@@ -1,0 +1,535 @@
+"""CLI del motor. Su razón de ser es `--dry-run`.
+
+    python -m app.cli --dry-run
+    python -m app.cli --dry-run --date 2026-09-08 --checkin lower=2,fatigue=5
+    python -m app.cli --dry-run --offline    # sin tocar Garmin
+    python -m app.cli --checkin-help         # deslizadores válidos
+
+`--dry-run` recorre EXACTAMENTE el mismo camino que la ejecución real —lee
+Garmin, construye las señales, decide, arma la sesión, compone el mensaje y
+construye el cuerpo del PUT de Hevy— y se detiene justo antes de escribir. Esa
+es la única diferencia, y es deliberado: un ensayo que usa otro código no
+ensaya nada.
+
+EL ORIGEN DE LOS DATOS SE DICE SIEMPRE Y EN ALTO
+------------------------------------------------
+No basta con etiquetar "reales" y confiar. Una etiqueta fija miente en cuanto
+algo va mal: si Garmin devuelve 429, o si un endpoint falla y los días vuelven
+vacíos, un informe que siga diciendo "7 días reales" está afirmando algo que no
+ha comprobado. Por eso la cabecera no declara la intención sino el RESULTADO:
+cuántos días trajeron cada métrica, de dónde salen las salidas en bici y qué
+incidencias hubo. Y los avisos se pintan con el mismo tamaño de letra que el
+cartel de datos de ejemplo, porque un aviso discreto es un aviso que no se lee.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+from app.config_loader import load_config
+from app.engine.decision import EngineState, decide
+from app.engine.message import render_plain, render_telegram
+from app.engine.signals import Checkin, DayMetrics, Ride, build_signals
+from app.settings import settings
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ANCHO = 78
+
+# Días de histórico de SALIDAS. Es mucho mayor que la ventana de wellness a
+# propósito: las actividades vienen en una sola petición por rango, mientras
+# que el wellness son varias peticiones por día. Y los umbrales adaptativos
+# (`load_3d_p90`) necesitan 60 días de distribución para existir siquiera.
+RIDE_HISTORY_DAYS = 190
+
+# Nombres cortos para el check-in en línea de órdenes, para no escribir
+# `lower_discomfort=3` a las siete de la mañana. La clave de la derecha se
+# valida contra `checkin_sliders` del YAML antes de usarse.
+CHECKIN_ALIAS = {
+    "fatigue": "fatigue",
+    "fatiga": "fatigue",
+    "mood": "mood",
+    "animo": "mood",
+    "upper": "upper_discomfort",
+    "lower": "lower_discomfort",
+    "sleep": "sleep_quality",
+    "sleep_quality": "sleep_quality",
+    "desire": "training_desire",
+    "ganas": "training_desire",
+    "rpe": "yesterday_rpe",
+}
+
+
+def checkin_help(cfg) -> str:
+    """Documenta los deslizadores REALES del YAML, no una lista escrita a mano.
+
+    Se genera desde la configuración porque una ayuda copiada a mano se queda
+    obsoleta el día que se añade un deslizador, y entonces enseña a escribir
+    check-ins que el motor ignora.
+    """
+    inverso: dict[str, list[str]] = {}
+    for alias, clave in CHECKIN_ALIAS.items():
+        inverso.setdefault(clave, []).append(alias)
+
+    lineas = ["Deslizadores de --checkin en este config.yaml:", ""]
+    for s in cfg.raw.get("checkin_sliders", []):
+        clave = s["key"]
+        alias = sorted(a for a in inverso.get(clave, []) if a != clave)
+        corto = f"   [alias: {', '.join(alias)}]" if alias else ""
+        lineas.append(f"  {clave:<18} {s.get('label', '')}{corto}")
+
+    claves = [s["key"] for s in cfg.raw.get("checkin_sliders", [])]
+    lineas += [
+        "",
+        "Todos los campos, nombres largos:",
+        '  --checkin "' + ",".join(f"{k}=5" for k in claves) + '"',
+        "",
+        "Todos los campos, alias cortos:",
+        '  --checkin "fatigue=4,mood=7,upper=1,lower=2,sleep=7,desire=8,rpe=6"',
+        "",
+        "Una clave que no esté en la lista es un error, no un valor ignorado.",
+    ]
+    return "\n".join(lineas)
+
+
+def parse_checkin(text: str | None, day: date, valid_keys: set[str]) -> Checkin | None:
+    """`lower=2,fatigue=5` -> Checkin.
+
+    Una clave desconocida es un error duro. Antes se aceptaba cualquier cosa, y
+    una errata (`fatige=5`) se traducía en que la regla correspondiente saliera
+    como "sin datos para evaluar" sin que nadie pudiera sospechar por qué. Un
+    check-in que se ignora en silencio es peor que uno que no se escribe.
+    """
+    if not text:
+        return None
+    values: dict[str, int | None] = {}
+    for par in text.split(","):
+        par = par.strip()
+        if not par:
+            continue
+        if "=" not in par:
+            raise SystemExit(f"check-in mal escrito: '{par}'. Formato: clave=valor")
+        k, v = par.split("=", 1)
+        k = k.strip()
+        key = CHECKIN_ALIAS.get(k, k)
+        if key not in valid_keys:
+            raise SystemExit(
+                f"\n  check-in: '{k}' no es un deslizador de este config.yaml.\n"
+                f"  Válidos: {', '.join(sorted(valid_keys))}\n"
+                f"  Alias:   {', '.join(sorted(CHECKIN_ALIAS))}\n"
+            )
+        try:
+            values[key] = int(v)
+        except ValueError:
+            raise SystemExit(f"check-in: '{v}' no es un número entero") from None
+    return Checkin(date=day, values=values)
+
+
+# ---------------------------------------------------------------------------
+# Procedencia de los datos
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Procedencia:
+    """Qué datos se han usado de verdad. Medido, no supuesto."""
+
+    titular: str
+    detalle: list[str] = field(default_factory=list)
+    avisos: list[str] = field(default_factory=list)
+    es_ejemplo: bool = False
+
+    def banner(self) -> list[str]:
+        """Los avisos van con el mismo peso visual que el cartel de ejemplo."""
+        if not self.avisos:
+            return []
+        out = ["", "!" * ANCHO]
+        for a in self.avisos:
+            out.append(f"  ATENCIÓN: {a}")
+        out.append("!" * ANCHO)
+        return out
+
+
+def _completitud(metrics: list[DayMetrics]) -> tuple[list[str], list[str]]:
+    """Cuenta qué trajo realmente cada métrica. Devuelve (detalle, avisos)."""
+    n = len(metrics)
+    campos = [
+        ("hrv", "HRV"),
+        ("rhr", "FC reposo"),
+        ("sleep_min", "sueño"),
+        ("sleep_score", "score sueño"),
+        ("body_battery", "body battery"),
+    ]
+    detalle: list[str] = []
+    avisos: list[str] = []
+    trozos = []
+    for attr, etiqueta in campos:
+        c = sum(1 for m in metrics if getattr(m, attr, None) is not None)
+        trozos.append(f"{etiqueta} {c}/{n}")
+        if c == 0 and n:
+            avisos.append(
+                f"NINGÚN día trajo {etiqueta}. Las reglas que dependan de esa "
+                f"señal no se han podido evaluar."
+            )
+    detalle.append("wellness recibido: " + ", ".join(trozos))
+    return detalle, avisos
+
+
+def synthetic_window(day: date, days: int) -> tuple[list[DayMetrics], list[Ride]]:
+    """Ventana de ejemplo. Existe para poder ensayar sin credenciales.
+
+    Los valores son deliberadamente NORMALES: un perfil sin nada roto, para que
+    lo que se vea en el ensayo sea el camino feliz y no un caso extremo. Si
+    hicieran falta casos extremos, para eso están los tests.
+    """
+    metrics = []
+    for i in range(days):
+        d = day - timedelta(days=days - 1 - i)
+        metrics.append(
+            DayMetrics(
+                date=d,
+                hrv=[62, 58, 64, 61, 59, 63, 60][i % 7],
+                rhr=[48, 49, 47, 48, 50, 48, 47][i % 7],
+                sleep_min=[430, 405, 455, 420, 390, 445, 425][i % 7],
+                sleep_score=[78, 71, 84, 76, 68, 81, 77][i % 7],
+                body_battery=[72, 65, 80, 70, 61, 76, 74][i % 7],
+            )
+        )
+    rides = [
+        Ride(
+            date=day - timedelta(days=2),
+            duration_s=5400,
+            distance_m=48000.0,
+            zones=(900.0, 2400.0, 1500.0, 500.0, 100.0),
+            aerobic_te=3.1,
+            name="Salida de ejemplo (sábado)",
+        ),
+    ]
+    return metrics, rides
+
+
+def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str]]:
+    """Histórico largo de salidas desde `data/cache/activities.json`."""
+    if not usar:
+        return [], ["histórico largo desactivado (--no-cache)"], [
+            "sin histórico largo, los umbrales adaptativos de carga no tienen "
+            "base y `carga_acumulada` no se podrá evaluar"
+        ]
+
+    from app.integrations.activity_cache import load_cached_rides
+
+    cache = load_cached_rides(REPO_ROOT / "data" / "cache" / "activities.json")
+    if not cache.available:
+        return [], [], [
+            f"sin histórico largo de salidas ({cache.describe()}); los umbrales "
+            f"adaptativos de carga se quedarán sin base y `carga_acumulada` no "
+            f"se podrá evaluar"
+        ]
+    detalle = [f"histórico de carga: {cache.describe()}"]
+    if cache.file_mtime:
+        detalle.append(f"                    caché escrita el "
+                       f"{cache.file_mtime:%Y-%m-%d %H:%M}")
+    return cache.rides, detalle, []
+
+
+def fetch_garmin(
+    day: date, days: int, usar_cache: bool
+) -> tuple[list[DayMetrics], list[Ride], Procedencia]:
+    """Datos reales del reloj, con el histórico largo desde la caché."""
+    from app.integrations.activity_cache import merge_rides
+    from app.integrations.garmin import GarminError, GarminRateLimited, build_client
+
+    cached, det_cache, avisos_cache = cargar_cache_salidas(usar_cache)
+
+    try:
+        client = build_client(settings)
+        client.connect()
+        metrics, rides = client.window(day, days, ride_days=RIDE_HISTORY_DAYS)
+    except GarminRateLimited as exc:
+        raise SystemExit(
+            f"\n{'!' * ANCHO}\n"
+            f"  GARMIN LIMITÓ LA PETICIÓN (429). NO HAY DATOS FRESCOS.\n"
+            f"{'!' * ANCHO}\n\n"
+            f"  {exc}\n\n"
+            f"  No se decide con datos a medias, así que no se ha decidido nada.\n"
+            f"  Garmin limita por IP y el bloqueo se levanta solo: espera un rato\n"
+            f"  y repite. Cada login nuevo empeora el bloqueo, así que no\n"
+            f"  conviene insistir en bucle.\n\n"
+            f"  Mientras tanto, `--offline` recorre el mismo camino con datos de\n"
+            f"  ejemplo claramente marcados como tales.\n"
+        ) from exc
+    except GarminError as exc:
+        raise SystemExit(
+            f"\n  No se pudo leer Garmin: {exc}\n\n"
+            f"  Para la prueba con datos reales hace falta un fichero .env en\n"
+            f"  {REPO_ROOT} con:\n\n"
+            f"      GARMIN_EMAIL=tu_correo\n"
+            f"      GARMIN_PASSWORD=tu_contraseña\n\n"
+            f"  Escríbelo tú: el sistema no pide credenciales por consola.\n"
+            f"  Mientras tanto, `--offline` recorre el mismo camino con datos\n"
+            f"  de ejemplo claramente marcados como tales.\n"
+        ) from exc
+
+    detalle, avisos = _completitud(metrics)
+    detalle += det_cache
+    avisos += avisos_cache
+
+    frescas = len(rides)
+    todas = merge_rides(cached, rides)
+    detalle.append(
+        f"salidas: {frescas} leídas ahora + {len(cached)} en caché "
+        f"= {len(todas)} tras fusionar"
+    )
+
+    if client.session_resumed:
+        detalle.append("sesión reanudada desde los tokens guardados (sin login)")
+    if client.rate_limit_events:
+        avisos.append(
+            f"Garmin devolvió 429 {len(client.rate_limit_events)} vez/veces "
+            f"durante esta lectura ({client.rate_limit_events[0]}). Se reintentó "
+            f"y los datos que ves SÍ llegaron, pero la IP está limitada: repetir "
+            f"la orden muchas veces empeora el bloqueo."
+        )
+
+    return metrics, todas, Procedencia(
+        titular=f"Garmin Connect — {days} días de wellness leídos ahora",
+        detalle=detalle,
+        avisos=avisos,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Informe
+# ---------------------------------------------------------------------------
+
+
+def imprimir_hevy(decision, cfg, mostrar_remoto: bool) -> None:
+    """Qué se escribiría en Hevy. Es la parte con más riesgo del sistema."""
+    from app.integrations.hevy import build_routine_payload, payload_diff
+
+    print("-" * ANCHO)
+    print("  LO QUE SE ESCRIBIRÍA EN HEVY (y no se escribe)")
+    print("-" * ANCHO)
+
+    s = decision.session
+    hevy_cfg = (cfg.raw.get("integrations") or {}).get("hevy") or {}
+    encendido = bool(hevy_cfg.get("write_enabled", False))
+    print(f"  interruptor integrations.hevy.write_enabled = {encendido}")
+    if not encendido:
+        print("    -> MODO SOLO LECTURA. Aunque esto no fuera un ensayo, no se")
+        print("       escribiría nada en Hevy. Enciéndelo cuando el mensaje de")
+        print("       cada mañana coincida con lo que habrías hecho tú.")
+    print()
+
+    if not (s.write_to_hevy and s.routine_key):
+        print("  Hoy no hay nada que escribir: la sesión no toca Hevy.")
+        print()
+        return
+
+    rid = s.hevy_routine_id
+    payload = build_routine_payload(s, cfg)
+    rutina = payload["routine"]
+    print(f"  PUT /v1/routines/{rid}")
+    print(f"  título: {rutina['title']}   ({len(rutina['exercises'])} ejercicios)")
+    print("  (PUT es REEMPLAZO TOTAL: esto no se suma a la rutina, la sustituye)")
+    print()
+
+    for ex in rutina["exercises"]:
+        print(f"  [{ex['index']}] {ex['title']}"
+              f"   ·   template {ex['exercise_template_id']}")
+        if ex.get("superset_id") is not None:
+            print(f"       superserie: {ex['superset_id']}")
+        for st in ex["sets"]:
+            trozos = []
+            if st.get("reps") is not None:
+                trozos.append(f"{st['reps']} reps")
+            if st.get("duration_seconds") is not None:
+                trozos.append(f"{st['duration_seconds']} s")
+            if st.get("weight_kg") is not None:
+                trozos.append(f"{st['weight_kg']} kg")
+            if st.get("distance_meters") is not None:
+                trozos.append(f"{st['distance_meters']} m")
+            print(f"       serie {st['index'] + 1}: {st['type']:<7} "
+                  + " · ".join(trozos))
+        print()
+
+    if mostrar_remoto and rid:
+        print("  Comparación con lo que hay AHORA en Hevy:")
+        try:
+            from app.integrations.hevy import build_client as hevy_client
+
+            remoto = hevy_client(settings, cfg).get_routine(rid)
+            for linea in payload_diff(remoto, payload):
+                print(f"    {linea}")
+        except Exception as exc:  # noqa: BLE001 - leer Hevy aquí es opcional
+            print(f"    no se pudo leer el estado remoto: {exc}")
+            print("    (lectura opcional; no afecta a la decisión)")
+        print()
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(
+        prog="adaptive",
+        description="Motor de decisión de entrenamiento adaptativo",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p.add_argument("--dry-run", action="store_true",
+                   help="decide y muestra, pero no escribe en Hevy ni envía Telegram")
+    p.add_argument("--date", help="día a decidir (AAAA-MM-DD). Por defecto, hoy")
+    p.add_argument("--checkin", help="check-in simulado: lower=2,fatigue=5,desire=7")
+    p.add_argument("--checkin-help", action="store_true",
+                   help="lista los deslizadores válidos y sale")
+    p.add_argument("--offline", action="store_true",
+                   help="no consultar Garmin; usar datos de ejemplo marcados")
+    p.add_argument("--days", type=int, default=7, help="días de wellness (7)")
+    p.add_argument("--no-cache", action="store_true",
+                   help="no usar el histórico largo de data/cache/activities.json")
+    p.add_argument("--hevy-diff", action="store_true",
+                   help="leer la rutina actual de Hevy y comparar (solo lectura)")
+    p.add_argument("--json", action="store_true", help="volcar la decisión en JSON")
+    p.add_argument("--config", default=None, help="ruta a config.yaml")
+    p.add_argument("-v", "--verbose", action="store_true")
+    args = p.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    cfg = load_config(Path(args.config) if args.config else settings.config_path)
+
+    if args.checkin_help:
+        print(checkin_help(cfg))
+        return 0
+
+    if not args.dry_run:
+        print("Por ahora solo está implementado --dry-run.")
+        return 2
+
+    day = (
+        datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today()
+    )
+
+    if args.offline:
+        metrics, rides = synthetic_window(day, args.days)
+        cached, det_cache, avisos_cache = cargar_cache_salidas(not args.no_cache)
+        if cached:
+            from app.integrations.activity_cache import merge_rides
+
+            rides = merge_rides(cached, rides)
+        proc = Procedencia(
+            titular=f"DATOS DE EJEMPLO ({args.days} días) — NO son tus datos reales",
+            detalle=["wellness: inventado en synthetic_window()"] + det_cache,
+            avisos=[
+                "el wellness de este informe es INVENTADO. Sirve para ver el "
+                "camino completo, no para decidir si entrenar hoy."
+            ] + avisos_cache,
+            es_ejemplo=True,
+        )
+    else:
+        metrics, rides, proc = fetch_garmin(day, args.days, not args.no_cache)
+
+    valid_keys = {s["key"] for s in cfg.raw.get("checkin_sliders", [])}
+    checkin = parse_checkin(args.checkin, day, valid_keys)
+    if checkin:
+        faltan = sorted(valid_keys - set(checkin.values))
+        origen_ci = f"simulado, {len(checkin.values)}/{len(valid_keys)} campos"
+        if faltan:
+            proc.detalle.append(
+                f"check-in incompleto, sin: {', '.join(faltan)}"
+            )
+            proc.detalle.append(
+                "                    (las reglas que dependan de esos campos no "
+                "se evaluarán)"
+            )
+    else:
+        origen_ci = "sin check-in"
+
+    signals = build_signals(cfg, day, metrics=metrics, rides=rides, checkin=checkin)
+
+    # `program_start` sale del YAML y el validador garantiza que existe: sin él
+    # la semana de descarga no se activaría nunca. El resto del estado sigue en
+    # frío mientras no haya base de datos.
+    state = EngineState(program_start=cfg.program_start)
+
+    decision = decide(cfg, day, signals, state, source="dry_run")
+
+    print("=" * ANCHO)
+    print("  ENSAYO EN SECO — no se escribe en Hevy ni se envía nada")
+    print("=" * ANCHO)
+    print(f"  fecha        : {day} ({decision.weekday})")
+    print(f"  config       : {settings.config_path.name}  hash={cfg.hash}")
+    print(f"  datos        : {proc.titular}")
+    for linea in proc.detalle:
+        print(f"                 {linea}")
+    print(f"  check-in     : {origen_ci}")
+    print(f"  programa     : inicio {cfg.program_start} · descarga "
+          f"{'ACTIVA' if decision.deload.active else 'no'} "
+          f"({decision.deload.reason})")
+    print("  estado       : sin BD (sin rachas ni reglas previas)")
+    print("=" * ANCHO)
+    for linea in proc.banner():
+        print(linea)
+
+    if args.json:
+        print(json.dumps(decision.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+
+    print()
+    print("-" * ANCHO)
+    print("  MENSAJE DE TELEGRAM (tal cual se enviaría)")
+    print("-" * ANCHO)
+    print()
+    print(render_plain(decision, cfg))
+    print()
+
+    print("-" * ANCHO)
+    print("  TRAZA DE LA DECISIÓN")
+    print("-" * ANCHO)
+    print(f"  semáforo: {decision.light}"
+          + (f" por '{decision.trigger_rule}'" if decision.trigger_rule else ""))
+    for r in decision.light_decision.fired:
+        print(f"    · disparó [{r.level}] {r.name}: {'; '.join(r.detail)}")
+    saltadas = decision.light_decision.skipped
+    if saltadas:
+        print(f"  reglas sin evaluar por falta de datos: {len(saltadas)}")
+        for r in saltadas:
+            print(f"    · {r.name} (falta: {', '.join(sorted(set(r.missing)))})")
+    for nombre, valor in sorted(signals.adaptive.items()):
+        estado = f"{valor:.1f}" if valor is not None else "SIN BASE"
+        print(f"  umbral adaptativo {nombre}: {estado}")
+    print(f"  sesión: {decision.session.kind} — {decision.session.title}")
+    for c in decision.session.changes:
+        print(f"    · {c}")
+    if decision.progression:
+        pr = decision.progression
+        print(f"  puerta general: {pr.gate_open} ({pr.gate_reason})")
+        print(f"  puerta series : {pr.sets_allowed} ({pr.sets_reason})")
+        print(f"  puerta reps   : {pr.reps_allowed} ({pr.reps_reason})")
+    for n in decision.notes:
+        print(f"  nota: {n}")
+
+    print()
+    imprimir_hevy(decision, cfg, args.hevy_diff)
+
+    texto = render_telegram(decision, cfg)
+    tg_cfg = (cfg.raw.get("integrations") or {}).get("telegram") or {}
+    print("-" * ANCHO)
+    print("  TELEGRAM (no enviado)")
+    print("-" * ANCHO)
+    print(f"  integrations.telegram.send_enabled = "
+          f"{bool(tg_cfg.get('send_enabled', True))}")
+    print(f"  {len(texto)} caracteres al chat configurado")
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

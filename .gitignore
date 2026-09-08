@@ -1,0 +1,34 @@
+# Secrets — NEVER commit
+.env
+
+# Runtime data (SQLite, tokens de Garmin, caché de actividades reales)
+# La caché contiene el histórico de entrenamientos del usuario: NUNCA se sube.
+data/*
+!data/.gitkeep
+
+# Previous hevy2garmin trial, kept out of the repo
+legacy/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# Salidas de ejecuciones manuales (pueden contener datos del usuario)
+/out.txt
+*.out.txt
+/Nuevo Documento de texto.txt

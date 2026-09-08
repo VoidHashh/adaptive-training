@@ -1,0 +1,1586 @@
+# =============================================================================
+# adaptive-training — configuración del motor de decisión
+# =============================================================================
+# Este archivo es la ÚNICA fuente de verdad de las rutinas y de los umbrales.
+# El motor no usa ningún LLM: son reglas explícitas, deterministas y auditables.
+#
+# Importante: la API de Hevy (PUT /v1/routines/{id}) REEMPLAZA la rutina entera,
+# no hace parche. Por eso las rutinas se definen aquí completas: cada mañana el
+# sistema reconstruye la rutina del día desde este YAML aplicando la decisión.
+# Si editas una rutina en la app de Hevy, el cambio se perderá en la siguiente
+# escritura. Edítala aquí.
+#
+# Cada cambio de este archivo genera un config_hash distinto que se guarda con
+# cada decisión, para poder saber con qué configuración se decidió cada día.
+# =============================================================================
+
+version: 1
+timezone: Europe/Madrid
+
+
+# -----------------------------------------------------------------------------
+# 0-bis. PROGRAMA
+# -----------------------------------------------------------------------------
+# `start` es el origen desde el que se cuentan las semanas de descarga. NO es
+# decorativo y NO puede quedarse vacío: sin él, `special_rules.semana_de_descarga`
+# no tiene desde dónde contar `every_n_weeks` y la descarga no se activa NUNCA.
+# Un sistema que progresa sin descargar es un sistema que acumula fatiga hasta
+# que algo cede, y con 44 años, déficit calórico y una hernia L4-L5 eso no es un
+# riesgo aceptable.
+#
+# Por eso el cargador se NIEGA A ARRANCAR si falta o está en null, en vez de
+# apuntarlo en una nota del informe. Una nota se lee el primer día y se ignora
+# el resto; un arranque fallido se arregla.
+program:
+  start: 2026-09-08   # AAAA-MM-DD. Origen del contador de descargas.
+
+
+# -----------------------------------------------------------------------------
+# 0-ter. INTERRUPTORES DE ESCRITURA
+# -----------------------------------------------------------------------------
+# Todo lo que sale del sistema hacia fuera pasa por aquí. Empiezan APAGADOS.
+#
+# El motivo de que `hevy.write_enabled` arranque en false no es la desconfianza
+# en el código: es que `PUT /v1/routines/{id}` REEMPLAZA la rutina entera, así
+# que el coste de una decisión mal construida no es un mal día de entreno, es
+# una rutina destruida. Con el interruptor apagado el sistema decide, avisa por
+# Telegram y registra qué HABRÍA escrito, pero no toca Hevy. Eso permite correr
+# una semana en seco comparando cada mañana el mensaje con lo que uno habría
+# hecho, y encenderlo solo cuando las dos cosas coincidan.
+#
+# El interruptor NO afecta a la reversión: si algo se rompió mientras estaba
+# encendido, se puede deshacer aunque luego se apague.
+integrations:
+  hevy:
+    write_enabled: false
+
+    # Copias de seguridad antes de cada escritura. No es configurable que se
+    # hagan —sin copia verificada no se escribe, y eso está en el código— pero
+    # sí cuántas se conservan.
+    backup:
+      keep_last: 30
+
+  telegram:
+    send_enabled: true   # los mensajes sí se envían: leer no rompe nada
+
+
+# -----------------------------------------------------------------------------
+# 0. RESTRICCIONES DE SEGURIDAD — hernia discal L4-L5
+# -----------------------------------------------------------------------------
+# Esto NO es un umbral que se recalibre: es una restricción permanente. El
+# cargador de configuración se niega a arrancar si alguna rutina HIIT contiene
+# un ejercicio de esta lista, para que un cambio hecho con prisa en Hevy y
+# copiado aquí no meta un patrón contraindicado sin que nadie se dé cuenta.
+#
+# Ámbito: SOLO las rutinas HIIT. En la fuerza normal el peso muerto sí está
+# permitido (Día 2) porque va controlado, a repeticiones bajas y con la regla
+# `retirada_peso_muerto` vigilándolo. Lo que se prohíbe es ese mismo patrón
+# ejecutado con prisa y bajo fatiga, que es lo que define un HIIT.
+safety:
+  condition: "Hernia discal L4-L5"
+
+  forbidden_in_hiit:
+    reason: >
+      Ningún ejercicio con flexión lumbar repetida bajo carga ni con carga
+      axial explosiva puede entrar en las rutinas HIIT.
+
+    # Bloqueo por template_id: es el criterio fuerte, independiente del idioma
+    # y del nombre que le pongamos aquí. IDs verificados contra el catálogo
+    # real de Hevy (453 plantillas).
+    template_ids:
+      # --- flexión lumbar repetida ---
+      - {id: "022DF610", name: "Sit Up"}
+      - {id: "9237BA12", name: "Sit Up (Weighted)"}
+      - {id: "32B0B590", name: "Jackknife Sit Up"}
+      - {id: "DCF3B31B", name: "Crunch"}
+      - {id: "EB43ADD4", name: "Crunch (Machine)"}
+      - {id: "D928C232", name: "Crunch (Weighted)"}
+      - {id: "BC10A922", name: "Decline Crunch"}
+      - {id: "B2398CD1", name: "Decline Crunch (Weighted)"}
+      - {id: "A41C7261", name: "Bicycle Crunch"}
+      - {id: "594450D2", name: "Bicycle Crunch Raised Legs"}
+      - {id: "23A48484", name: "Cable Crunch"}
+      - {id: "DBE341AA", name: "Oblique Crunch"}
+      - {id: "7952B5CD", name: "Reverse Crunch"}
+      - {id: "6BE68B62", name: "V Up"}
+      - {id: "970ADF87", name: "Hollow Rock"}
+      - {id: "B94E35E1", name: "Toes to Bar"}
+      - {id: "08590920", name: "Hanging Knee Raise"}
+      - {id: "F8356514", name: "Hanging Leg Raise"}
+      - {id: "09C9F635", name: "Lying Leg Raise"}
+      - {id: "0482DA98", name: "Leg Raise Parallel Bars"}
+      - {id: "BB83BDDE", name: "Russian Twist (Bodyweight)"}
+      - {id: "2982AA23", name: "Russian Twist (Weighted)"}
+      - {id: "4180C405", name: "Good Morning (Barbell)"}
+      # --- carga axial explosiva ---
+      - {id: "FB09C938", name: "Snatch"}
+      - {id: "E22F9358", name: "Power Snatch"}
+      - {id: "F4E77594", name: "Hang Snatch"}
+      - {id: "F3717B0E", name: "Dumbbell Snatch"}
+      - {id: "89304423", name: "Kettlebell Snatch"}
+      - {id: "ABB00838", name: "Clean"}
+      - {id: "C628D768", name: "Power Clean"}
+      - {id: "BD4E7E53", name: "Hang Clean"}
+      - {id: "652FEA39", name: "Clean Pull"}
+      - {id: "9E09CEC3", name: "Clean and Jerk"}
+      - {id: "D3095577", name: "Clean and Press"}
+      - {id: "F99C211D", name: "Kettlebell Clean"}
+      - {id: "E764B907", name: "Split Jerk"}
+      - {id: "90E506D5", name: "Thruster (Barbell)"}
+      - {id: "10313AFD", name: "Thruster (Kettlebell)"}
+      - {id: "542F3CD5", name: "Push Press"}
+      - {id: "7B8D84E8", name: "Overhead Press (Barbell)"}
+      - {id: "6AC96645", name: "Overhead Press (Dumbbell)"}
+      - {id: "B09A1304", name: "Overhead Press (Smith Machine)"}
+      - {id: "91AF29E0", name: "Seated Overhead Press (Barbell)"}
+      - {id: "9930DF71", name: "Seated Overhead Press (Dumbbell)"}
+      - {id: "F8A0FCCA", name: "Kettlebell Swing"}
+      - {id: "56092DD1", name: "Box Jump"}
+      - {id: "07EBC4DC", name: "Lateral Box Jump"}
+      - {id: "70D4EBBF", name: "Jump Squat"}
+      - {id: "BB792A36", name: "Burpee"}
+      - {id: "115CC72C", name: "Burpee Broad Jumps"}
+      - {id: "86B00DDE", name: "Burpee Over the Bar"}
+      - {id: "5046D0A9", name: "Front Squat"}
+      # --- peso muerto y variantes: permitidos en fuerza, nunca en HIIT ---
+      - {id: "C6272009", name: "Deadlift (Barbell)"}
+      - {id: "20870ED5", name: "Deadlift (Smith Machine)"}
+      - {id: "5F4E6DD3", name: "Deadlift (Dumbbell)"}
+      - {id: "99507114", name: "Deadlift (Band)"}
+      - {id: "B923B230", name: "Deadlift (Trap bar)"}
+      - {id: "FA5D0DE1", name: "Deadlift High Pull"}
+      - {id: "D20D7BBE", name: "Sumo Deadlift"}
+      - {id: "2A48E443", name: "Straight Leg Deadlift"}
+      - {id: "2B4B7310", name: "Romanian Deadlift (Barbell)"}
+      - {id: "72CFFAD5", name: "Romanian Deadlift (Dumbbell)"}
+      - {id: "0B9B92BA", name: "Romanian Deadlift (Smith Machine)"}
+      - {id: "93472AC1", name: "Single Leg Romanian Deadlift (Barbell)"}
+      - {id: "937292AB", name: "Single Leg Romanian Deadlift (Dumbbell)"}
+
+    # Bloqueo por nombre: red de seguridad para ejercicios PROPIOS, que llevan
+    # un UUID largo en vez de un ID del catálogo y por tanto no pueden estar en
+    # la lista de arriba. Se compara sin acentos y sin distinguir mayúsculas.
+    name_patterns:
+      - "sit ?up"
+      - "crunch"
+      - "abdominal(es)? (clasic|tradicional)"
+      - "encogimiento"
+      - "russian twist|giro ruso"
+      - "elevacion(es)? de piernas? colgad"
+      # Acotado con \b a ambos lados. La versión anterior era "v.?up", que
+      # capturaba cualquier cadena con una `v` y un carácter cualquiera antes
+      # de "up". Ahora solo coincide "v up", "v-up", "vup" y sus plurales.
+      - "\\bv[- ]?ups?\\b"
+      - "toes to bar"
+      - "burpee"
+      - "snatch|arrancada"
+      # OJO, PATRÓN ANCHO: "clean" coincide con cualquier nombre que lo
+      # contenga, no solo con las cargadas olímpicas. Se mantiene porque el
+      # coste de un falso negativo aquí (una cargada entrando en un HIIT bajo
+      # fatiga, con hernia L4-L5) es mucho mayor que el de un falso positivo,
+      # que es un fallo al arrancar y se resuelve en un minuto. Si algún día un
+      # ejercicio personalizado legítimo choca con él, la salida NO es
+      # ensanchar el patrón sino añadir ese ejercicio a `allow_exceptions` con
+      # su motivo escrito, que es donde queda auditable.
+      - "clean|cargada"
+      - "jerk|envion"
+      - "thruster"
+      - "push press"
+      - "swing (ruso|con kettlebell)"
+      - "box jump|salto al cajon"
+      - "jump squat|sentadilla con salto"
+      - "peso muerto|deadlift"
+      - "press (militar|sobre la cabeza)|overhead press"
+      - "buenos dias|good morning"
+
+    # Excepciones explícitas: ejercicios que un patrón podría capturar por el
+    # nombre pero que están revisados y aprobados. Si añades uno aquí, escribe
+    # el motivo: dentro de seis meses no te acordarás.
+    allow_exceptions:
+      - id: "A1F47ACC"
+        name: "Wall Ball"
+        why: >
+          Lanzamiento desde el pecho contra la pared, sin sentadilla y sin
+          recorrido por encima de la cabeza. Equivale al chest pass del plan
+          original. Revisado y aprobado explícitamente.
+
+
+# -----------------------------------------------------------------------------
+# 1. LÍNEA BASE — cómo se calculan las medias móviles de Garmin
+# -----------------------------------------------------------------------------
+baseline:
+  window_days: 7            # ventana de la media móvil (HRV, FC reposo)
+  min_days_required: 4      # días mínimos con dato para fiarse de la media.
+                            # Por debajo de esto, las reglas objetivas (HRV/FC)
+                            # NO disparan: arranque en frío -> se decide solo
+                            # con el formulario. Ver `cold_start` abajo.
+  exclude_outliers: true    # descarta el máximo y el mínimo de la ventana
+
+# -----------------------------------------------------------------------------
+# 1-bis. UMBRALES ADAPTATIVOS
+# -----------------------------------------------------------------------------
+# Principio general: siempre que se pueda, un umbral se calcula contra tu propia
+# distribución histórica en vez de ser una constante inventada. Cada entrada de
+# aquí define un percentil móvil que las reglas pueden referenciar con la
+# sintaxis `{gt_adaptive: <nombre>}`.
+#
+# AVISO IMPORTANTE sobre elegir el percentil: un umbral de percentil dispara,
+# por construcción, el (100 - p)% de los días. p80 no significa "cuando estoy
+# cargado", significa "1 día de cada 5". Medido sobre tus 180 días reales:
+#     load_3d  p50=95   p80=238  p90=308  máximo=566
+#     load_7d  p50=273  p80=485  p90=587  máximo=746
+# Elegido p90: dispara ~1 día de cada 10 (load_3d por encima de 308). Con p80
+# eran 1 de cada 5, demasiado al sumarlo al resto de reglas ámbar.
+adaptive_thresholds:
+
+  load_3d_p90:
+    metric: load_3d
+    window_days: 60
+    percentile: 90
+    # Sin este mínimo de histórico la regla NO dispara: con pocos días, el
+    # percentil se calcula sobre ruido.
+    min_days_required: 30
+    # Contar también los días de descanso (carga 0). Si se excluyen, el umbral
+    # sube (p80 pasa de 238 a 263) y la regla se vuelve más permisiva.
+    include_zero_days: true
+
+  load_7d_p90:
+    metric: load_7d
+    window_days: 60
+    percentile: 90
+    min_days_required: 30
+    include_zero_days: true
+
+
+cold_start:
+  # Al arrancar, el sistema intenta rellenar la línea base hacia atrás con
+  # get_hrv_data_range / FC en reposo. Si no hay suficientes días:
+  backfill_days: 30
+  on_insufficient_data: subjective_only   # subjective_only | assume_green
+  notify: true              # avisa por Telegram de que decide a ciegas
+
+
+# -----------------------------------------------------------------------------
+# 2. FORMULARIO DIARIO (PWA) — deslizadores 1..10
+# -----------------------------------------------------------------------------
+# El orden de esta lista es el orden en que aparecen en la PWA.
+checkin_sliders:
+  - key: fatigue
+    label: "Cansancio general"
+    hint_low: "fresco"
+    hint_high: "reventado"
+  - key: mood
+    label: "Ánimo"
+    hint_low: "bajo"
+    hint_high: "alto"
+  - key: upper_discomfort
+    label: "Molestias tronco superior (cervicales/hombros)"
+    hint_low: "ninguna"
+    hint_high: "mucho dolor"
+  - key: lower_discomfort
+    label: "Molestias tronco inferior (lumbar)"
+    hint_low: "ninguna"
+    hint_high: "mucho dolor"
+  - key: sleep_quality
+    label: "Calidad del sueño percibida"
+    hint_low: "fatal"
+    hint_high: "excelente"
+  - key: training_desire
+    label: "Ganas de entrenar"
+    hint_low: "ninguna"
+    hint_high: "muchas"
+  # 7º deslizador. NO estaba en el brief original: se añade porque Hevy no
+  # registra RPE (comprobado: 0 de 268 series subidas lo llevaban, y el schema
+  # PutRoutinesRequestSet ni siquiera tiene campo rpe). Sin este dato la regla
+  # de progresión "todas las series con RPE <= 8" no se puede evaluar.
+  - key: yesterday_rpe
+    label: "Esfuerzo del entreno de ayer"
+    hint_low: "suave"
+    hint_high: "al límite"
+    optional: true          # si ayer no hubo entreno, se deja en blanco
+
+checkin_comment:
+  key: comments
+  label: "Comentarios"
+
+
+# -----------------------------------------------------------------------------
+# 3. UMBRALES DEL SEMÁFORO
+# -----------------------------------------------------------------------------
+# Se evalúa ROJO primero; si no dispara ninguna, se evalúa ÁMBAR; si no, VERDE.
+# Cada regla tiene nombre propio: es el que se guarda en `decisions.trigger_rule`
+# y el que aparece en el mensaje de Telegram ("qué señal lo ha disparado").
+# `requires` declara de qué datos depende: si falta alguno, la regla se salta y
+# se anota como skipped en el log (no se asume ni bien ni mal).
+
+thresholds:
+  red:
+    - name: lumbar_alto
+      description: "Molestia lumbar >= 7"
+      requires: [lower_discomfort]
+      when: {lower_discomfort: {gte: 7}}
+
+    - name: hrv_hundida_2d
+      description: "HRV por debajo del 85% de la media de 7 días, 2 días seguidos"
+      requires: [hrv, hrv_baseline]
+      when: {hrv_ratio: {lt: 0.85, consecutive_days: 2}}
+
+    - name: fc_reposo_disparada
+      description: "FC en reposo >= media 7d + 7 lpm"
+      requires: [rhr, rhr_baseline]
+      when: {rhr_delta: {gte: 7}}
+
+    - name: sueno_muy_corto
+      description: "Menos de 5 h de sueño"
+      requires: [sleep_min]
+      when: {sleep_min: {lt: 300}}
+
+    - name: sin_ganas_y_reventado
+      description: "Ganas <= 2 y cansancio >= 8"
+      requires: [training_desire, fatigue]
+      when:
+        all:
+          - {training_desire: {lte: 2}}
+          - {fatigue: {gte: 8}}
+
+  amber:
+    - name: lumbar_medio
+      description: "Molestia lumbar entre 5 y 6"
+      requires: [lower_discomfort]
+      when: {lower_discomfort: {gte: 5, lte: 6}}
+
+    - name: cervicales_hombros
+      description: "Molestia tronco superior >= 6"
+      requires: [upper_discomfort]
+      when: {upper_discomfort: {gte: 6}}
+
+    - name: hrv_baja_1d
+      description: "HRV por debajo del 90% de la media de 7 días"
+      requires: [hrv, hrv_baseline]
+      when: {hrv_ratio: {lt: 0.90}}
+
+    - name: fc_reposo_elevada
+      description: "FC en reposo >= media 7d + 4 lpm"
+      requires: [rhr, rhr_baseline]
+      when: {rhr_delta: {gte: 4}}
+
+    - name: sueno_corto
+      description: "Entre 5 h y 6,5 h de sueño"
+      requires: [sleep_min]
+      when: {sleep_min: {gte: 300, lt: 390}}
+
+    - name: cansancio_alto
+      description: "Cansancio >= 7"
+      requires: [fatigue]
+      when: {fatigue: {gte: 7}}
+
+    - name: carga_acumulada
+      description: "Carga de 3 días por encima de tu percentil 90 habitual"
+      requires: [load_3d, load_3d_p90]
+      # Umbral relativo, no constante: se compara con tu propia distribución.
+      # Ver la sección `adaptive_thresholds`.
+      when: {load_3d: {gt_adaptive: load_3d_p90}}
+
+    - name: resaca_finde
+      description: "Fin de semana duro en bici: el lunes arranca en ámbar"
+      # Solo se evalúa el lunes. Mira lo que REALMENTE hiciste sábado y domingo
+      # (actividades de Garmin), no lo que se recomendó.
+      only_on_weekday: [monday]
+      requires: [weekend_intense_rides, weekend_total_hours]
+      when:
+        any:
+          - {weekend_intense_rides: {gte: 1}}
+          - {weekend_total_hours: {gt: 4.0}}
+
+
+# -----------------------------------------------------------------------------
+# 4. ACCIONES POR SEMÁFORO
+# -----------------------------------------------------------------------------
+actions:
+  green:
+    session: full
+    allow_progression: true
+    allow_hiit: true
+    bike_max: intensa       # techo de intensidad para la bici; ver `cycling`
+
+  amber:
+    session: reduced
+    set_reduction: 0.25       # -25% de series, redondeando hacia abajo
+    min_sets_per_exercise: 2
+    drop_expendable: true     # elimina los ejercicios marcados
+                              # expendable_in_amber: true
+    allow_progression: false
+    allow_hiit: false
+    bike_max: suave
+
+  red:
+    session: recovery
+    allow_progression: false
+    allow_hiit: false
+    bike_max: descanso
+    defer_strength: true      # la fuerza NO se salta: queda pendiente en
+                              # `pending_strength` y se recupera en el siguiente
+                              # día verde disponible
+    defer_expires_days: 7     # si no se recupera en 7 días, se descarta
+    recovery_block: recuperacion_suave   # ver `recovery_blocks` abajo
+
+
+# -----------------------------------------------------------------------------
+# 5. PROGRESIÓN DE CARGAS
+# -----------------------------------------------------------------------------
+progression:
+  # Puerta de entrada (todo debe cumplirse):
+  #  (a) semáforo VERDE hoy
+  #  (b) en la última ejecución de esa rutina se completaron TODAS las series
+  #      con las reps objetivo
+  #  (c) los dos frenos de abajo no están activos
+  gate:
+    require_green: true
+    require_all_sets_at_target_reps: true
+
+  brakes:
+    # Freno 1: si el esfuerzo percibido del entreno fue alto, no se sube.
+    - name: rpe_alto
+      source: yesterday_rpe
+      when: {gte: 8}
+      blocks: last_session_only    # solo bloquea la rutina de esa sesión
+
+    # Freno 2: la lumbar manda. Con hernia L4-L5, cualquier molestia apreciable
+    # congela TODA la progresión, no solo la de la cadena posterior.
+    - name: lumbar_bloquea_todo
+      source: lower_discomfort
+      when: {gte: 4}
+      blocks: all
+
+  # Sesiones limpias consecutivas necesarias antes de subir peso.
+  # Por defecto 1. La cadena posterior necesita 2 por la hernia: se marca
+  # ejercicio a ejercicio con `clean_sessions_required` más abajo.
+  default_clean_sessions_required: 1
+
+  # Incremento por defecto si el ejercicio no define el suyo.
+  default_increment_kg: 2.5
+
+  # A qué series se aplica la subida en los esquemas en rampa.
+  # top_set = solo la serie más pesada | all_sets = a todas
+  default_apply_to: top_set
+
+  # ---------------------------------------------------------------------------
+  # MODOS DE PROGRESIÓN
+  # ---------------------------------------------------------------------------
+  # Progresar solo por carga tiene tres agujeros:
+  #   - los ejercicios sin peso (planchas, perro de caza, dead bug, bosu) no
+  #     pueden progresar NUNCA: no hay nada que subir
+  #   - la carga se agota; llega un punto en que 2,5 kg más no es una subida
+  #     razonable y el estímulo se queda plano
+  #   - con la hernia L4-L5, en cadena posterior una serie más es más segura
+  #     que 5 kg más, y ese orden de preferencia tiene que estar en el config,
+  #     no en la cabeza de nadie
+  #
+  # `progression_type` se declara por ejercicio. Modos:
+  #
+  #   load    sube CARGA cuando se cumple la puerta. El comportamiento clásico.
+  #
+  #   double  DOBLE PROGRESIÓN. Requiere `rep_range: [min, max]`. Mientras no se
+  #           llegue al máximo en TODAS las series efectivas, sube reps. Cuando
+  #           todas están en el máximo, sube carga y vuelve al mínimo. Es el
+  #           modo por defecto en cualquier ejercicio con rango (10-12, 12-15).
+  #
+  #   volume  SIN CARGA. Sube reps o segundos según el incremento, hasta el
+  #           techo. Para planchas, perro de caza, dead bug y bosu.
+  #
+  #   sets    Añade una SERIE EFECTIVA cuando se cumple la puerta N veces
+  #           seguidas, hasta `max_sets`. Al llegar al techo pasa al modo
+  #           `then` (por defecto `double`). Modo preferente en cadena
+  #           posterior: primero series, después carga.
+  default_progression_type: double
+
+  modes:
+    double:
+      # Si el ejercicio no declara `rep_range`, se deduce del propio esquema:
+      # min = reps actuales de la serie más baja, max = min + `deduced_span`.
+      # Deducir es peor que declarar; el YAML lo declara donde importa.
+      deduced_span: 3
+      rep_increment: 1
+      # A qué series se suben las reps: la más baja primero (progresión
+      # escalonada, la habitual) o todas a la vez.
+      rep_apply_to: lowest_first
+
+    volume:
+      reps_increment: 2
+      seconds_increment: 5
+      # Techos por defecto. Pasado esto un ejercicio de core deja de ser core y
+      # empieza a ser resistencia: si se llega aquí, toca cambiar el ejercicio
+      # o añadir carga, y el sistema avisa en vez de seguir sumando.
+      max_reps: 30
+      max_seconds: 60
+      on_ceiling_notify: true
+
+    sets:
+      # Más exigente que la subida de carga a propósito: una serie efectiva más
+      # es un salto de volumen mayor que 2,5 kg.
+      clean_sessions_required: 3
+      max_sets: 5               # SERIES EFECTIVAS, sin contar el calentamiento
+      # Modo al que se pasa cuando ya se ha llegado a `max_sets`.
+      then: double
+
+  # ---------------------------------------------------------------------------
+  # SEGURIDAD DE LA PROGRESIÓN DE VOLUMEN
+  # ---------------------------------------------------------------------------
+  # La carga que subes se nota el mismo día. El volumen se acumula y se nota
+  # tres semanas después, cuando ya no sabes de dónde viene. Por eso el volumen
+  # lleva frenos propios, además de la puerta general.
+  volume_safety:
+    enabled: true
+
+    # ---- DOS PUERTAS, NO UNA ----------------------------------------------
+    # Añadir una SERIE y añadir REPS no tienen el mismo riesgo, así que no
+    # pasan por la misma puerta. Una cuarta serie de hip thrust es una dosis
+    # nueva de trabajo con carga sobre la cadena posterior; dos repeticiones
+    # más de dead bug no lo son. Con las dos cosas en el mismo freno había que
+    # elegir entre ser laxo con la serie o asfixiar las reps, y se asfixiaban
+    # las dos.
+    #
+    # POR QUÉ SE MIDE POR SESIÓN Y NO POR DÍAS
+    # La versión anterior usaba una ventana de 7 días: "ningún rojo y menos de
+    # dos ámbar en la última semana". Eso medía en días algo que ocurre una vez
+    # por semana en cada rutina, y el desajuste de relojes salía carísimo: un
+    # rojo en lunes cancelaba la única oportunidad de volumen de las TRES
+    # rutinas, porque las tres caen dentro de esos 7 días. En una simulación de
+    # 12 semanas con 7% de días rojos la puerta quedaba abierta solo el 25% de
+    # los días verdes, y la cadena posterior (hip thrust, curl femoral, peso
+    # muerto) no subía UNA sola serie en todo el trimestre. Los ejercicios de
+    # carga no lo notaban porque tienen otro canal por el que progresar; los de
+    # volumen no tienen otro. El freno acababa castigando justo a los
+    # ejercicios que la hernia L4-L5 obliga a favorecer, que es lo contrario de
+    # para lo que se puso.
+    #
+    # Anclado a la sesión anterior de LA MISMA rutina, el freno responde a lo
+    # que de verdad importa: cómo fue la última vez que se hizo este trabajo.
+
+    # Puerta ESTRICTA: añadir una serie efectiva (modo `sets`).
+    sets_gate:
+      # Estados de la sesión anterior de ESTA rutina que bloquean.
+      block_if_last_routine_session_in: [red, amber]
+      block_if_mean_lower_discomfort_gte: 4
+
+    # Puerta RELAJADA: subir reps o segundos (modo `volume`, y la fase de reps
+    # del modo `double`). Solo la para un rojo o una lumbar sostenida alta.
+    reps_gate:
+      block_if_last_routine_session_in: [red]
+      block_if_mean_lower_discomfort_gte: 5
+
+    # Ventana de la media lumbar. La molestia sí es una señal diaria, así que
+    # esta se sigue midiendo en días.
+    discomfort_lookback_days: 7
+
+    # Si nunca se ha hecho esta rutina no hay sesión anterior con la que
+    # comparar. `true` deja pasar: la alternativa es que un programa recién
+    # estrenado no progrese nunca.
+    allow_if_no_previous_session: true
+
+    # Ámbito del estado que se arrastra (racha limpia y turno de espera):
+    #   routine_exercise -> por rutina Y ejercicio
+    #   exercise         -> por ejercicio, compartido entre rutinas
+    #
+    # `routine_exercise` es el correcto: `plancha_lateral` está en las tres
+    # rutinas con dosis distintas (20 s en Día 1, 30 s en Día 2), y `dead_bug`
+    # y `perro_de_caza` en dos. Compartiendo racha acumularían sesiones limpias
+    # de tres rutinas y progresarían al triple de velocidad de la que se
+    # entrenan.
+    state_scope: routine_exercise
+
+    # Nunca las dos cosas el mismo día.
+    never_load_and_volume_same_session: true
+
+    # Ámbito del conflicto:
+    #   exercise -> un mismo ejercicio no sube carga y volumen a la vez
+    #   session  -> en toda la sesión se sube una cosa o la otra (más estricto)
+    #
+    # `exercise` es el ámbito correcto: lo peligroso es subir carga Y volumen
+    # en EL MISMO ejercicio (3→4 series y 60→62,5 kg a la vez es un +35% de
+    # trabajo en ese ejercicio, y cuando la semana siguiente venga mal no hay
+    # forma de saber cuál de las dos sobró). Que la prensa suba peso el mismo
+    # día que el perro de caza suma repeticiones no tiene ese riesgo: son
+    # estímulos distintos en músculos distintos.
+    #
+    # Con `session` aparecía además un efecto de inanición: los ejercicios en
+    # modo `double` ya al tope de su rango piden carga TODAS las sesiones, así
+    # que con `prefer: load` la cadena posterior en modo `sets` no subía una
+    # serie jamás, y con `prefer: volume` el Día 3 tardaba 14 sesiones en
+    # volver a tocar el peso. Ninguna de las dos cosas es lo que se quiere.
+    conflict_scope: exercise
+
+    # Quién gana el conflicto DENTRO de un mismo ejercicio. `volume` es la
+    # prioridad clínica declarada: con la hernia, una serie más antes que
+    # 5 kg más.
+    prefer_on_conflict: volume
+
+    # ---- Cupos por sesión ----
+    # Con `conflict_scope: exercise` desaparece el freno natural que suponía
+    # "una sola clase de progresión por sesión", así que los cupos pasan a ser
+    # lo único que evita que un día bueno dispare siete subidas a la vez. Un
+    # salto semanal así de grande y de golpe es exactamente lo que no conviene
+    # a una espalda con L4-L5: mejor escalonado.
+    max_volume_increases_per_session: 2
+    max_load_increases_per_session: 3
+
+    # Cuando hay más candidatos que cupo, ¿quién pasa primero?
+    #   waiting_longest -> el que lleva más sesiones sin progresar
+    #   routine_order   -> el orden en que están escritos en la rutina
+    #
+    # `waiting_longest` importa más de lo que parece: con `routine_order`, en
+    # una rutina de 11 ejercicios como el Día 3 los últimos (curl predicador,
+    # extensión de tríceps) no llegarían a subir NUNCA, porque los de arriba
+    # agotan el cupo cada sesión. Turnándose, todos acaban pasando.
+    queue_policy: waiting_longest
+
+  # En semana de descarga el volumen también baja. `special_rules` recorta la
+  # carga al 60%; sin esto el volumen se quedaba intacto y la descarga era
+  # media descarga.
+  deload:
+    reduce_volume: true
+    sets_factor: 0.70         # series efectivas, redondeando hacia abajo, mín. 2
+    reps_factor: 0.80
+    seconds_factor: 0.80
+    freeze_progression: true  # durante la descarga no se progresa nada
+
+
+# -----------------------------------------------------------------------------
+# 5-bis. SERIES DE CALENTAMIENTO
+# -----------------------------------------------------------------------------
+# Donde hay 4 series, la primera es de calentamiento con poco peso. No es una
+# serie efectiva, así que queda FUERA de:
+#   - el cumplimiento que abre la puerta de la progresión (solo cuentan las
+#     efectivas: calentar con 30 kg no demuestra nada sobre si toca subir)
+#   - el cálculo de volumen
+#   - el recorte del -25% de los días ÁMBAR, que se aplica sobre las efectivas
+# Y además nunca se elimina: el día que vienes tocado, calentar importa más, no
+# menos.
+#
+# ESTADO REAL (leído de la API el 07-09-2026): las series de calentamiento
+# están MARCADAS en Hevy. El campo `type` devuelve `warmup` en 18 series y
+# `normal` en las otras 114. Las 18 son exactamente las primeras series de los
+# 18 ejercicios de 4 series (5 en Día 1, 6 en Día 2, 7 en Día 3).
+#
+# Es decir: hoy manda la API y la heurística no llega a ejecutarse nunca. Se
+# mantiene como plan B por dos motivos concretos, no por simetría:
+#   - un ejercicio nuevo añadido en Hevy con prisa y sin marcar la serie
+#   - una rutina creada desde cero, donde es fácil olvidarlo
+# En ambos casos la heurística cubre el hueco sin que el sistema tenga que
+# decidir a ciegas.
+#
+# La precedencia es por EJERCICIO, no por rutina: basta con que un ejercicio
+# tenga alguna serie marcada para que se crea su marcado entero. Así, marcar
+# uno solo no altera el comportamiento de los demás.
+set_types:
+
+  # api                -> manda el campo `type` de Hevy y punto
+  # heuristic          -> se ignora la API y se aplica siempre la regla de abajo
+  # api_then_heuristic -> manda la API; si no marca ninguna, se aplica la regla
+  source: api_then_heuristic
+
+  heuristic:
+    enabled: true
+    # "La primera serie de un ejercicio con N o más series es calentamiento".
+    sets_gte: 4
+    count: 1                  # cuántas series iniciales cuentan como calentamiento
+
+  # Excepciones por ejercicio, con la clave interna (no el nombre). Un `false`
+  # desactiva la heurística ahí y trata las cuatro series como efectivas.
+  # Vacío a propósito: con las series ya marcadas en Hevy no hace falta ninguna
+  # excepción. (El caso que lo motivaba, `gemelo_sentado`, se corrigió en la
+  # propia rutina: ahora es 12x20 de calentamiento y 30/40/50 de trabajo.)
+  # Un override NO ignora un marcado explícito de Hevy: solo desactiva la
+  # heurística para ese ejercicio.
+  overrides: {}
+
+  exclude_from:
+    progression_compliance: true
+    volume: true
+    amber_set_reduction: true
+  never_drop_warmup: true
+
+  # Si se pone a true, al reescribir la rutina el sistema marcará en Hevy como
+  # `warmup` las series que considere calentamiento, y a partir de ahí la rama
+  # `api` funcionaría sola. Queda en false porque cambiaría visiblemente tus
+  # rutinas y pediste dejarlas como están.
+  write_warmup_type_to_hevy: false
+
+
+# -----------------------------------------------------------------------------
+# 6. REGLAS ESPECIALES
+# -----------------------------------------------------------------------------
+special_rules:
+  - name: retirada_peso_muerto
+    description: >
+      Con molestia lumbar >= 5 dos días consecutivos, se retira el peso muerto
+      de las rutinas durante 14 días y se avisa por Telegram.
+    trigger:
+      source: lower_discomfort
+      when: {gte: 5}
+      consecutive_days: 2
+    action:
+      remove_exercises: [peso_muerto_smith]
+      duration_days: 14
+    notify: true
+
+  - name: descarga_press_hombro
+    description: >
+      Con molestia de tronco superior >= 6, se reduce la carga del press de
+      hombro ese día (no se retira el ejercicio).
+    trigger:
+      source: upper_discomfort
+      when: {gte: 6}
+    action:
+      reduce_load:
+        exercises: [press_hombro_maquina]
+        factor: 0.70
+      duration_days: 1
+    notify: true
+
+  - name: semana_de_descarga
+    description: >
+      Semana de descarga automática: 60% de la carga y sin HIIT.
+    trigger:
+      every_n_weeks: 7        # dentro del rango 6-8 que pediste
+      jitter_weeks: 1         # puede adelantarse/retrasarse 1 semana si esa
+                              # semana ya viene marcada en rojo
+    action:
+      load_factor: 0.60
+      allow_hiit: false
+      duration_days: 7
+    notify: true
+
+
+# -----------------------------------------------------------------------------
+# 7. CALENDARIO
+# -----------------------------------------------------------------------------
+# `active_variant` decide cuál se usa. Cambiar de temporada = cambiar esta línea,
+# sin tocar código.
+calendar:
+  active_variant: with_pool
+
+  variants:
+    with_pool:
+      description: "Temporada con piscina"
+      monday:    {strength: dia_1}
+      tuesday:   {rest: true}
+      wednesday: {pool: true}
+      thursday:  {strength: dia_2}
+      friday:    {pool: true}
+      saturday:  {bike: true}
+      sunday:    {bike: true}
+
+    summer:
+      description: "Verano, sin piscina, tres días de fuerza"
+      monday:    {strength: dia_1}
+      tuesday:   {rest: true}
+      wednesday: {strength: dia_2}
+      thursday:  {rest: true}
+      friday:    {strength: dia_3}
+      saturday:  {bike: true}
+      sunday:    {bike: true}
+
+# -----------------------------------------------------------------------------
+# 7-bis. CICLISMO
+# -----------------------------------------------------------------------------
+# El Edge 1040 sincroniza con Garmin Connect; el sistema lee las actividades con
+# get_activities_by_date y las guarda enteras (incluido raw_json) en la tabla
+# `activities`. De ahí salen tres cosas: la clasificación de cada salida, la
+# carga real que alimenta load_3d/load_7d, y la recomendación del fin de semana.
+cycling:
+
+  # Qué actividades de Garmin cuentan como ciclismo. Los nombres son los
+  # activityType.typeKey que devuelve Connect.
+  activity_types:
+    - cycling
+    - road_biking
+    - gravel_cycling
+    - mountain_biking
+    - indoor_cycling
+    - virtual_ride
+
+  fetch:
+    lookback_days: 10       # ventana que se re-lee cada mañana, por si el Edge
+                            # sincronizó tarde o una salida se editó a posteriori
+    backfill_days: 90       # solo en el primer arranque
+
+  # ---------------------------------------------------------------------------
+  # Clasificación de cada salida: SUAVE / MEDIA / INTENSA
+  # ---------------------------------------------------------------------------
+  # Se evalúa en orden. La primera que encaja gana; si no encaja ninguna, suave.
+  #
+  # CALIBRADO con tus 25 salidas de los últimos 90 días (jun-sep 2026).
+  #
+  # Los valores de partida (intensa >15% Z4-5, media >40% Z3) daban 10 INTENSA,
+  # 0 MEDIA y 15 SUAVE. Al ordenar las 10 "intensas" por %Z4-5 aparece un hueco
+  # claro: 61,2 - 54,0 - 33,1 - 32,6 || 27,2 - 24,5 - 22,3 - 18,0 - 17,1 - 15,9.
+  # Las cuatro primeras son sesiones duras de verdad (carga 188-323); las seis
+  # siguientes forman un continuo de rodajes tempo con carga 76-144.
+  #
+  # Cortando en 30% el clasificador coincide EXACTAMENTE con la etiqueta que
+  # Garmin calcula por su cuenta (trainingEffectLabel), que no interviene en el
+  # cálculo y sirve de comprobación independiente:
+  #     INTENSA -> VO2MAX, VO2MAX, LACTATE_THRESHOLD, LACTATE_THRESHOLD  (4/4)
+  #     MEDIA   -> TEMPO                                                 (1/1)
+  #     SUAVE   -> AEROBIC_BASE / RECOVERY
+  # Reparto resultante: 4 INTENSA, 4 MEDIA, 17 SUAVE.
+  #
+  # PENDIENTE DE RECALIBRACIÓN: revisar a las 4 semanas con /api/export.
+  classification:
+    - level: intensa
+      description: "Más del 30% del tiempo en Z4-Z5"
+      zones: [4, 5]
+      min_time_pct: 30
+    - level: media
+      description: "Más del 30% del tiempo en Z3"
+      zones: [3]
+      min_time_pct: 30
+    - level: suave
+      description: "El resto"
+      always: true
+
+  # Si Garmin no devuelve el reparto por zonas (pasa en actividades importadas
+  # o sin sensor de FC), se clasifica con esta alternativa en vez de asumir
+  # suave, que sería optimista y peligroso.
+  classification_fallback:
+    use: anaerobic_training_effect
+    intensa_if_gte: 2.0
+    media_if_gte: 1.0
+    # Si tampoco hay training effect, la salida queda como `desconocida` y NO
+    # dispara la regla del lunes: se anota como dato faltante en el log.
+    on_no_data: desconocida
+
+  hr_zones:
+    source: garmin          # garmin | computed
+    max_hr: null            # solo necesario si source: computed
+
+  # ---------------------------------------------------------------------------
+  # Carga de entrenamiento
+  # ---------------------------------------------------------------------------
+  load:
+    # De dónde sale la carga que alimenta load_3d / load_7d.
+    source: activity_training_load    # activity_training_load | garmin_daily
+    # Si una actividad no trae trainingLoad, se estima con duración x factor
+    # según la clasificación. Aproximado, pero mejor que contarla como cero.
+    fallback_estimate:
+      enabled: true
+      load_per_hour: {suave: 40, media: 90, intensa: 160}
+
+  # ---------------------------------------------------------------------------
+  # Regla del fin de semana (alimenta `resaca_finde` en thresholds.amber)
+  # ---------------------------------------------------------------------------
+  weekend:
+    days: [saturday, sunday]
+    # RECALIBRAR: este valor debe SUBIR si tu volumen semanal aumenta. Está
+    # ajustado a un fin de semana típico actual de 1-2,8 h; si empiezas a hacer
+    # salidas largas de forma habitual, 2,5 h dejará de significar "fin de
+    # semana duro" y pasará a significar "fin de semana normal", y el lunes
+    # saldrá en ámbar siempre. Revisar en la recalibración de las 4 semanas.
+    total_hours_threshold: 2.5
+
+    # Ajustado a 1 tras arreglar el clasificador. El motivo original para
+    # subirlo a 2 (el lunes salía ámbar 7 de cada 12 semanas) venía del
+    # clasificador flojo, no de este umbral; corregido el origen, con 1 salida
+    # intensa el lunes sale ámbar 4 de cada 12 semanas, y con 2 la regla queda
+    # muerta porque nunca has hecho dos sesiones VO2max/umbral en un mismo
+    # fin de semana. Una salida INTENSA ahora significa de verdad VO2max o
+    # umbral de lactato, y eso sí justifica arrancar el lunes con precaución.
+    intense_rides_threshold: 1
+
+  # ---------------------------------------------------------------------------
+  # Recomendación de bici (sábado y domingo)
+  # ---------------------------------------------------------------------------
+  # Pipeline determinista, en este orden:
+  #   1. `baseline_by_weekday` da el tipo de partida
+  #   2. se recorta al techo `actions.<semáforo>.bike_max`
+  #   3. `no_consecutive_intense` lo recorta otra vez si AYER hiciste una salida
+  #      clasificada como intensa (lo realmente hecho, no lo recomendado)
+  # El resultado y cada recorte se registran para poder explicarlos en Telegram.
+  recommendation:
+    enabled: true
+    recommend_on: [saturday, sunday]
+
+    baseline_by_weekday:
+      saturday: intensa
+      sunday: media
+
+    no_consecutive_intense: true
+    after_intense_downgrade_to: suave
+    # También cuenta una salida intensa del viernes de cara al sábado.
+    lookback_days: 1
+
+    # --- Presupuesto semanal de sesiones intensas --------------------------
+    # Cuenta como sesión intensa cualquier HIIT EJECUTADO (no solo programado)
+    # y cualquier salida de bici clasificada como INTENSA.
+    #
+    # Nota sobre el ajuste del clasificador: con INTENSA en >30% de Z4-5 solo
+    # tuviste 4 salidas intensas en 90 días. El presupuesto de 3 lo consumirán
+    # sobre todo los HIIT (hasta 2 por semana, día 1 y día 2), dejando hueco
+    # para 1 salida intensa el fin de semana. Que es justo el reparto que
+    # describe la regla.
+    intensity_budget:
+      enabled: true
+      weekly_limit: 3
+      week_starts_on: monday
+      counts_as_intense:
+        hiit_executed: true       # HIIT realmente hecho, leído de Hevy
+        ride_intensa: true        # salida clasificada INTENSA
+        strength_session: false   # la fuerza normal no cuenta
+
+      # Al llegar al fin de semana:
+      #   - si ya se alcanzó el límite -> las dos salidas se recomiendan SUAVES
+      #   - si queda margen -> se puede recomendar UNA intensa, nunca las dos,
+      #     y solo si el semáforo de ese día está en VERDE
+      max_intense_rides_per_weekend: 1
+      require_green_for_intense: true
+      on_budget_exhausted: suave
+
+    # Textos y duraciones orientativas que van al mensaje de Telegram.
+    types:
+      intensa:
+        label: "Intensa"
+        detail: "Series en Z4-Z5. Calienta bien antes."
+        duration_min: 90
+        duration_max: 150
+      media:
+        label: "Media"
+        detail: "Z2 con tramos sostenidos en Z3, sin series estructuradas."
+        duration_min: 120
+        duration_max: 180
+      suave:
+        label: "Suave"
+        detail: "Z2 continuo, sin series. Si dudas, más corto."
+        duration_min: 90
+        duration_max: 150
+      descanso:
+        label: "Descanso"
+        detail: "Sin bici. Paseo muy suave como mucho."
+        duration_min: 0
+        duration_max: 60
+
+    # Orden de menor a mayor intensidad. Lo usa el motor para aplicar los topes.
+    intensity_order: [descanso, suave, media, intensa]
+
+
+# -----------------------------------------------------------------------------
+# 8. HIIT
+# -----------------------------------------------------------------------------
+hiit:
+  enabled: false            # <-- ponlo en true cuando quieras empezar
+  start_week: 5             # semanas contadas desde `program_start_date`
+  program_start_date: null  # AAAA-MM-DD; si es null se usa la fecha del primer
+                            # check-in registrado
+  allowed_routines: [dia_1, dia_2]
+
+  # Día 3 (viernes) NUNCA lleva HIIT. Es la sesión ligera previa a la bici del
+  # fin de semana y esa función se pierde si se le añade intensidad.
+  # Esto es redundante con allowed_routines a propósito: si algún día alguien
+  # añade dia_3 a la lista de arriba sin recordar el motivo, el cargador de
+  # configuración se negará a arrancar en vez de romper el descanso en silencio.
+  never_routines: [dia_3]
+
+  # Un bloque distinto por día. Los dos existen como rutinas propias en Hevy.
+  blocks:
+    dia_1: hiit_dia_1
+    dia_2: hiit_dia_2
+
+  only_on_green: true
+
+
+# -----------------------------------------------------------------------------
+# 9. RUTINAS
+# -----------------------------------------------------------------------------
+# Formato de cada ejercicio:
+#   key:            identificador estable interno (no cambiarlo: es la clave de
+#                   `exercise_targets` en la BD y de las reglas especiales)
+#   template_id:    exercise_template_id de Hevy. Es independiente del idioma:
+#                   por eso funciona aunque tu app esté en español.
+#   name:           etiqueta para el mensaje de Telegram
+#   superset_id:    si el ejercicio va en superserie, el id del grupo. Debe
+#                   guardarse: el PUT de Hevy reemplaza la rutina entera, así
+#                   que omitirlo deshace la superserie en la app.
+#   sets:           lista literal de series. Cada una:
+#                     reps / weight_kg / duration_s / distance_m (los que
+#                     apliquen), y opcionalmente `type: warmup`
+#                   Se reproduce tal cual en Hevy, incluidas las rampas. Qué
+#                   series cuentan como calentamiento lo decide `set_types`.
+#   increment_kg:   cuánto sube cuando toca progresar
+#   apply_to:       top_set | all_sets
+#   clean_sessions_required: sesiones limpias seguidas antes de subir
+#   expendable_in_amber: true -> se elimina en días ámbar
+#   notes:          nota que se escribe en la rutina de Hevy
+
+routines:
+
+  # ---------------------------------------------------------------------------
+  dia_1:
+    title: "Día 1"
+    hevy_routine_id: "29ce5818-5442-4a40-9e70-1e74904d5867"
+    focus: "Tren inferior + core"
+    # DECISIONES CERRADAS, no son omisiones (leído de la API el 07-09-2026):
+    #   - El curl-up de McGill está retirado a propósito. El core de este día es
+    #     plancha lateral + perro de caza + bosu. No lo eches en falta ni lo
+    #     vuelvas a meter "porque falta".
+    #   - El bosu de propiocepción y la elevación de cadera son intencionados.
+    #   - El paseo del granjero a una mano NO está aquí: está en el HIIT del
+    #     Día 1, que es donde toca.
+    #   - El perro de caza pasó de 2 a 3 series el 07-09-2026; ya coincide con
+    #     el del Día 3.
+    exercises:
+
+      - key: prensa_horizontal
+        template_id: "0EB695C9"
+        name: "Prensa horizontal"
+        increment_kg: 5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 30}
+          - {reps: 12, weight_kg: 60}
+          - {reps: 12, weight_kg: 80}
+          - {reps: 12, weight_kg: 100}
+
+      - key: extension_cuadriceps
+        template_id: "75A4F6C4"
+        name: "Extensión de cuádriceps"
+        increment_kg: 2.5
+        apply_to: all_sets
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 25}
+          - {reps: 12, weight_kg: 30}
+          - {reps: 12, weight_kg: 30}
+          - {reps: 12, weight_kg: 30}
+
+      - key: patada_atras
+        template_id: "1ADF8723"
+        name: "Patada atrás (máquina)"
+        increment_kg: 2.5
+        apply_to: all_sets
+        clean_sessions_required: 2      # cadena posterior
+        # Cadena posterior: primero series, después carga. NO estaba en la lista
+        # de tres que diste (hip thrust, peso muerto, curl femoral), pero es
+        # cadena posterior igual. Si prefieres que aquí mande la carga, cambia
+        # esta línea a `double` y no hay que tocar nada más.
+        progression_type: sets
+        max_sets: 4
+        then: double
+        rep_range: [20, 24]
+        sets:
+          - {type: warmup, reps: 20, weight_kg: 20}
+          - {reps: 24, weight_kg: 20}
+          - {reps: 24, weight_kg: 20}
+          - {reps: 24, weight_kg: 20}
+
+      - key: gemelo_sentado
+        template_id: "062AB91A"
+        name: "Elevación de gemelo sentado"
+        increment_kg: 5
+        apply_to: top_set
+        expendable_in_amber: true
+        # Corregido en Hevy el 07-09-2026: antes eran tres series idénticas de
+        # 20 kg y un salto a 50. Ahora la rampa es coherente.
+        progression_type: double
+        rep_range: [12, 15]
+        sets:
+          - {type: warmup, reps: 12, weight_kg: 20}
+          - {reps: 12, weight_kg: 30}
+          - {reps: 12, weight_kg: 40}
+          - {reps: 15, weight_kg: 50}
+
+      - key: press_triceps_sentado
+        template_id: "234BC743"
+        name: "Press de tríceps sentado"
+        increment_kg: 2.5
+        apply_to: all_sets
+        expendable_in_amber: true
+        # Se queda en 4 series (1 de calentamiento + 3 efectivas): confirmado
+        # como intencionado, no es un resto sin limpiar.
+        # Las cuatro van a 0 kg: sin peso real registrado no hay progresión
+        # posible aquí.
+        # Las cuatro series a 0 kg. En `double` eso significa que subirá reps
+        # hasta 15 y ahí se quedará: el motor NO inventa una carga inicial
+        # partiendo de cero (ver `_can_raise_load`). En cuanto registres el peso
+        # real en Hevy, la progresión de carga se activa sola.
+        progression_type: double
+        rep_range: [12, 15]
+        sets:
+          - {type: warmup, reps: 12, weight_kg: 0}
+          - {reps: 15, weight_kg: 0}
+          - {reps: 15, weight_kg: 0}
+          - {reps: 15, weight_kg: 0}
+
+      - key: elevacion_cadera_unilateral
+        template_id: "487B3755"
+        # NOMENCLATURA: en Hevy figura como "Empuje de Cadera a Una Pierna"
+        # (Single Leg Hip Thrust), pero el ejercicio real es una ELEVACIÓN DE
+        # CADERA. El catálogo de Hevy no tiene una entrada mejor. La nota que
+        # ya tienes escrita en la rutina dice justo eso.
+        name: "Elevación de cadera a una pierna"
+        notes: "ELEVACIÓN CADERA"
+        clean_sessions_required: 2      # cadena posterior
+        progression_type: volume
+        max_reps: 30
+        sets:
+          - {reps: 20}
+          - {reps: 20}
+          - {reps: 20}
+
+      - key: plancha_lateral
+        template_id: "E3EDA509"
+        name: "Plancha lateral"
+        progression_type: volume
+        max_seconds: 45
+        sets:
+          - {duration_s: 20}
+          - {duration_s: 20}
+          - {duration_s: 20}
+
+      - key: perro_de_caza
+        template_id: "BD0AD077"
+        name: "Perro de caza"
+        progression_type: volume
+        max_reps: 30
+        sets:
+          - {reps: 20}
+          - {reps: 20}
+          - {reps: 20}
+
+      - key: bosu_propiocepcion
+        template_id: "10282350-8d6a-48de-9886-82f4cd111a67"   # ejercicio propio
+        name: "Bosu propiocepción"
+        expendable_in_amber: true
+        # Progresa por tiempo, no por el lastre: en propiocepción aguantar más
+        # es el objetivo, y más peso solo cambia el ejercicio.
+        progression_type: volume
+        max_seconds: 45
+        sets:
+          - {weight_kg: 10, duration_s: 20}
+          - {weight_kg: 10, duration_s: 20}
+          - {weight_kg: 10, duration_s: 20}
+
+  # ---------------------------------------------------------------------------
+  dia_2:
+    title: "Día 2"
+    hevy_routine_id: "1f1b439c-a769-46e6-a83c-405fabfa3c96"
+    focus: "Cadena posterior + espalda"
+    exercises:
+
+      - key: hip_thrust_barra
+        template_id: "D57C2EC7"
+        # NOMENCLATURA: en Hevy figura como "Empuje de Caderas (Barra)" porque
+        # el catálogo no tiene entrada para las máquinas Technogym. El
+        # ejercicio real es un HIP THRUST EN MÁQUINA, no con barra libre.
+        name: "Hip thrust (máquina)"
+        increment_kg: 5
+        apply_to: all_sets
+        clean_sessions_required: 2      # cadena posterior
+        # Reps objetivo añadidas en Hevy el 07-09-2026 (antes venían a null, lo
+        # que dejaba la puerta `require_all_sets_at_target_reps` sin nada contra
+        # lo que comparar). Falta la carga: mientras siga a 0 kg el motor
+        # registra el cumplimiento pero no puede proponer una subida.
+        progression_type: sets
+        max_sets: 5
+        then: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+
+      - key: curl_femoral_pie
+        template_id: "6120CAAB"
+        name: "Curl femoral de pie"
+        increment_kg: 2.5
+        apply_to: all_sets
+        clean_sessions_required: 2      # cadena posterior
+        # Reps ya definidas; falta la carga. Igual que hip_thrust_barra.
+        progression_type: sets
+        max_sets: 5
+        then: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+
+      - key: peso_muerto_smith
+        template_id: "20870ED5"
+        # NOMENCLATURA: en Hevy figura como "Peso Muerto (Máquina Smith)"
+        # porque el catálogo no tiene la máquina. El ejercicio real es un peso
+        # muerto EN MÁQUINA TECHNOGYM GUIADA. No es una barra libre ni un
+        # multipower, y esa diferencia es justo la que lo hace admisible con la
+        # hernia L4-L5: es un ejercicio de rehabilitación en este caso.
+        # Por eso la restricción de `safety` NO lo bloquea aquí: solo se aplica
+        # a las rutinas HIIT. Aquí está controlado y vigilado por la regla
+        # `retirada_peso_muerto`, que es su objetivo.
+        name: "Peso muerto (máquina guiada)"
+        increment_kg: 5
+        apply_to: all_sets
+        clean_sessions_required: 2      # cadena posterior
+        # Reps ya definidas; falta la carga. Igual que hip_thrust_barra.
+        # DISCREPANCIA ANOTADA: al añadir las reps dijiste 10 para este
+        # ejercicio, pero Hevy devuelve 12 en las tres series efectivas, igual
+        # que en los otros tres. Se reproduce lo que hay en Hevy. Si querías 10,
+        # cámbialo allí y este bloque se regenera en la siguiente lectura.
+        # Techo de series más bajo que el resto de la cadena posterior: es el
+        # ejercicio que vigila `retirada_peso_muerto`, y aquí el volumen tampoco
+        # es gratis.
+        progression_type: sets
+        max_sets: 4
+        then: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+
+      - key: jalon_al_pecho
+        template_id: "6A6C31A5"
+        name: "Jalón al pecho"
+        increment_kg: 5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 30}
+          - {reps: 12, weight_kg: 40}
+          - {reps: 12, weight_kg: 40}
+          - {reps: 12, weight_kg: 40}
+
+      - key: remo_t_apoyado
+        template_id: "6A8D3193"
+        # NOMENCLATURA: en Hevy figura como "Remo en T con Apoyo de Pecho"
+        # (Chest Supported T Bar Row). El ejercicio real es un CHEST SUPPORTED
+        # ROW en máquina, sin barra en T.
+        name: "Remo con apoyo de pecho"
+        increment_kg: 2.5
+        apply_to: all_sets
+        # Reps ya definidas; falta la carga. Igual que hip_thrust_barra.
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 0}
+
+      - key: face_pull
+        template_id: "BE640BA0"
+        name: "Tirón a la cara"
+        increment_kg: 2.5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [12, 15]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 10}
+          - {reps: 15, weight_kg: 12.5}
+          - {reps: 15, weight_kg: 12.5}
+          - {reps: 15, weight_kg: 12.5}
+
+      - key: dead_bug
+        template_id: "D8911FC4"
+        name: "Dead bug"
+        progression_type: volume
+        max_reps: 30
+        sets:
+          - {reps: 20}
+          - {reps: 20}
+          - {reps: 20}
+
+      - key: pallof_press
+        template_id: "CC55119B"
+        name: "Press Pallof en polea"
+        progression_type: volume
+        max_reps: 30
+        sets:
+          - {reps: 20, weight_kg: 0}
+          - {reps: 20, weight_kg: 0}
+          - {reps: 20, weight_kg: 0}
+
+      - key: plancha_lateral
+        template_id: "E3EDA509"
+        name: "Plancha lateral"
+        progression_type: volume
+        max_seconds: 60
+        sets:
+          - {duration_s: 30}
+          - {duration_s: 30}
+          - {duration_s: 30}
+
+  # ---------------------------------------------------------------------------
+  dia_3:
+    title: "Día 3"
+    hevy_routine_id: "05e27b0c-7c9e-484c-a9aa-1c78622bc0c2"
+    focus: "Caderas + hombro + brazo + core"
+    # Solo se usa en la variante `summer` del calendario.
+    # DECISIONES CERRADAS: este día lleva vuelos posteriores con mancuernas
+    # (rear delt fly), NO remo con apoyo de pecho. Son ejercicios distintos y
+    # está bien así. Y nunca lleva HIIT: ver `hiit.never_routines`.
+    exercises:
+
+      - key: abduccion_cadera
+        template_id: "F4B4C6EE"
+        name: "Abducción de cadera"
+        increment_kg: 5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 40}
+          - {reps: 12, weight_kg: 50}
+          - {reps: 12, weight_kg: 60}
+          - {reps: 12, weight_kg: 65}
+
+      - key: aduccion_cadera
+        template_id: "8BEBFED6"
+        name: "Aducción de cadera"
+        increment_kg: 5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 15}
+          - {reps: 12, weight_kg: 25}
+          - {reps: 12, weight_kg: 35}
+          - {reps: 12, weight_kg: 40}
+
+      - key: press_hombro_maquina
+        template_id: "9237BAD1"
+        name: "Press de hombro sentado (máquina)"
+        increment_kg: 2.5
+        apply_to: top_set
+        # Objetivo de la regla `descarga_press_hombro`.
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 10}
+          - {reps: 12, weight_kg: 10}
+          - {reps: 12, weight_kg: 12.5}
+          - {reps: 12, weight_kg: 12.5}
+
+      - key: contractora_pecho
+        template_id: "9DCE2D64"
+        name: "Contractora de pecho (pec deck)"
+        increment_kg: 2.5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 10}
+          - {reps: 12, weight_kg: 20}
+          - {reps: 12, weight_kg: 25}
+          - {reps: 12, weight_kg: 27.5}
+
+      - key: vuelos_posteriores
+        template_id: "B582299E"
+        name: "Vuelos posteriores con apoyo"
+        increment_kg: 1
+        apply_to: all_sets
+        expendable_in_amber: true
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 3}
+          - {reps: 12, weight_kg: 3}
+          - {reps: 12, weight_kg: 4}
+          - {reps: 12, weight_kg: 4}
+
+      - key: curl_predicador
+        template_id: "1E9A6B8E"
+        name: "Curl predicador (máquina)"
+        increment_kg: 1.25
+        apply_to: top_set
+        expendable_in_amber: true
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 10}
+          - {reps: 12, weight_kg: 12.5}
+          - {reps: 12, weight_kg: 13.75}
+          - {reps: 12, weight_kg: 15}
+
+      - key: extension_triceps_polea
+        template_id: "CDC472B1"
+        name: "Extensión de tríceps en polea"
+        increment_kg: 2.5
+        apply_to: top_set
+        expendable_in_amber: true
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10, weight_kg: 10}
+          - {reps: 12, weight_kg: 12.5}
+          - {reps: 12, weight_kg: 12.5}
+          - {reps: 12, weight_kg: 15}
+
+      - key: perro_de_caza
+        template_id: "BD0AD077"
+        name: "Perro de caza"
+        progression_type: volume
+        max_reps: 30
+        sets:
+          - {reps: 20}
+          - {reps: 20}
+          - {reps: 20}
+
+      - key: dead_bug
+        template_id: "D8911FC4"
+        name: "Dead bug"
+        progression_type: volume
+        max_reps: 30
+        sets:
+          - {reps: 20}
+          - {reps: 20}
+          - {reps: 20}
+
+      # Estos dos van en SUPERSERIE en Hevy (superset_id 0). Hay que guardarlo:
+      # el PUT de rutinas es un reemplazo completo, no un parche, así que una
+      # rutina reescrita sin `superset_id` te deshace la superserie en la app.
+      - key: plancha_lateral
+        template_id: "E3EDA509"
+        name: "Plancha lateral"
+        superset_id: 0
+        progression_type: volume
+        max_seconds: 45
+        sets:
+          - {duration_s: 20}
+          - {duration_s: 20}
+          - {duration_s: 20}
+
+      - key: plancha
+        template_id: "C6C9B8A0"
+        name: "Plancha"
+        superset_id: 0
+        progression_type: volume
+        max_seconds: 60
+        sets:
+          - {duration_s: 20}
+          - {duration_s: 20}
+          - {duration_s: 20}
+
+  # ---------------------------------------------------------------------------
+  # Bloques HIIT. No son rutinas de calendario: se AÑADEN al final de dia_1 o
+  # dia_2 cuando `hiit.enabled` es true y se cumplen las condiciones.
+  # Cada día tiene el suyo; ver `hiit.blocks`.
+  hiit_dia_1:
+    title: "Día 1 HIIT"
+    hevy_routine_id: "a41e5c8a-f806-4a1f-87aa-1c1c32b1a04e"
+    standalone: false
+    exercises:
+      - key: remo_maquina
+        template_id: "0222DB42"
+        name: "Remo (máquina)"
+        progression_type: none
+        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
+
+      - key: suitcase_carry
+        template_id: "7593855D"
+        name: "Paseo del granjero a una mano"
+        # Sin carga ni distancia definidas en Hevy (0 kg / 0 m).
+        progression_type: none
+        sets:
+          - {weight_kg: null, distance_m: null}
+          - {weight_kg: null, distance_m: null}
+          - {weight_kg: null, distance_m: null}
+
+      - key: air_bike
+        template_id: "43573BB8"
+        name: "Air bike"
+        progression_type: none
+        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
+
+      # Sustituye a "Abdominales (sit up)" (template 022DF610), retirado por la
+      # hernia L4-L5: flexión lumbar repetida bajo fatiga. Ver `safety`.
+      - key: plancha_frontal
+        template_id: "C6C9B8A0"
+        name: "Plancha frontal"
+        progression_type: volume
+        max_seconds: 60
+        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
+
+      - key: wall_ball
+        template_id: "A1F47ACC"
+        name: "Wall ball"
+        progression_type: none
+        sets:
+          - {reps: 20, weight_kg: 5}
+          - {reps: 20, weight_kg: 5}
+          - {reps: 20, weight_kg: 5}
+
+  hiit_dia_2:
+    title: "Día 2 HIIT"
+    hevy_routine_id: "6265a7b5-5cdd-422a-8833-735828827189"
+    standalone: false
+    exercises:
+      - key: battle_ropes
+        template_id: "084A67CA"
+        name: "Cuerdas de batalla"
+        notes: "40 - 20"
+        progression_type: none
+        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
+
+      - key: comba
+        template_id: "040BA2E3"
+        name: "Salto a la cuerda"
+        progression_type: none
+        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
+
+      - key: ski_erg
+        template_id: "5D99A2FA"
+        name: "Ski erg"
+        notes: "40 - 20"
+        progression_type: none
+        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
+
+      - key: step_up
+        template_id: "128A2381"
+        name: "Step up"
+        notes: "40 - 20"
+        progression_type: none
+        sets: [{reps: 40}, {reps: 40}, {reps: 40}]
+
+
+# -----------------------------------------------------------------------------
+# 10. BLOQUES DE RECUPERACIÓN (días rojos)
+# -----------------------------------------------------------------------------
+# Sustituyen a la sesión de fuerza. Movilidad y core suave, nada de carga.
+recovery_blocks:
+  recuperacion_suave:
+    title: "Recuperación"
+    write_to_hevy: false      # no reescribe la rutina; solo se manda por Telegram
+    exercises:
+      - {key: dead_bug, template_id: "D8911FC4", name: "Dead bug", sets: [{reps: 15}, {reps: 15}]}
+      - {key: perro_de_caza, template_id: "BD0AD077", name: "Perro de caza", sets: [{reps: 15}, {reps: 15}]}
+      - {key: plancha, template_id: "C6C9B8A0", name: "Plancha", sets: [{duration_s: 20}, {duration_s: 20}]}
+      - {key: caminar, template_id: "33EDD7DB", name: "Caminar 20-30 min suave", sets: [{}]}
+
+
+# -----------------------------------------------------------------------------
+# 11. PROGRAMACIÓN Y AVISOS
+# -----------------------------------------------------------------------------
+schedule:
+  garmin_fetch_time: "06:30"    # lee Garmin antes de que te levantes
+  fallback_decision_time: "09:00"   # si no hay check-in, decide solo con Garmin
+  evening_summary_time: "22:30"     # captura lo entrenado para el histórico
+
+  garmin_retry:
+    attempts: 3
+    backoff_seconds: [60, 300, 900]
+    notify_on_final_failure: true
+
+notifications:
+  telegram:
+    enabled: true
+    # El token y el chat ID van en .env, NUNCA aquí.
+    # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+    send_on_decision: true
+    send_on_special_rule: true
+    send_on_error: true
+    include_reasoning: true     # incluye qué regla disparó el semáforo

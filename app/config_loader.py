@@ -1,0 +1,738 @@
+"""Carga, validación y hash de config.yaml.
+
+Tres responsabilidades:
+
+1. Cargar el YAML.
+2. Validar las referencias cruzadas. El YAML es grande y está lleno de claves
+   que apuntan a otras claves (el calendario nombra rutinas, las reglas
+   especiales nombran ejercicios, el HIIT nombra un bloque). Una errata ahí
+   no rompe nada al arrancar pero produce una decisión silenciosamente mal
+   una mañana cualquiera. Preferimos petar al cargar.
+3. Calcular un hash estable del contenido. Se guarda con cada decisión, para
+   que dentro de cuatro semanas se pueda saber con qué umbrales se decidió
+   cada día, aunque el YAML haya cambiado por medio.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import unicodedata
+from datetime import date, datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+def _strip_accents(text: str) -> str:
+    """Quita acentos para que los patrones funcionen con nombres en español."""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+    )
+
+WEEKDAYS = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+]
+
+# Tipos de serie que acepta Hevy en el campo `type`.
+VALID_SET_TYPES = {"normal", "warmup", "failure", "dropset"}
+VALID_SET_SOURCES = {"api", "heuristic", "api_then_heuristic"}
+VALID_PROGRESSION_TYPES = {"load", "double", "volume", "sets", "none"}
+
+
+class ConfigError(ValueError):
+    """config.yaml es inválido. El mensaje lista TODOS los problemas."""
+
+
+class Config:
+    """Envoltorio de solo lectura sobre el YAML, con el hash calculado."""
+
+    def __init__(self, data: dict[str, Any], config_hash: str, source: Path | None = None):
+        self._data = data
+        self.hash = config_hash
+        self.source = source
+
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    @property
+    def raw(self) -> dict[str, Any]:
+        return self._data
+
+    # --- accesos con nombre, para no repetir literales por el código --------
+    @property
+    def timezone(self) -> str:
+        return self._data.get("timezone", "UTC")
+
+    @property
+    def program_start(self) -> date:
+        """Origen del contador de descargas. El validador garantiza que existe."""
+        value = (self._data.get("program") or {}).get("start")
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+    @property
+    def routines(self) -> dict[str, Any]:
+        return self._data.get("routines", {})
+
+    @property
+    def cycling(self) -> dict[str, Any]:
+        return self._data.get("cycling", {})
+
+    @property
+    def set_types(self) -> dict[str, Any]:
+        """Sección `set_types`. Si falta, valores por defecto conservadores:
+        sin heurística, así nunca se descarta una serie por sorpresa."""
+        return self._data.get("set_types") or {
+            "source": "api",
+            "heuristic": {"enabled": False},
+        }
+
+    @property
+    def thresholds(self) -> dict[str, Any]:
+        return self._data.get("thresholds", {})
+
+    def active_calendar(self) -> dict[str, Any]:
+        cal = self._data["calendar"]
+        return cal["variants"][cal["active_variant"]]
+
+    def slider_keys(self) -> list[str]:
+        return [s["key"] for s in self._data.get("checkin_sliders", [])]
+
+    def all_rules(self) -> list[dict[str, Any]]:
+        out = []
+        for light in ("red", "amber"):
+            for rule in self.thresholds.get(light, []):
+                out.append({**rule, "light": light})
+        return out
+
+
+def compute_hash(data: dict[str, Any]) -> str:
+    """Hash estable del contenido, insensible al orden de las claves.
+
+    Se hashea el JSON canónico y no los bytes del archivo, para que un cambio
+    de comentarios o de indentación no invente una recalibración que no existe.
+    """
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+def _validate(data: dict[str, Any]) -> list[str]:
+    """Devuelve la lista de problemas encontrados. Vacía = configuración válida."""
+    errors: list[str] = []
+
+    def require(cond: bool, msg: str) -> None:
+        if not cond:
+            errors.append(msg)
+
+    # --- secciones obligatorias --------------------------------------------
+    for section in (
+        "timezone",
+        "program",
+        "checkin_sliders",
+        "thresholds",
+        "actions",
+        "progression",
+        "calendar",
+        "routines",
+        "cycling",
+        "hiit",
+    ):
+        require(section in data, f"falta la sección obligatoria '{section}'")
+    if errors:
+        return errors  # sin las secciones base no tiene sentido seguir
+
+    # --- origen del programa ------------------------------------------------
+    # Se valida aquí arriba y con dureza. `program.start` es el origen desde el
+    # que se cuentan las semanas de descarga: sin él la descarga no se activa
+    # nunca y el sistema progresa indefinidamente sin descargar. Eso es un fallo
+    # silencioso con consecuencias físicas, así que no se avisa: se impide
+    # arrancar.
+    prog_start = (data.get("program") or {}).get("start")
+    if prog_start is None:
+        errors.append(
+            "program.start está vacío o no existe. Es el origen desde el que se "
+            "cuentan las semanas de descarga (special_rules.semana_de_descarga). "
+            "Sin él la descarga NUNCA se activa y el programa progresa sin "
+            "descargar nunca. Pon una fecha AAAA-MM-DD."
+        )
+    elif isinstance(prog_start, datetime):
+        errors.append(
+            f"program.start '{prog_start}' lleva hora. Debe ser una fecha "
+            "AAAA-MM-DD sin hora: la descarga se cuenta por semanas."
+        )
+    elif not isinstance(prog_start, date):
+        # PyYAML ya convierte 2026-09-08 a `date`. Si llega como texto es que
+        # estaba entrecomillado o mal escrito.
+        try:
+            datetime.strptime(str(prog_start), "%Y-%m-%d")
+        except ValueError:
+            errors.append(
+                f"program.start '{prog_start}' no es una fecha AAAA-MM-DD válida"
+            )
+        else:
+            errors.append(
+                f"program.start '{prog_start}' está entre comillas. Quítalas para "
+                "que YAML lo lea como fecha y no como texto."
+            )
+
+    routines = data["routines"]
+    slider_keys = {s["key"] for s in data["checkin_sliders"]}
+
+    # --- sliders ------------------------------------------------------------
+    require(
+        len(slider_keys) == len(data["checkin_sliders"]),
+        "hay claves duplicadas en checkin_sliders",
+    )
+
+    # --- calendario ---------------------------------------------------------
+    cal = data["calendar"]
+    variant = cal.get("active_variant")
+    require(
+        variant in cal.get("variants", {}),
+        f"calendar.active_variant '{variant}' no existe en calendar.variants",
+    )
+    for vname, vdata in cal.get("variants", {}).items():
+        for day, plan in vdata.items():
+            if day == "description":
+                continue
+            require(day in WEEKDAYS, f"calendar.variants.{vname}: '{day}' no es un día válido")
+            key = (plan or {}).get("strength")
+            if key is not None:
+                require(
+                    key in routines,
+                    f"calendar.variants.{vname}.{day}: la rutina '{key}' no existe",
+                )
+
+    # --- reglas del semáforo ------------------------------------------------
+    seen_names: set[str] = set()
+    for light in ("red", "amber"):
+        for rule in data["thresholds"].get(light, []):
+            name = rule.get("name")
+            require(bool(name), f"hay una regla en thresholds.{light} sin 'name'")
+            require(name not in seen_names, f"nombre de regla duplicado: '{name}'")
+            seen_names.add(name)
+            require("when" in rule, f"la regla '{name}' no tiene bloque 'when'")
+            for day in rule.get("only_on_weekday", []):
+                require(day in WEEKDAYS, f"la regla '{name}' referencia el día inválido '{day}'")
+
+    # --- acciones por semáforo ---------------------------------------------
+    order = data["cycling"].get("recommendation", {}).get("intensity_order", [])
+    types = data["cycling"].get("recommendation", {}).get("types", {})
+    require(bool(order), "falta cycling.recommendation.intensity_order")
+    require(
+        set(order) == set(types),
+        f"intensity_order {sorted(order)} y types {sorted(types)} no coinciden",
+    )
+    for light in ("green", "amber", "red"):
+        require(light in data["actions"], f"falta actions.{light}")
+        cap = data["actions"].get(light, {}).get("bike_max")
+        require(
+            cap in order,
+            f"actions.{light}.bike_max '{cap}' no está en intensity_order",
+        )
+
+    rec = data["cycling"].get("recommendation", {})
+    for day, level in rec.get("baseline_by_weekday", {}).items():
+        require(day in WEEKDAYS, f"baseline_by_weekday: '{day}' no es un día válido")
+        require(level in order, f"baseline_by_weekday.{day}: '{level}' no está en intensity_order")
+    require(
+        rec.get("after_intense_downgrade_to") in order,
+        "after_intense_downgrade_to no está en intensity_order",
+    )
+
+    # --- clasificación de salidas ------------------------------------------
+    levels = [c.get("level") for c in data["cycling"].get("classification", [])]
+    require(bool(levels), "falta cycling.classification")
+    require(
+        any(c.get("always") for c in data["cycling"].get("classification", [])),
+        "cycling.classification no tiene un nivel con 'always: true'; "
+        "habría salidas sin clasificar",
+    )
+    for level in levels:
+        require(level in order, f"classification: el nivel '{level}' no está en intensity_order")
+
+    # --- reglas especiales: los ejercicios deben existir --------------------
+    all_exercise_keys = {
+        ex["key"] for r in routines.values() for ex in r.get("exercises", [])
+    }
+    for rule in data.get("special_rules", []):
+        name = rule.get("name", "<sin nombre>")
+        action = rule.get("action", {})
+        for key in action.get("remove_exercises", []):
+            require(
+                key in all_exercise_keys,
+                f"regla '{name}': el ejercicio '{key}' no existe en ninguna rutina",
+            )
+        for key in action.get("reduce_load", {}).get("exercises", []):
+            require(
+                key in all_exercise_keys,
+                f"regla '{name}': el ejercicio '{key}' no existe en ninguna rutina",
+            )
+        src = rule.get("trigger", {}).get("source")
+        if src is not None:
+            require(
+                src in slider_keys,
+                f"regla '{name}': la señal '{src}' no es un deslizador del formulario",
+            )
+
+    # --- progresión ---------------------------------------------------------
+    for brake in data["progression"].get("brakes", []):
+        require(
+            brake.get("source") in slider_keys,
+            f"freno '{brake.get('name')}': la señal '{brake.get('source')}' "
+            "no es un deslizador del formulario",
+        )
+        require(
+            brake.get("blocks") in ("all", "last_session_only"),
+            f"freno '{brake.get('name')}': 'blocks' debe ser 'all' o 'last_session_only'",
+        )
+
+    # --- umbrales adaptativos ----------------------------------------------
+    adaptive = data.get("adaptive_thresholds", {})
+    for name, spec in adaptive.items():
+        require(
+            isinstance(spec.get("percentile"), (int, float)) and 0 < spec["percentile"] < 100,
+            f"adaptive_thresholds.{name}: 'percentile' debe estar entre 0 y 100",
+        )
+        require(
+            isinstance(spec.get("window_days"), int) and spec["window_days"] > 0,
+            f"adaptive_thresholds.{name}: falta 'window_days'",
+        )
+        require(
+            isinstance(spec.get("min_days_required"), int),
+            f"adaptive_thresholds.{name}: falta 'min_days_required'",
+        )
+        require(
+            spec.get("min_days_required", 0) <= spec.get("window_days", 0),
+            f"adaptive_thresholds.{name}: min_days_required no puede superar window_days",
+        )
+
+    # Toda referencia `gt_adaptive` desde una regla debe existir aquí.
+    def _check_adaptive_refs(node: Any, rule_name: str) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "gt_adaptive":
+                    require(
+                        v in adaptive,
+                        f"la regla '{rule_name}' referencia el umbral adaptativo "
+                        f"'{v}', que no está definido en adaptive_thresholds",
+                    )
+                else:
+                    _check_adaptive_refs(v, rule_name)
+        elif isinstance(node, list):
+            for item in node:
+                _check_adaptive_refs(item, rule_name)
+
+    for light in ("red", "amber"):
+        for rule in data["thresholds"].get(light, []):
+            _check_adaptive_refs(rule.get("when"), rule.get("name", "<sin nombre>"))
+
+    # --- HIIT ---------------------------------------------------------------
+    hiit = data["hiit"]
+    allowed = hiit.get("allowed_routines", [])
+    never = hiit.get("never_routines", [])
+    for key in allowed:
+        require(key in routines, f"hiit.allowed_routines: la rutina '{key}' no existe")
+    for key in never:
+        require(key in routines, f"hiit.never_routines: la rutina '{key}' no existe")
+
+    # El día 3 (viernes) es la sesión ligera previa a la bici del fin de semana.
+    # Si alguien lo mete en allowed_routines sin recordar el motivo, mejor que
+    # el sistema se niegue a arrancar a que le añada intensidad en silencio.
+    conflict = sorted(set(allowed) & set(never))
+    require(
+        not conflict,
+        f"hiit: {conflict} está a la vez en allowed_routines y never_routines. "
+        "El día 3 no debe llevar HIIT: es la sesión ligera previa a la bici.",
+    )
+
+    blocks = hiit.get("blocks", {})
+    require(bool(blocks), "falta hiit.blocks (mapa rutina -> bloque HIIT)")
+    for routine_key, block_key in blocks.items():
+        require(
+            routine_key in routines,
+            f"hiit.blocks: la rutina '{routine_key}' no existe",
+        )
+        require(
+            block_key in routines,
+            f"hiit.blocks.{routine_key}: el bloque '{block_key}' no existe",
+        )
+        require(
+            routine_key not in never,
+            f"hiit.blocks: '{routine_key}' tiene bloque HIIT pero está en never_routines",
+        )
+    for key in allowed:
+        require(
+            key in blocks,
+            f"hiit.allowed_routines incluye '{key}' pero no tiene bloque en hiit.blocks",
+        )
+
+    # --- restricción de seguridad: patrones prohibidos en HIIT --------------
+    # Es una restricción médica permanente (hernia L4-L5), no un umbral.
+    # Se aplica SOLO a las rutinas HIIT: en la fuerza normal el peso muerto está
+    # permitido y controlado por la regla `retirada_peso_muerto`.
+    forbidden = data.get("safety", {}).get("forbidden_in_hiit", {})
+    if forbidden:
+        blocked_ids = {
+            str(e["id"]).upper() for e in forbidden.get("template_ids", []) if e.get("id")
+        }
+        exempt_ids = {
+            str(e["id"]).upper() for e in forbidden.get("allow_exceptions", []) if e.get("id")
+        }
+        patterns = [re.compile(p, re.IGNORECASE) for p in forbidden.get("name_patterns", [])]
+
+        # Las rutinas HIIT son las referenciadas desde hiit.blocks.
+        hiit_routine_keys = set(blocks.values())
+        for rkey in sorted(hiit_routine_keys):
+            for ex in routines.get(rkey, {}).get("exercises", []):
+                tid = str(ex.get("template_id") or "").upper()
+                if tid in exempt_ids:
+                    continue
+                name = ex.get("name", "")
+                if tid in blocked_ids:
+                    blocked_name = next(
+                        (
+                            e["name"]
+                            for e in forbidden["template_ids"]
+                            if str(e["id"]).upper() == tid
+                        ),
+                        name,
+                    )
+                    errors.append(
+                        f"SEGURIDAD — rutina HIIT '{rkey}': el ejercicio '{name}' "
+                        f"(template {tid} = {blocked_name}) está prohibido en HIIT "
+                        f"por la hernia L4-L5. Ver safety.forbidden_in_hiit."
+                    )
+                    continue
+                normalized = _strip_accents(name)
+                for pat in patterns:
+                    if pat.search(normalized):
+                        errors.append(
+                            f"SEGURIDAD — rutina HIIT '{rkey}': el nombre del ejercicio "
+                            f"'{name}' coincide con el patrón prohibido "
+                            f"/{pat.pattern}/ (hernia L4-L5). Si es un falso positivo, "
+                            f"añádelo a safety.forbidden_in_hiit.allow_exceptions con "
+                            f"el motivo."
+                        )
+                        break
+
+    # --- presupuesto semanal de intensidad ----------------------------------
+    budget = (
+        data["cycling"].get("recommendation", {}).get("intensity_budget", {})
+    )
+    if budget.get("enabled"):
+        require(
+            isinstance(budget.get("weekly_limit"), int) and budget["weekly_limit"] > 0,
+            "intensity_budget.weekly_limit debe ser un entero positivo",
+        )
+        require(
+            budget.get("week_starts_on") in WEEKDAYS,
+            f"intensity_budget.week_starts_on '{budget.get('week_starts_on')}' no es válido",
+        )
+        require(
+            budget.get("on_budget_exhausted") in order,
+            f"intensity_budget.on_budget_exhausted '{budget.get('on_budget_exhausted')}' "
+            "no está en intensity_order",
+        )
+        require(
+            isinstance(budget.get("max_intense_rides_per_weekend"), int),
+            "falta intensity_budget.max_intense_rides_per_weekend",
+        )
+
+    # --- rutinas ------------------------------------------------------------
+    for rkey, routine in routines.items():
+        keys_here: set[str] = set()
+        for ex in routine.get("exercises", []):
+            k = ex.get("key")
+            require(bool(k), f"rutina '{rkey}': hay un ejercicio sin 'key'")
+            require(
+                k not in keys_here,
+                f"rutina '{rkey}': la clave de ejercicio '{k}' está duplicada",
+            )
+            keys_here.add(k)
+            require(
+                bool(ex.get("template_id")),
+                f"rutina '{rkey}' / '{k}': falta template_id (Hevy no aceptará la escritura)",
+            )
+            require(
+                isinstance(ex.get("sets"), list) and len(ex["sets"]) > 0,
+                f"rutina '{rkey}' / '{k}': 'sets' debe ser una lista no vacía",
+            )
+            for i, s in enumerate(ex.get("sets") or []):
+                stype = s.get("type")
+                require(
+                    stype is None or str(stype).lower() in VALID_SET_TYPES,
+                    f"rutina '{rkey}' / '{k}': serie {i} tiene type='{stype}', "
+                    f"que no es uno de {sorted(VALID_SET_TYPES)}",
+                )
+
+    # --- series de calentamiento --------------------------------------------
+    st = data.get("set_types") or {}
+    if st:
+        source = st.get("source")
+        require(
+            source in VALID_SET_SOURCES,
+            f"set_types.source '{source}' no es válido "
+            f"(esperado: {sorted(VALID_SET_SOURCES)})",
+        )
+        h = st.get("heuristic") or {}
+        if h.get("enabled", True):
+            require(
+                int(h.get("sets_gte", 4)) >= 2,
+                "set_types.heuristic.sets_gte debe ser al menos 2",
+            )
+            require(
+                1 <= int(h.get("count", 1)) < int(h.get("sets_gte", 4)),
+                "set_types.heuristic.count debe ser >= 1 y menor que sets_gte: "
+                "si no, un ejercicio podría quedarse sin ninguna serie efectiva",
+            )
+        for ekey in (st.get("overrides") or {}):
+            require(
+                ekey in all_exercise_keys,
+                f"set_types.overrides: el ejercicio '{ekey}' no existe en ninguna rutina",
+            )
+
+    # --- modos de progresión -------------------------------------------------
+    prog = data.get("progression") or {}
+    default_mode = str(prog.get("default_progression_type", "double"))
+    require(
+        default_mode in VALID_PROGRESSION_TYPES,
+        f"progression.default_progression_type '{default_mode}' no es válido "
+        f"(esperado: {sorted(VALID_PROGRESSION_TYPES)})",
+    )
+
+    modes = prog.get("modes") or {}
+    sets_mode = modes.get("sets") or {}
+    then_default = str(sets_mode.get("then", "double"))
+    require(
+        then_default in {"load", "double"},
+        f"progression.modes.sets.then '{then_default}' no es válido: "
+        "al agotar el techo de series solo se puede pasar a 'load' o 'double'",
+    )
+
+    vs = prog.get("volume_safety") or {}
+    scope = str(vs.get("conflict_scope", "session"))
+    require(
+        scope in {"session", "exercise"},
+        f"progression.volume_safety.conflict_scope '{scope}' no es válido "
+        "(esperado: 'session' o 'exercise')",
+    )
+    prefer = str(vs.get("prefer_on_conflict", "volume"))
+    require(
+        prefer in {"volume", "load"},
+        f"progression.volume_safety.prefer_on_conflict '{prefer}' no es válido "
+        "(esperado: 'volume' o 'load')",
+    )
+    policy = str(vs.get("queue_policy", "waiting_longest"))
+    require(
+        policy in {"waiting_longest", "routine_order"},
+        f"progression.volume_safety.queue_policy '{policy}' no es válido "
+        "(esperado: 'waiting_longest' o 'routine_order')",
+    )
+    for ckey in ("max_volume_increases_per_session", "max_load_increases_per_session"):
+        cap = vs.get(ckey)
+        require(
+            cap is None or int(cap) >= 1,
+            f"progression.volume_safety.{ckey} debe ser >= 1 "
+            "(para desactivar la progresión entera usa la puerta, no un cupo de 0)",
+        )
+
+    state_scope = str(vs.get("state_scope", "routine_exercise"))
+    require(
+        state_scope in {"routine_exercise", "exercise"},
+        f"progression.volume_safety.state_scope '{state_scope}' no es válido "
+        "(esperado: 'routine_exercise' o 'exercise')",
+    )
+
+    # Las dos puertas de volumen. La estricta gobierna añadir una serie; la
+    # relajada, subir reps o segundos.
+    valid_lights = {"green", "amber", "red"}
+    for gname in ("sets_gate", "reps_gate"):
+        g = vs.get(gname)
+        require(
+            isinstance(g, dict),
+            f"progression.volume_safety.{gname} falta o no es un mapa. Desde que "
+            "las series y las reps tienen frenos separados las dos puertas son "
+            "obligatorias: sin una de ellas ese modo no sabría cuándo pararse",
+        )
+        if not isinstance(g, dict):
+            continue
+        blocking = g.get("block_if_last_routine_session_in") or []
+        require(
+            isinstance(blocking, list),
+            f"progression.volume_safety.{gname}.block_if_last_routine_session_in "
+            "debe ser una lista de semáforos",
+        )
+        names = {str(x) for x in blocking} if isinstance(blocking, list) else set()
+        for lg in sorted(names):
+            require(
+                lg in valid_lights,
+                f"progression.volume_safety.{gname}."
+                f"block_if_last_routine_session_in: '{lg}' no es un semáforo válido "
+                f"(esperado: {sorted(valid_lights)})",
+            )
+        require(
+            "green" not in names,
+            f"progression.volume_safety.{gname} bloquea con la sesión anterior en "
+            "VERDE, y eso deja el modo sin ninguna sesión en la que pueda progresar. "
+            "Si la intención es congelarlo, usa progression_type: none",
+        )
+
+    # La puerta de las series no puede ser más laxa que la de las reps: añadir
+    # una serie es siempre el movimiento más arriesgado de los dos.
+    sg = {str(x) for x in ((vs.get("sets_gate") or {}).get(
+        "block_if_last_routine_session_in") or [])}
+    rg = {str(x) for x in ((vs.get("reps_gate") or {}).get(
+        "block_if_last_routine_session_in") or [])}
+    require(
+        rg <= sg,
+        "progression.volume_safety: reps_gate es MÁS estricta que sets_gate "
+        f"(reps bloquea en {sorted(rg)}, series en {sorted(sg)}). Añadir una serie "
+        "es el movimiento más arriesgado de los dos, así que su puerta no puede ser "
+        "la más permisiva",
+    )
+    s_disc = (vs.get("sets_gate") or {}).get("block_if_mean_lower_discomfort_gte")
+    r_disc = (vs.get("reps_gate") or {}).get("block_if_mean_lower_discomfort_gte")
+    require(
+        s_disc is None or r_disc is None or float(s_disc) <= float(r_disc),
+        f"progression.volume_safety: el umbral de lumbar de sets_gate ({s_disc}) debe "
+        f"ser <= el de reps_gate ({r_disc}); si no, se permitiría añadir una serie con "
+        "más molestia de la que hace falta para sumar una repetición",
+    )
+
+    lookback = vs.get("discomfort_lookback_days")
+    require(
+        lookback is None or int(lookback) >= 1,
+        "progression.volume_safety.discomfort_lookback_days debe ser >= 1",
+    )
+    for dead in ("lookback_days", "block_if_red_days_gte", "block_if_amber_days_gte"):
+        require(
+            dead not in vs,
+            f"progression.volume_safety.{dead} ya no se usa: los frenos de volumen se "
+            "anclan a la sesión anterior de la misma rutina, no a una ventana de días. "
+            "Muévelo a sets_gate/reps_gate.block_if_last_routine_session_in",
+        )
+
+    dl = prog.get("deload") or {}
+    for fkey in ("sets_factor", "reps_factor", "seconds_factor"):
+        f = dl.get(fkey)
+        require(
+            f is None or 0 < float(f) <= 1,
+            f"progression.deload.{fkey} debe estar en (0, 1]: una descarga "
+            "recorta volumen, no lo aumenta",
+        )
+
+    for rkey, routine in routines.items():
+        for ex in routine.get("exercises") or []:
+            k = ex.get("key", "<sin key>")
+            mode = str(ex.get("progression_type", default_mode))
+            require(
+                mode in VALID_PROGRESSION_TYPES,
+                f"rutina '{rkey}' / '{k}': progression_type '{mode}' no es válido "
+                f"(esperado: {sorted(VALID_PROGRESSION_TYPES)})",
+            )
+
+            rr = ex.get("rep_range")
+            if rr is not None:
+                ok = isinstance(rr, list) and len(rr) == 2
+                require(ok, f"rutina '{rkey}' / '{k}': rep_range debe ser [min, max]")
+                if ok:
+                    require(
+                        int(rr[0]) < int(rr[1]),
+                        f"rutina '{rkey}' / '{k}': rep_range {rr} está invertido o "
+                        "es un punto: sin recorrido no hay doble progresión",
+                    )
+
+            if mode == "sets":
+                # Un `max_sets` por debajo de las series efectivas que ya tiene
+                # el ejercicio no es un techo: es un recorte encubierto, y el
+                # motor no lo aplicaría nunca (solo suma series). Mejor que
+                # falle aquí que dejar un ejercicio congelado en silencio.
+                effective = sum(
+                    1 for s in (ex.get("sets") or [])
+                    if str(s.get("type") or "normal").lower() != "warmup"
+                )
+                max_sets = int(ex.get("max_sets", sets_mode.get("max_sets", 5)))
+                require(
+                    max_sets >= effective,
+                    f"rutina '{rkey}' / '{k}': max_sets={max_sets} es menor que las "
+                    f"{effective} series efectivas que ya tiene",
+                )
+                then = str(ex.get("then", then_default))
+                require(
+                    then in {"load", "double"},
+                    f"rutina '{rkey}' / '{k}': then '{then}' no es válido",
+                )
+                if then == "double":
+                    require(
+                        ex.get("rep_range") is not None,
+                        f"rutina '{rkey}' / '{k}': con then=double hace falta "
+                        "rep_range, o al agotar las series no habrá a qué pasar",
+                    )
+
+            if mode == "volume":
+                has_reps = any(s.get("reps") for s in (ex.get("sets") or []))
+                has_secs = any(s.get("duration_s") for s in (ex.get("sets") or []))
+                require(
+                    has_reps or has_secs,
+                    f"rutina '{rkey}' / '{k}': progression_type=volume pero el "
+                    "ejercicio no tiene ni reps ni duration_s que subir",
+                )
+                # El techo tiene que estar por encima de lo que ya se hace.
+                if has_secs:
+                    cur = max(
+                        int(s["duration_s"]) for s in ex["sets"] if s.get("duration_s")
+                    )
+                    cap_s = int(ex.get("max_seconds", (modes.get("volume") or {}).get(
+                        "max_seconds", 60)))
+                    require(
+                        cap_s >= cur,
+                        f"rutina '{rkey}' / '{k}': max_seconds={cap_s} está por debajo "
+                        f"de los {cur} s que ya hace",
+                    )
+                elif has_reps:
+                    cur = max(int(s["reps"]) for s in ex["sets"] if s.get("reps"))
+                    cap_r = int(ex.get("max_reps", (modes.get("volume") or {}).get(
+                        "max_reps", 30)))
+                    require(
+                        cap_r >= cur,
+                        f"rutina '{rkey}' / '{k}': max_reps={cap_r} está por debajo "
+                        f"de las {cur} reps que ya hace",
+                    )
+
+    return errors
+
+
+def load_config(path: Path | str) -> Config:
+    """Carga y valida config.yaml. Lanza ConfigError con todos los problemas."""
+    path = Path(path)
+    if not path.is_file():
+        raise ConfigError(f"no se encuentra el archivo de configuración: {path}")
+
+    with path.open(encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path} no contiene un mapa YAML en la raíz")
+
+    problems = _validate(data)
+    if problems:
+        listed = "\n".join(f"  - {p}" for p in problems)
+        raise ConfigError(f"config.yaml tiene {len(problems)} problema(s):\n{listed}")
+
+    return Config(data, compute_hash(data), source=path)
