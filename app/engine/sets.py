@@ -47,6 +47,18 @@ def warmup_flags(
     if n == 0:
         return []
 
+    if not cfg:
+        # Sin sección `set_types` NO se aplica la heurística. El defecto
+        # contrario -que es el que había- convertía en calentamiento la
+        # primera serie de todo ejercicio de 4+ series sin que nadie lo
+        # hubiera pedido, y eso mueve el cumplimiento, el recorte del ámbar
+        # y la progresión de volumen a la vez.
+        #
+        # El validador además exige la sección, así que esto solo actúa si
+        # alguien llama al motor con un dict a medias. Manda el marcado de
+        # Hevy y punto.
+        return [str(s.get("type") or NORMAL).lower() == WARMUP for s in sets]
+
     source = str(cfg.get("source", SOURCE_API_THEN_HEURISTIC))
     overrides = cfg.get("overrides") or {}
 

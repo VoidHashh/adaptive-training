@@ -54,7 +54,7 @@ NOT_FIRED = "not_fired"
 SKIPPED = "skipped"  # falta algún dato
 NOT_APPLICABLE = "not_applicable"  # no toca hoy (only_on_weekday)
 
-_COMPARISONS = {
+COMPARISONS = {
     "gte": lambda a, b: a >= b,
     "gt": lambda a, b: a > b,
     "lte": lambda a, b: a <= b,
@@ -204,7 +204,7 @@ def _eval_ops(
                 ctx.missing.append(str(operand))
                 results.append(None)
                 continue
-            fn = _COMPARISONS.get(base_op)
+            fn = COMPARISONS.get(base_op)
             if fn is None:
                 raise RuleError(f"operador desconocido: {op}")
             ok = fn(value, threshold)
@@ -215,7 +215,7 @@ def _eval_ops(
                 )
             continue
 
-        fn = _COMPARISONS.get(op)
+        fn = COMPARISONS.get(op)
         if fn is None:
             raise RuleError(f"operador desconocido: {op}")
         ok = fn(value, operand)

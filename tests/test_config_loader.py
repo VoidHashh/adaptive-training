@@ -48,6 +48,109 @@ def test_load_config_lanza_si_no_existe(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Erratas: la lección del `fatige=5` aplicada al YAML
+# ---------------------------------------------------------------------------
+#
+# Una clave mal escrita aquí no daba error. Se leía con `.get(clave, defecto)`
+# y el defecto decidía en su lugar, sin decir nada. Los tres casos de abajo son
+# reales, no hipotéticos: los tres cambian el entrenamiento y ninguno avisaba.
+
+
+def _regla(data, nombre) -> dict:
+    return next(r for r in data["special_rules"] if r["name"] == nombre)
+
+
+def test_una_errata_en_duration_days_no_pasa_desapercibida(cfg_copia):
+    """`durantion_days` dejaba la retirada de peso muerto en 1 día en vez de 14.
+
+    Catorce días sin peso muerto es una decisión de seguridad; un día es no
+    hacer nada. La diferencia era una letra.
+    """
+    accion = _regla(cfg_copia.raw, "retirada_peso_muerto")["action"]
+    accion["durantion_days"] = accion.pop("duration_days")
+    msg = errores(cfg_copia.raw)
+    assert "durantion_days" in msg
+    assert "duration_days" in msg, "el error tiene que decir cuál era la buena"
+
+
+def test_una_errata_en_every_n_weeks_no_apaga_la_descarga_en_silencio(cfg_copia):
+    """Mismo desenlace que un `program.start` vacío: la descarga no se programa
+    nunca. Ese ya era error duro; este se colaba."""
+    trig = _regla(cfg_copia.raw, "semana_de_descarga")["trigger"]
+    trig["every_n_week"] = trig.pop("every_n_weeks")
+    assert "every_n_week" in errores(cfg_copia.raw)
+
+
+def test_una_errata_en_el_factor_de_reduccion_no_deja_el_recorte_en_nada(cfg_copia):
+    """Sin `factor`, `session_builder` usa 1.0: la regla dice que reduce carga
+    y no reduce nada."""
+    rl = _regla(cfg_copia.raw, "descarga_press_hombro")["action"]["reduce_load"]
+    rl["factorr"] = rl.pop("factor")
+    assert "factorr" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("operador", ["gtee", "mayor_que", "=>", "gte_adaptativo"])
+def test_un_operador_desconocido_se_rechaza_al_arrancar(cfg_copia, operador):
+    """En un freno no saltaba nunca; en un disparador saltaba todos los días.
+    Dos desenlaces opuestos para la misma errata, ninguno visible."""
+    cfg_copia.raw["progression"]["brakes"][1]["when"] = {operador: 4}
+    assert "operador desconocido" in errores(cfg_copia.raw)
+
+
+def test_los_operadores_adaptativos_siguen_siendo_validos(cfg_copia):
+    """`gte_adaptive` es legítimo: compara contra la distribución propia."""
+    cfg_copia.raw["progression"]["brakes"][1]["when"] = {"gte_adaptive": "load_3d_p90"}
+    assert "operador desconocido" not in errores(cfg_copia.raw)
+
+
+def test_un_when_vacio_no_compara_nada_y_se_rechaza(cfg_copia):
+    cfg_copia.raw["progression"]["brakes"][1]["when"] = {}
+    assert "no compara nada" in errores(cfg_copia.raw)
+
+
+def test_una_clave_inventada_en_un_freno_se_rechaza(cfg_copia):
+    cfg_copia.raw["progression"]["brakes"][1]["bloks"] = "all"
+    assert "bloks" in errores(cfg_copia.raw)
+
+
+def test_on_missing_solo_admite_block_o_skip(cfg_copia):
+    cfg_copia.raw["progression"]["brakes"][0]["on_missing"] = "ignorar"
+    assert "on_missing" in errores(cfg_copia.raw)
+
+
+def test_un_disparador_no_puede_ser_por_señal_y_por_calendario_a_la_vez(cfg_copia):
+    _regla(cfg_copia.raw, "semana_de_descarga")["trigger"]["source"] = "fatigue"
+    assert "solo uno de los dos" in errores(cfg_copia.raw)
+
+
+def test_un_disparador_sin_señal_ni_calendario_se_rechaza(cfg_copia):
+    trig = _regla(cfg_copia.raw, "retirada_peso_muerto")["trigger"]
+    trig.pop("source")
+    assert "por señal" in errores(cfg_copia.raw)
+
+
+def test_una_regla_especial_sin_duration_days_se_rechaza(cfg_copia):
+    """El defecto silencioso era 1 día."""
+    _regla(cfg_copia.raw, "retirada_peso_muerto")["action"].pop("duration_days")
+    assert "duration_days" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("factor", [0, 1.5, -0.5])
+def test_una_regla_de_recorte_no_puede_subir_la_carga(cfg_copia, factor):
+    _regla(cfg_copia.raw, "semana_de_descarga")["action"]["load_factor"] = factor
+    assert "recortan carga" in errores(cfg_copia.raw)
+
+
+def test_sin_seccion_set_types_no_se_arranca(cfg_copia):
+    """Faltando la sección, la heurística se activaba con su defecto y convertía
+    en calentamiento la primera serie de todo ejercicio de 4+ series. Eso mueve
+    el cumplimiento, el recorte del ámbar y la progresión de volumen a la vez.
+    """
+    cfg_copia.raw.pop("set_types")
+    assert "set_types" in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
 # program.start: el sistema NO debe arrancar sin él
 # ---------------------------------------------------------------------------
 # Sin origen de programa la semana de descarga no se activa nunca. Es un fallo

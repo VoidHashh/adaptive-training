@@ -114,7 +114,10 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     L.append(f"{EMOJI.get(luz, '⚪')} <b>{fmt_date(decision.day).capitalize()} — {NOMBRE_LUZ.get(luz, luz.upper())}</b>")
 
     if decision.deload.active:
-        L.append("🔻 <i>Semana de descarga</i>")
+        # El motivo va aquí, pegado al aviso, y no suelto entre los apuntes:
+        # "semana 8 del programa" contesta la pregunta que provoca el 🔻.
+        motivo_dl = f" — {decision.deload.reason}" if decision.deload.reason else ""
+        L.append(f"🔻 <i>Semana de descarga{motivo_dl}</i>")
 
     # --- la sesión ----------------------------------------------------------
     s = decision.session
@@ -164,6 +167,46 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append(f"🚴 {decision.bike.text()}")
 
+    # --- decidido con datos incompletos -------------------------------------
+    # FUERA de `include_reasoning` a propósito. Apagar el razonamiento es
+    # decir "no me cuentes por qué", no "ocúltame que hoy has decidido a
+    # ciegas". Un día sin check-in, sin línea base de HRV o con salidas del
+    # fin de semana sin clasificar es un día en el que el semáforo vale
+    # menos, y eso hay que saberlo aunque no se quiera leer el resto.
+    #
+    # Se vuelca `signals.notes` entero: TODO lo que se apunta ahí es una
+    # degradación (sin check-in, sin línea base, sin serie para el umbral
+    # adaptativo, histórico insuficiente, percentil 0, salidas sin
+    # clasificar). Si algún día se apunta ahí algo que no lo sea, va a
+    # aparecer en el mensaje y se verá: mejor un aviso de más que uno que
+    # solo existía en el log del servidor.
+    degradaciones = list(decision.signals.notes)
+
+    # Una regla que no se pudo evaluar NO es una regla que no disparó, y la
+    # diferencia es justo la que este bloque existe para contar: hoy el
+    # semáforo se ha decidido sin mirar `cervicales_hombros` porque faltaba
+    # `upper_discomfort`, y esa es una regla que podía haber puesto el día en
+    # ámbar. Estaba escrito solo dentro de `include_reasoning`, así que con el
+    # razonamiento apagado un verde decidido sin mirar media hoja de reglas se
+    # leía como un verde con todas miradas.
+    #
+    # Solo se nombran las reglas, no cada señal que faltaba. Las señales
+    # derivadas (hrv_ratio, hrv_baseline, ...) multiplican la lista sin añadir
+    # nada: si falta el HRV faltan las tres, y lo accionable es "hoy no se pudo
+    # mirar el HRV".
+    sin_datos = sorted({r.name for r in decision.light_decision.skipped})
+    if sin_datos:
+        cabe = sin_datos[:4]
+        resto = len(sin_datos) - len(cabe)
+        cola = f" (+{resto})" if resto > 0 else ""
+        degradaciones.append(f"sin datos para evaluar: {', '.join(cabe)}{cola}")
+
+    if degradaciones:
+        L.append("")
+        L.append("🔍 <b>Decidido con datos incompletos</b>")
+        for n in degradaciones:
+            L.append(f"• {n}")
+
     # --- por qué ------------------------------------------------------------
     if incluir_motivo:
         L.append("")
@@ -182,18 +225,25 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         if decision.progression and not decision.progression.gate_open:
             L.append(f"• Progresión cerrada: {decision.progression.gate_reason}")
 
-        # Las señales que faltan importan: una regla que no se pudo evaluar no
-        # es una regla que no disparó, y conviene saber la diferencia.
-        # Solo se nombran las reglas que no se pudieron evaluar, no cada señal
-        # que faltaba. Las señales derivadas (hrv_ratio, hrv_baseline, ...)
-        # multiplican la lista sin añadir información: si falta el HRV faltan
-        # las tres, y lo accionable es "hoy no se pudo mirar el HRV".
-        sin_datos = sorted({r.name for r in decision.light_decision.skipped})
-        if sin_datos:
-            cabe = sin_datos[:4]
-            resto = len(sin_datos) - len(cabe)
-            cola = f" (+{resto})" if resto > 0 else ""
-            L.append(f"• Sin datos para evaluar: {', '.join(cabe)}{cola}")
+        # El resto de apuntes del motor. No son degradaciones -por eso van
+        # aquí y no arriba- pero tampoco eran visibles en ninguna parte: solo
+        # los imprimía el CLI, que es justo lo que no se lee por la mañana.
+        # Dentro caen cosas que se notan en la app sin explicación: "sin HIIT:
+        # <motivo>", "progresión no aplicada: el semáforo está en amber", la
+        # fuerza que queda pendiente de recuperar, o una regla especial que ha
+        # caducado y por eso hoy vuelve un ejercicio que llevaba días fuera.
+        # Las que ya se han dicho arriba se reconstruyen desde la MISMA fuente
+        # que las produjo, no se reconocen por el texto. Buscar "descarga:" o
+        # "sesión recuperada" con un `startswith` funcionaría hoy y dejaría de
+        # funcionar el día que alguien reescriba la frase, sin avisar.
+        ya_dicho = {f"descarga: {decision.deload.reason}"}
+        if s.deferred_from:
+            ya_dicho.add(f"sesión recuperada del {s.deferred_from.isoformat()}")
+        apuntes = [
+            n for n in list(s.notes) + list(decision.notes) if n not in ya_dicho
+        ]
+        for n in apuntes:
+            L.append(f"• {n}")
 
     texto = "\n".join(L)
     if len(texto) > LIMIT:

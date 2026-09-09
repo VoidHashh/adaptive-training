@@ -288,30 +288,48 @@ def hiit_applies(
     light: str,
     day: date,
     program_start: date | None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, bool]:
+    """(¿aplica?, motivo, ¿el motivo es de hoy?).
+
+    El tercer elemento separa dos cosas que se confundían. "El HIIT está
+    desactivado en el config" y "hoy es ámbar y el HIIT solo va en verde" son
+    los dos un `False` con su explicación, pero el primero vale igual mañana y
+    dentro de seis meses, y el segundo solo hoy.
+
+    Sin la distinción, el mensaje diario terminaba con un "sin HIIT: el HIIT
+    está desactivado en el config" fijo, todos los días del año. Y una línea
+    que sale siempre no se lee: se aprende a saltarla, arrastrando consigo las
+    que sí cambian. Los motivos permanentes se siguen devolviendo -la traza del
+    CLI y los tests los usan- pero no se apuntan como noticia del día.
+    """
     raw = config.raw if hasattr(config, "raw") else config
     cfg = raw.get("hiit", {}) or {}
 
+    # --- motivos de configuración: iguales hoy que dentro de seis meses ----
     if not cfg.get("enabled", False):
-        return False, "el HIIT está desactivado en el config"
+        return False, "el HIIT está desactivado en el config", False
     if routine_key in {str(r) for r in (cfg.get("never_routines") or [])}:
-        return False, f"{routine_key} nunca lleva HIIT"
+        return False, f"{routine_key} nunca lleva HIIT", False
     if routine_key not in {str(r) for r in (cfg.get("allowed_routines") or [])}:
-        return False, f"{routine_key} no está en allowed_routines"
+        return False, f"{routine_key} no está en allowed_routines", False
+
+    # --- motivos del día: cambian, y por eso se cuentan --------------------
     if cfg.get("only_on_green", True) and light != "green":
-        return False, f"el HIIT solo se añade en verde y hoy es {light}"
+        return False, f"el HIIT solo se añade en verde y hoy es {light}", True
 
     start = cfg.get("program_start_date") or program_start
     if start is None:
-        return False, "no hay fecha de inicio del programa con la que contar semanas"
+        # Este no es "hoy no toca", es "no se ha podido calcular". Se cuenta
+        # siempre: es la misma clase de hueco que un freno sin señal.
+        return False, "no hay fecha de inicio del programa con la que contar semanas", True
     if isinstance(start, str):
         start = date.fromisoformat(start)
     weeks = ((day - start).days // 7) + 1
     need = int(cfg.get("start_week", 1))
     if weeks < need:
-        return False, f"semana {weeks} del programa; el HIIT empieza en la {need}"
+        return False, f"semana {weeks} del programa; el HIIT empieza en la {need}", True
 
-    return True, f"semana {weeks}, verde y {routine_key} lo admite"
+    return True, f"semana {weeks}, verde y {routine_key} lo admite", True
 
 
 # ---------------------------------------------------------------------------
@@ -423,16 +441,37 @@ def build_session(
     out.exercises = exercises
 
     # 6. HIIT
-    ok, why = hiit_applies(config, routine_key, light, day, program_start)
-    if ok and action.get("allow_hiit", False):
+    ok, why, es_de_hoy = hiit_applies(config, routine_key, light, day, program_start)
+    permitido = bool(action.get("allow_hiit", False))
+
+    if not ok:
+        # Solo se apunta si el motivo es del día. Los permanentes -HIIT
+        # apagado, rutina que nunca lo lleva- son configuración, no noticia,
+        # y repetidos a diario enseñan a no leer la sección entera.
+        if es_de_hoy:
+            out.notes.append(f"sin HIIT: {why}")
+    elif not permitido:
+        # Tocaba HIIT y una regla especial lo ha quitado. Antes esta rama caía
+        # en el `else` de abajo y apuntaba `why`, que en este caso dice
+        # "semana 5, verde y dia_1 lo admite": el motivo de que SÍ tocara,
+        # presentado como el motivo de que no. Justo al revés.
+        out.notes.append("sin HIIT: una regla especial lo ha desactivado hoy")
+    else:
         block_key = str(((raw.get("hiit", {}) or {}).get("blocks") or {}).get(routine_key, ""))
         block = routines.get(block_key, {}) or {}
         if block:
             out.hiit_block = block_key
             out.exercises = out.exercises + copy.deepcopy(block.get("exercises") or [])
             out.changes.append(f"añadido bloque HIIT ({block.get('title', block_key)}): {why}")
-    else:
-        out.notes.append(f"sin HIIT: {why}")
+        else:
+            # Este era el peor de los tres: todo decía que tocaba HIIT, el
+            # bloque no aparecía en `routines`, y la sesión salía sin él sin
+            # una sola línea en ninguna parte. Una errata en `hiit.blocks`
+            # borraba el HIIT del programa en silencio.
+            out.notes.append(
+                f"sin HIIT: tocaba, pero el bloque '{block_key}' de "
+                f"hiit.blocks.{routine_key} no existe en `routines`"
+            )
 
     return out
 

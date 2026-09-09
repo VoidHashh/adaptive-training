@@ -438,12 +438,22 @@ progression:
     require_green: true
     require_all_sets_at_target_reps: true
 
+  # `on_missing` dice qué hacer cuando la señal de un freno no está disponible:
+  #   block (por defecto) -> se cierra la puerta y se explica por qué
+  #   skip                -> el freno se ignora ese día
+  # El defecto es `block` a propósito: un freno que no se puede evaluar no es
+  # un freno que no salta. Cada `skip` es una excepción consciente y se
+  # justifica aquí al lado.
   brakes:
     # Freno 1: si el esfuerzo percibido del entreno fue alto, no se sube.
     - name: rpe_alto
       source: yesterday_rpe
       when: {gte: 8}
       blocks: last_session_only    # solo bloquea la rutina de esa sesión
+      # Este SÍ se salta si falta: el RPE de ayer es legítimamente nulo cuando
+      # ayer no se entrenó, que es la mitad de los días. Con `block` la
+      # progresión no avanzaría jamás.
+      on_missing: skip
 
     # Freno 2: la lumbar manda. Con hernia L4-L5, cualquier molestia apreciable
     # congela TODA la progresión, no solo la de la cadena posterior.
@@ -451,6 +461,8 @@ progression:
       source: lower_discomfort
       when: {gte: 4}
       blocks: all
+      # Sin `on_missing`, es decir `block`: un día sin check-in es un día sin
+      # saber cómo está la lumbar, y ese no es día de subir carga.
 
   # Sesiones limpias consecutivas necesarias antes de subir peso.
   # Por defecto 1. La cadena posterior necesita 2 por la hernia: se marca

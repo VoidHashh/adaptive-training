@@ -25,6 +25,8 @@ from typing import Any
 
 import yaml
 
+from app.engine.rules import COMPARISONS
+
 
 def _strip_accents(text: str) -> str:
     """Quita acentos para que los patrones funcionen con nombres en español."""
@@ -483,6 +485,13 @@ def _validate(data: dict[str, Any]) -> list[str]:
 
     # --- series de calentamiento --------------------------------------------
     st = data.get("set_types") or {}
+    require(
+        bool(st),
+        "falta la sección 'set_types'. Sin ella no se sabe qué series cuentan "
+        "como calentamiento, y eso mueve a la vez el cumplimiento, el recorte "
+        "del ámbar y la progresión de volumen. Decláralo, aunque sea "
+        "'source: api'",
+    )
     if st:
         source = st.get("source")
         require(
@@ -714,6 +723,127 @@ def _validate(data: dict[str, Any]) -> list[str]:
                         f"rutina '{rkey}' / '{k}': max_reps={cap_r} está por debajo "
                         f"de las {cur} reps que ya hace",
                     )
+
+    # --- erratas: operadores y claves desconocidas ---------------------------
+    #
+    # Esto es la misma lección que el `fatige=5` del check-in, aplicada al
+    # YAML. Una clave mal escrita aquí no da error: se lee con un `.get(clave,
+    # defecto)` y el defecto decide en su lugar. Los tres casos concretos:
+    #
+    #   duration_days -> durantion_days   la retirada de peso muerto dura 1
+    #                                     día en vez de 14
+    #   every_n_weeks -> every_n_week     la descarga no se programa nunca
+    #   factor        -> factorr          la reducción de carga se queda en 1.0
+    #
+    # Ninguno de los tres avisa. Todos cambian el entrenamiento. Por eso una
+    # clave que no se reconoce es un error de arranque, no un valor ignorado.
+    def check_ops(when: Any, where: str) -> None:
+        if not isinstance(when, dict):
+            require(False, f"{where}: 'when' debe ser un diccionario de operadores")
+            return
+        require(bool(when), f"{where}: 'when' está vacío, no compara nada")
+        for op in when:
+            base = str(op)
+            if base.endswith("_adaptive"):
+                base = base[: -len("_adaptive")]
+            require(
+                base in COMPARISONS,
+                f"{where}: operador desconocido '{op}'. "
+                f"Válidos: {', '.join(sorted(COMPARISONS))} "
+                f"(y su variante '_adaptive')",
+            )
+
+    def check_keys(obj: Any, allowed: set[str], where: str) -> None:
+        if not isinstance(obj, dict):
+            return
+        for k in obj:
+            require(
+                k in allowed,
+                f"{where}: clave desconocida '{k}'. Válidas: "
+                f"{', '.join(sorted(allowed))}. Si es una errata, el valor "
+                f"real se estaría ignorando en silencio",
+            )
+
+    for i, brake in enumerate(prog.get("brakes") or []):
+        where = f"progression.brakes[{i}] ('{brake.get('name', 'sin nombre')}')"
+        check_keys(brake, {"name", "source", "when", "blocks", "on_missing"}, where)
+        check_ops(brake.get("when"), where)
+        require(
+            str(brake.get("blocks", "all")) in {"all", "last_session_only"},
+            f"{where}: 'blocks' debe ser 'all' o 'last_session_only'",
+        )
+        require(
+            str(brake.get("on_missing", "block")) in {"block", "skip"},
+            f"{where}: 'on_missing' debe ser 'block' o 'skip'. Con 'block' "
+            f"(por defecto) un freno sin datos cierra la puerta",
+        )
+        require(
+            bool(brake.get("source")),
+            f"{where}: falta 'source', no hay señal que vigilar",
+        )
+
+    for i, rule in enumerate(data.get("special_rules") or []):
+        where = f"special_rules[{i}] ('{rule.get('name', 'sin nombre')}')"
+        check_keys(rule, {"name", "description", "trigger", "action", "notify"}, where)
+
+        trig = rule.get("trigger") or {}
+        check_keys(
+            trig,
+            {"source", "when", "consecutive_days", "every_n_weeks", "jitter_weeks"},
+            f"{where}.trigger",
+        )
+        # Un disparador o mira una señal, o va por calendario. Ni las dos ni
+        # ninguna: sin esto una regla puede quedarse muda sin que se note.
+        por_senal = "source" in trig
+        por_calendario = "every_n_weeks" in trig
+        require(
+            por_senal != por_calendario,
+            f"{where}.trigger: tiene que ser por señal ('source' + 'when') o "
+            f"por calendario ('every_n_weeks'), y solo uno de los dos",
+        )
+        if por_senal:
+            check_ops(trig.get("when"), f"{where}.trigger")
+
+        action = rule.get("action") or {}
+        check_keys(
+            action,
+            {
+                "remove_exercises",
+                "reduce_load",
+                "load_factor",
+                "allow_hiit",
+                "duration_days",
+            },
+            f"{where}.action",
+        )
+        require(
+            "duration_days" in action,
+            f"{where}.action: falta 'duration_days'. Sin él la regla dura 1 "
+            f"día, que casi nunca es lo que se quiere y no se nota",
+        )
+        rl = action.get("reduce_load")
+        if rl is not None:
+            check_keys(rl, {"exercises", "factor"}, f"{where}.action.reduce_load")
+            require(
+                rl.get("factor") is not None,
+                f"{where}.action.reduce_load: falta 'factor'; sin él no se "
+                f"reduce nada (equivale a 1.0)",
+            )
+        for fkey in ("load_factor", "factor"):
+            f = action.get(fkey) if fkey == "load_factor" else (rl or {}).get(fkey)
+            require(
+                f is None or 0 < float(f) <= 1,
+                f"{where}: '{fkey}'={f} debe estar en (0, 1]: estas reglas "
+                f"recortan carga, no la suben",
+            )
+
+    for i, rule in enumerate(data.get("rules") or []):
+        where = f"rules[{i}] ('{rule.get('name', 'sin nombre')}')"
+        if "when" in rule:
+            check_ops(rule.get("when"), where)
+        for j, cond in enumerate(rule.get("all_of") or rule.get("any_of") or []):
+            if isinstance(cond, dict) and "when" in cond:
+                check_ops(cond.get("when"), f"{where}[{j}]")
 
     return errors
 

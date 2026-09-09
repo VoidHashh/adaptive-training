@@ -50,7 +50,7 @@ from typing import Any
 
 from app.engine.bike_advisor import BikeRecommendation, recommend_bike
 from app.engine.progression import ProgressionPlan, plan_progression
-from app.engine.rules import LightDecision, evaluate_light
+from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_light
 from app.engine.session_builder import BuiltSession, build_session, today_plan
 from app.engine.signals import Signals, WEEKDAY_NAMES, week_start
 
@@ -261,15 +261,17 @@ def _trigger_fires(trigger: dict[str, Any], signals: Signals, day: date) -> bool
             # no puede activarse por un hueco en los datos.
             return False
         for op, operand in when.items():
-            if op == "gte" and not v >= operand:
-                return False
-            if op == "gt" and not v > operand:
-                return False
-            if op == "lte" and not v <= operand:
-                return False
-            if op == "lt" and not v < operand:
-                return False
-            if op == "eq" and not v == operand:
+            fn = COMPARISONS.get(op)
+            if fn is None:
+                # Una errata aquí era peor que en un freno: como ninguna rama
+                # coincidía, no se devolvía False y la regla se daba por
+                # cumplida. `gtee: 7` habría retirado el peso muerto TODOS los
+                # días, con la única condición de que hubiera algún dato.
+                raise RuleError(
+                    f"regla especial: operador desconocido '{op}'. "
+                    f"Válidos: {', '.join(sorted(COMPARISONS))}"
+                )
+            if not fn(v, operand):
                 return False
     return True
 

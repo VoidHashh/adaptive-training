@@ -31,6 +31,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -157,26 +158,59 @@ class Procedencia:
         return out
 
 
-def _completitud(metrics: list[DayMetrics]) -> tuple[list[str], list[str]]:
-    """Cuenta qué trajo realmente cada métrica. Devuelve (detalle, avisos)."""
+def _completitud(
+    metrics: list[DayMetrics], cfg: Any = None
+) -> tuple[list[str], list[str]]:
+    """Cuenta qué trajo realmente cada métrica. Devuelve (detalle, avisos).
+
+    El aviso NO salta solo cuando una métrica viene a cero. Saltaba solo ahí, y
+    ese era el problema: 4 de 7 días de HRV no avisaba de nada, pero la línea
+    base necesita `min_days_required` días en la ventana, así que por debajo de
+    ese número el `hrv_ratio` no existe y las reglas que lo usan no se evalúan.
+    El sistema seguía dando su semáforo verde sin mencionar que le faltaba la
+    mitad de la información con la que se supone que lo calcula.
+    """
     n = len(metrics)
     campos = [
-        ("hrv", "HRV"),
-        ("rhr", "FC reposo"),
-        ("sleep_min", "sueño"),
-        ("sleep_score", "score sueño"),
-        ("body_battery", "body battery"),
+        ("hrv", "HRV", True),
+        ("rhr", "FC reposo", True),
+        ("sleep_min", "sueño", False),
+        ("sleep_score", "score sueño", False),
+        ("body_battery", "body battery", False),
     ]
+
+    raw = (cfg.raw if hasattr(cfg, "raw") else cfg) or {}
+    # Misma ruta que usa `build_signals`: `baseline` cuelga de la raíz, no de
+    # `signals`. Leerlo de otro sitio daría el defecto de 4 para siempre y este
+    # aviso mentiría sobre el umbral real.
+    minimo = int((raw.get("baseline") or {}).get("min_days_required", 4))
+
     detalle: list[str] = []
     avisos: list[str] = []
     trozos = []
-    for attr, etiqueta in campos:
+    for attr, etiqueta, tiene_base in campos:
         c = sum(1 for m in metrics if getattr(m, attr, None) is not None)
         trozos.append(f"{etiqueta} {c}/{n}")
-        if c == 0 and n:
+        if not n:
+            continue
+        if c == 0:
             avisos.append(
                 f"NINGÚN día trajo {etiqueta}. Las reglas que dependan de esa "
                 f"señal no se han podido evaluar."
+            )
+        elif tiene_base and c < minimo:
+            avisos.append(
+                f"solo {c}/{n} días trajeron {etiqueta}, y la línea base "
+                f"necesita {minimo}. Hay dato de hoy pero no hay contra qué "
+                f"compararlo: las reglas que miran la desviación no se evalúan."
+            )
+        elif c < n:
+            hueco = n - c
+            verbo = "falta" if hueco == 1 else "faltan"
+            dia = "día" if hueco == 1 else "días"
+            avisos.append(
+                f"{verbo} {hueco} de {n} {dia} de {etiqueta}. No invalida la "
+                f"lectura, pero el histórico va con huecos."
             )
     detalle.append("wellness recibido: " + ", ".join(trozos))
     return detalle, avisos
@@ -240,7 +274,7 @@ def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str]]:
 
 
 def fetch_garmin(
-    day: date, days: int, usar_cache: bool
+    day: date, days: int, usar_cache: bool, cfg: Any = None
 ) -> tuple[list[DayMetrics], list[Ride], Procedencia]:
     """Datos reales del reloj, con el histórico largo desde la caché."""
     from app.integrations.activity_cache import merge_rides
@@ -277,7 +311,7 @@ def fetch_garmin(
             f"  de ejemplo claramente marcados como tales.\n"
         ) from exc
 
-    detalle, avisos = _completitud(metrics)
+    detalle, avisos = _completitud(metrics, cfg)
     detalle += det_cache
     avisos += avisos_cache
 
@@ -296,6 +330,19 @@ def fetch_garmin(
             f"durante esta lectura ({client.rate_limit_events[0]}). Se reintentó "
             f"y los datos que ves SÍ llegaron, pero la IP está limitada: repetir "
             f"la orden muchas veces empeora el bloqueo."
+        )
+
+    # Un hueco por error de lectura no es lo mismo que un hueco de verdad. Los
+    # dos dejan la métrica en None, así que sin esto la única diferencia entre
+    # "esa noche no hubo HRV" y "no se pudo leer el HRV de esa noche" era un
+    # `log.debug` que el nivel por defecto ni imprime.
+    if client.fetch_errors:
+        avisos.append(
+            f"{len(client.fetch_errors)} lectura(s) de wellness fallaron y el "
+            f"hueco que dejan NO significa que no hubiera dato: "
+            f"{client.fetch_errors[0]}"
+            + (f" (+{len(client.fetch_errors) - 1} más)"
+               if len(client.fetch_errors) > 1 else "")
         )
 
     return metrics, todas, Procedencia(
@@ -434,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
             es_ejemplo=True,
         )
     else:
-        metrics, rides, proc = fetch_garmin(day, args.days, not args.no_cache)
+        metrics, rides, proc = fetch_garmin(day, args.days, not args.no_cache, cfg)
 
     valid_keys = {s["key"] for s in cfg.raw.get("checkin_sliders", [])}
     checkin = parse_checkin(args.checkin, day, valid_keys)

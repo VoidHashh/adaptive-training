@@ -13,9 +13,10 @@ from datetime import date
 
 import pytest
 
-from app.cli import CHECKIN_ALIAS, checkin_help, parse_checkin
+from app.cli import CHECKIN_ALIAS, _completitud, checkin_help, parse_checkin
+from app.engine.signals import DayMetrics
 
-from tests.conftest import LUNES
+from tests.conftest import LUNES, dias
 
 
 @pytest.fixture
@@ -135,3 +136,63 @@ def test_todos_los_alias_apuntan_a_deslizadores_reales(claves):
 def test_todos_los_deslizadores_tienen_al_menos_una_forma_de_escribirse(claves):
     alcanzables = set(CHECKIN_ALIAS.values()) | claves
     assert claves <= alcanzables
+
+
+# ---------------------------------------------------------------------------
+# Completitud del wellness
+# ---------------------------------------------------------------------------
+#
+# El aviso saltaba SOLO cuando una métrica venía a cero. Con 4 de 7 días de HRV
+# no decía nada, y sin embargo por debajo de `baseline.min_days_required` no
+# hay línea base: `hrv_ratio` no existe y las reglas que lo usan no se evalúan.
+# El informe se leía igual que el de una semana completa.
+
+
+def ventana(n: int, con_hrv: int, **resto) -> list[DayMetrics]:
+    """`n` días de los cuales `con_hrv` traen HRV."""
+    return [
+        DayMetrics(date=LUNES, hrv=100.0 if i < con_hrv else None, **resto)
+        for i in range(n)
+    ]
+
+
+def test_una_metrica_a_cero_sigue_avisando(cfg):
+    _, avisos = _completitud(ventana(7, 0), cfg)
+    assert any("NINGÚN día trajo HRV" in a for a in avisos)
+
+
+def test_por_debajo_del_minimo_de_la_linea_base_tambien_avisa(cfg):
+    """El caso que faltaba: hay dato, pero no hay contra qué compararlo."""
+    _, avisos = _completitud(ventana(7, 3), cfg)
+    hrv = [a for a in avisos if "HRV" in a]
+    assert hrv, f"3/7 días de HRV pasó sin aviso: {avisos}"
+    assert "3/7" in hrv[0]
+    assert "línea base" in hrv[0]
+
+
+def test_el_minimo_sale_del_yaml_no_de_una_constante(cfg_copia):
+    """Si se sube `min_days_required`, el aviso tiene que subir con él."""
+    cfg_copia.raw["baseline"]["min_days_required"] = 6
+    _, avisos = _completitud(ventana(7, 5), cfg_copia)
+    assert any("necesita 6" in a for a in avisos)
+
+
+def test_un_hueco_suelto_se_menciona_sin_alarmar(cfg):
+    _, avisos = _completitud(ventana(7, 6), cfg)
+    hrv = [a for a in avisos if "HRV" in a]
+    assert hrv and "falta 1 de 7" in hrv[0]
+    assert "línea base" not in hrv[0], "6/7 no rompe la línea base"
+
+
+def test_una_semana_completa_no_genera_ningun_aviso(cfg):
+    metrics = dias(LUNES, 7, hrv=100.0, rhr=50.0, sleep_min=420,
+                   sleep_score=80, body_battery=70)
+    detalle, avisos = _completitud(metrics, cfg)
+    assert avisos == []
+    assert "HRV 7/7" in detalle[0]
+
+
+def test_sin_config_no_revienta(cfg):
+    """`_completitud` se llama antes de que el config esté garantizado."""
+    _, avisos = _completitud(ventana(7, 3), None)
+    assert any("HRV" in a for a in avisos)

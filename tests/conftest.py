@@ -61,8 +61,74 @@ def cfg_summer(cfg):
 
 
 def sig(day: date, history: dict[str, dict[date, Any]] | None = None, **values) -> Signals:
-    """Un `Signals` a mano, sin pasar por `build_signals`."""
+    """Un `Signals` a mano, sin pasar por `build_signals`.
+
+    Ojo: `sig(day)` a secas NO es "un día normal", es un día en el que no se
+    sabe absolutamente nada y las 13 reglas se quedan sin evaluar. Para "un día
+    en el que el sistema tiene todo lo que necesita" está `sig_completa`.
+    """
     return Signals(day=day, values=values, history=history or {})
+
+
+# Todas las señales que pide alguna regla del `config.yaml` real, con valores
+# tranquilos (día verde). Existe porque `sig(day)` se estaba usando como si
+# fuera un día normal cuando es justo lo contrario, y eso hacía pasar tests que
+# afirmaban "aquí no falta ningún dato" sobre un día en el que faltaban todos.
+SENALES_COMPLETAS: dict[str, Any] = {
+    "lower_discomfort": 1,
+    "upper_discomfort": 1,
+    "fatigue": 3,
+    "training_desire": 8,
+    "hrv": 60.0,
+    "hrv_baseline": 60.0,
+    "hrv_ratio": 1.0,
+    "rhr": 50.0,
+    "rhr_baseline": 50.0,
+    "rhr_delta": 0.0,
+    "sleep_min": 450.0,
+    "load_3d": 100.0,
+    "weekend_intense_rides": 0,
+    "weekend_total_hours": 1.0,
+}
+
+# Los percentiles NO son señales: viven en `Signals.adaptive` y las reglas los
+# leen por ahí (`gt_adaptive: load_3d_p90`), no en `values`. Ponerlos en
+# `values` no da error, simplemente no los encuentra nadie.
+UMBRALES_COMPLETOS: dict[str, float] = {
+    "load_3d_p90": 200.0,
+    "load_7d_p90": 400.0,
+}
+
+
+def sig_completa(day: date, *, dias_historico: int = 7, **overrides) -> Signals:
+    """Un día en el que no falta ningún dato.
+
+    Rellena las tres vías por las que una regla puede pedir algo, que no son
+    intercambiables:
+
+    - `values`, para el valor de hoy;
+    - `adaptive`, para los percentiles;
+    - `history`, porque una regla con `consecutive_days: 2` mira la serie y no
+      el valor de hoy. Con el valor solo, la regla sigue sin poder evaluarse.
+
+    El histórico repite el valor de hoy hacia atrás: una semana tranquila e
+    igual a sí misma, que es lo que hace falta para que ninguna regla salte por
+    accidente.
+
+    `tests/test_message.py::test_el_dia_completo_no_deja_ninguna_regla_sin_evaluar`
+    comprueba que sigue siendo cierto: el día que una regla nueva pida una señal
+    que no esté aquí, ese test lo dice en vez de dejar que los demás sigan
+    pasando por el motivo equivocado.
+    """
+    values = {**SENALES_COMPLETAS, **overrides}
+    history = {
+        k: {day - timedelta(days=i): v for i in range(dias_historico)}
+        for k, v in values.items()
+        if isinstance(v, (int, float))
+    }
+    s = sig(day, history=history, **values)
+    s.adaptive.update(UMBRALES_COMPLETOS)
+    return s
 
 
 def ride(

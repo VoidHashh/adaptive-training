@@ -71,8 +71,25 @@ def ride_from_activity(act: dict[str, Any]) -> Ride | None:
     stamp = act.get("startTimeLocal") or act.get("startTimeGMT") or ""
     try:
         d = datetime.fromisoformat(str(stamp).replace("Z", "")).date()
-    except ValueError:
-        return None
+    except ValueError as exc:
+        # Aquí SÍ se revienta, y la diferencia con el `return None` de arriba
+        # es toda la cuestión: ese significa "no es una salida en bici", este
+        # significaría "es una salida en bici y la estoy tirando". Devolver
+        # None en los dos casos hacía que una salida real desapareciera de
+        # `load_3d/7d` sin dejar rastro: menos carga de la que hubo, y verde
+        # el día que tocaba ámbar.
+        #
+        # Y no puede ser un caso rutinario: Garmin siempre manda
+        # `startTimeLocal` en ISO. Si un día no se puede leer es que ha
+        # cambiado el formato, y entonces no se pierde una salida sino
+        # TODAS. Ese es exactamente el fallo que tiene que parar el sistema
+        # en vez de degradarlo en silencio hasta que alguien lo note meses
+        # después.
+        raise GarminError(
+            f"actividad de bici {act.get('activityId')} con fecha ilegible: "
+            f"{stamp!r}. No se descarta una salida real sin decirlo; si el "
+            f"formato de Garmin ha cambiado hay que arreglarlo aquí."
+        ) from exc
 
     zonas = None
     secs = [act.get(f"hrTimeInZone_{i}") for i in range(1, 6)]
@@ -154,6 +171,13 @@ class GarminClient:
     # lee para no presentar como lectura limpia algo que costó cinco intentos.
     rate_limit_events: list[str] = field(default_factory=list)
     session_resumed: bool = False
+    # Métricas que fallaron al leerse, una línea por (día, métrica).
+    #
+    # No es lo mismo "esa noche no hubo HRV" que "no se pudo leer el HRV de esa
+    # noche": lo primero es un dato, lo segundo es un fallo. Los dos acababan en
+    # `hrv=None` y el segundo solo se veía en un `log.debug` que nadie mira.
+    # Con la lista, el informe puede decir la diferencia.
+    fetch_errors: list[str] = field(default_factory=list)
 
     def connect(self) -> None:
         try:
@@ -183,6 +207,17 @@ class GarminClient:
 
     # --- wellness -----------------------------------------------------------
 
+    def _fallo(self, iso: str, metrica: str, exc: Exception) -> None:
+        """Anota una métrica que no se pudo leer, y lo dice en el log.
+
+        `warning` y no `debug`: el nivel por defecto no muestra los debug, así
+        que la única señal de que la lectura iba mal era invisible tanto en el
+        log como en el informe. Una semana leyendo el HRV a medias se veía
+        igual que una semana leyéndolo entero.
+        """
+        self.fetch_errors.append(f"{iso}: no se pudo leer {metrica} ({exc})")
+        log.warning("Garmin: sin %s el %s: %s", metrica, iso, exc)
+
     def day_metrics(self, day: date) -> DayMetrics:
         """Una fila de wellness. Los huecos se quedan en None a propósito."""
         if self._api is None:
@@ -198,7 +233,7 @@ class GarminClient:
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.debug("sin HRV el %s: %s", iso, exc)
+            self._fallo(iso, "hrv", exc)
 
         try:
             stats = _retry(self._api.get_stats, iso, what="stats", sink=self.rate_limit_events) or {}
@@ -206,7 +241,7 @@ class GarminClient:
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.debug("sin stats el %s: %s", iso, exc)
+            self._fallo(iso, "rhr", exc)
 
         try:
             sleep = _retry(self._api.get_sleep_data, iso, what="sleep", sink=self.rate_limit_events) or {}
@@ -220,7 +255,7 @@ class GarminClient:
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.debug("sin sueño el %s: %s", iso, exc)
+            self._fallo(iso, "sueño", exc)
 
         try:
             bb = _retry(self._api.get_body_battery, iso, iso, what="body_battery", sink=self.rate_limit_events)
@@ -233,7 +268,7 @@ class GarminClient:
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
-            log.debug("sin body battery el %s: %s", iso, exc)
+            self._fallo(iso, "body battery", exc)
 
         return DayMetrics(
             date=day,

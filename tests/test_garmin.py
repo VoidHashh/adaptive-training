@@ -85,8 +85,40 @@ def test_el_tipo_se_compara_en_minusculas():
     assert ride_from_activity(actividad(activityType={"typeKey": "CYCLING"})) is not None
 
 
-def test_una_fecha_ilegible_descarta_la_actividad_en_vez_de_inventarla():
-    assert ride_from_activity(actividad(startTimeLocal="ayer por la tarde")) is None
+def test_una_fecha_ilegible_en_una_salida_de_bici_revienta():
+    """Este test decía lo contrario y estaba mal.
+
+    Descartar la actividad "en vez de inventarla" suena prudente, pero la
+    alternativa a inventarse la fecha no era tirar la salida: era decir que no
+    se puede leer. Una salida real que desaparece resta carga de `load_3d/7d`
+    y deja el día en verde cuando tocaba ámbar, sin que nada lo cuente.
+
+    Además no es un caso raro y aislado. Garmin manda `startTimeLocal` en ISO
+    siempre; si deja de poder leerse es que cambió el formato, y entonces no
+    se pierde una salida, se pierden todas.
+    """
+    act = actividad(startTimeLocal="ayer por la tarde", startTimeGMT=None)
+    with pytest.raises(GarminError, match="fecha ilegible"):
+        ride_from_activity(act)
+
+
+def test_el_error_de_fecha_dice_qué_actividad_y_qué_fecha():
+    """Sin el id no hay forma de ir a mirarla en Garmin."""
+    act = actividad(startTimeLocal="ayer por la tarde", startTimeGMT=None)
+    with pytest.raises(GarminError) as exc:
+        ride_from_activity(act)
+    assert "111" in str(exc.value)
+    assert "ayer por la tarde" in str(exc.value)
+
+
+def test_una_fecha_ilegible_en_algo_que_no_es_bici_sigue_sin_molestar():
+    """El filtro de tipo va primero: no se revienta por una carrera rara."""
+    act = actividad(
+        activityType={"typeKey": "running"},
+        startTimeLocal="ayer por la tarde",
+        startTimeGMT=None,
+    )
+    assert ride_from_activity(act) is None
 
 
 def test_si_falta_la_hora_local_se_usa_la_gmt():
@@ -220,3 +252,96 @@ def test_el_cliente_sin_conectar_se_niega_a_leer():
         c.day_metrics(date(2026, 9, 7))
     with pytest.raises(GarminError, match="no conectado"):
         c.rides(date(2026, 9, 1), date(2026, 9, 7))
+
+
+# ---------------------------------------------------------------------------
+# Un hueco por error de lectura no es un hueco de verdad
+# ---------------------------------------------------------------------------
+#
+# Las cuatro lecturas de wellness atrapaban cualquier excepción y la mandaban a
+# `log.debug`. Como el nivel por defecto no imprime los debug, "esa noche no
+# hubo HRV" y "no se pudo leer el HRV de esa noche" acababan siendo el mismo
+# `None` y ni el log ni el informe distinguían uno de otro.
+
+
+class ApiQueFalla:
+    """Un API de Garmin en el que todo revienta menos las pulsaciones."""
+
+    def get_hrv_data(self, *_):
+        raise RuntimeError("500 del servidor")
+
+    def get_stats(self, *_):
+        return {"restingHeartRate": 52}
+
+    def get_sleep_data(self, *_):
+        raise RuntimeError("respuesta vacía")
+
+    def get_body_battery(self, *_):
+        raise RuntimeError("timeout")
+
+
+def cliente_con_api_rota() -> "garmin.GarminClient":
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c._api = ApiQueFalla()
+    return c
+
+
+def test_un_fallo_de_lectura_no_tumba_el_dia_pero_queda_anotado():
+    c = cliente_con_api_rota()
+    m = c.day_metrics(date(2026, 9, 7))
+
+    # Lo que sí llegó, llega.
+    assert m.rhr == 52.0
+    # Lo que no, se queda en None como siempre...
+    assert m.hrv is None and m.sleep_min is None and m.body_battery is None
+    # ...pero ahora hay constancia de POR QUÉ está en None.
+    assert len(c.fetch_errors) == 3
+
+
+def test_el_apunte_dice_qué_día_y_qué_métrica():
+    c = cliente_con_api_rota()
+    c.day_metrics(date(2026, 9, 7))
+    texto = " | ".join(c.fetch_errors)
+    assert "2026-09-07" in texto
+    assert "hrv" in texto
+    assert "500 del servidor" in texto, "el error original hay que conservarlo"
+
+
+def test_los_apuntes_se_acumulan_entre_dias():
+    """El informe cuenta lecturas fallidas de toda la ventana, no de una."""
+    c = cliente_con_api_rota()
+    for i in range(1, 8):
+        c.day_metrics(date(2026, 9, i))
+    assert len(c.fetch_errors) == 21
+
+
+def test_un_dia_limpio_no_deja_apuntes():
+    class ApiSana(ApiQueFalla):
+        def get_hrv_data(self, *_):
+            return {"hrvSummary": {"lastNightAvg": 60}}
+
+        def get_sleep_data(self, *_):
+            return {"dailySleepDTO": {"sleepTimeSeconds": 25200,
+                                      "sleepScores": {"overall": {"value": 80}}}}
+
+        def get_body_battery(self, *_):
+            return [{"bodyBatteryValuesArray": [[0, 70]]}]
+
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c._api = ApiSana()
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.hrv == 60.0 and m.sleep_min == 420 and m.body_battery == 70
+    assert c.fetch_errors == []
+
+
+def test_un_429_sigue_propagandose_y_no_se_queda_en_un_apunte():
+    """`fetch_errors` es para los fallos que se pueden absorber. Un 429 no lo
+    es: si se anotara aquí, el día se decidiría con datos a medias."""
+    class ApiLimitada:
+        def get_hrv_data(self, *_):
+            raise RuntimeError("429 Too Many Requests")
+
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c._api = ApiLimitada()
+    with pytest.raises(GarminRateLimited):
+        c.day_metrics(date(2026, 9, 7))

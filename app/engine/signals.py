@@ -94,6 +94,10 @@ class ClassifiedRide:
     source: str  # zones | fallback_te | none
     load: float  # carga usada para load_3d/7d (real o estimada)
     load_estimated: bool
+    # False cuando la carga no se ha podido saber NI estimar y `load` es un 0
+    # de relleno. Un 0 de relleno y un día de descanso son el mismo número y
+    # significan lo contrario, así que quien sume cargas necesita distinguirlos.
+    load_known: bool = True
     zone_pct: dict[int, float] = field(default_factory=dict)
 
     @property
@@ -294,31 +298,40 @@ def classify_ride(ride: Ride, cycling_cfg: dict[str, Any]) -> ClassifiedRide:
             source = "none"
             level = str(fallback.get("on_no_data", UNKNOWN))
 
-    load, estimated = _ride_load(ride, level, cycling_cfg)
+    load, estimated, known = _ride_load(ride, level, cycling_cfg)
     return ClassifiedRide(
         ride=ride,
         level=level,
         source=source,
         load=load,
         load_estimated=estimated,
+        load_known=known,
         zone_pct=pcts,
     )
 
 
-def _ride_load(ride: Ride, level: str, cycling_cfg: dict[str, Any]) -> tuple[float, bool]:
-    """Carga de la salida: la real de Garmin, o una estimada por duración."""
+def _ride_load(
+    ride: Ride, level: str, cycling_cfg: dict[str, Any]
+) -> tuple[float, bool, bool]:
+    """Carga de la salida: (valor, ¿estimada?, ¿se sabe?).
+
+    El tercer elemento existe porque los dos primeros no distinguían "salió a
+    rodar y no gastó nada" de "salió a rodar y no sé cuánto gastó". Los dos
+    devolvían `0.0, False`, que sumado a `load_7d` es literalmente lo mismo que
+    un día de sofá.
+    """
     if ride.training_load is not None:
-        return float(ride.training_load), False
+        return float(ride.training_load), False, True
 
     est = (cycling_cfg.get("load", {}) or {}).get("fallback_estimate", {}) or {}
     if not est.get("enabled") or not ride.duration_s:
-        return 0.0, False
+        return 0.0, False, False
 
     per_hour = (est.get("load_per_hour") or {}).get(level)
     if per_hour is None:
         # Sin factor para ese nivel (p. ej. `desconocida`): no inventamos.
-        return 0.0, False
-    return (ride.duration_s / 3600.0) * float(per_hour), True
+        return 0.0, False, False
+    return (ride.duration_s / 3600.0) * float(per_hour), True, True
 
 
 def classify_all(rides: Iterable[Ride], cycling_cfg: dict[str, Any]) -> list[ClassifiedRide]:
@@ -336,10 +349,27 @@ def classify_all(rides: Iterable[Ride], cycling_cfg: dict[str, Any]) -> list[Cla
 # ---------------------------------------------------------------------------
 
 
-def rolling_load(rides: Sequence[ClassifiedRide], day: date, window_days: int) -> float:
-    """Suma de carga en la ventana de `window_days` que termina en `day`."""
+def rolling_load(
+    rides: Sequence[ClassifiedRide], day: date, window_days: int
+) -> float | None:
+    """Suma de carga en la ventana de `window_days` que termina en `day`.
+
+    Devuelve `None` si alguna salida de la ventana tiene carga desconocida.
+    Antes esa salida entraba como 0 y el resultado era un número más bajo que
+    el real, sin marca de ninguna clase: `carga_acumulada` comparaba contra su
+    umbral una carga incompleta y salía verde el día que tocaba ámbar.
+
+    `None` no es un fallo: es "hoy este dato no se puede dar". El semáforo ya
+    sabe tratarlo -la regla se marca como no evaluable y se dice en el
+    mensaje-, y el percentil adaptativo lo descarta de la ventana en vez de
+    calibrarse contra un cero falso, que es lo que rebajaba el umbral para
+    todos los días siguientes.
+    """
     start = day - timedelta(days=window_days - 1)
-    return sum(r.load for r in rides if start <= r.date <= day)
+    ventana = [r for r in rides if start <= r.date <= day]
+    if any(not r.load_known for r in ventana):
+        return None
+    return sum(r.load for r in ventana)
 
 
 def load_series(
@@ -347,7 +377,7 @@ def load_series(
     end_day: date,
     days: int,
     window_days: int,
-) -> dict[date, float]:
+) -> dict[date, float | None]:
     """`load_Nd` para cada uno de los últimos `days` días que terminan en `end_day`."""
     return {
         end_day - timedelta(days=i): rolling_load(rides, end_day - timedelta(days=i), window_days)
@@ -621,6 +651,16 @@ def build_signals(
         series = load_series(classified, day, days=max(history_days, 90), window_days=win)
         sig.values[name] = series.get(day)
         sig.history[name] = series
+        if series.get(day) is None:
+            desde = day - timedelta(days=win - 1)
+            culpables = sorted(
+                {r.date for r in classified if desde <= r.date <= day and not r.load_known}
+            )
+            notes.append(
+                f"{name}: sin dato — {len(culpables)} salida(s) sin carga ni forma de "
+                f"estimarla ({', '.join(d.isoformat() for d in culpables)}). "
+                f"Se prefiere no dar el número a darlo por lo bajo."
+            )
 
     # --- umbrales adaptativos ---------------------------------------------
     for name, spec in adaptive_cfg.items():

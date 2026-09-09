@@ -178,6 +178,15 @@ def test_una_salida_desconocida_no_recibe_carga_inventada():
     assert c.level == UNKNOWN
     assert c.load == 0.0
     assert not c.load_estimated
+    # ...pero el 0 va marcado: es relleno, no una lectura.
+    assert c.load_known is False
+
+
+def test_una_carga_real_y_una_estimada_si_se_saben():
+    real = classify_ride(ride(LUNES, load=222.0, zones=(0, 0, 0, 600, 600)), CYCLING)
+    est = classify_ride(Ride(date=LUNES, duration_s=7200, zones=(0, 0, 0, 600, 600)), CYCLING)
+    assert real.load_known is True
+    assert est.load_known is True
 
 
 def test_las_actividades_que_no_son_bici_se_descartan():
@@ -210,6 +219,81 @@ def test_load_series_devuelve_un_valor_por_dia():
     assert len(serie) == 10
     assert serie[LUNES] == 100.0
     assert serie[LUNES - timedelta(days=5)] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Una salida con carga desconocida no se suma como si fuera un cero
+# ---------------------------------------------------------------------------
+#
+# El fallo: una salida sin `training_load` y sin forma de estimarla entraba en
+# `load_3d/7d` valiendo 0.0, exactamente igual que un día de sofá. La carga
+# salía por debajo de la real, `carga_acumulada` no llegaba a su umbral y el
+# día salía verde. Y como el umbral es un percentil de la propia serie, ese
+# cero falso además rebajaba el listón para los días siguientes.
+
+
+def test_una_salida_sin_carga_conocida_deja_la_ventana_sin_dato():
+    rides = classify_all(
+        [ride(LUNES, load=100), Ride(date=LUNES, duration_s=7200, is_cycling=True)],
+        CYCLING,
+    )
+    assert rolling_load(rides, LUNES, 3) is None, (
+        "sumar 100 + 0 daría 100, que es menos carga de la que hubo"
+    )
+
+
+def test_la_ventana_vuelve_a_dar_numero_en_cuanto_la_salida_sale_de_ella():
+    """No es un veneno permanente: caduca con la ventana."""
+    rides = classify_all(
+        [
+            ride(LUNES - timedelta(days=5), load=100),
+            Ride(date=LUNES - timedelta(days=5), duration_s=7200, is_cycling=True),
+        ],
+        CYCLING,
+    )
+    assert rolling_load(rides, LUNES, 3) == 0.0
+    assert rolling_load(rides, LUNES, 7) is None
+
+
+def test_un_dia_de_descanso_sigue_siendo_cero_no_desconocido():
+    """La distinción tiene que ir en los dos sentidos."""
+    rides = classify_all([ride(LUNES - timedelta(days=10), load=100)], CYCLING)
+    assert rolling_load(rides, LUNES, 7) == 0.0
+
+
+def test_el_percentil_adaptativo_descarta_los_dias_sin_dato():
+    """`resolve_adaptive_threshold` ya filtra los `None`: lo que se comprueba
+    aquí es que un día contaminado no entra en la muestra como un cero."""
+    from app.engine.signals import resolve_adaptive_threshold
+
+    serie = {LUNES - timedelta(days=i): 100.0 for i in range(1, 11)}
+    limpio, _ = resolve_adaptive_threshold(
+        {"window_days": 30, "min_days_required": 5, "percentile": 90}, serie, LUNES
+    )
+    serie[LUNES - timedelta(days=3)] = None
+    con_hueco, _ = resolve_adaptive_threshold(
+        {"window_days": 30, "min_days_required": 5, "percentile": 90}, serie, LUNES
+    )
+    assert limpio == con_hueco == 100.0
+
+
+def test_se_dice_en_las_notas_que_falta_la_carga(cfg):
+    """Si no se dice, es otro fallo silencioso: el usuario vería
+    `carga_acumulada` sin evaluar y sin saber por qué."""
+    from app.engine.signals import build_signals
+
+    s = build_signals(
+        cfg,
+        LUNES,
+        metrics=[],
+        rides=[Ride(date=LUNES, duration_s=7200, is_cycling=True)],
+        sessions=[],
+        checkin=None,
+    )
+    assert s.values["load_7d"] is None
+    nota = next((n for n in s.notes if n.startswith("load_7d")), None)
+    assert nota is not None, f"ninguna nota explica el hueco: {s.notes}"
+    assert LUNES.isoformat() in nota, "hay que decir QUÉ día está sin clasificar"
 
 
 # ---------------------------------------------------------------------------

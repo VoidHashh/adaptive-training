@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from app.engine.rules import COMPARISONS, RuleError
 from app.engine.sets import excludes, warmup_flags
 
 LOAD = "load"
@@ -208,19 +209,42 @@ def evaluate_gate(
             return False, "en la última sesión no se completaron todas las series efectivas"
 
     for brake in prog_cfg.get("brakes", []) or []:
-        value = signals.get(str(brake.get("source")))
+        source = str(brake.get("source"))
+        value = signals.get(source)
+
         if value is None:
-            continue
+            # Un freno que no se puede evaluar NO es un freno que no salta.
+            #
+            # Antes esto era un `continue`: sin check-in, el freno lumbar
+            # -que con una hernia L4-L5 es el que manda- desaparecía sin
+            # decir nada y la puerta se quedaba abierta. Se subía peso
+            # precisamente el día del que menos se sabía.
+            #
+            # Por defecto se cierra: no progresar hoy es reversible mañana,
+            # subir carga con la lumbar sin evaluar no lo es. `on_missing:
+            # skip` existe para las señales legítimamente opcionales -el RPE
+            # de ayer es nulo si ayer no se entrenó- y hay que declararlo a
+            # mano en el YAML, para que saltárselo sea una decisión escrita.
+            if str(brake.get("on_missing", "block")) == "skip":
+                continue
+            return False, (
+                f"freno '{brake.get('name')}' no evaluable: falta '{source}'. "
+                f"Sin ese dato no se sube carga."
+            )
+
         cond = brake.get("when") or {}
         hit = False
         for op, operand in cond.items():
-            if op == "gte" and value >= operand:
-                hit = True
-            elif op == "gt" and value > operand:
-                hit = True
-            elif op == "lte" and value <= operand:
-                hit = True
-            elif op == "lt" and value < operand:
+            fn = COMPARISONS.get(op)
+            if fn is None:
+                # Una errata en el operador (`gtee: 4`) dejaba el freno
+                # muerto en silencio: ninguna rama coincidía, `hit` se
+                # quedaba en False y el freno no saltaba jamás.
+                raise RuleError(
+                    f"freno '{brake.get('name')}': operador desconocido "
+                    f"'{op}'. Válidos: {', '.join(sorted(COMPARISONS))}"
+                )
+            if fn(value, operand):
                 hit = True
         if not hit:
             continue
