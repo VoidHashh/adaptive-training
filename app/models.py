@@ -202,6 +202,14 @@ class ExerciseTarget(Base):
     # Racha de sesiones limpias consecutivas. Se compara con
     # `clean_sessions_required` del ejercicio (2 en cadena posterior).
     clean_streak: Mapped[int] = mapped_column(Integer, default=0)
+    # ¿La ÚLTIMA sesión se completó a las reps objetivo?
+    #
+    # No se deduce de `clean_streak > 0`. Son dos cosas distintas: la racha se
+    # pone a cero también cuando un ejercicio acaba de progresar, y ese día el
+    # cumplimiento fue bueno. Con un solo campo, el día siguiente a cada subida
+    # se leería como "la última sesión se falló", que es justo lo contrario de
+    # lo que pasó, y la puerta de la progresión se cerraría sola.
+    last_compliant: Mapped[bool | None] = mapped_column(Boolean)
     last_progressed_date: Mapped[date | None] = mapped_column(Date)
     last_session_date: Mapped[date | None] = mapped_column(Date)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -209,6 +217,49 @@ class ExerciseTarget(Base):
     __table_args__ = (
         UniqueConstraint("routine_key", "exercise_key", name="uq_target_routine_ex"),
     )
+
+
+class RoutineState(Base):
+    """Cómo fue la última vez que se entrenó CADA rutina.
+
+    Es el reloj de los frenos de volumen, y por eso es por rutina y no global:
+    un rojo el lunes no tiene por qué cancelar la subida del viernes, que es
+    otra sesión con otros ejercicios. Guardarlo en una sola variable global
+    haría que cualquier día malo congelase el programa entero.
+
+    Solo se escribe cuando la sesión se ha EJECUTADO. Decidir que hoy toca
+    fuerza no es haberla hecho.
+    """
+
+    __tablename__ = "routine_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    routine_key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+    last_light: Mapped[str | None] = mapped_column(String(8))
+    last_trained_date: Mapped[date | None] = mapped_column(Date)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class ProgramState(Base):
+    """Estado del programa que no es de ningún día ni de ninguna rutina.
+
+    Fila única (`id = 1`). De momento solo guarda la última descarga concedida,
+    pero es una tabla y no una constante porque ese dato TIENE que sobrevivir a
+    un reinicio: la descarga se coloca con un margen de semanas (`jitter_weeks`)
+    y sin recordar cuál fue la última, un reinicio en la semana equivocada la
+    repite o se la salta, y en ninguno de los dos casos avisa.
+
+    `program_start` NO está aquí a propósito: sale de `config.yaml`, que es el
+    sitio donde el usuario lo pone y puede corregirlo. Tenerlo en los dos
+    lugares invita a que discrepen.
+    """
+
+    __tablename__ = "program_state"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    last_deload_start: Mapped[date | None] = mapped_column(Date)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class RuleState(Base):
@@ -225,6 +276,14 @@ class RuleState(Base):
     active_until: Mapped[date | None] = mapped_column(Date)
     reason: Mapped[str | None] = mapped_column(Text)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # El `action` de la regla, tal cual: es LO QUE HACE (qué ejercicio retira,
+    # qué factor de carga aplica). Sin esto, una regla rescatada del disco
+    # volvía con la acción vacía y dejaba de hacer nada, en silencio: el peso
+    # muerto retirado catorce días reaparecía al primer reinicio, y el mensaje
+    # seguía diciendo que la regla estaba activa.
+    action_json: Mapped[str | None] = mapped_column(Text)
+    notify: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (Index("ix_rule_states_active", "rule_name", "entity", "active_until"),)
 
