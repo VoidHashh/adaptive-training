@@ -46,7 +46,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 from app.engine.bike_advisor import BikeRecommendation, recommend_bike
 from app.engine.progression import ProgressionPlan, plan_progression
@@ -604,27 +604,66 @@ def advance_state(
     if executed is None or not rkey or sess.kind not in {"full", "reduced"}:
         return new
 
-    new.last_routine_light[rkey] = decision.light
+    return apply_execution(
+        new,
+        routine_key=rkey,
+        exercises=sess.exercises,
+        executed=executed,
+        light=decision.light,
+        progressed=[e.key for e in decision.progression.changes]
+        if decision.progression
+        else (),
+    )
 
-    for ex in sess.exercises:
+
+def apply_execution(
+    state: EngineState,
+    *,
+    routine_key: str,
+    exercises: Sequence[dict[str, Any]],
+    executed: dict[str, bool],
+    light: str | None = None,
+    progressed: Sequence[str] = (),
+) -> EngineState:
+    """Aplica al estado lo que REALMENTE se ejecutó. Muta y devuelve `state`.
+
+    Está separada de `advance_state` porque las dos mitades ocurren en momentos
+    distintos y con información distinta. Por la mañana se decide y se guardan
+    reglas, aplazamientos y descarga; por la noche se sabe qué se hizo y avanzan
+    las rachas. La reconciliación nocturna llama AQUÍ y no a `advance_state`
+    porque `advance_state` reconstruye `active_rules` desde la decisión que
+    recibe: al reconciliar habría que rehidratar esa decisión desde la base de
+    datos, y una rehidratación incompleta -que es lo normal- vaciaría en
+    silencio las reglas activas. El peso muerto retirado catorce días volvería a
+    aparecer en la rutina esa misma noche, sin un solo error por ninguna parte.
+
+    `progressed` son los ejercicios que HOY han subido. Su racha vuelve a cero:
+    las sesiones limpias que pagaron la subida ya se han gastado en ella. Sin
+    esta lista un ejercicio que sube por la mañana y se completa por la noche
+    conservaría la racha entera y podría volver a subir al día siguiente, dos
+    subidas seguidas sin las sesiones limpias que las justifican. Es el motivo
+    de que la progresión se guarde con la decisión: por la noche ya no se puede
+    deducir.
+    """
+    if light is not None:
+        state.last_routine_light[routine_key] = light
+
+    for ex in exercises:
         key = ex.get("key")
         if not key:
             continue
         ok = bool(executed.get(key, False))
-        scoped = (rkey, key)
-        new.compliance[scoped] = ok
+        scoped = (routine_key, key)
+        state.compliance[scoped] = ok
         if ok:
-            new.clean_sessions[scoped] = new.clean_sessions.get(scoped, 0) + 1
+            state.clean_sessions[scoped] = state.clean_sessions.get(scoped, 0) + 1
         else:
             # La racha se rompe entera. Es el punto: "sesiones limpias
             # CONSECUTIVAS". Decrementar en vez de resetear convertiría el
             # requisito en una media, que es otra cosa.
-            new.clean_sessions[scoped] = 0
+            state.clean_sessions[scoped] = 0
 
-    # Un ejercicio que acaba de progresar empieza racha de cero: las sesiones
-    # limpias que le dieron la subida ya se han gastado en esa subida.
-    if decision.progression:
-        for e in decision.progression.changes:
-            new.clean_sessions[(rkey, e.key)] = 0
+    for key in progressed:
+        state.clean_sessions[(routine_key, key)] = 0
 
-    return new
+    return state

@@ -397,6 +397,10 @@ def save_decision(session: Session, decision: Any) -> DecisionRow:
         bike_recommendation_json=_json(decision.bike.to_dict())
         if decision.bike is not None and hasattr(decision.bike, "to_dict")
         else None,
+        progression_json=_json(decision.progression.to_dict())
+        if decision.progression is not None
+        and hasattr(decision.progression, "to_dict")
+        else None,
     )
     session.add(fila)
     session.flush()
@@ -409,6 +413,31 @@ def current_decision(session: Session, day: date) -> DecisionRow | None:
             DecisionRow.date == day, DecisionRow.is_current.is_(True)
         )
     ).first()
+
+
+def planned_session(fila: DecisionRow | None) -> dict[str, Any]:
+    """La sesión que se planificó ese día, tal cual se guardó.
+
+    La reconciliación compara contra ESTO y no contra lo que hoy produciría el
+    motor. Volver a decidir por la noche daría la sesión que tocaría con las
+    señales de ahora, que no tiene por qué ser la que se escribió por la mañana:
+    se estaría midiendo el cumplimiento contra un plan que nunca existió.
+    """
+    if fila is None or not fila.planned_session_json:
+        return {}
+    return json.loads(fila.planned_session_json)
+
+
+def progressed_keys(fila: DecisionRow | None) -> list[str]:
+    """Ejercicios que subieron ese día. Su racha tiene que volver a cero."""
+    if fila is None or not fila.progression_json:
+        return []
+    datos = json.loads(fila.progression_json)
+    return [
+        e["key"]
+        for e in (datos.get("exercises") or [])
+        if e.get("changed") and e.get("key")
+    ]
 
 
 def _json(valor: Any) -> str | None:

@@ -175,6 +175,19 @@ class Decision(Base):
     planned_session_json: Mapped[str | None] = mapped_column(Text)
     bike_recommendation_json: Mapped[str | None] = mapped_column(Text)
 
+    # Qué subió hoy y por qué. Se guarda por dos motivos independientes.
+    #
+    # El primero es poder contestar "¿por qué subió el hip thrust el día 12?"
+    # tres semanas después. Hasta ahora la progresión solo existía dentro del
+    # mensaje de Telegram, y un mensaje no es un registro.
+    #
+    # El segundo es que la reconciliación de la noche LA NECESITA. Un ejercicio
+    # que sube por la mañana tiene que empezar racha de cero, y de noche eso ya
+    # no se puede deducir: la sesión guardada dice qué se planificó, no qué
+    # cambió respecto a ayer. Sin esto la racha sobreviviría a la subida y el
+    # ejercicio podría volver a subir al día siguiente.
+    progression_json: Mapped[str | None] = mapped_column(Text)
+
     __table_args__ = (Index("ix_decisions_date_current", "date", "is_current"),)
 
 

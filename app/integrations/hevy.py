@@ -36,9 +36,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Sequence
+
+from app.engine.sets import warmup_flags
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +62,135 @@ class HevyWriteDisabled(HevyError):
 # Separada del cliente HTTP a propósito: es lo que `--dry-run` enseña. Si la
 # construcción viviera dentro de la llamada de red, el ensayo tendría que
 # simularla y estaría enseñando otra cosa distinta de la que se envía.
+
+
+def _fecha_workout(w: dict[str, Any]) -> date | None:
+    """El día de un entrenamiento de Hevy.
+
+    Devuelve `None` si no se puede leer, y el llamante lo descarta. Aquí SÍ es
+    razonable descartar -al revés que en Garmin, donde una fecha ilegible
+    revienta-: en Garmin la fecha decide si una salida entra en la carga
+    acumulada y perderla falsea un número; aquí solo se usa para saber si el
+    entrenamiento cae dentro de la ventana que se está reconciliando, y un
+    entrenamiento sin fecha legible no se puede asignar a ningún día por
+    definición. Lo que no puede es pasar callando: se anota en el log.
+    """
+    stamp = w.get("start_time") or w.get("startTime") or w.get("created_at")
+    if not stamp:
+        log.warning("Hevy: entrenamiento %s sin fecha; se ignora", w.get("id"))
+        return None
+    texto = str(stamp).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(texto).date()
+    except ValueError:
+        log.warning(
+            "Hevy: entrenamiento %s con fecha ilegible %r; se ignora",
+            w.get("id"),
+            stamp,
+        )
+        return None
+
+
+def workout_compliance(
+    workout: dict[str, Any],
+    planned: Any,
+    config: Any = None,
+) -> dict[str, bool]:
+    """¿Se completó cada ejercicio a las reps objetivo? Una entrada por ejercicio.
+
+    Es la señal que alimenta la racha de sesiones limpias, y por tanto lo único
+    que abre la puerta de la subida de carga. Se compara contra lo PLANIFICADO,
+    no contra lo que Hevy diga que era la rutina: la rutina en Hevy la reescribe
+    este mismo sistema cada mañana, así que compararla consigo misma no diría
+    nada.
+
+    Criterio: todas las series efectivas (el calentamiento no cuenta) tienen que
+    alcanzar las reps del plan. Una serie de menos, o una serie a menos reps, y
+    el ejercicio no es limpio.
+
+    Un ejercicio del plan que no aparece en el entrenamiento cuenta como NO
+    cumplido. Es lo prudente: si no está, o no se hizo o no se registró, y en
+    ninguno de los dos casos hay pruebas de que se completara.
+    """
+    raw = (config.raw if hasattr(config, "raw") else config) or {}
+    set_cfg = raw.get("set_types", {}) or {}
+
+    hechos: dict[str, list[dict[str, Any]]] = {}
+    for ex in workout.get("exercises") or []:
+        clave = ex.get("exercise_template_id") or ex.get("title")
+        if clave:
+            hechos.setdefault(str(clave), []).extend(ex.get("sets") or [])
+
+    salida: dict[str, bool] = {}
+    for ex in getattr(planned, "exercises", []) or []:
+        key = ex.get("key")
+        if not key:
+            continue
+        plan_sets = ex.get("sets") or []
+        flags = warmup_flags(plan_sets, set_cfg, key)
+        objetivo = [s for s, warm in zip(plan_sets, flags, strict=True) if not warm]
+
+        candidatos = hechos.get(str(ex.get("template_id") or "")) or hechos.get(
+            str(ex.get("name") or "")
+        )
+        if not candidatos:
+            salida[key] = False
+            continue
+
+        reales = [
+            s
+            for s in candidatos
+            if str(s.get("type", "normal")).lower() not in {"warmup", "warm_up"}
+        ]
+        if len(reales) < len(objetivo):
+            salida[key] = False
+            continue
+
+        salida[key] = all(
+            _alcanza(real, plan) for real, plan in zip(reales, objetivo)
+        )
+    return salida
+
+
+# El plan y la respuesta de Hevy no llaman igual a lo mismo: el motor usa
+# `duration_s` y la API devuelve `duration_seconds`. La correspondencia se
+# escribe aquí, una vez, en vez de repartirla por comparaciones sueltas.
+CAMPOS_SERIE = (("reps", "reps"), ("duration_s", "duration_seconds"))
+
+
+def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
+    """¿Una serie ejecutada cumple lo que se le pedía?
+
+    Solo se miran las magnitudes que el plan pide. Un ejercicio por tiempo no
+    tiene reps, y exigirle reps lo dejaría siempre en "no cumplido": la plancha
+    lateral no subiría nunca.
+
+    Hacer MÁS de lo pedido cumple. El criterio es "no se quedó corto", no "clavó
+    el número": doce repeticiones cuando se pedían diez es una sesión limpia.
+
+    Una serie del plan que no pide NINGUNA magnitud es un error duro y no un
+    "cumple". El bucle no tendría nada que comprobar y devolvería `True` sin
+    haber mirado nada: el ejercicio saldría limpio sin una sola prueba de que se
+    hizo, la racha avanzaría y con ella subiría la carga. Es justo el fallo que
+    no puede pasar callando en una espalda con hernia.
+    """
+    comprobado = False
+    for campo_plan, campo_real in CAMPOS_SERIE:
+        objetivo = plan.get(campo_plan)
+        if objetivo is None:
+            continue
+        comprobado = True
+        hecho = real.get(campo_real)
+        if hecho is None or float(hecho) < float(objetivo):
+            return False
+
+    if not comprobado:
+        raise HevyError(
+            f"serie del plan sin magnitud medible ({sorted(plan)}): no se puede "
+            f"decidir si se cumplió. Toda serie efectiva tiene que pedir al menos "
+            f"una de {[p for p, _ in CAMPOS_SERIE]}."
+        )
+    return True
 
 
 def _set_payload(index: int, s: dict[str, Any]) -> dict[str, Any]:
@@ -313,6 +444,69 @@ class HevyClient:
         if isinstance(datos, list):
             datos = datos[0] if datos else {}
         return datos
+
+    def get_workouts(self, since: date, *, max_pages: int = 5) -> list[dict[str, Any]]:
+        """Los entrenamientos registrados desde `since` (incluido).
+
+        Sin esto el sistema no progresa NUNCA. La racha de sesiones limpias solo
+        avanza cuando `advance_state` recibe qué se completó de verdad, y eso
+        únicamente se puede saber leyendo lo que se hizo. Un sistema que decide
+        cada mañana pero nunca se entera de si la sesión se ejecutó manda el
+        mensaje correcto todos los días con los mismos pesos para siempre.
+
+        Se pagina hacia atrás y se corta en cuanto se pasa de `since`: la API
+        devuelve lo más reciente primero y no hace falta traerse el histórico
+        entero cada mañana.
+        """
+        salida: list[dict[str, Any]] = []
+        completo = False
+        with self._client() as c:
+            for pagina in range(1, max_pages + 1):
+                r = c.get(
+                    "/v1/workouts",
+                    headers=self._headers(),
+                    params={"page": pagina, "pageSize": 10},
+                )
+                if r.status_code != 200:
+                    raise HevyError(
+                        f"GET /v1/workouts (página {pagina}) devolvió "
+                        f"{r.status_code}: {r.text[:200]}"
+                    )
+                datos = r.json() or {}
+                lote = datos.get("workouts") if isinstance(datos, dict) else datos
+                if not lote:
+                    completo = True
+                    break
+
+                # "Se ha pasado de la ventana" y "no se le puede leer la fecha"
+                # son cosas distintas y antes se trataban igual. Un solo
+                # entrenamiento con la fecha rota cortaba la paginación entera y
+                # se perdían en silencio todos los anteriores: la sesión de ayer
+                # dejaba de contar porque la de hoy tenía el `start_time` raro.
+                # Sin fecha se salta el entrenamiento; solo la fecha anterior a
+                # `since` da por terminada la búsqueda.
+                for w in lote:
+                    dia = _fecha_workout(w)
+                    if dia is None:
+                        continue
+                    if dia < since:
+                        completo = True
+                        break
+                    salida.append(w)
+                if completo:
+                    break
+
+        if not completo:
+            # Se acabaron las páginas antes de llegar a `since`: lo que se
+            # devuelve es un trozo, y un trozo tiene el mismo aspecto que la
+            # lista entera. Quien reconcilia daría por no hecha una sesión que
+            # sí está, solo que en la página siguiente.
+            raise HevyError(
+                f"GET /v1/workouts: {max_pages} páginas no bastan para cubrir "
+                f"desde {since}; la lista estaría incompleta y faltarían "
+                f"sesiones por reconciliar. Sube `max_pages`."
+            )
+        return salida
 
     # --- escritura ----------------------------------------------------------
 
