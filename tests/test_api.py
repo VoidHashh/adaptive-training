@@ -26,6 +26,7 @@ from app import repository as repo
 from app.api import app, get_config
 from app.db import get_session
 from app.models import Base
+from app.settings import settings
 from tests.conftest import LUNES, dias
 
 
@@ -141,6 +142,90 @@ def test_sin_el_doble_de_clientes_la_ruta_choca_contra_el_cerrojo(db, cfg, monke
 # ---------------------------------------------------------------------------
 # Salud
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def arrancada(cfg, monkeypatch):
+    """La aplicación arrancada DE VERDAD, con su `lifespan`.
+
+    El resto de tests usan `TestClient` sin `with` para no disparar el
+    `lifespan`, porque llama a `init_db()` sobre el motor real y eso toca la base
+    del usuario. Aquí hace falta lo contrario -es justo el arranque lo que se
+    prueba-, así que se sustituyen las dos cosas que salen de la máquina:
+    `init_db` y los clientes.
+    """
+    monkeypatch.setattr("app.api.init_db", lambda: None)
+    monkeypatch.setattr("app.api._clientes", lambda cfg_: (None, None))
+    monkeypatch.setattr("app.api.get_config", lambda: cfg)
+    app.dependency_overrides[get_config] = lambda: cfg
+    try:
+        yield
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_al_arrancar_se_montan_los_tres_trabajos_del_dia(arrancada, monkeypatch):
+    """El fallo que este test existe para impedir: `build_scheduler` estaba
+    escrito, probado y no lo llamaba NADIE en producción. El contenedor arrancaba,
+    servía la PWA, contestaba `status: ok` y no ejecutaba ni el refresco de
+    Garmin, ni la decisión de las 09:00, ni la reconciliación. Desde fuera es
+    idéntico a un día de descanso: no llega mensaje."""
+    monkeypatch.setattr(settings, "scheduler_enabled", True)
+
+    with TestClient(app) as c:
+        sched = c.get("/api/health").json()["scheduler"]
+
+    assert sched["running"] is True, "la aplicación arrancó sin planificador"
+    assert set(sched["jobs"]) == {"garmin_fetch", "decision_fallback", "reconcile"}
+    assert all(sched["jobs"].values()), (
+        "un trabajo sin próxima ejecución está montado pero no se va a ejecutar, "
+        "que es el mismo silencio con otra forma"
+    )
+
+
+def test_sin_planificador_la_salud_no_dice_que_todo_va_bien(arrancada, monkeypatch):
+    """Apagarlo es legítimo (tests, un segundo proceso solo-web), pero tiene que
+    verse: si no, es una aplicación que no decide nada contestando 200."""
+    monkeypatch.setattr(settings, "scheduler_enabled", False)
+
+    with TestClient(app) as c:
+        cuerpo = c.get("/api/health").json()
+
+    assert cuerpo["scheduler"]["running"] is False
+    assert cuerpo["scheduler"]["error"], "no se dice por qué no hay planificador"
+    assert cuerpo["scheduler"]["jobs"] == {}
+
+
+def test_si_el_planificador_revienta_la_pwa_sigue_en_pie_y_se_dice(
+    arrancada, monkeypatch
+):
+    """Negarse a arrancar dejaría sin formulario, que es lo único que se puede
+    hacer a mano cuando algo va mal. Pero tampoco puede fingir que arrancó."""
+    monkeypatch.setattr(settings, "scheduler_enabled", True)
+
+    def revienta(*a, **k):
+        raise RuntimeError("la zona horaria del config no existe")
+
+    monkeypatch.setattr("app.scheduler.build_scheduler", revienta)
+
+    with TestClient(app) as c:
+        cuerpo = c.get("/api/health").json()
+        assert c.get("/").status_code == 200, "sin planificador la PWA sigue viva"
+
+    assert cuerpo["scheduler"]["running"] is False
+    assert "zona horaria" in cuerpo["scheduler"]["error"]
+
+
+def test_al_parar_la_aplicacion_el_planificador_se_para(arrancada, monkeypatch):
+    """Un planificador que sobrevive al proceso que lo montó sigue decidiendo con
+    una configuración que ya nadie está mirando."""
+    monkeypatch.setattr(settings, "scheduler_enabled", True)
+
+    with TestClient(app):
+        vivo = app.state.scheduler
+        assert vivo.running
+
+    assert not vivo.running
 
 
 def test_la_salud_declara_lo_que_falta(cliente):

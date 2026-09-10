@@ -30,7 +30,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -56,13 +56,60 @@ def get_config():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Arranca la base, y con ella los tres trabajos del día.
+
+    El planificador vive AQUÍ y no en un proceso aparte a propósito. Es un
+    sistema que decide solo: sin los trabajos montados sirve la PWA, contesta
+    `status: ok` y no pasa nada nunca -ni el refresco de Garmin de las 06:30, ni
+    la decisión de las 09:00 cuando no hay check-in, ni la reconciliación de las
+    22:30-. Eso no se ve desde fuera, y el modo de fallo es idéntico a un día de
+    descanso: no llega mensaje.
+
+    Si el planificador no llega a arrancar NO se tumba la aplicación: se anota
+    en `app.state` y `/api/health` lo dice. Negarse a arrancar dejaría sin
+    formulario, que es lo único que se puede hacer a mano; contestar "ok" sin
+    trabajos sería mentir.
+    """
+    from app.scheduler import build_scheduler
+
     init_db()
     faltan = settings.missing_secrets()
     if faltan:
         # Se arranca igual -hay que poder abrir el formulario para ver qué
         # falta- pero no se hace como si nada.
         log.warning("faltan secretos en el .env: %s", ", ".join(faltan))
+
+    app.state.scheduler = None
+    app.state.scheduler_error = None
+    if settings.scheduler_enabled:
+        try:
+            cfg = get_config()
+            hevy, tg = _clientes(cfg)
+            app.state.scheduler = build_scheduler(
+                cfg,
+                hevy_client=hevy,
+                telegram_client=tg,
+                dry_run=settings.dry_run,
+            )
+            log.info(
+                "planificador arrancado con %d trabajo(s)",
+                len(app.state.scheduler.get_jobs()),
+            )
+        except Exception as exc:  # noqa: BLE001
+            app.state.scheduler_error = str(exc)
+            log.exception("el planificador NO ha arrancado")
+    else:
+        log.warning(
+            "planificador desactivado (SCHEDULER_ENABLED=false): no habrá "
+            "decisión automática ni reconciliación"
+        )
+
     yield
+
+    if app.state.scheduler is not None:
+        # `wait=False`: al parar el contenedor no se espera a que termine un
+        # trabajo largo, pero sí se le dice a APScheduler que no lance más.
+        app.state.scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="Entrenamiento adaptativo", version="0.1.0", lifespan=lifespan)
@@ -109,7 +156,7 @@ class CheckinIn(BaseModel):
 
 
 @app.get("/api/health")
-def health(cfg=Depends(get_config)) -> dict[str, Any]:
+def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
     """Sirve para el healthcheck de Docker y para ver qué falta.
 
     Devuelve `secrets_missing` en vez de esconderlo: un sistema arrancado a
@@ -121,6 +168,34 @@ def health(cfg=Depends(get_config)) -> dict[str, Any]:
         "timezone": cfg.timezone,
         "secrets_missing": settings.missing_secrets(),
         "dry_run": settings.dry_run,
+        # Sin esto, una aplicación sin planificador es indistinguible de una
+        # sana: sirve la PWA, contesta 200, y no decide nunca. Se dice cuántos
+        # trabajos hay y cuándo toca cada uno, porque "arrancado" tampoco basta:
+        # un planificador vivo con cero trabajos falla exactamente igual.
+        "scheduler": _estado_planificador(request),
+    }
+
+
+def _estado_planificador(request: Request) -> dict[str, Any]:
+    sched = getattr(request.app.state, "scheduler", None)
+    error = getattr(request.app.state, "scheduler_error", None)
+    if sched is None:
+        return {
+            "running": False,
+            "jobs": {},
+            "error": error or (
+                "desactivado por SCHEDULER_ENABLED"
+                if not settings.scheduler_enabled
+                else "no arrancó"
+            ),
+        }
+    return {
+        "running": sched.running,
+        "jobs": {
+            j.id: (j.next_run_time.isoformat() if j.next_run_time else None)
+            for j in sched.get_jobs()
+        },
+        "error": None,
     }
 
 

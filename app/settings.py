@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # envía Telegram. Equivale al flag --dry-run de la CLI.
     dry_run: bool = Field(default=False)
 
+    # Los tres trabajos del día (Garmin 06:30, decisión 09:00, reconciliar
+    # 22:30). Por defecto SÍ, porque un sistema que decide solo y no tiene
+    # planificador no decide nada: sirve la PWA, contesta "ok" en /api/health y
+    # no pasa nada nunca. Solo se apaga en los tests y en un eventual segundo
+    # proceso que sirva la web sin duplicar los trabajos -dos planificadores
+    # sobre la misma base son dos decisiones pisándose el mismo día-.
+    scheduler_enabled: bool = Field(default=True)
+
     # --- Ayudas -------------------------------------------------------------
     def missing_secrets(self) -> list[str]:
         """Devuelve los secretos que hacen falta y no están puestos.
