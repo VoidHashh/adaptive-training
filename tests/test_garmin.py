@@ -464,11 +464,38 @@ class ApiQueFalla:
     def get_body_battery(self, *_):
         raise RuntimeError("timeout")
 
+    def get_training_readiness(self, *_):
+        raise RuntimeError("504")
+
+
+class ApiSana:
+    """El mismo API cuando todo va bien. Es la base de casi todos los tests."""
+
+    def get_hrv_data(self, *_):
+        return {"hrvSummary": {"lastNightAvg": 60}}
+
+    def get_stats(self, *_):
+        return {"restingHeartRate": 52}
+
+    def get_sleep_data(self, *_):
+        return {"dailySleepDTO": {"sleepTimeSeconds": 25200,
+                                  "sleepScores": {"overall": {"value": 80}}}}
+
+    def get_body_battery(self, *_):
+        return [{"bodyBatteryValuesArray": [[0, 70]]}]
+
+    def get_training_readiness(self, *_):
+        return [{"score": 74, "level": "HIGH"}]
+
+
+def cliente(api) -> "garmin.GarminClient":
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c._api = api
+    return c
+
 
 def cliente_con_api_rota() -> "garmin.GarminClient":
-    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
-    c._api = ApiQueFalla()
-    return c
+    return cliente(ApiQueFalla())
 
 
 def test_un_fallo_de_lectura_no_tumba_el_dia_pero_queda_anotado():
@@ -480,7 +507,7 @@ def test_un_fallo_de_lectura_no_tumba_el_dia_pero_queda_anotado():
     # Lo que no, se queda en None como siempre...
     assert m.hrv is None and m.sleep_min is None and m.body_battery is None
     # ...pero ahora hay constancia de POR QUÉ está en None.
-    assert len(c.fetch_errors) == 3
+    assert len(c.fetch_errors) == 4
 
 
 def test_el_apunte_dice_qué_día_y_qué_métrica():
@@ -497,26 +524,167 @@ def test_los_apuntes_se_acumulan_entre_dias():
     c = cliente_con_api_rota()
     for i in range(1, 8):
         c.day_metrics(date(2026, 9, i))
-    assert len(c.fetch_errors) == 21
+    assert len(c.fetch_errors) == 28
 
 
 def test_un_dia_limpio_no_deja_apuntes():
-    class ApiSana(ApiQueFalla):
-        def get_hrv_data(self, *_):
-            return {"hrvSummary": {"lastNightAvg": 60}}
-
-        def get_sleep_data(self, *_):
-            return {"dailySleepDTO": {"sleepTimeSeconds": 25200,
-                                      "sleepScores": {"overall": {"value": 80}}}}
-
-        def get_body_battery(self, *_):
-            return [{"bodyBatteryValuesArray": [[0, 70]]}]
-
-    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
-    c._api = ApiSana()
+    c = cliente(ApiSana())
     m = c.day_metrics(date(2026, 9, 7))
     assert m.hrv == 60.0 and m.sleep_min == 420 and m.body_battery == 70
     assert c.fetch_errors == []
+
+
+# ---------------------------------------------------------------------------
+# Un 200 al que le falta el campo
+# ---------------------------------------------------------------------------
+#
+# El agujero era más fino que el anterior y bastante peor. Los cuatro `try`
+# solo se enteran de lo que lanza una excepción, y una respuesta correcta a la
+# que le falta el campo que buscamos NO lanza nada: `.get()` devuelve None y el
+# día sigue como si esa noche no se hubiera medido.
+#
+# Lo que hace grave a este caso es su forma. Un 500 falla un día; un campo
+# renombrado falla TODOS los días a partir de ese, y sin síntoma: la línea base
+# se queda sin puntos suficientes, `adaptive_thresholds` deja de existir y el
+# sistema decide con las constantes de reserva durante semanas.
+
+
+def sin_clave(base: type, metodo: str, valor):
+    """Un API sano al que se le cambia UNA respuesta."""
+    api = base()
+    setattr(api, metodo, lambda *_: valor)
+    return cliente(api)
+
+
+def test_un_hrv_sin_lastNightAvg_no_pasa_por_una_noche_sin_medir():
+    c = sin_clave(ApiSana, "get_hrv_data", {"hrvSummary": {"lastNightAverage": 60}})
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.hrv is None
+    assert len(c.fetch_errors) == 1
+    assert "lastNightAvg" in c.fetch_errors[0]
+
+
+def test_una_noche_sin_HRV_de_verdad_sigue_sin_dejar_apunte():
+    """La otra mitad, y sin ella el aviso no valdría nada.
+
+    Un reloj en la mesilla es un caso normalísimo y tiene que seguir siendo
+    `hrv=None` en silencio. Si cada noche sin medir dejara un apunte, la lista
+    se llenaría de ruido y dejaría de mirarse justo el día que dijera algo.
+    """
+    for vacio in ({}, None, {"hrvSummary": {}}, {"hrvSummary": None}):
+        c = sin_clave(ApiSana, "get_hrv_data", vacio)
+        assert c.day_metrics(date(2026, 9, 7)).hrv is None
+        assert c.fetch_errors == [], f"con {vacio!r} no hay nada que avisar"
+
+
+def test_una_clave_presente_con_valor_nulo_es_un_dato_y_no_un_fallo():
+    """Garmin manda `"restingHeartRate": null` los días que no lo mide.
+
+    Eso es una respuesta, no un silencio: la clave está donde tiene que estar.
+    """
+    c = sin_clave(ApiSana, "get_stats", {"restingHeartRate": None})
+    assert c.day_metrics(date(2026, 9, 7)).rhr is None
+    assert c.fetch_errors == []
+
+
+def test_unos_stats_sin_la_clave_de_pulsaciones_sí_avisan():
+    c = sin_clave(ApiSana, "get_stats", {"totalSteps": 8000})
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.rhr is None
+    assert len(c.fetch_errors) == 1
+    assert "restingHeartRate" in c.fetch_errors[0]
+
+
+def test_un_sueño_sin_sleepTimeSeconds_avisa():
+    c = sin_clave(ApiSana, "get_sleep_data", {"dailySleepDTO": {"sleepStartTimestampGMT": 1}})
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.sleep_min is None
+    assert any("sleepTimeSeconds" in e for e in c.fetch_errors)
+
+
+def test_una_noche_sin_puntuación_no_avisa_porque_pasa_de_verdad():
+    """`sleepScores` falta en las siestas y en las noches que Garmin no puntúa.
+
+    Es el único nivel que se lee con `.get` a propósito: avisar aquí sería
+    generar ruido diario por un caso normal.
+    """
+    c = sin_clave(
+        ApiSana, "get_sleep_data", {"dailySleepDTO": {"sleepTimeSeconds": 25200}}
+    )
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.sleep_min == 420 and m.sleep_score is None
+    assert c.fetch_errors == []
+
+
+def test_una_serie_de_body_battery_que_ya_no_son_pares_avisa():
+    """Antes, un cambio de formato aquí era un None más entre los normales."""
+    c = sin_clave(ApiSana, "get_body_battery", [{"bodyBatteryValuesArray": [[70]]}])
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.body_battery is None
+    assert any("pares" in e for e in c.fetch_errors)
+
+
+def test_un_día_sin_body_battery_no_avisa():
+    for vacio in ([], None, [{}]):
+        c = sin_clave(ApiSana, "get_body_battery", vacio)
+        assert c.day_metrics(date(2026, 9, 7)).body_battery is None
+        assert c.fetch_errors == [], f"con {vacio!r} no hay nada que avisar"
+
+
+def test_el_apunte_del_campo_que_falta_explica_que_no_falla_solo_hoy():
+    """El texto es la mitad del arreglo.
+
+    Un "no se pudo leer hrv" se lee como un día malo y se ignora. Lo que hay
+    que poder entender de un vistazo es que a partir de hoy no se va a leer
+    NINGUNO, que es lo que convierte un aviso en algo que se atiende.
+    """
+    c = sin_clave(ApiSana, "get_hrv_data", {"hrvSummary": {"otroNombre": 60}})
+    c.day_metrics(date(2026, 9, 7))
+    aviso = c.fetch_errors[0]
+    assert "todos los días" in aviso
+    assert "hrvSummary" in aviso, "sin la ruta no se sabe dónde mirar"
+
+
+# ---------------------------------------------------------------------------
+# readiness: la columna que llevaba desde el principio a NULL
+# ---------------------------------------------------------------------------
+#
+# `DayMetrics.readiness`, `daily_metrics.readiness` y `sig.values["readiness"]`
+# estaban declarados los tres y no los llenaba nadie. Se conecta en vez de
+# borrarse porque el histórico no se recupera: Garmin no deja bajar readiness
+# de hace meses, y cada día sin guardarlo es un día que ya no se podrá analizar.
+
+
+def test_el_readiness_se_lee_y_llega_a_DayMetrics():
+    m = cliente(ApiSana()).day_metrics(date(2026, 9, 7))
+    assert m.readiness == 74
+
+
+def test_un_día_sin_readiness_se_queda_en_None_sin_avisar():
+    c = sin_clave(ApiSana, "get_training_readiness", [])
+    assert c.day_metrics(date(2026, 9, 7)).readiness is None
+    assert c.fetch_errors == []
+
+
+def test_un_readiness_sin_score_avisa_como_los_demás():
+    c = sin_clave(ApiSana, "get_training_readiness", [{"level": "HIGH"}])
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.readiness is None
+    assert any("score" in e for e in c.fetch_errors)
+
+
+def test_que_falle_el_readiness_no_se_lleva_por_delante_el_resto_del_día():
+    """Es la métrica más nueva y la única que no decide nada todavía.
+
+    No puede ser la que tumbe la lectura de HRV, que sí decide.
+    """
+    api = ApiSana()
+    api.get_training_readiness = lambda *_: (_ for _ in ()).throw(RuntimeError("404"))
+    c = cliente(api)
+    m = c.day_metrics(date(2026, 9, 7))
+    assert m.hrv == 60.0 and m.rhr == 52.0
+    assert m.readiness is None
+    assert len(c.fetch_errors) == 1 and "readiness" in c.fetch_errors[0]
 
 
 def test_un_429_sigue_propagandose_y_no_se_queda_en_un_apunte():

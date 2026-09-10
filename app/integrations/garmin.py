@@ -266,18 +266,57 @@ class GarminClient:
         self.fetch_errors.append(f"{iso}: no se pudo leer {metrica} ({exc})")
         log.warning("Garmin: sin %s el %s: %s", metrica, iso, exc)
 
+    def _campo(self, iso: str, metrica: str, dentro: Any, clave: str, ruta: str) -> Any:
+        """Saca `clave` de `dentro`, separando 'no hay dato' de 'no lo entiendo'.
+
+        Los dos casos acababan en `None` y ninguno de los dos se contaba, pero
+        no son la misma cosa ni de lejos:
+
+        - **El contenedor no existe o viene vacío**: eso es un dato. Esa noche
+          no hubo medición porque el reloj se quedó en la mesilla. `None` es la
+          respuesta correcta y no hay nada que anotar.
+
+        - **El contenedor viene CON contenido pero sin la clave**: Garmin ha
+          respondido 200, la petición ha ido bien, y aun así el campo no está
+          donde estaba. Casi siempre significa que lo han renombrado.
+
+        El segundo es el que no se puede callar, y no por ser un error sino por
+        su forma: no falla un día suelto, falla TODOS a partir de ese. Y el
+        síntoma no es un aviso, es que la línea base se queda sin puntos
+        suficientes, los umbrales adaptativos dejan de existir y el sistema
+        pasa a decidir con las constantes de reserva. Semanas de mañanas
+        decididas con menos información de la que había, y ni una línea en el
+        informe que lo insinúe.
+
+        Una clave presente con valor nulo SÍ es 'no hubo dato': Garmin manda
+        `"restingHeartRate": null` los días que no lo mide, y eso es una
+        respuesta, no un silencio.
+        """
+        if not dentro:
+            return None
+        if clave not in dentro:
+            self.fetch_errors.append(
+                f"{iso}: Garmin respondió correctamente pero sin '{clave}' "
+                f"dentro de {ruta} ({metrica}). El campo ya no está donde "
+                f"estaba: si lo han renombrado esto no falla hoy, falla todos "
+                f"los días a partir de hoy, y en silencio"
+            )
+            log.warning("Garmin: falta '%s' en %s el %s", clave, ruta, iso)
+            return None
+        return dentro[clave]
+
     def day_metrics(self, day: date) -> DayMetrics:
         """Una fila de wellness. Los huecos se quedan en None a propósito."""
         if self._api is None:
             raise GarminError("cliente no conectado: llama a connect() primero")
         iso = day.isoformat()
 
-        hrv = rhr = sleep_min = sleep_score = battery = None
+        hrv = rhr = sleep_min = sleep_score = battery = readiness = None
 
         try:
             data = _retry(self._api.get_hrv_data, iso, what="hrv", sink=self.rate_limit_events, policy=self.retry) or {}
-            summary = (data or {}).get("hrvSummary") or {}
-            hrv = summary.get("lastNightAvg")
+            summary = self._campo(iso, "hrv", data, "hrvSummary", "la respuesta de HRV")
+            hrv = self._campo(iso, "hrv", summary, "lastNightAvg", "hrvSummary")
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -285,7 +324,7 @@ class GarminClient:
 
         try:
             stats = _retry(self._api.get_stats, iso, what="stats", sink=self.rate_limit_events, policy=self.retry) or {}
-            rhr = stats.get("restingHeartRate")
+            rhr = self._campo(iso, "rhr", stats, "restingHeartRate", "la respuesta de stats")
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -293,13 +332,16 @@ class GarminClient:
 
         try:
             sleep = _retry(self._api.get_sleep_data, iso, what="sleep", sink=self.rate_limit_events, policy=self.retry) or {}
-            dto = (sleep or {}).get("dailySleepDTO") or {}
-            secs = dto.get("sleepTimeSeconds")
+            dto = self._campo(iso, "sueño", sleep, "dailySleepDTO", "la respuesta de sueño")
+            secs = self._campo(iso, "sueño", dto, "sleepTimeSeconds", "dailySleepDTO")
             if secs:
                 sleep_min = int(secs) // 60
-            scores = dto.get("sleepScores") or {}
-            overall = scores.get("overall") or {}
-            sleep_score = overall.get("value")
+            # `sleepScores` sí puede faltar de verdad: una siesta o una noche
+            # que Garmin no consigue puntuar no traen bloque de puntuación. Por
+            # eso este nivel se lee con `.get` y no se anota; los de dentro sí.
+            scores = (dto or {}).get("sleepScores") or {}
+            overall = self._campo(iso, "sueño", scores, "overall", "sleepScores")
+            sleep_score = self._campo(iso, "sueño", overall, "value", "sleepScores.overall")
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -308,15 +350,53 @@ class GarminClient:
         try:
             bb = _retry(self._api.get_body_battery, iso, iso, what="body_battery", sink=self.rate_limit_events, policy=self.retry)
             if bb:
-                niveles = (bb[0] or {}).get("bodyBatteryValuesArray") or []
+                niveles = self._campo(
+                    iso, "body battery", bb[0], "bodyBatteryValuesArray",
+                    "la respuesta de body battery",
+                ) or []
                 # El valor útil es el de la mañana, no el máximo del día: el
                 # sistema decide al levantarse.
                 if niveles:
-                    battery = niveles[0][1] if len(niveles[0]) > 1 else None
+                    if len(niveles[0]) > 1:
+                        battery = niveles[0][1]
+                    else:
+                        # Cada nivel es un par [timestamp, valor]. Si deja de
+                        # serlo, `niveles[0][1]` no existe y antes eso era un
+                        # None más, indistinguible de un día sin reloj.
+                        self.fetch_errors.append(
+                            f"{iso}: la serie de body battery no viene en "
+                            f"pares [instante, valor] sino como "
+                            f"{niveles[0]!r}. Ha cambiado el formato"
+                        )
         except GarminError:
             raise
         except Exception as exc:  # noqa: BLE001
             self._fallo(iso, "body battery", exc)
+
+        try:
+            # Training Readiness: el propio resumen de Garmin, 0-100.
+            #
+            # `DayMetrics.readiness`, la columna `daily_metrics.readiness` y el
+            # `sig.values["readiness"]` del motor llevaban desde el principio
+            # declarados, y nadie los llenaba nunca: la columna era NULL en
+            # todas las filas y la señal valía None todos los días. Otro
+            # interruptor sin cable detrás.
+            #
+            # Se conecta en vez de borrarse porque el histórico no se puede
+            # recuperar luego: Garmin no deja bajar readiness de hace meses, y
+            # `docs/analisis.md` lo da por disponible. Cada día que pasa sin
+            # guardarlo es un día que ya no se va a poder analizar. Cuesta una
+            # llamada más por día de ventana.
+            tr = _retry(self._api.get_training_readiness, iso, what="readiness", sink=self.rate_limit_events, policy=self.retry)
+            if tr:
+                primero = tr[0] if isinstance(tr, list) else tr
+                readiness = self._campo(
+                    iso, "readiness", primero, "score", "la respuesta de readiness"
+                )
+        except GarminError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self._fallo(iso, "readiness", exc)
 
         return DayMetrics(
             date=day,
@@ -325,6 +405,7 @@ class GarminClient:
             sleep_min=sleep_min,
             sleep_score=int(sleep_score) if sleep_score is not None else None,
             body_battery=int(battery) if battery is not None else None,
+            readiness=int(readiness) if readiness is not None else None,
         )
 
     # --- actividades --------------------------------------------------------
