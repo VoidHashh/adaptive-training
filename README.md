@@ -153,7 +153,7 @@ app/api.py       FastAPI: la API del formulario y, en su `lifespan`, los
                  misma base son dos decisiones pisándose el mismo día.
 app/scheduler.py APScheduler con las horas del `config.yaml`.
 static/          La PWA. Sin dependencias ni compilación.
-tests/           451 tests.
+tests/           458 tests.
 ```
 
 ### La idea que se repite en todo el código
