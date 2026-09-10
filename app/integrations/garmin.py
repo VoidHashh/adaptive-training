@@ -306,15 +306,29 @@ class GarminClient:
         return dentro[clave]
 
     def day_metrics(self, day: date) -> DayMetrics:
-        """Una fila de wellness. Los huecos se quedan en None a propósito."""
+        """Una fila de wellness. Los huecos se quedan en None a propósito.
+
+        Además de los seis números, se lleva las cinco respuestas enteras en
+        `DayMetrics.raw`. Cinco llamadas para quedarse con seis escalares y
+        descartar el resto era una pérdida definitiva: aquí no hay caché de
+        wellness -las salidas sí la tienen- y Garmin no deja bajar sueño ni body
+        battery de hace meses. Cada mañana sin guardarlo era un día que ya no se
+        iba a poder analizar nunca.
+
+        Una respuesta que falló NO deja clave en `raw`. Es la misma distinción
+        de siempre: "no vino" y "vino vacío" no son lo mismo, y el que aparezca
+        la clave con `{}` dentro es la prueba de que la llamada sí contestó.
+        """
         if self._api is None:
             raise GarminError("cliente no conectado: llama a connect() primero")
         iso = day.isoformat()
 
         hrv = rhr = sleep_min = sleep_score = battery = readiness = None
+        crudo: dict[str, Any] = {}
 
         try:
             data = _retry(self._api.get_hrv_data, iso, what="hrv", sink=self.rate_limit_events, policy=self.retry) or {}
+            crudo["hrv"] = data
             summary = self._campo(iso, "hrv", data, "hrvSummary", "la respuesta de HRV")
             hrv = self._campo(iso, "hrv", summary, "lastNightAvg", "hrvSummary")
         except GarminError:
@@ -324,6 +338,7 @@ class GarminClient:
 
         try:
             stats = _retry(self._api.get_stats, iso, what="stats", sink=self.rate_limit_events, policy=self.retry) or {}
+            crudo["stats"] = stats
             rhr = self._campo(iso, "rhr", stats, "restingHeartRate", "la respuesta de stats")
         except GarminError:
             raise
@@ -332,6 +347,7 @@ class GarminClient:
 
         try:
             sleep = _retry(self._api.get_sleep_data, iso, what="sleep", sink=self.rate_limit_events, policy=self.retry) or {}
+            crudo["sleep"] = sleep
             dto = self._campo(iso, "sueño", sleep, "dailySleepDTO", "la respuesta de sueño")
             secs = self._campo(iso, "sueño", dto, "sleepTimeSeconds", "dailySleepDTO")
             if secs:
@@ -349,6 +365,7 @@ class GarminClient:
 
         try:
             bb = _retry(self._api.get_body_battery, iso, iso, what="body_battery", sink=self.rate_limit_events, policy=self.retry)
+            crudo["body_battery"] = bb
             if bb:
                 niveles = self._campo(
                     iso, "body battery", bb[0], "bodyBatteryValuesArray",
@@ -388,6 +405,7 @@ class GarminClient:
             # guardarlo es un día que ya no se va a poder analizar. Cuesta una
             # llamada más por día de ventana.
             tr = _retry(self._api.get_training_readiness, iso, what="readiness", sink=self.rate_limit_events, policy=self.retry)
+            crudo["readiness"] = tr
             if tr:
                 primero = tr[0] if isinstance(tr, list) else tr
                 readiness = self._campo(
@@ -406,6 +424,7 @@ class GarminClient:
             sleep_score=int(sleep_score) if sleep_score is not None else None,
             body_battery=int(battery) if battery is not None else None,
             readiness=int(readiness) if readiness is not None else None,
+            raw=crudo or None,
         )
 
     # --- actividades --------------------------------------------------------

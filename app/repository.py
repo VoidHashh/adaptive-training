@@ -488,6 +488,88 @@ def _json(valor: Any) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# El crudo de las APIs, guardado sin que la base engorde sola
+# ---------------------------------------------------------------------------
+
+MAX_ELEMENTOS_LISTA = 50
+CLAVE_PODAS = "__podado_al_guardar__"
+AVISO_TAMANO = 200_000
+
+
+def podar_crudo(node: Any) -> tuple[Any, list[str]]:
+    """Quita del crudo las series largas. Devuelve `(podado, qué se ha quitado)`.
+
+    POR QUÉ SE PODA
+    ---------------
+    Las respuestas de sueño y de body battery no son un resumen: traen la serie
+    por minutos de la noche entera. Guardarlas tal cual son cientos de KB por
+    día y decenas de MB en cuanto se rellenan los 190 días de histórico, en un
+    servidor de casa y en una tabla que se consulta desde el móvil.
+
+    POR QUÉ SE PODA POR FORMA Y NO POR NOMBRE
+    -----------------------------------------
+    La tentación es una lista de campos conocidos -`sleepMovement`,
+    `bodyBatteryValuesArray`- y quitar esos. Sería exactamente el fallo que este
+    proyecto lleva semanas cerrando: el día que Garmin renombre uno, la lista
+    deja de reconocerlo, no falla nada, y la tabla empieza a crecer (o a
+    guardar) otra cosa sin que nadie se entere. La forma no se renombra: una
+    lista de 480 elementos es una serie temporal se llame como se llame.
+
+    QUÉ SOBREVIVE
+    -------------
+    Todos los escalares, a cualquier profundidad. Ahí es donde vive lo que de
+    verdad haría falta dentro de cuatro semanas -fases de sueño en minutos,
+    respiración media, el mínimo de body battery-, y por eso el recorte no
+    contradice el motivo de guardar el crudo.
+
+    Y de lo que se corta queda constancia doble: una muestra de dos elementos
+    (que dice la FORMA de lo cortado, y con eso se sabe si merece la pena
+    volver a guardarlo entero) y una línea en `CLAVE_PODAS` con el nombre y
+    cuántos elementos tenía. Un recorte que no se anota es un dato que se
+    perdió sin dejar rastro, que es el mismo problema con otro nombre.
+    """
+    cortes: list[str] = []
+    return _podar(node, "", cortes), cortes
+
+
+def _podar(node: Any, ruta: str, cortes: list[str]) -> Any:
+    if isinstance(node, dict):
+        return {k: _podar(v, f"{ruta}.{k}" if ruta else str(k), cortes) for k, v in node.items()}
+    if isinstance(node, (list, tuple)):
+        if len(node) > MAX_ELEMENTOS_LISTA:
+            cortes.append(f"{ruta or '<raíz>'}: {len(node)} elementos")
+            return {
+                "__podado__": len(node),
+                "__muestra__": [_podar(x, ruta, []) for x in node[:2]],
+            }
+        return [_podar(x, ruta, cortes) for x in node]
+    return node
+
+
+def crudo_para_guardar(raw: Any, *, etiqueta: str = "") -> str | None:
+    """El crudo ya podado y en JSON, listo para una columna `raw_json`."""
+    if not raw:
+        return None
+    podado, cortes = podar_crudo(raw)
+    if cortes:
+        if isinstance(podado, dict):
+            podado[CLAVE_PODAS] = cortes
+        else:
+            podado = {"valor": podado, CLAVE_PODAS: cortes}
+    texto = json.dumps(podado, ensure_ascii=False, default=str, sort_keys=True)
+    if len(texto) > AVISO_TAMANO:
+        # No se recorta: recortar por tamaño sería tirar datos por un criterio
+        # que no significa nada. Pero que una fila pase de 200 KB DESPUÉS de
+        # podar quiere decir que la respuesta ha cambiado de forma, y eso hay
+        # que verlo antes de que sean 190 filas así.
+        log.warning(
+            "crudo de %s: %d KB después de podar. Revisa si la respuesta ha "
+            "cambiado de forma", etiqueta or "una API", len(texto) // 1024,
+        )
+    return texto
+
+
+# ---------------------------------------------------------------------------
 # Lo que se lee de Garmin, guardado
 # ---------------------------------------------------------------------------
 #
@@ -551,6 +633,13 @@ def upsert_daily_metrics(
             nuevo = getattr(m, campo, None)
             if nuevo is not None:
                 setattr(fila, campo, nuevo)
+
+        # El crudo sigue la MISMA regla que los seis números: una pasada que no
+        # lo trae no borra el que ya había. Si mañana la llamada de sueño falla,
+        # la respuesta buena de hoy se queda donde está.
+        crudo = crudo_para_guardar(getattr(m, "raw", None), etiqueta="wellness")
+        if crudo is not None:
+            fila.raw_json = crudo
 
         if loads is not None:
             l3, l7 = loads.get(dia, (None, None))

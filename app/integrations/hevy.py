@@ -91,6 +91,98 @@ def _fecha_workout(w: dict[str, Any]) -> date | None:
         return None
 
 
+@dataclass(frozen=True)
+class WorkoutTotals:
+    """Los tres números de un entrenamiento que van a `workout_log`."""
+
+    duration_s: int | None = None
+    total_sets: int | None = None
+    total_volume_kg: float | None = None
+
+
+def workout_totals(workout: dict[str, Any]) -> WorkoutTotals:
+    """Duración, series y volumen de un entrenamiento de Hevy.
+
+    Los tres campos llevaban desde el principio declarados en `WorkoutLog` y
+    nadie los llenaba: la fila guardaba el id, el título y si la sesión fue
+    limpia, y el resto quedaba a NULL. `docs/analisis.md` daba por hecho que la
+    vista de volumen salía de aquí.
+
+    SE CUENTA TODO, TAMBIÉN EL CALENTAMIENTO, y no es un descuido:
+
+    - `total_sets` significa el total. Si excluyera el calentamiento el nombre
+      estaría mintiendo, y eso ya ha costado bastante en este proyecto.
+    - Y sobre todo: desde que el motor marca las series de calentamiento en Hevy
+      (`set_types.write_warmup_type_to_hevy`), la PROPORCIÓN de series marcadas
+      cambia de un mes a otro por un cambio de código, no por un cambio de
+      entrenamiento. Un total que excluyera el calentamiento daría un escalón en
+      la gráfica el día de ese despliegue, y ese escalón no significaría nada.
+
+    El desglose efectivo se puede recalcular exactamente desde `raw_json`, que
+    ahora sí se guarda. El total no se puede recuperar si no se guarda.
+
+    Una serie sin peso (peso corporal, plancha) suma 0 al volumen y 1 a las
+    series: hacerla no es levantar kilos, pero es una serie.
+    """
+    ejercicios = workout.get("exercises") or []
+    series = 0
+    volumen = 0.0
+    for ex in ejercicios:
+        for s in ex.get("sets") or []:
+            series += 1
+            peso, reps = s.get("weight_kg"), s.get("reps")
+            if peso is not None and reps is not None:
+                try:
+                    volumen += float(peso) * float(reps)
+                except (TypeError, ValueError):
+                    log.warning(
+                        "Hevy: serie con peso/reps no numéricos (%r x %r) en el "
+                        "entrenamiento %s; no suma al volumen",
+                        peso, reps, workout.get("id"),
+                    )
+
+    return WorkoutTotals(
+        duration_s=_duracion(workout),
+        # Un entrenamiento sin ejercicios no son 0 series: es que no se pudo
+        # leer. Cero y "no se sabe" no son el mismo dato en una gráfica.
+        total_sets=series if ejercicios else None,
+        total_volume_kg=round(volumen, 1) if ejercicios else None,
+    )
+
+
+def _duracion(w: dict[str, Any]) -> int | None:
+    """Segundos entre el inicio y el fin. `None` si no se pueden leer los dos."""
+    directo = w.get("duration_seconds") or w.get("duration_s")
+    if directo is not None:
+        try:
+            return int(float(directo))
+        except (TypeError, ValueError):
+            pass
+
+    def instante(clave: str, alt: str) -> datetime | None:
+        stamp = w.get(clave) or w.get(alt)
+        if not stamp:
+            return None
+        try:
+            return datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    ini, fin = instante("start_time", "startTime"), instante("end_time", "endTime")
+    if ini is None or fin is None:
+        return None
+    segundos = (fin - ini).total_seconds()
+    # Una duración negativa o absurda es un dato malo, y guardarlo lo daría por
+    # bueno para siempre. Mejor NULL, que se lee como "esto no se sabe".
+    if segundos <= 0 or segundos > 12 * 3600:
+        log.warning(
+            "Hevy: duración imposible (%.0f s) en el entrenamiento %s; se deja "
+            "sin dato", segundos, w.get("id"),
+        )
+        return None
+    return int(segundos)
+
+
 def workout_compliance(
     workout: dict[str, Any],
     planned: Any,

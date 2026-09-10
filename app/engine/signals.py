@@ -54,7 +54,21 @@ UNKNOWN = "desconocida"
 
 @dataclass(frozen=True)
 class DayMetrics:
-    """Una fila de wellness de Garmin."""
+    """Una fila de wellness de Garmin.
+
+    `raw` son las respuestas completas de las que salen los seis números, una
+    por llamada. Existe porque de esas cinco respuestas este sistema extrae seis
+    escalares y tira TODO lo demás, y el wellness -al revés que las salidas, que
+    quedan enteras en `data/cache/activities.json`- no tiene caché ninguna. Lo
+    que no se guarde hoy no se puede pedir dentro de cuatro semanas: Garmin no
+    sirve histórico antiguo de sueño ni de body battery.
+
+    No entra en la comparación (`compare=False`): dos filas de wellness son la
+    misma fila si coinciden los números. Meterlo en el `__eq__` -y por tanto en
+    el `__hash__`, que la dataclass congelada genera de los mismos campos-
+    convertiría en no hasheable algo que hoy sí lo es, por un campo que ni
+    decide ni se compara.
+    """
 
     date: date
     hrv: float | None = None
@@ -63,6 +77,7 @@ class DayMetrics:
     sleep_score: int | None = None
     body_battery: int | None = None
     readiness: int | None = None
+    raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

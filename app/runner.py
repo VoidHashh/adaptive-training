@@ -345,7 +345,11 @@ def run_reconcile(
     seguro es `workout_log.hevy_workout_id`, que es único: un entrenamiento ya
     registrado no vuelve a contar.
     """
-    from app.integrations.hevy import _fecha_workout, workout_compliance
+    from app.integrations.hevy import (
+        _fecha_workout,
+        workout_compliance,
+        workout_totals,
+    )
 
     res = ReconcileResult(day=day)
 
@@ -404,6 +408,7 @@ def run_reconcile(
     repo.save_state(session, state, day=day)
 
     for w in nuevos:
+        totales = workout_totals(w)
         session.add(
             WorkoutLog(
                 hevy_workout_id=str(w.get("id")),
@@ -411,6 +416,17 @@ def run_reconcile(
                 routine_key=str(rkey),
                 title=w.get("title"),
                 all_sets_at_target=all(executed.values()) if executed else None,
+                duration_s=totales.duration_s,
+                total_sets=totales.total_sets,
+                total_volume_kg=totales.total_volume_kg,
+                # El entrenamiento entero, que hasta ahora se leía, se usaba
+                # para decidir si la sesión fue limpia y se tiraba. Es el único
+                # sitio donde queda el peso y las reps de CADA serie: ni la
+                # decisión ni el estado del motor guardan lo que de verdad se
+                # levantó, solo si alcanzó el objetivo. Sin esto no se puede
+                # responder nunca a "¿cuánto subió el hip thrust en tres meses?"
+                # y no se puede arreglar hacia atrás.
+                raw_json=repo.crudo_para_guardar(w, etiqueta="entrenamiento Hevy"),
             )
         )
     session.flush()

@@ -2,9 +2,18 @@
 
 Principios:
 
-- Todo lo que viene de una API externa se guarda además en crudo (`raw_json`).
-  Si dentro de cuatro semanas resulta que hace falta un campo que hoy no
-  estamos extrayendo, estará ahí en vez de haberse perdido.
+- Todo lo que viene de una API externa se guarda además en crudo, y en un solo
+  sitio: `raw_json` si la tabla lo tiene, y si no es porque el crudo ya está
+  entero en otra parte. Si dentro de cuatro semanas resulta que hace falta un
+  campo que hoy no estamos extrayendo, estará ahí en vez de haberse perdido.
+  De `daily_metrics.raw_json` se podan las series por minuto (ver
+  `repository.podar_crudo`): los escalares, que es donde vive lo que haría
+  falta, sobreviven enteros. `activities` no lleva columna porque su crudo vive
+  en `data/cache/activities.json`, que se fusiona y nunca se poda.
+
+  Esto era un principio escrito y no cumplido: las tres columnas `raw_json`
+  estaban declaradas y ninguna se escribía. Un principio en un docstring que el
+  código no aplica es peor que no tenerlo, porque se le da por hecho.
 - La tabla `decisions` es un registro append-only: nunca se actualiza una
   decisión, se inserta otra y se marca la anterior con `is_current=False`.
   Así queda el rastro de que a las 09:00 se decidió sin check-in y a las 09:40
@@ -116,7 +125,11 @@ class Activity(Base):
     # zones | fallback_te | none  -> de dónde salió la clasificación
     classification_source: Mapped[str | None] = mapped_column(String(16))
 
-    raw_json: Mapped[str | None] = mapped_column(Text)
+    # Esta tabla NO tiene `raw_json`, y es la única de las tres que no lo
+    # necesita: el crudo de cada salida está entero en
+    # `data/cache/activities.json`, que se fusiona en cada refresco y nunca se
+    # poda. La columna estuvo declarada aquí sin que nadie la escribiera nunca,
+    # que es peor que no tenerla: parecía una copia de seguridad y no lo era.
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (Index("ix_activities_date_cycling", "date", "is_cycling"),)

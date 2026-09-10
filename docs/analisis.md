@@ -52,7 +52,7 @@ El esquema soporta las cuatro vistas sin cambios de forma:
 |-------|---------------|--------|
 | 1, 2  | `checkins` (una fila por día, nulo = sin contestar) | Sí |
 | 1, 2  | `daily_metrics` (hrv, rhr, sleep_min, sleep_score, body_battery, readiness) | Sí, desde que `run_daily` la escribe |
-| 3     | `workout_log` (volumen, series) + `raw_json` para el detalle por ejercicio | Sí |
+| 3     | `workout_log` (volumen, series) + `raw_json` para el detalle por ejercicio | Sí, desde que `run_reconcile` los rellena |
 | 3     | `activities` (intensity_level, training_load, zonas) | Sí, desde que `run_daily` la escribe |
 | 4     | `decisions.fired_rules_json` y `skipped_rules_json`, append-only con `is_current` | Sí |
 
@@ -78,6 +78,39 @@ Ya se escriben las dos, en `run_daily`, con dos reglas:
 - **Si archivar falla, la mañana termina igual** y el fallo viaja en
   `problemas`. Perder un día de histórico es malo; quedarse sin plan por no
   poder guardar una fila, peor.
+
+### La fila de `workout_log` decía "Sí" y no era verdad
+
+Esta tabla llevaba el mismo problema que las otras dos, pero además **estaba
+certificada como resuelta en esta misma tabla**: la vista 3 declaraba salir de
+`workout_log (volumen, series) + raw_json`, y de esas cuatro columnas
+(`duration_s`, `total_sets`, `total_volume_kg`, `raw_json`) no se escribía
+NINGUNA. `run_reconcile` guardaba el id, el día, el título y `all_sets_at_target`,
+y tiraba el entrenamiento entero después de mirarlo.
+
+Es el mismo patrón que el validador que daba por buena una sección muerta: el
+documento que tenía que avisar del hueco era justo el que decía que no lo había.
+Ahora se rellenan las cuatro. Dos consecuencias que conviene saber:
+
+- `total_sets` y `total_volume_kg` incluyen el calentamiento. Excluirlo daría un
+  escalón en la gráfica el día que se desplegó el marcado de series de
+  calentamiento en Hevy, y ese escalón no significaría nada. El desglose
+  efectivo se recalcula desde `raw_json`.
+- `raw_json` es el ÚNICO sitio donde queda el peso y las reps realmente
+  levantados en cada serie. Ni la decisión ni el estado del motor los guardan:
+  solo guardan si se alcanzó el objetivo. Sin esta columna, "¿cuánto subió el
+  hip thrust en tres meses?" no tiene respuesta posible.
+
+### Wellness: se podan las series por minuto, no los datos
+
+`daily_metrics.raw_json` guarda las cinco respuestas de Garmin de las que salen
+los seis números. No caben tal cual: sueño y body battery traen la serie por
+minutos de la noche entera, cientos de KB al día. Se poda **por forma y no por
+nombre** (`repository.podar_crudo`): toda lista de más de 50 elementos se
+sustituye por una muestra de dos y un recuento. Una lista de campos conocidos
+dejaría de reconocer el día que Garmin renombre uno, y no fallaría: engordaría
+la base en silencio. Los escalares —fases de sueño, respiración, mínimos— pasan
+enteros, y es ahí donde vive lo que haría falta más adelante.
 
 ## Notas de diseño para cuando se implemente
 
