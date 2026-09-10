@@ -106,3 +106,59 @@ def test_entre_semana_no_se_recomienda_bici_y_se_dice_por_que(cfg):
     assert not rec.applies
     assert rec.skip_reason
     assert rec.text() == "", "si no aplica, no puede ocupar una línea del mensaje"
+
+
+# --- el presupuesto que no se sabe si está agotado --------------------------
+
+
+def _con_presupuesto(day: date, used: int, unknown: int, limit: int = 3) -> Signals:
+    from app.engine.signals import IntensityBudget
+
+    s = Signals(day=day)
+    s.budget = IntensityBudget(
+        limit=limit, used=used, detail=[], week_start=day, unknown=unknown
+    )
+    return s
+
+
+def test_una_salida_sin_clasificar_no_deja_pasar_la_intensa(cfg):
+    """El agujero, visto desde donde se nota.
+
+    Dos intensas confirmadas y una salida sin clasificar, con el límite en 3.
+    Antes: las desconocidas no se contaban, `exhausted` era False y el sábado
+    salía 'intensa'. Un presupuesto que se salta solo cuando faltan datos no es
+    un presupuesto: la semana en que Garmin no clasifica bien es justamente la
+    que acaba con una salida fuerte de más.
+    """
+    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=2, unknown=1), "green")
+    assert rec.level == "suave"
+
+
+def test_el_motivo_dice_que_no_se_sabe_y_no_que_esta_agotado(cfg):
+    """Frenar por falta de datos y frenar por un hecho no son lo mismo.
+
+    El motivo va escrito en el mensaje precisamente para que el sábado por la
+    mañana se pueda decidir a mano con la información buena.
+    """
+    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=2, unknown=1), "green")
+    motivo = rec.downgrades[-1][2]
+    assert "puede que" in motivo
+    assert "sin clasificar" in motivo
+    assert "agotado (" not in motivo, "no se puede afirmar lo que no se sabe"
+
+
+def test_con_el_presupuesto_agotado_de_verdad_el_motivo_lo_afirma(cfg):
+    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=3, unknown=0), "green")
+    assert rec.level == "suave"
+    assert "agotado" in rec.downgrades[-1][2]
+
+
+def test_sin_salidas_sin_clasificar_la_intensa_del_sabado_sigue_saliendo(cfg):
+    """Que el freno nuevo no se coma todos los sábados.
+
+    Un presupuesto que recorta siempre no es un presupuesto, y este test es lo
+    único que separa las dos cosas.
+    """
+    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=1, unknown=0), "green")
+    assert rec.level == "intensa"
+    assert not rec.downgrades

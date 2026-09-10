@@ -201,6 +201,26 @@ def recommend_bike(
                 str(budget_cfg.get("on_budget_exhausted", "suave")),
                 f"presupuesto semanal agotado ({budget.used}/{budget.limit} sesiones intensas)",
             )
+        elif budget is not None and budget.indeterminate:
+            # Recorta igual, pero con un motivo que dice la verdad: no se sabe.
+            #
+            # La alternativa era dejar pasar la intensa, que es lo que se hacía
+            # cuando las salidas sin clasificar simplemente no se contaban. Un
+            # presupuesto que se salta solo cuando faltan datos no es un
+            # presupuesto: la semana en que Garmin no clasifica bien es
+            # justamente la que acaba con una salida fuerte de más.
+            #
+            # Frenar por falta de datos cuesta una salida más suave de lo
+            # necesario. No frenar cuesta la cuarta intensa de la semana. Con
+            # una hernia L4-L5 los dos errores no valen lo mismo, y este es de
+            # los que se pueden corregir a mano el sábado por la mañana: el
+            # motivo va escrito en el mensaje.
+            downgrade(
+                str(budget_cfg.get("on_budget_exhausted", "suave")),
+                f"puede que el presupuesto semanal esté agotado: "
+                f"{budget.used}/{budget.limit} intensas confirmadas y "
+                f"{budget.unknown} salida(s) sin clasificar",
+            )
 
         max_weekend = int(budget_cfg.get("max_intense_rides_per_weekend", 1))
         done = _intense_rides_this_weekend(signals, cycling)

@@ -482,6 +482,9 @@ class IntensityBudget:
     used: int
     detail: list[str]
     week_start: date
+    # Salidas de la semana que no se pudieron clasificar. Podrían haber sido
+    # intensas, así que `used` es un MÍNIMO, no el número.
+    unknown: int = 0
 
     @property
     def remaining(self) -> int:
@@ -489,7 +492,33 @@ class IntensityBudget:
 
     @property
     def exhausted(self) -> bool:
+        """Agotado con certeza: solo cuenta lo confirmado."""
         return self.used >= self.limit
+
+    @property
+    def indeterminate(self) -> bool:
+        """No agotado por lo confirmado, pero las desconocidas podrían agotarlo.
+
+        Esta propiedad existe porque el conteo era ciego a su propio agujero.
+        `used` solo suma las salidas con `level == "intensa"`, y una salida que
+        Garmin no pudo clasificar -sin zonas de FC y sin Training Effect- sale
+        'desconocida' y NO gastaba presupuesto. No es que se contase mal: es
+        que se contaba como si se supiera, y no se sabía.
+
+        El resultado, con `weekly_limit: 3`: cuatro salidas fuertes en la
+        semana, una de ellas sin clasificar, y el sistema informa "2/3, te
+        queda una". El presupuesto semanal existe justamente para que la cuarta
+        no ocurra, y era la salida sin datos la que abría la puerta.
+
+        Se separa de `exhausted` en vez de mezclarse porque son cosas distintas
+        y quien decide tiene que poder distinguirlas: "agotado" es un hecho y
+        "puede que agotado" es una falta de datos. Mezclarlas volvería a
+        producir un número que no se puede discutir, que es de lo que se venía.
+
+        El mismo criterio que ya usa `weekend_summary`: si lo confirmado ya
+        basta para concluir, el dato que falta no cambia nada y esto es False.
+        """
+        return not self.exhausted and (self.used + self.unknown) >= self.limit
 
 
 def intensity_budget(
@@ -509,12 +538,22 @@ def intensity_budget(
 
     detail: list[str] = []
     used = 0
+    unknown = 0
 
     if counts.get("ride_intensa", True):
         for r in rides:
-            if start <= r.date <= day and r.level == "intensa":
+            if not (start <= r.date <= day):
+                continue
+            if r.level == "intensa":
                 used += 1
                 detail.append(f"{r.date.isoformat()}: salida INTENSA")
+            elif r.level == UNKNOWN:
+                # Ni se suma ni se ignora. Sumarla sería inventarse una intensa
+                # que a lo mejor fue un paseo; ignorarla -lo que se hacía- es
+                # afirmar que fue un paseo, que es igual de inventado y además
+                # cae del lado que quita el freno.
+                unknown += 1
+                detail.append(f"{r.date.isoformat()}: salida SIN CLASIFICAR")
 
     if counts.get("hiit_executed", True):
         for s in sessions:
@@ -528,7 +567,13 @@ def intensity_budget(
                 used += 1
                 detail.append(f"{s.date.isoformat()}: fuerza ({s.routine_key})")
 
-    return IntensityBudget(limit=limit, used=used, detail=sorted(detail), week_start=start)
+    return IntensityBudget(
+        limit=limit,
+        used=used,
+        detail=sorted(detail),
+        week_start=start,
+        unknown=unknown,
+    )
 
 
 def last_ride_level(
@@ -688,6 +733,17 @@ def build_signals(
     budget = intensity_budget(classified, sessions, day, cycling_cfg)
     sig.values["week_intense_count"] = budget.used
     sig.values["week_intense_remaining"] = budget.remaining
+    if budget.unknown:
+        # Va a `notes` y no solo al motivo del recorte de bici porque
+        # `week_intense_count` se enseña como un número redondo -"2/3 intensas
+        # esta semana"- y ese número es un MÍNIMO, no el dato. Enseñar un
+        # mínimo con cara de dato es la forma más limpia que hay de que alguien
+        # se fíe de él.
+        notes.append(
+            f"week_intense_count: {budget.used}/{budget.limit} es un MÍNIMO, no "
+            f"el número: hay {budget.unknown} salida(s) de esta semana sin "
+            f"clasificar y cualquiera pudo ser intensa"
+        )
 
     lookback = int(
         ((cycling_cfg.get("recommendation", {}) or {}).get("lookback_days", 1))

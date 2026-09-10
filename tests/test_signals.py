@@ -407,6 +407,80 @@ def test_el_presupuesto_cuenta_lo_ejecutado_no_lo_programado():
     assert b2.exhausted
 
 
+def test_una_salida_sin_clasificar_no_se_cuenta_como_paseo():
+    """El agujero: `used` solo sumaba `level == "intensa"`.
+
+    Una salida que Garmin no pudo clasificar -sin zonas de FC y sin Training
+    Effect- salía 'desconocida' y no gastaba presupuesto. No es que se contara
+    mal: se contaba como si se supiera, y no se sabía. Ignorarla es afirmar que
+    fue un paseo, que está tan inventado como decir que fue intensa y además
+    cae del lado que quita el freno.
+    """
+    rides = classify_all(
+        [
+            ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=1),  # intensa
+            Ride(date=LUNES, duration_s=3600, activity_id=2),  # desconocida
+        ],
+        CYCLING,
+    )
+    b = intensity_budget(rides, [], LUNES, CYCLING)
+    assert b.used == 1, "la desconocida no puede sumar como intensa"
+    assert b.unknown == 1, "pero tampoco puede desaparecer"
+    assert any("SIN CLASIFICAR" in d for d in b.detail)
+
+
+def test_el_presupuesto_que_puede_estar_agotado_se_distingue_del_que_lo_esta():
+    """Con `weekly_limit: 3`: dos confirmadas y una sin clasificar.
+
+    El sistema informaba "2/3, te queda una" y dejaba pasar la cuarta salida
+    fuerte de la semana. El presupuesto existe justamente para que esa cuarta
+    no ocurra, y era la salida sin datos la que abría la puerta.
+
+    `exhausted` sigue siendo un hecho y `indeterminate` una falta de datos: no
+    se mezclan, porque quien decide tiene que poder distinguirlas.
+    """
+    rides = classify_all(
+        [
+            ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=1),
+            ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=2),
+            Ride(date=LUNES, duration_s=3600, activity_id=3),
+        ],
+        CYCLING,
+    )
+    b = intensity_budget(rides, [], LUNES, CYCLING)
+    assert b.used == 2 and b.unknown == 1
+    assert not b.exhausted, "dos de tres confirmadas no agotan nada"
+    assert b.indeterminate, "pero la tercera podría haberlo agotado"
+
+
+def test_si_lo_confirmado_ya_agota_el_presupuesto_lo_desconocido_no_cambia_nada():
+    """Mismo criterio que `weekend_summary`.
+
+    Si el dato que falta no puede cambiar la conclusión, no hay indecisión que
+    declarar: el presupuesto está agotado y punto.
+    """
+    rides = classify_all(
+        [ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=i) for i in (1, 2, 3)]
+        + [Ride(date=LUNES, duration_s=3600, activity_id=4)],
+        CYCLING,
+    )
+    b = intensity_budget(rides, [], LUNES, CYCLING)
+    assert b.exhausted
+    assert not b.indeterminate
+
+
+def test_sin_salidas_sin_clasificar_no_hay_indecision():
+    """La guarda de que esto no frena por defecto.
+
+    Un presupuesto que se declarase indeterminado sin motivo recortaría todas
+    las semanas y dejaría de ser un presupuesto.
+    """
+    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
+    b = intensity_budget(rides, [], LUNES, CYCLING)
+    assert b.unknown == 0
+    assert not b.indeterminate
+
+
 def test_la_intensidad_de_la_semana_pasada_no_cuenta():
     anterior = LUNES - timedelta(days=1)  # domingo
     rides = classify_all([ride(anterior, zones=(0, 0, 0, 900, 900))], CYCLING)
