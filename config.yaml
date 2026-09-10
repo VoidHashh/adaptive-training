@@ -505,13 +505,24 @@ progression:
       # Deducir es peor que declarar; el YAML lo declara donde importa.
       deduced_span: 3
       rep_increment: 1
-      # A qué series se suben las reps: la más baja primero (progresión
-      # escalonada, la habitual) o todas a la vez.
+      # A qué series se suben las reps:
+      #   lowest_first -> UNA serie, la más baja. 12/10/10 -> 12/11/10, y en
+      #                   las sesiones siguientes 12/11/11, 12/12/11, 12/12/12.
+      #                   Se llena desde abajo y la rampa se conserva.
+      #   all_sets     -> todas a la vez, cada una topada en el máximo del rango.
+      # Ninguno de los dos baja nunca una serie. El código llegó a hacerlo: esta
+      # opción no se leía y escribía un valor absoluto en todas las series, así
+      # que 12/10/10 salía 11/11/11, aplanado Y con una repetición MENOS arriba.
       rep_apply_to: lowest_first
 
     volume:
       reps_increment: 2
       seconds_increment: 5
+      # Aquí `all_sets`, y la diferencia con la doble progresión es deliberada:
+      # esto son planchas y core, esquemas parejos (3×20) sin rampa que
+      # preservar. Subir de una en una triplicaría lo que tarda en avanzar el
+      # modo que existe precisamente para progresar sin tocar la carga.
+      rep_apply_to: all_sets
       # Techos por defecto. Pasado esto un ejercicio de core deja de ser core y
       # empieza a ser resistencia: si se llega aquí, toca cambiar el ejercicio
       # o añadir carga, y el sistema avisa en vez de seguir sumando.

@@ -661,3 +661,40 @@ def test_una_variante_que_no_se_usa_tambien_se_valida(cfg_copia):
     cambie `active_variant` no hay ninguna otra oportunidad de revisarla."""
     cfg_copia.raw["calendar"]["variants"]["summer"]["friday"] = {"strength": "dia_9"}
     assert "dia_9" in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# Cómo suben las reps
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("modo", ["double", "volume"])
+def test_un_rep_apply_to_mal_escrito_no_arranca(cfg_copia, modo):
+    """`rep_apply_to` es la opción que estuvo años sin que nadie la leyera.
+
+    Ahora sí se lee, y por eso mismo hay que validarla: un `lowest-first` con
+    guion en vez de guion bajo caería al defecto sin decir nada, y el defecto
+    NO es el mismo en los dos modos -`double` sube una serie, `volume` sube
+    todas-, así que la errata no se vería como un error sino como un esquema
+    que se aplana solo al cabo de unas semanas.
+    """
+    cfg_copia.raw["progression"]["modes"][modo]["rep_apply_to"] = "lowest-first"
+    err = errores(cfg_copia.raw)
+    assert f"progression.modes.{modo}.rep_apply_to" in err
+    assert "lowest_first" in err, "el error tiene que decir cuáles valen"
+
+
+def test_un_default_apply_to_mal_escrito_no_arranca(cfg_copia):
+    """Lo mismo para la carga: `top_sets` en plural es la errata natural, y
+    caería en el `else` que sube TODAS las series."""
+    cfg_copia.raw["progression"]["default_apply_to"] = "top_sets"
+    assert "default_apply_to" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("modo,esperado", [("double", "lowest_first"),
+                                           ("volume", "all_sets")])
+def test_el_config_real_declara_como_suben_las_reps(cfg, modo, esperado):
+    """Guarda del `config.yaml` de verdad: los dos modos declaran su
+    `rep_apply_to` a mano en vez de depender del defecto del código, porque son
+    defectos distintos y confundirlos no da ningún error."""
+    assert cfg.raw["progression"]["modes"][modo].get("rep_apply_to") == esperado

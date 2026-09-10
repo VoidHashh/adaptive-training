@@ -129,6 +129,49 @@ def _split(ex: dict[str, Any], set_cfg: dict[str, Any]):
     return warm, work
 
 
+def _sumar(
+    work: list[dict[str, Any]],
+    campo: str,
+    delta: int,
+    modo: str,
+    tope: int | None,
+) -> None:
+    """Suma `delta` a las series efectivas, sin bajar ninguna nunca.
+
+    Es el equivalente para reps y segundos de lo que la carga ya hacía con
+    `weight_delta_kg` + `apply_to`. Antes esto era un valor absoluto escrito en
+    todas las series, y un 12/10/10 al que le tocaba subir salía 11/11/11: la
+    rampa aplanada y el top set con una repetición MENOS que antes de subir.
+
+    `lowest_first` sube UNA serie, la más baja de todas, y si hay empate la
+    primera de ellas: 12/10/10 -> 12/11/10 -> 12/11/11 -> 12/12/11 -> 12/12/12.
+    Se llena desde abajo hasta emparejar, que es la progresión escalonada de
+    toda la vida y la que el YAML pedía.
+
+    `all_sets` sube todas a la vez, cada una topada por su cuenta.
+    """
+    con_dato = [s for s in work if s.get(campo) is not None]
+    if not con_dato or delta <= 0:
+        return
+
+    def techo(valor: int) -> int:
+        return min(valor + delta, tope) if tope is not None else valor + delta
+
+    if modo == "all_sets":
+        for s in con_dato:
+            # `max` y no `techo` a secas: una serie que ya esté POR ENCIMA del
+            # tope se queda como está en vez de recortarse. El tope existe para
+            # frenar la subida, no para nivelar hacia abajo lo que ya se hace.
+            s[campo] = max(int(s[campo]), techo(int(s[campo])))
+        return
+
+    objetivo = min(int(s[campo]) for s in con_dato)
+    for s in con_dato:
+        if int(s[campo]) == objetivo:
+            s[campo] = max(objetivo, techo(objetivo))
+            return
+
+
 def apply_progression(
     exercises: list[dict[str, Any]],
     plan: ProgressionPlan,
@@ -153,13 +196,20 @@ def apply_progression(
             for _ in range(e.add_sets):
                 work.append(copy.deepcopy(work[-1]))
         if e.new_reps is not None:
+            # Absoluto, y solo se usa donde serlo es correcto: la vuelta al
+            # mínimo del rango cuando la doble progresión sube carga. Es un
+            # recorte declarado, no una subida.
             for s in work:
                 if s.get("reps") is not None:
                     s["reps"] = e.new_reps
+        elif e.rep_delta:
+            _sumar(work, "reps", e.rep_delta, e.rep_apply_to, e.rep_cap)
         if e.new_duration_s is not None:
             for s in work:
                 if s.get("duration_s") is not None:
                     s["duration_s"] = e.new_duration_s
+        elif e.duration_delta_s:
+            _sumar(work, "duration_s", e.duration_delta_s, "all_sets", e.duration_cap)
         if e.weight_delta_kg is not None:
             if e.apply_to == "all_sets":
                 for s in work:

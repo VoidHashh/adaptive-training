@@ -82,8 +82,30 @@ class ExerciseProgression:
     # 3/4/4 -> 4/5/5 y la rampa se conserva, que es lo que se quiere.
     weight_delta_kg: float | None = None
     apply_to: str = "top_set"
+    # Las reps viajan como INCREMENTO por el mismo motivo que la carga, y por
+    # uno más. `new_reps` era un valor ABSOLUTO que se escribía en todas las
+    # series efectivas, así que un 12/10/10 con la subida calculada sobre la
+    # serie más baja (10 -> 11) salía 11/11/11: se aplanaba la rampa Y se
+    # QUITABA una repetición a la serie superior. Subir bajando el top set es
+    # lo contrario de progresar, y encima no daba ningún error.
+    #
+    # `rep_apply_to` es la opción que ya estaba en el YAML (`lowest_first`) y
+    # que el código no leía:
+    #   lowest_first -> sube UNA serie, la más baja. 12/10/10 -> 12/11/10.
+    #   all_sets     -> sube todas, cada una topada en `rep_cap`.
+    # Ninguno de los dos baja nunca una serie.
+    rep_delta: int | None = None
+    rep_apply_to: str = "lowest_first"
+    # Tope por serie. En doble progresión es el máximo del rango: sin él,
+    # `all_sets` sobre 12/10/10 daría 13/11/11 y se saldría del rango.
+    rep_cap: int | None = None
+    # Reps ABSOLUTAS, y solo donde serlo es correcto: la vuelta al mínimo del
+    # rango cuando la doble progresión cierra el ciclo y sube carga. Ahí sí se
+    # reescriben todas las series a propósito, porque es un recorte declarado.
     new_reps: int | None = None
     new_duration_s: int | None = None
+    duration_delta_s: int | None = None
+    duration_cap: int | None = None
     add_sets: int = 0
     # Sesiones que este ejercicio lleva sin progresar. Decide el turno cuando
     # hay más candidatos que cupo.
@@ -105,8 +127,13 @@ class ExerciseProgression:
             "blocked_by": self.blocked_by,
             "weight_delta_kg": self.weight_delta_kg,
             "apply_to": self.apply_to,
+            "rep_delta": self.rep_delta,
+            "rep_apply_to": self.rep_apply_to,
+            "rep_cap": self.rep_cap,
             "new_reps": self.new_reps,
             "new_duration_s": self.new_duration_s,
+            "duration_delta_s": self.duration_delta_s,
+            "duration_cap": self.duration_cap,
             "add_sets": self.add_sets,
             "waiting": self.waiting,
             "at_ceiling": self.at_ceiling,
@@ -472,12 +499,25 @@ def _plan_double(ex, exercise, effective, modes, prog_cfg,
         if not volume_allowed:
             ex.blocked_by = f"subida de reps bloqueada: {why}"
             return ex
-        inc = int((modes.get("double") or {}).get("rep_increment", 1))
-        target = min(min(reps) + inc, hi)
+        m = modes.get("double") or {}
+        inc = int(m.get("rep_increment", 1))
+        modo = str(m.get("rep_apply_to", "lowest_first"))
+        baja = min(reps)
+        # El incremento se topa contra el máximo del rango DESDE LA SERIE MÁS
+        # BAJA, que es la que se va a subir. Toparlo contra la más alta dejaría
+        # `delta` en 0 en cuanto una serie llegara al tope (12/10/10 con hi=12)
+        # y la subida sería una que no sube: exactamente el tipo de regla que en
+        # este proyecto es error duro.
+        delta = min(inc, hi - baja)
         ex.changed = True
         ex.kind = KIND_VOLUME
-        ex.new_reps = target
-        ex.what = f"{min(reps)}→{target} reps"
+        ex.rep_delta = delta
+        ex.rep_apply_to = modo
+        ex.rep_cap = hi
+        if modo == "all_sets":
+            ex.what = f"+{delta} rep en todas las series (tope {hi})"
+        else:
+            ex.what = f"{baja}→{baja + delta} reps en la serie más baja"
         return ex
 
     # Todas al tope: toca carga y vuelta al mínimo. Esto NO cuenta como subida
@@ -527,11 +567,12 @@ def _plan_volume(ex, exercise, effective, modes, volume_allowed, why) -> Exercis
             ex.at_ceiling = True
             ex.blocked_by = f"ya está en el techo de {cap} s"
             return ex
-        target = min(cur + int(m.get("seconds_increment", 5)), cap)
+        delta = min(int(m.get("seconds_increment", 5)), cap - cur)
         ex.changed = True
         ex.kind = KIND_VOLUME
-        ex.new_duration_s = target
-        ex.what = f"{cur}→{target} s"
+        ex.duration_delta_s = delta
+        ex.duration_cap = cap
+        ex.what = f"{cur}→{cur + delta} s"
         return ex
 
     reps = [int(s["reps"]) for s in effective if s.get("reps")]
@@ -542,11 +583,18 @@ def _plan_volume(ex, exercise, effective, modes, volume_allowed, why) -> Exercis
             ex.at_ceiling = True
             ex.blocked_by = f"ya está en el techo de {cap} reps"
             return ex
-        target = min(cur + int(m.get("reps_increment", 2)), cap)
+        delta = min(int(m.get("reps_increment", 2)), cap - cur)
         ex.changed = True
         ex.kind = KIND_VOLUME
-        ex.new_reps = target
-        ex.what = f"{cur}→{target} reps"
+        ex.rep_delta = delta
+        # `all_sets` y no `lowest_first`, y la diferencia con la doble
+        # progresión es deliberada. Aquí no hay rampa que preservar -son
+        # planchas y core, 3×20 parejo- y subir de una en una triplicaría lo que
+        # tarda en progresar un modo que existe justamente para progresar sin
+        # tocar la carga. Se declara en el YAML para que se pueda cambiar.
+        ex.rep_apply_to = str(m.get("rep_apply_to", "all_sets"))
+        ex.rep_cap = cap
+        ex.what = f"{cur}→{cur + delta} reps"
         return ex
 
     ex.blocked_by = "ni reps ni segundos: no hay nada que subir"

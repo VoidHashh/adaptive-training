@@ -48,6 +48,8 @@ WEEKDAYS = [
 VALID_SET_TYPES = {"normal", "warmup", "failure", "dropset"}
 VALID_SET_SOURCES = {"api", "heuristic", "api_then_heuristic"}
 VALID_PROGRESSION_TYPES = {"load", "double", "volume", "sets", "none"}
+# Cómo se reparte una subida de repeticiones entre las series efectivas.
+VALID_REP_APPLY_TO = {"lowest_first", "all_sets"}
 
 
 class ConfigError(ValueError):
@@ -670,6 +672,29 @@ def _validate(data: dict[str, Any]) -> list[str]:
     )
 
     modes = prog.get("modes") or {}
+
+    # `rep_apply_to` decide si una subida de reps respeta la rampa o la aplana.
+    # Un valor mal escrito caería al defecto sin decir nada, y el defecto de
+    # `volume` (`all_sets`) es justo el contrario del de `double`
+    # (`lowest_first`): la errata no se notaría como un fallo, se notaría como
+    # que el esquema se aplana solo al cabo de unas semanas.
+    for modo, defecto in (("double", "lowest_first"), ("volume", "all_sets")):
+        valor = str((modes.get(modo) or {}).get("rep_apply_to", defecto))
+        require(
+            valor in VALID_REP_APPLY_TO,
+            f"progression.modes.{modo}.rep_apply_to '{valor}' no es válido "
+            f"(esperado: {sorted(VALID_REP_APPLY_TO)})",
+        )
+
+    # `apply_to` es lo mismo para la carga, y la errata natural es `top_sets`
+    # en plural, que caería en la rama de subir TODAS las series.
+    apply_to = str(prog.get("default_apply_to", "top_set"))
+    require(
+        apply_to in {"top_set", "all_sets"},
+        f"progression.default_apply_to '{apply_to}' no es válido "
+        "(esperado: 'top_set' o 'all_sets')",
+    )
+
     sets_mode = modes.get("sets") or {}
     then_default = str(sets_mode.get("then", "double"))
     require(

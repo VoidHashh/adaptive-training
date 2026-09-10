@@ -524,6 +524,16 @@ def test_la_carga_progresada_se_acumula_en_vez_de_reiniciarse(db, cfg):
     Se simulan varios meses entrenando todo lo que se manda, y se mira la carga
     VIGENTE que queda guardada, no la que se escribe hoy: una semana de descarga
     escribe menos a propósito y eso no es un retroceso.
+
+    El horizonte era de 140 días y ahora es de 200. No es que la garantía haya
+    cambiado -la carga sigue acumulando y sigue sin retroceder-, es que la
+    CADENCIA se ha movido: con `rep_apply_to: lowest_first` la doble progresión
+    sube una repetición por sesión en una sola serie, así que llegar al tope de
+    reps -que es lo que dispara el escalón de peso- cuesta 6 sesiones en vez de
+    2. Medido en este mismo `config.yaml`: los escalones caen en los días 7,
+    161 y 245 en vez de 7, 63 y 126. Si este test vuelve a quedarse corto, mirar
+    primero si alguien ha tocado `rep_apply_to` antes de sospechar de la
+    persistencia.
     """
     raw = cfg.raw
     rutina = "dia_1"
@@ -539,7 +549,7 @@ def test_la_carga_progresada_se_acumula_en_vez_de_reiniciarse(db, cfg):
     )
 
     vistos: list[float] = [partida]
-    for n in range(140):
+    for n in range(200):
         dia = LUNES + timedelta(days=n)
         estado = load_state(db, program_start=raw.get("program", {}).get("start_date"))
         decision = decide(cfg, dia, sig_completa(dia), estado)
