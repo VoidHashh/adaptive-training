@@ -131,6 +131,20 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             "recovery": "recuperación",
         }.get(s.kind, s.kind)
         cab = f"💪 <b>{s.title}</b> ({etiqueta})"
+        # `routines.*.focus` llevaba desde el principio en el YAML sin que lo
+        # leyera nadie: "Tren inferior + core", "Cadena posterior + espalda",
+        # "Caderas + hombro + brazo + core". Es la única frase del fichero que
+        # dice de qué va la sesión, y el mensaje de la mañana la ignoraba
+        # mientras enumeraba ocho ejercicios sin encabezarlos.
+        #
+        # Va pegado al título y no en una línea aparte: el mensaje ya tiene
+        # bloques de sobra, y esto es un subtítulo, no un apartado. Se busca en
+        # `routines` a propósito: en un día de recuperación `routine_key`
+        # apunta a `recovery_blocks`, no encuentra nada, y el encabezado se
+        # queda como estaba.
+        foco = ((raw.get("routines") or {}).get(s.routine_key or "") or {}).get("focus")
+        if foco:
+            cab += f" — {foco}"
         if s.deferred_from:
             cab += f"\n<i>Recuperas la sesión del {fmt_short(s.deferred_from)}</i>"
         L.append(cab)

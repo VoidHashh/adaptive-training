@@ -374,3 +374,64 @@ def test_la_sesion_recuperada_no_se_dice_dos_veces(cfg):
             assert "sesión recuperada del" not in txt
             return
     pytest.fail("ningún día de la semana recuperó la sesión aplazada")
+
+
+# ---------------------------------------------------------------------------
+# `routines.*.focus`: la única frase que dice de qué va el día
+# ---------------------------------------------------------------------------
+#
+# Llevaba desde el principio en el YAML -"Tren inferior + core", "Cadena
+# posterior + espalda", "Caderas + hombro + brazo + core"- sin que lo leyera
+# nadie. El mensaje enumeraba ocho ejercicios sin encabezarlos.
+
+
+def test_el_foco_del_dia_llega_al_encabezado(cfg):
+    txt = render_plain(decision_completa(cfg), cfg)
+    foco = cfg.raw["routines"]["dia_1"]["focus"]
+    assert foco in txt, f"el foco del día no aparece:\n{txt}"
+
+
+def test_el_foco_va_pegado_al_titulo_y_no_en_una_linea_suelta(cfg):
+    """El mensaje ya tiene bloques de sobra: esto es un subtítulo."""
+    txt = render_plain(decision_completa(cfg), cfg)
+    foco = cfg.raw["routines"]["dia_1"]["focus"]
+    cabecera = next(l for l in txt.splitlines() if l.startswith("💪"))
+    assert cabecera.endswith(f"— {foco}")
+    assert "sesión completa" in cabecera, "el tipo de sesión no se pierde"
+
+
+def test_el_foco_sale_del_yaml_y_no_de_una_tabla_a_mano(cfg):
+    c = copy.deepcopy(cfg)
+    c.raw["routines"]["dia_1"]["focus"] = "Tirón horizontal y nada más"
+    assert "Tirón horizontal y nada más" in render_plain(decision_completa(c), c)
+
+
+def test_una_rutina_sin_foco_no_revienta_el_mensaje(cfg):
+    """El config lo exige donde se lee, pero el renderizador no puede caerse:
+    llega aquí con el `raw` en la mano desde sitios que no validan."""
+    c = copy.deepcopy(cfg)
+    del c.raw["routines"]["dia_1"]["focus"]
+    cabecera = next(
+        l for l in render_plain(decision_completa(c), c).splitlines()
+        if l.startswith("💪")
+    )
+    assert cabecera.endswith("(sesión completa)")
+
+
+def test_el_foco_sobrevive_a_include_reasoning_false(cfg_sin_motivo):
+    """No es razonamiento: es de qué va la sesión."""
+    txt = render_plain(decision_completa(cfg_sin_motivo), cfg_sin_motivo)
+    assert cfg_sin_motivo.raw["routines"]["dia_1"]["focus"] in txt
+
+
+def test_un_dia_de_descanso_no_lleva_foco(cfg):
+    """Martes es descanso: sin `routine_key` no hay nada que buscar."""
+    from datetime import timedelta
+
+    from app.engine.decision import EngineState, decide
+
+    martes = LUNES + timedelta(days=1)
+    txt = render_plain(decide(cfg, martes, sig_completa(martes), EngineState()), cfg)
+    assert "💪" not in txt
+    for r in cfg.raw["routines"].values():
+        assert r.get("focus", "\0") not in txt

@@ -184,11 +184,15 @@ def test_sin_detalle_el_motivo_sigue_siendo_el_de_siempre(cfg):
 def test_una_rutina_sin_ejercicios_no_abre_la_puerta_por_vacuidad(cfg):
     """`all([])` es True, y ahí está la trampa.
 
-    Una rutina sin ejercicios no valida hoy como error, así que puede llegar
-    aquí. Si el cumplimiento global se resolviera con `all()` a secas, "no hay
-    nada que comprobar" se convertiría en "todo comprobado y correcto". No
-    tiene consecuencia inmediata -sin ejercicios no hay nada que subir-, pero
-    es la misma confusión entre vacío y conforme que este arreglo persigue.
+    Si el cumplimiento global se resolviera con `all()` a secas, "no hay nada
+    que comprobar" se convertiría en "todo comprobado y correcto". Es la misma
+    confusión entre vacío y conforme que este arreglo persigue.
+
+    El config ya NO deja arrancar con una rutina vacía -`_validate` la rechaza
+    desde que se cerró la lista blanca de claves de rutina-, así que este caso
+    no llega por el YAML. Se mantiene igualmente: aquí se entra con el `raw`
+    en la mano desde el planificador y desde los tests, y la defensa que
+    importa es la de la función, no la de la puerta de entrada.
     """
     raw = copy.deepcopy(cfg.raw)
     raw["routines"]["dia_1"]["exercises"] = []

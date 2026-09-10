@@ -753,3 +753,251 @@ def test_el_config_real_declara_las_dos_ventanas(cfg):
     assert isinstance(fetch.get("backfill_days"), int)
     ventanas = [s["window_days"] for s in cfg.raw["adaptive_thresholds"].values()]
     assert fetch["backfill_days"] >= max(ventanas)
+
+
+# ---------------------------------------------------------------------------
+# `cycling.hr_zones`: un interruptor que ofrecía una alternativa inexistente
+# ---------------------------------------------------------------------------
+#
+# El bloque era:
+#
+#     hr_zones:
+#       source: garmin          # garmin | computed
+#       max_hr: null            # solo necesario si source: computed
+#
+# `computed` no está implementado en ninguna parte. Las zonas salen de
+# `timeInZones` de cada actividad, tal cual las da Garmin, y `classify_ride`
+# lee `ride.zones` sin mirar el config. Lo peligroso no es la clave sobrante:
+# es que anuncia una alternativa. Quien escribiera `source: computed` y
+# rellenara su `max_hr` creería haber cambiado el criterio con el que se
+# decide si una salida fue intensa -y por tanto si el lunes se frena- y no
+# habría cambiado nada.
+
+
+def test_hr_zones_no_se_ignora_se_rechaza(cfg_copia):
+    cfg_copia.raw["cycling"]["hr_zones"] = {"source": "garmin", "max_hr": None}
+    err = errores(cfg_copia.raw)
+    assert "hr_zones" in err
+
+
+def test_el_rechazo_de_hr_zones_explica_por_que(cfg_copia):
+    """Un 'clave desconocida' a secas invita a volver a escribirla."""
+    cfg_copia.raw["cycling"]["hr_zones"] = {"source": "computed", "max_hr": 185}
+    err = errores(cfg_copia.raw)
+    assert "computed" in err, "el error tiene que nombrar la alternativa que no existe"
+    assert "Bórralo" in err
+
+
+def test_el_config_real_ya_no_lo_lleva(cfg):
+    assert "hr_zones" not in cfg.raw["cycling"]
+
+
+def test_una_errata_en_cycling_no_se_ignora(cfg_copia):
+    """La sección entera queda cerrada, no solo `hr_zones`."""
+    cfg_copia.raw["cycling"]["clasification"] = []
+    err = errores(cfg_copia.raw)
+    assert "cycling" in err and "clasification" in err
+
+
+@pytest.mark.parametrize(
+    "clave",
+    ["activity_types", "classification", "classification_fallback",
+     "fetch", "load", "recommendation", "weekend"],
+)
+def test_las_claves_vivas_de_cycling_siguen_pasando(cfg, clave):
+    """Guarda de la lista blanca: si alguien la recorta, esto lo dice.
+
+    Las siete se leen de verdad -`signals.py`, `bike_advisor.py`,
+    `activity_cache.py`-, así que ninguna puede caer en el rechazo.
+    """
+    assert clave in cfg.raw["cycling"]
+    assert "clave desconocida" not in errores(cfg.raw)
+
+
+# ---------------------------------------------------------------------------
+# Rutinas: la lista blanca que no existía y la rutina vacía que pasaba
+# ---------------------------------------------------------------------------
+#
+# `check_keys` vivía a la altura de `progression.brakes`, o sea DESPUÉS del
+# bucle de rutinas, así que las secciones de más arriba no podían llamarla
+# aunque quisieran. Ahí se quedaron dos claves muertas: `standalone: false` en
+# los dos bloques HIIT y `focus` en los tres días.
+
+
+def test_standalone_ya_no_esta_en_el_config_real(cfg):
+    for rkey, rutina in cfg.raw["routines"].items():
+        assert "standalone" not in rutina, f"{rkey} sigue llevando standalone"
+
+
+def test_standalone_no_puede_volver(cfg_copia):
+    """No era una opción: repetía como interruptor lo que deciden `calendar` y
+    `hiit.blocks`. Un `standalone: true` no habría programado nada."""
+    cfg_copia.raw["routines"]["hiit_dia_1"]["standalone"] = True
+    err = errores(cfg_copia.raw)
+    assert "standalone" in err and "hiit_dia_1" in err
+
+
+def test_una_errata_en_una_clave_de_rutina_no_se_ignora(cfg_copia):
+    cfg_copia.raw["routines"]["dia_1"]["hevy_routine_di"] = "xxx"
+    err = errores(cfg_copia.raw)
+    assert "hevy_routine_di" in err
+
+
+@pytest.mark.parametrize("vacio", [[], None, {}])
+def test_una_rutina_sin_ejercicios_no_arranca(cfg_copia, vacio):
+    """La mañana saldría sin sesión, que es indistinguible de un día de
+    descanso: el fallo silencioso más caro de este sistema."""
+    cfg_copia.raw["routines"]["dia_1"]["exercises"] = vacio
+    err = errores(cfg_copia.raw)
+    assert "dia_1" in err and "exercises" in err
+
+
+def test_todas_las_rutinas_reales_traen_ejercicios(cfg):
+    for rkey, rutina in cfg.raw["routines"].items():
+        assert rutina.get("exercises"), f"{rkey} está vacía"
+
+
+# `focus` ya no es decorativo: es el subtítulo del encabezado del mensaje.
+
+
+def test_una_rutina_de_fuerza_sin_foco_no_arranca(cfg_copia):
+    del cfg_copia.raw["routines"]["dia_1"]["focus"]
+    err = errores(cfg_copia.raw)
+    assert "dia_1" in err and "focus" in err
+
+
+@pytest.mark.parametrize("vacio", ["", "   ", None])
+def test_un_foco_en_blanco_tampoco_vale(cfg_copia, vacio):
+    """Un `focus: ""` acortaría el encabezado igual que no ponerlo, pero
+    dejando el fichero con pinta de tenerlo."""
+    cfg_copia.raw["routines"]["dia_1"]["focus"] = vacio
+    assert "focus" in errores(cfg_copia.raw)
+
+
+def test_un_foco_en_un_bloque_hiit_se_rechaza(cfg_copia):
+    """Los bloques HIIT se añaden al final de otra sesión y usan su
+    encabezado, así que ahí `focus` volvería a ser una clave muerta."""
+    cfg_copia.raw["routines"]["hiit_dia_1"]["focus"] = "Metabólico"
+    err = errores(cfg_copia.raw)
+    assert "hiit_dia_1" in err and "focus" in err
+
+
+def test_se_exige_en_las_rutinas_de_TODAS_las_variantes(cfg_copia):
+    """`dia_3` solo lo programa la variante de verano, que no es la activa.
+
+    Validar solo la variante en curso dejaría el fichero pasando en invierno
+    y fallando el día del cambio de temporada, que es cuando peor viene
+    descubrir un error de configuración.
+    """
+    assert cfg_copia.raw["calendar"]["active_variant"] != "summer"
+    del cfg_copia.raw["routines"]["dia_3"]["focus"]
+    assert "dia_3" in errores(cfg_copia.raw)
+
+
+def test_el_config_real_trae_foco_en_las_tres(cfg):
+    for rkey in ("dia_1", "dia_2", "dia_3"):
+        assert str(cfg.raw["routines"][rkey].get("focus") or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# `safety.condition`: documentación disfrazada de interruptor
+# ---------------------------------------------------------------------------
+#
+# `condition: "Hernia discal L4-L5"` no lo leía nadie. En una sección llamada
+# `safety` eso es peor que en cualquier otra: una clave se lee como algo que el
+# código consulta, y quien la viera podría creer que cambiarla -o quitarla-
+# cambia lo que el sistema permite. Lo que manda es la lista de `template_ids`.
+# Ahora la condición está escrita como comentario del YAML, que es lo que era.
+
+
+def test_condition_ya_no_esta_en_el_config_real(cfg):
+    assert "condition" not in cfg.raw["safety"]
+
+
+def test_condition_no_puede_volver(cfg_copia):
+    cfg_copia.raw["safety"]["condition"] = "Hernia discal L4-L5"
+    err = errores(cfg_copia.raw)
+    assert "safety" in err and "condition" in err
+
+
+def test_la_condicion_sigue_documentada_en_el_yaml():
+    """Quitar la clave no es quitar la información: sin ella nadie entiende
+    por qué hay veinte plantillas prohibidas."""
+    import io
+
+    from app.settings import REPO_ROOT
+
+    texto = io.open(REPO_ROOT / "config.yaml", encoding="utf-8").read()
+    assert "L4-L5" in texto
+
+
+def test_una_errata_dentro_de_forbidden_in_hiit_no_se_ignora(cfg_copia):
+    """`template_id` en singular dejaría la lista de bloqueos VACÍA y el
+    validador daría por buena una rutina HIIT con un sit up dentro."""
+    cfg_copia.raw["safety"]["forbidden_in_hiit"]["template_id"] = []
+    err = errores(cfg_copia.raw)
+    assert "safety.forbidden_in_hiit" in err and "template_id" in err
+
+
+def test_la_prohibicion_de_verdad_sigue_en_pie(cfg_copia):
+    """Guarda de que este arreglo no ha aflojado nada: el sit up retirado por
+    la hernia sigue sin poder entrar en un bloque HIIT."""
+    cfg_copia.raw["routines"]["hiit_dia_1"]["exercises"].append(
+        {"key": "sit_up", "name": "Sit Up", "template_id": "022DF610",
+         "progression_type": "none", "sets": [{"reps": 20}]}
+    )
+    err = errores(cfg_copia.raw)
+    assert "022DF610" in err or "Sit Up" in err
+
+
+# ---------------------------------------------------------------------------
+# `progression.modes.*`: la lista blanca que faltaba donde más caro sale
+# ---------------------------------------------------------------------------
+#
+# `rep_aply_to` con una pe se leería como ausente, el `.get()` devolvería el
+# defecto `all`, y la rampa 12/10/10 se aplanaría a 13/11/11 en vez de subir
+# solo la serie baja. El YAML seguiría diciendo `lowest_first`. Es la misma
+# avería que se arregló en el código; ahora está cerrada por los dos lados.
+
+
+def test_la_errata_de_rep_apply_to_no_se_ignora(cfg_copia):
+    modo = cfg_copia.raw["progression"]["modes"]["volume"]
+    modo["rep_aply_to"] = modo.pop("rep_apply_to")
+    err = errores(cfg_copia.raw)
+    assert "progression.modes.volume" in err and "rep_aply_to" in err
+
+
+@pytest.mark.parametrize("modo", ["double", "volume", "sets"])
+def test_cada_modo_tiene_su_lista_blanca(cfg_copia, modo):
+    cfg_copia.raw["progression"]["modes"][modo]["incremento_reps"] = 1
+    err = errores(cfg_copia.raw)
+    assert f"progression.modes.{modo}" in err
+
+
+def test_un_modo_inventado_no_se_ignora(cfg_copia):
+    """Un modo que el motor no conoce no progresaría nada y no lo diría."""
+    cfg_copia.raw["progression"]["modes"]["tiempo_bajo_tension"] = {}
+    err = errores(cfg_copia.raw)
+    assert "progression.modes" in err and "tiempo_bajo_tension" in err
+
+
+def test_una_errata_en_el_nivel_de_progression_tampoco(cfg_copia):
+    cfg_copia.raw["progression"]["defualt_increment_kg"] = 2.5
+    err = errores(cfg_copia.raw)
+    assert "defualt_increment_kg" in err
+
+
+@pytest.mark.parametrize(
+    "modo,clave",
+    [("double", "deduced_span"), ("double", "rep_apply_to"),
+     ("double", "rep_increment"),
+     ("volume", "max_reps"), ("volume", "max_seconds"),
+     ("volume", "on_ceiling_notify"), ("volume", "rep_apply_to"),
+     ("volume", "reps_increment"), ("volume", "seconds_increment"),
+     ("sets", "clean_sessions_required"), ("sets", "max_sets"), ("sets", "then")],
+)
+def test_las_claves_vivas_de_cada_modo_siguen_pasando(cfg, modo, clave):
+    """Guarda de la lista blanca: las doce se leen de verdad en
+    `app/engine/progression.py`, así que ninguna puede caer en el rechazo."""
+    assert clave in cfg.raw["progression"]["modes"][modo]
+    assert "clave desconocida" not in errores(cfg.raw)

@@ -149,6 +149,24 @@ def _validate(data: dict[str, Any]) -> list[str]:
         if not cond:
             errors.append(msg)
 
+    def check_keys(obj: Any, allowed: set[str], where: str) -> None:
+        """Lista blanca: cualquier clave fuera de `allowed` es un error duro.
+
+        Está definida aquí arriba, y no en mitad del fichero como estuvo, para
+        que la puedan usar TODAS las secciones. Mientras vivía a la altura de
+        `progression.brakes` las de más arriba -rutinas, cycling- no podían
+        llamarla, y ahí es donde se quedaron dos claves muertas.
+        """
+        if not isinstance(obj, dict):
+            return
+        for k in obj:
+            require(
+                k in allowed,
+                f"{where}: clave desconocida '{k}'. Válidas: "
+                f"{', '.join(sorted(allowed))}. Si es una errata, el valor "
+                f"real se estaría ignorando en silencio",
+            )
+
     # --- secciones obligatorias --------------------------------------------
     for section in (
         "timezone",
@@ -421,8 +439,18 @@ def _validate(data: dict[str, Any]) -> list[str]:
         require(level in order, f"classification: el nivel '{level}' no está en intensity_order")
 
     # --- reglas especiales: los ejercicios deben existir --------------------
+    #
+    # `r.get("exercises", [])` devolvía None con `exercises:` a secas y esto
+    # reventaba con un TypeError en vez de dar el error de configuración. Un
+    # validador que se rompe al validar deja al usuario con una traza de
+    # Python donde debería haber una frase, y encima oculta el resto de
+    # problemas del fichero: `_validate` los junta todos y los enseña de una
+    # vez, y una excepción a mitad se lleva por delante los que faltaban.
     all_exercise_keys = {
-        ex["key"] for r in routines.values() for ex in r.get("exercises", [])
+        ex["key"]
+        for r in routines.values()
+        for ex in (r.get("exercises") or [])
+        if isinstance(ex, dict) and ex.get("key")
     }
     for rule in data.get("special_rules", []):
         name = rule.get("name", "<sin nombre>")
@@ -635,7 +663,21 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # Es una restricción médica permanente (hernia L4-L5), no un umbral.
     # Se aplica SOLO a las rutinas HIIT: en la fuerza normal el peso muerto está
     # permitido y controlado por la regla `retirada_peso_muerto`.
-    forbidden = data.get("safety", {}).get("forbidden_in_hiit", {})
+    #
+    # `condition: "Hernia discal L4-L5"` vivía aquí sin que lo leyera nadie. En
+    # una sección que se llama `safety` eso es peor que en cualquier otra: una
+    # clave se lee como un interruptor, y quien la viera podría pensar que
+    # cambiarla o quitarla cambia lo que el sistema permite. No cambiaba nada.
+    # Ahora es un comentario del YAML -que es lo que era- y esta lista blanca
+    # impide que vuelva en forma de clave, aquí o con cualquier otro nombre.
+    safety = data.get("safety") or {}
+    check_keys(safety, {"forbidden_in_hiit"}, "safety")
+    check_keys(
+        safety.get("forbidden_in_hiit") or {},
+        {"reason", "template_ids", "name_patterns", "allow_exceptions"},
+        "safety.forbidden_in_hiit",
+    )
+    forbidden = safety.get("forbidden_in_hiit") or {}
     if forbidden:
         blocked_ids = {
             str(e["id"]).upper() for e in forbidden.get("template_ids", []) if e.get("id")
@@ -648,7 +690,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         # Las rutinas HIIT son las referenciadas desde hiit.blocks.
         hiit_routine_keys = set(blocks.values())
         for rkey in sorted(hiit_routine_keys):
-            for ex in routines.get(rkey, {}).get("exercises", []):
+            for ex in routines.get(rkey, {}).get("exercises") or []:
                 tid = str(ex.get("template_id") or "").upper()
                 if tid in exempt_ids:
                     continue
@@ -704,9 +746,63 @@ def _validate(data: dict[str, Any]) -> list[str]:
         )
 
     # --- rutinas ------------------------------------------------------------
+    #
+    # Las que algún día de alguna variante programa como fuerza. Se miran TODAS
+    # las variantes y no solo la activa: `dia_3` solo existe en `summer`, y
+    # validar únicamente la variante en curso dejaría el fichero pasando en
+    # invierno y fallando el día que se cambie de temporada, que es cuando
+    # menos se quiere descubrir un error de configuración.
+    rutinas_de_fuerza = {
+        plan.get("strength")
+        for vdata in (cal.get("variants") or {}).values()
+        for dia, plan in vdata.items()
+        if dia != "description" and isinstance(plan, dict) and plan.get("strength")
+    }
     for rkey, routine in routines.items():
+        # Una rutina vacía no daba error, y `all([])` es True: "no hay nada que
+        # comprobar" se lee igual que "todo comprobado y correcto". Hoy no tiene
+        # consecuencia -sin ejercicios no hay nada que subir, y la puerta se
+        # cierra por falta de registro-, pero llegar hasta ahí para que la
+        # vacuidad se resuelva bien por casualidad es demasiado camino. Y el
+        # síntoma sería una mañana sin sesión, que es indistinguible de un día
+        # de descanso: exactamente el fallo que no puede quedar mudo.
+        require(
+            isinstance(routine.get("exercises"), list) and routine["exercises"],
+            f"rutina '{rkey}': 'exercises' está vacía o no es una lista. Una "
+            f"rutina sin ejercicios se escribiría en Hevy dejándola en blanco y "
+            f"la mañana saldría sin sesión, sin un solo error",
+        )
+        # `standalone: false` vivía aquí sin que lo leyera nadie, en los dos
+        # bloques HIIT. No era una opción: repetía en forma de interruptor algo
+        # que deciden `calendar` -que no los nombra- y `hiit.blocks` -que los
+        # ata a dia_1 y dia_2-. Un `standalone: true` no habría programado nada.
+        check_keys(
+            routine,
+            {"title", "hevy_routine_id", "exercises", "focus"},
+            f"rutina '{rkey}'",
+        )
+        # `focus` ya no es decorativo: es el subtítulo del encabezado del
+        # mensaje. Se exige donde se va a leer y se prohíbe donde no.
+        if rkey in rutinas_de_fuerza:
+            require(
+                bool(str(routine.get("focus") or "").strip()),
+                f"rutina '{rkey}': falta 'focus'. Es el subtítulo de la sesión "
+                f"en el mensaje de la mañana ('Día 1 (sesión completa) — Tren "
+                f"inferior + core') y la única frase del fichero que dice de "
+                f"qué va el día. Sin él el encabezado se acorta sin avisar",
+            )
+        elif "focus" in routine:
+            require(
+                False,
+                f"rutina '{rkey}': lleva 'focus' pero no la programa ningún "
+                f"día de `calendar` como fuerza, así que nadie lo enseñaría. "
+                f"Los bloques HIIT se añaden al final de otra sesión y usan el "
+                f"encabezado de esa. Bórralo.",
+            )
         keys_here: set[str] = set()
-        for ex in routine.get("exercises", []):
+        # `or []` y no `, []`: con `exercises:` a secas YAML devuelve None, y
+        # el validador reventaba con un TypeError en vez de dar la frase.
+        for ex in routine.get("exercises") or []:
             k = ex.get("key")
             require(bool(k), f"rutina '{rkey}': hay un ejercicio sin 'key'")
             require(
@@ -994,6 +1090,39 @@ def _validate(data: dict[str, Any]) -> list[str]:
                         f"de las {cur} reps que ya hace",
                     )
 
+    # --- erratas dentro de `progression` -------------------------------------
+    #
+    # `progression.modes.*` no tenía lista blanca, y ahí es donde más caro sale:
+    # `rep_aply_to` con una pe se leería como ausente, el `.get()` devolvería el
+    # defecto `all` y la rampa 12/10/10 se aplanaría a 13/11/11 en vez de subir
+    # solo la serie baja. El YAML seguiría diciendo `lowest_first` y el usuario
+    # vería una progresión distinta de la que pidió, sin un solo error. Es
+    # exactamente la avería que se acaba de arreglar en el código, ahora
+    # cerrada también por el lado de la escritura.
+    check_keys(
+        prog,
+        {
+            "brakes",
+            "deload",
+            "gate",
+            "modes",
+            "volume_safety",
+            "default_apply_to",
+            "default_clean_sessions_required",
+            "default_increment_kg",
+            "default_progression_type",
+        },
+        "progression",
+    )
+    check_keys(modes, {"double", "volume", "sets"}, "progression.modes")
+    for nombre, permitidas in (
+        ("double", {"deduced_span", "rep_apply_to", "rep_increment"}),
+        ("volume", {"max_reps", "max_seconds", "on_ceiling_notify",
+                    "rep_apply_to", "reps_increment", "seconds_increment"}),
+        ("sets", {"clean_sessions_required", "max_sets", "then"}),
+    ):
+        check_keys(modes.get(nombre) or {}, permitidas, f"progression.modes.{nombre}")
+
     # --- erratas: operadores y claves desconocidas ---------------------------
     #
     # Esto es la misma lección que el `fatige=5` del check-in, aplicada al
@@ -1015,17 +1144,6 @@ def _validate(data: dict[str, Any]) -> list[str]:
         for op, operand in when.items():
             check_op_name(op, where)
             check_op_target(op, operand, where)
-
-    def check_keys(obj: Any, allowed: set[str], where: str) -> None:
-        if not isinstance(obj, dict):
-            return
-        for k in obj:
-            require(
-                k in allowed,
-                f"{where}: clave desconocida '{k}'. Válidas: "
-                f"{', '.join(sorted(allowed))}. Si es una errata, el valor "
-                f"real se estaría ignorando en silencio",
-            )
 
     for i, brake in enumerate(prog.get("brakes") or []):
         where = f"progression.brakes[{i}] ('{brake.get('name', 'sin nombre')}')"
@@ -1147,6 +1265,42 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # defecto y el YAML seguiría diciendo otra cosa, que es exactamente la
     # avería que acaba de cerrarse en esta sección.
     check_keys(fetch, {"lookback_days", "backfill_days"}, "cycling.fetch")
+
+    # `hr_zones` era el último bloque de `cycling` que no leía nadie:
+    #
+    #     hr_zones:
+    #       source: garmin          # garmin | computed
+    #       max_hr: null            # solo necesario si source: computed
+    #
+    # Se rechaza en vez de ignorarse, como `cold_start`, y por el mismo motivo:
+    # el daño no lo hace la clave sobrante, lo hace la alternativa que anuncia.
+    # `source: computed` no existe en el código, así que quien lo escribiera y
+    # rellenara `max_hr` cambiaría el fichero, lo releería convencido de haber
+    # cambiado el criterio, y seguiría clasificando con las zonas de Garmin sin
+    # que nada se lo dijera. El reparto por zonas sale de `timeInZones` de cada
+    # actividad y no hay nada que configurar.
+    require(
+        "hr_zones" not in ((data.get("cycling") or {})),
+        "cycling.hr_zones no lo leía nadie: las zonas de FC vienen tal cual de "
+        "Garmin (`timeInZones` por actividad) y no hay ningún 'source: "
+        "computed' implementado, así que rellenar 'max_hr' no cambiaría ni una "
+        "clasificación. Bórralo.",
+    )
+    # Y con eso la sección queda cerrada: cualquier clave nueva aquí o es una
+    # errata o es una opción que alguien ha escrito esperando que se lea.
+    check_keys(
+        data.get("cycling") or {},
+        {
+            "activity_types",
+            "classification",
+            "classification_fallback",
+            "fetch",
+            "load",
+            "recommendation",
+            "weekend",
+        },
+        "cycling",
+    )
 
     check_keys(notif, {"telegram"}, "notifications")
     check_keys(

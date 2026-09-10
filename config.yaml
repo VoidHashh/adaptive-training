@@ -76,9 +76,14 @@ integrations:
 # permitido (Día 2) porque va controlado, a repeticiones bajas y con la regla
 # `retirada_peso_muerto` vigilándolo. Lo que se prohíbe es ese mismo patrón
 # ejecutado con prisa y bajo fatiga, que es lo que define un HIIT.
+#
+# La condición que motiva todo esto es una hernia discal L4-L5. Va como
+# comentario y no como clave: `condition: "Hernia discal L4-L5"` estuvo aquí
+# sin que lo leyera nadie, y una clave se lee como un interruptor -algo que el
+# código consulta y que cambiaría de comportamiento si se cambia-. Cambiar ese
+# texto no habría desbloqueado ni un ejercicio. Lo que de verdad manda es la
+# lista de `template_ids` de abajo.
 safety:
-  condition: "Hernia discal L4-L5"
-
   forbidden_in_hiit:
     reason: >
       Ningún ejercicio con flexión lumbar repetida bajo carga ni con carga
@@ -889,9 +894,11 @@ cycling:
     # dispara la regla del lunes: se anota como dato faltante en el log.
     on_no_data: desconocida
 
-  hr_zones:
-    source: garmin          # garmin | computed
-    max_hr: null            # solo necesario si source: computed
+  # Las zonas de FC vienen tal cual de Garmin (`timeInZones` de cada actividad)
+  # y no se configuran aquí. Hubo un bloque `hr_zones: {source, max_hr}` que no
+  # leía nadie: ofrecía un `source: computed` que no existe en el código y un
+  # `max_hr` para calcularlas a mano. Rellenar ese `max_hr` no habría cambiado
+  # ni una clasificación. Está rechazado en el arranque para que no vuelva.
 
   # ---------------------------------------------------------------------------
   # Carga de entrenamiento
@@ -1512,10 +1519,14 @@ routines:
   # Bloques HIIT. No son rutinas de calendario: se AÑADEN al final de dia_1 o
   # dia_2 cuando `hiit.enabled` es true y se cumplen las condiciones.
   # Cada día tiene el suyo; ver `hiit.blocks`.
+  #
+  # Llevaban un `standalone: false` que no leía nadie. Repetía en forma de
+  # interruptor un hecho que no es configurable: quién se ejecuta suelto lo
+  # deciden `calendar` (que no los nombra) y `hiit.blocks` (que los ata a
+  # dia_1 y dia_2). Ponerlo a `true` no los habría programado ningún día.
   hiit_dia_1:
     title: "Día 1 HIIT"
     hevy_routine_id: "a41e5c8a-f806-4a1f-87aa-1c1c32b1a04e"
-    standalone: false
     exercises:
       - key: remo_maquina
         template_id: "0222DB42"
@@ -1560,7 +1571,6 @@ routines:
   hiit_dia_2:
     title: "Día 2 HIIT"
     hevy_routine_id: "6265a7b5-5cdd-422a-8833-735828827189"
-    standalone: false
     exercises:
       - key: battle_ropes
         template_id: "084A67CA"
