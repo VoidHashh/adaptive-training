@@ -8,6 +8,8 @@ Esa separación es deliberada: config.yaml se puede versionar en git,
 
 from __future__ import annotations
 
+import difflib
+import os
 from pathlib import Path
 
 from pydantic import Field, field_validator
@@ -15,12 +17,68 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Prefijos que son nuestros y de nadie más. Una variable que empiece por uno de
+# estos y no corresponda a ningún campo es una errata, no la variable de otro
+# programa: en este contenedor no vive nada más.
+PREFIJOS_PROPIOS = ("GARMIN_", "HEVY_", "TELEGRAM_")
+
+# Umbral de parecido para el resto. Medido contra el entorno real de Windows y
+# contra las variables que trae la imagen base de Python (PATH, HOME, HOSTNAME,
+# LANG, GPG_KEY, PYTHON_VERSION, PYTHONUNBUFFERED, VIRTUAL_ENV...): ninguna
+# llega a 0.85, y sí lo pasan DRY_RUM, DRYRUN, LOGLEVEL, CONFIGPATH o
+# DATABASE_URI, que son las erratas que de verdad se cometen.
+PARECIDO_MINIMO = 0.85
+
+
+def erratas_de_entorno(entorno: dict[str, str], campos: set[str]) -> list[tuple[str, str]]:
+    """Variables de entorno que se parecen a un ajuste nuestro y no lo son.
+
+    Existe por el hueco que deja `extra="forbid"`. Forbid protege el FICHERO
+    `.env`, y eso cubre la CLI y el desarrollo local, pero dentro de Docker no
+    hay `.env`: está en `.dockerignore` a propósito, y los valores entran como
+    variables de entorno vía `env_file:` de compose. Ahí forbid no mira nada,
+    porque pydantic solo lee del entorno las variables que ya conoce.
+
+    Es decir: justo en producción, que es donde el sistema decide solo, un
+    `DRY_RUM=true` se ignoraba en silencio y `dry_run` se quedaba en `False`.
+    Se habría escrito en Hevy y enviado Telegram el día en que se pidió
+    expresamente que no.
+
+    Devuelve pares (lo_que_hay, lo_que_seguramente_se_quería).
+    """
+    fuera: list[tuple[str, str]] = []
+    conocidos = sorted(c.upper() for c in campos)
+    for nombre in sorted(entorno):
+        n = nombre.upper()
+        if n in conocidos:
+            continue
+        if n.startswith(PREFIJOS_PROPIOS):
+            # Sin umbral: el prefijo ya es prueba suficiente. `get_close_matches`
+            # se usa solo para sugerir el más parecido de los nuestros.
+            sug = difflib.get_close_matches(n, conocidos, n=1, cutoff=0.0)
+            fuera.append((nombre, sug[0] if sug else "—"))
+            continue
+        sug = difflib.get_close_matches(n, conocidos, n=1, cutoff=PARECIDO_MINIMO)
+        if sug:
+            fuera.append((nombre, sug[0]))
+    return fuera
+
 
 class Settings(BaseSettings):
+    # `forbid` y no `ignore`: con `ignore`, una errata en el `.env` no era un
+    # error, era un ajuste que no existía. `DRY_RUM=true` se leía, se
+    # descartaba, y el arranque seguía tan contento con `dry_run=False`.
+    #
+    # Comprobado que es seguro en las tres formas en que esto arranca:
+    #   1. `.env` limpio + variables de entorno ajenas (TZ, PATH, HOSTNAME...)
+    #      -> arranca; pydantic solo mira del entorno los campos declarados.
+    #   2. Errata dentro del `.env` -> lanza, que es de lo que se trata.
+    #   3. Sin `.env`, todo por entorno (el caso Docker) -> arranca.
+    # El agujero del caso 3 lo tapa `erratas_de_entorno`, más abajo.
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",
+        extra="forbid",
     )
 
     # --- Garmin -------------------------------------------------------------
@@ -80,6 +138,18 @@ class Settings(BaseSettings):
     # proceso que sirva la web sin duplicar los trabajos -dos planificadores
     # sobre la misma base son dos decisiones pisándose el mismo día-.
     scheduler_enabled: bool = Field(default=True)
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        erratas = erratas_de_entorno(dict(os.environ), set(type(self).model_fields))
+        if erratas:
+            detalle = "; ".join(f"{mal} (¿querías {bien}?)" for mal, bien in erratas)
+            raise ValueError(
+                f"variable(s) de entorno que no son ningún ajuste: {detalle}. "
+                f"Un ajuste mal escrito no se aplica y no avisa: el sistema "
+                f"arranca con el valor por defecto y decide como si nunca lo "
+                f"hubieras puesto. Corrígelo o quítalo del entorno."
+            )
 
     # --- Ayudas -------------------------------------------------------------
     def missing_secrets(self) -> list[str]:

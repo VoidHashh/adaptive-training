@@ -108,17 +108,27 @@ def test_sin_el_doble_de_clientes_la_ruta_choca_contra_el_cerrojo(db, cfg, monke
     excepción y la convierte en `decided: False`, que es justo por dónde se
     escapó la primera vez.
 
-    El `skip` de arriba no es un adorno. Sin claves en el `.env`, `_clientes`
+    El `skip` de abajo no es un adorno. Sin claves en el `.env`, `_clientes`
     no devuelve ningún cliente, no se intenta ninguna conexión y el test pasaría sin
     haber comprobado nada -el mismo vacío que ya mordió una vez en este
     proyecto-. Si no hay clientes que construir, aquí no hay nada que demostrar.
+
+    `dry_run` se fija a `False` a mano, y esa línea es media prueba. Este test
+    dependía en silencio de que el `.env` real -que no está en git- lo tuviera
+    en `false`. El día que se puso en `true` para la prueba local, la ruta dejó
+    de intentar salir a la red, el cerrojo no llegó a saltar y el test se cayó
+    señalando al cerrojo, que era lo único que no fallaba. Un test que
+    comprueba una red de seguridad no puede depender de un fichero que decide
+    si esa red hace falta.
     """
-    from app.api import _clientes
+    from app.api import _clientes, settings as api_settings
     from tests.conftest import RedProhibidaEnTests
 
     hevy, tg, _ = _clientes(cfg)
     if hevy is None and tg is None:
         pytest.skip("sin claves en el .env no hay clientes reales que bloquear")
+
+    monkeypatch.setattr(api_settings, "dry_run", False)
 
     def fetch(cfg_, day):
         return dias(day, 10, hrv=60.0, rhr=50.0, sleep_min=450, sleep_score=80), []

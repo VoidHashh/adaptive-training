@@ -12,6 +12,20 @@ services:
     # esta es para que los logs y el reloj del sistema digan lo mismo.
     environment:
       TZ: Europe/Madrid
+    # Los valores entran como variables de entorno, NO como fichero: `.env`
+    # está en `.dockerignore` a propósito y no viaja dentro de la imagen.
+    #
+    # Eso tiene una consecuencia que no se ve: el `extra="forbid"` de
+    # `app/settings.py` protege el FICHERO `.env`, y aquí no hay fichero. Del
+    # entorno, pydantic solo lee las variables que ya conoce, así que un
+    # `DRY_RUM=true` entraría por aquí y se perdería sin una palabra. Ese hueco
+    # lo tapa `erratas_de_entorno()`, que corre al construir `Settings`.
+    #
+    # Tampoco se monta el `.env` como volumen, aunque eso también lo taparía:
+    # el contenedor corre como uid 1000 y un `.env` en 600 de otro usuario -lo
+    # normal en el Umbrel- lo dejaría sin secretos. `env_file:` lo lee el
+    # demonio de Docker, que es root, y además falla en voz alta si el fichero
+    # no existe.
     env_file:
       - .env
 
