@@ -416,6 +416,43 @@ def test_restaurar_retira_la_marca_de_escritura_en_curso(tmp_path):
     assert read_pending(tmp_path) is None
 
 
+def test_escribir_y_revertir_devuelve_la_rutina_a_como_estaba(tmp_path):
+    """El viaje completo: se escribe encima, se revierte, vuelve lo de antes.
+
+    Los otros tests prueban los dos eslabones por separado -que la escritura deja
+    una copia igual al remoto, y que `restore` manda el contenido de una copia-.
+    Ninguno prueba que encadenados devuelvan la rutina original, que es la única
+    promesa que importa cuando algo ha salido mal a las siete de la mañana. Dos
+    eslabones correctos con un cambio de forma entre medias -que la copia guarde
+    el cuerpo del PUT en vez de la rutina remota, por ejemplo- daría los dos
+    tests en verde y una reversión que no revierte.
+    """
+    c, doble = cliente(
+        tmp_path,
+        [
+            FakeResponse(200, REMOTO),      # lectura previa a la escritura
+            FakeResponse(200, {"ok": True}),  # el PUT que pisa la rutina
+            FakeResponse(200, {"ok": True}),  # el PUT de la reversión
+        ],
+    )
+
+    nuevo = build_routine_payload(SesionFalsa(exercises=[ejercicio()]), {})
+    assert c.write_routine("r1", nuevo).written
+    pisado = doble.llamadas[1]["json"]["routine"]
+    assert pisado["exercises"][0]["sets"][1]["weight_kg"] == 60, "no se llegó a pisar"
+
+    r = c.restore("r1")
+
+    assert r.written
+    devuelto = doble.llamadas[2]["json"]["routine"]
+    assert devuelto["title"] == REMOTO["title"]
+    assert devuelto["notes"] == REMOTO["notes"]
+    assert devuelto["exercises"] == REMOTO["exercises"], (
+        "lo revertido no es lo que había antes de escribir"
+    )
+    assert devuelto["exercises"][0]["sets"][1]["weight_kg"] == 55
+
+
 def test_sin_copia_no_se_puede_revertir(tmp_path):
     c, _ = cliente(tmp_path, [])
     with pytest.raises(HevyError, match="no hay ninguna copia"):
