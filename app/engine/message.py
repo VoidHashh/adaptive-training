@@ -147,6 +147,25 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         for e in cambios:
             L.append(f"• {e.text()}")
 
+    # --- lo que lleva parado ------------------------------------------------
+    # FUERA de `include_reasoning`, por lo mismo que los bloques de más abajo:
+    # que un ejercicio haya dejado de progresar no es "por qué he decidido
+    # esto", es un hecho del programa que solo se puede arreglar a mano.
+    #
+    # Esto no se pintaba. `ProgressionPlan` generaba las líneas desde el primer
+    # día y el único que las leía era un script de diagnóstico. El resultado
+    # medido: en la simulación de doce semanas, `press_triceps_sentado` y
+    # `remo_t_apoyado` no subieron ni una vez -esperaban una carga que nadie
+    # había apuntado en Hevy- y ninguno de los mensajes de esos ochenta y
+    # cuatro días lo mencionó. El sistema lo sabía y no lo dijo, que es la
+    # forma más cara de saberlo.
+    parados = decision.progression.stopped_lines() if decision.progression else []
+    if parados:
+        L.append("")
+        L.append("⏸️ <b>Sin progresar</b>")
+        for linea in parados:
+            L.append(f"• {linea}")
+
     # Retiradas y recortes: son cambios que el usuario notará en la app y que
     # sin explicación parecen un fallo del sistema.
     if s.dropped:

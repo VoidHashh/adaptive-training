@@ -164,6 +164,12 @@ class ProgressionPlan:
     exercises: list[ExerciseProgression] = field(default_factory=list)
     ceilings: list[str] = field(default_factory=list)
     missing_data: list[str] = field(default_factory=list)
+    # `progression.modes.volume.on_ceiling_notify`. Gobierna SOLO si el techo se
+    # cuenta en el mensaje; `ceilings` se rellena siempre. Un interruptor de
+    # notificación que además borrase el registro de la decisión convertiría
+    # "no me avises" en "no lo apuntes", y entonces la auditoría del día no
+    # podría contestar por qué un ejercicio lleva tres semanas parado.
+    notify_ceiling: bool = True
 
     @property
     def changes(self) -> list[ExerciseProgression]:
@@ -180,28 +186,54 @@ class ProgressionPlan:
             "reps_reason": self.reps_reason,
             "ceilings": self.ceilings,
             "missing_data": self.missing_data,
+            # Va al registro para que el "por qué no me avisó" tenga respuesta:
+            # un techo apuntado y no notificado se distingue de uno que no hubo.
+            "notify_ceiling": self.notify_ceiling,
             "exercises": [e.to_dict() for e in self.exercises],
         }
 
-    def text_lines(self) -> list[str]:
-        """Bloque de progresión del mensaje de Telegram."""
-        out = [e.text() for e in self.changes]
-        # Un ejercicio parado es información accionable: ha dejado de progresar
-        # y va a seguir parado hasta que se cambie algo. Callarlo convierte un
-        # ejercicio muerto en un ejercicio invisible.
-        #
-        # Los dos motivos se avisan por separado porque la acción es distinta:
-        # un techo se resuelve cambiando el ejercicio, un dato que falta se
-        # resuelve apuntando el peso en Hevy. Mandar "toca cambiar el
-        # ejercicio" cuando lo único que pasa es que no has apuntado la carga
-        # es peor que no mandar nada.
-        out.extend(f"{c}: techo alcanzado, toca cambiar el ejercicio" for c in self.ceilings)
+    def stopped_lines(self) -> list[str]:
+        """Los ejercicios que hoy NO progresan y por qué.
+
+        Un ejercicio parado es información accionable: ha dejado de progresar y
+        va a seguir parado hasta que se cambie algo. Callarlo convierte un
+        ejercicio muerto en un ejercicio invisible -y eso es exactamente lo que
+        pasaba: estas líneas se generaban aquí y no las leía nadie, porque
+        `render_telegram` pintaba solo `changes`. Doce semanas de simulación con
+        dos ejercicios sin avanzar ni una vez, y el mensaje de la mañana no lo
+        mencionó ninguno de los ochenta y cuatro días.
+
+        Los dos motivos se avisan por separado porque la acción es distinta: un
+        techo se resuelve cambiando el ejercicio, un dato que falta se resuelve
+        apuntando el peso en Hevy. Mandar "toca cambiar el ejercicio" cuando lo
+        único que pasa es que no has apuntado la carga es peor que no mandar
+        nada.
+        """
+        out: list[str] = []
+        if self.notify_ceiling:
+            out.extend(f"{c}: techo alcanzado, toca cambiar el ejercicio" for c in self.ceilings)
+        # Sin interruptor, y a propósito: `on_ceiling_notify` habla de techos.
+        # Un ejercicio sin carga registrada no está en su techo, está esperando
+        # un dato que solo puede dar el usuario, y silenciarlo lo deja parado
+        # para siempre sin que nada lo diga.
         if self.missing_data:
             out.append(
                 "Sin progresión por falta de carga registrada en Hevy: "
                 + ", ".join(self.missing_data)
             )
         return out
+
+    def text_lines(self) -> list[str]:
+        """Todo el bloque de progresión: lo que sube y lo que está parado.
+
+        `render_telegram` no llama a esto, sino a `stopped_lines`: el mensaje
+        pinta las subidas con su propia cabecera. Esto lo usa
+        `scripts/smoke_progression.py`, que durante meses imprimió estas líneas
+        bajo el rótulo "Mensaje de Telegram completo" mientras el mensaje real
+        no llevaba ni una. Las dos mitades salen ya de la misma función, así
+        que el script no puede volver a enseñar algo que no se manda.
+        """
+        return [e.text() for e in self.changes] + self.stopped_lines()
 
 
 # ---------------------------------------------------------------------------
@@ -759,6 +791,10 @@ def plan_progression(
         sets_reason=sets_why if gate_open else gate_reason,
         reps_allowed=reps_ok and gate_open,
         reps_reason=reps_why if gate_open else gate_reason,
+        # Vive bajo `modes.volume` porque el techo es suyo: `at_ceiling` solo lo
+        # pone `_plan_volume` (tope de reps o de segundos). Si algún día otro
+        # modo marca techo, esta opción tendrá que subir un nivel.
+        notify_ceiling=bool((modes.get("volume") or {}).get("on_ceiling_notify", True)),
     )
 
     for exercise in ejercicios:

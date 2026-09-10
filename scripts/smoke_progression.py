@@ -21,12 +21,21 @@ TODAY = date(2026, 9, 7)
 def sig(lights: dict[int, str] | None = None,
         lumbar: dict[int, int] | None = None,
         **values) -> Signals:
-    """`lights`/`lumbar` se indexan por días ATRÁS desde hoy."""
+    """`lights`/`lumbar` se indexan por días ATRÁS desde hoy.
+
+    La lumbar de HOY va por defecto a 1 -sana- y se puede pisar pasando
+    `lower_discomfort=`. No es cosmético: sin ese valor el freno
+    `lumbar_bloquea_todo` no se puede evaluar y cierra la puerta, así que TODAS
+    las secciones de abajo salían con "freno no evaluable" y ninguna enseñaba lo
+    que su rótulo prometía. La de los techos decía "Techos y 0 kg" y lo que
+    demostraba era la puerta cerrada.
+    """
     hist: dict = {}
     if lights:
         hist["light"] = {TODAY - timedelta(days=k): v for k, v in lights.items()}
     if lumbar:
         hist["lower_discomfort"] = {TODAY - timedelta(days=k): v for k, v in lumbar.items()}
+    values.setdefault("lower_discomfort", 1)
     return Signals(day=TODAY, values=values, history=hist)
 
 
@@ -56,8 +65,12 @@ def run(title: str, routine: str, s: Signals, light: str,
             print(f"      ---- {e.name}: {e.blocked_by}")
     if not plan.changes:
         print("      (ningún cambio)")
-    for line in plan.text_lines():
-        pass
+    # Se imprimen. Este bucle era `pass`: calculaba las líneas de los
+    # ejercicios parados y las tiraba, igual que hacía el mensaje de la
+    # mañana. Un diagnóstico que llama a la función y no enseña el resultado
+    # confirma que la función existe, no que sirva de algo.
+    for line in plan.stopped_lines():
+        print(f"      PARADO  {line}")
 
 
 print("=" * 78)
@@ -113,7 +126,7 @@ cfg2 = {**CFG.raw, "routines": {**CFG.raw["routines"], "tmp": {"exercises": [ex]
 plan = plan_progression(cfg2, "tmp", sig(), "green",
                         compliance={"t": True}, clean_sessions={"t": 5})
 print(f"    techo: {plan.exercises[0].blocked_by} | ceilings={plan.ceilings}")
-print(f"    telegram: {plan.text_lines()}")
+print(f"    parados: {plan.stopped_lines()}")
 
 ex0 = {"key": "z", "name": "Sin peso", "progression_type": "double",
        "rep_range": [12, 15],
@@ -142,8 +155,14 @@ print(f"    telegram: {e.text()}")
 
 print()
 print("=" * 78)
-print("H. Mensaje de Telegram completo (dia_2, todo verde)")
+print("H. Bloque de progresión del día (dia_2, todo verde)")
 print("=" * 78)
+# El rótulo decía "Mensaje de Telegram completo" y era falso: el mensaje de
+# verdad lo arma `render_telegram`, y de estas líneas solo pintaba las subidas.
+# Las de los ejercicios parados se veían AQUÍ y en ningún otro sitio, así que
+# este script era la prueba de que el aviso funcionaba y a la vez el motivo de
+# que nadie mirase si llegaba. Ahora sí llega; para ver el mensaje entero,
+# `scripts/smoke_decision.py`.
 keys2 = [e["key"] for e in CFG.raw["routines"]["dia_2"]["exercises"]]
 p = plan_progression(CFG, "dia_2", sig(), "green",
                      compliance={k: True for k in keys2},
