@@ -101,6 +101,23 @@ def test_la_mañana_decide_guarda_y_avisa(db, cfg):
     assert db.scalars(select(Notification)).first() is not None
 
 
+def test_un_dia_que_no_se_conto_a_nadie_queda_registrado(db, cfg):
+    """Sin cliente de Telegram la decisión se toma igual, pero hay que apuntarlo.
+
+    Antes se salía de `_mandar_telegram` antes de escribir la fila, así que esos
+    días no dejaban rastro en `notifications`. En el histórico, un día en el que
+    nadie se enteró y un día avisado correctamente se veían igual: los dos sin
+    nada raro. Ahora queda la fila con `status="skipped"` y el motivo escrito.
+    """
+    res = corre(db, cfg, hevy=HevyFalso(), tg=None)
+
+    fila = db.scalars(select(Notification)).first()
+    assert fila is not None, "el día que nadie se entera no deja rastro"
+    assert fila.status == "skipped"
+    assert "Telegram" in (fila.error or "")
+    assert res.problemas, "y además tiene que viajar al cliente en el momento"
+
+
 def test_la_mañana_no_avanza_las_rachas(db, cfg):
     """A las siete la sesión no se ha hecho todavía.
 

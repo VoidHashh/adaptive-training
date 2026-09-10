@@ -281,18 +281,27 @@ class GarminClient:
 
     # --- actividades --------------------------------------------------------
 
-    def rides(self, start: date, end: date) -> list[Ride]:
-        """Salidas en bici del rango, ya normalizadas."""
+    def raw_activities(self, start: date, end: date) -> list[dict[str, Any]]:
+        """Actividades del rango tal cual las devuelve Garmin, sin normalizar.
+
+        La caché guarda ESTO y no los `Ride` ya parseados: el día que
+        `ride_from_activity` aprenda a leer un campo nuevo, un histórico de
+        objetos normalizados no lo tendría y habría que volver a bajar 180 días
+        de Garmin. Con el crudo guardado se reparsea y ya está.
+        """
         if self._api is None:
             raise GarminError("cliente no conectado: llama a connect() primero")
 
-        raw = _retry(
+        return _retry(
             self._api.get_activities_by_date,
             start.isoformat(), end.isoformat(),
             what="activities",
             sink=self.rate_limit_events,
         ) or []
-        return rides_from_activities(raw)
+
+    def rides(self, start: date, end: date) -> list[Ride]:
+        """Salidas en bici del rango, ya normalizadas."""
+        return rides_from_activities(self.raw_activities(start, end))
 
     # --- conveniencia -------------------------------------------------------
 

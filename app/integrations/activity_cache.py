@@ -111,6 +111,93 @@ def load_cached_rides(path: Path | str) -> CachedActivities:
     )
 
 
+def _id_actividad(act: dict[str, Any]) -> Any:
+    for k in ("activityId", "activity_id", "id"):
+        if act.get(k) is not None:
+            return act[k]
+    return None
+
+
+def save_cache(path: Path | str, frescas: Sequence[dict[str, Any]]) -> int:
+    """Mezcla actividades nuevas con las que ya había y las escribe. Devuelve el total.
+
+    DOS COSAS QUE NO PUEDE HACER, Y LAS DOS ROMPERÍAN EN SILENCIO:
+
+    1. **No sobrescribe: mezcla.** La caché son 180 días de histórico y el
+       refresco diario trae una ventana mucho más corta. Escribir directamente
+       lo recién leído tiraría todo lo anterior, y como `load_cached_rides` no
+       se queja de una caché corta, los percentiles adaptativos se quedarían sin
+       base sin que nadie viera un error: simplemente `load_3d_p90` pasaría a
+       valer None y las reglas que lo usan dejarían de evaluarse.
+
+    2. **No escribe en el sitio: escribe al lado y renombra.** Si el proceso se
+       muere a mitad de un `json.dump`, el fichero queda truncado. Y un JSON
+       truncado no es un fichero que falta -eso se detecta-: es una caché que
+       existe, que no se puede parsear, y que deja el histórico en cero. El
+       renombrado es atómico, así que o está la versión vieja o está la nueva.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    previas: list[dict[str, Any]] = []
+    if path.is_file():
+        try:
+            with path.open(encoding="utf-8") as fh:
+                cargado = json.load(fh)
+            if isinstance(cargado, list):
+                previas = cargado
+        except (OSError, json.JSONDecodeError) as exc:
+            # Aquí sí se avisa fuerte: se está a punto de reemplazar una caché
+            # ilegible, y si no se dice, el histórico se habrá reiniciado sin
+            # que conste en ninguna parte por qué.
+            log.warning(
+                "caché de actividades ilegible (%s); se reconstruye desde cero "
+                "y se pierde el histórico que hubiera dentro", exc
+            )
+
+    fusion: dict[Any, dict[str, Any]] = {}
+    sin_id: list[dict[str, Any]] = []
+    for act in [*previas, *frescas]:  # las frescas después: ganan ellas
+        aid = _id_actividad(act)
+        if aid is None:
+            sin_id.append(act)
+        else:
+            fusion[aid] = act
+
+    total = [*fusion.values(), *sin_id]
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(total, fh, ensure_ascii=False, default=str)
+    tmp.replace(path)
+    return len(total)
+
+
+def refresh_cache(
+    path: Path | str,
+    day: date,
+    *,
+    days: int = 190,
+    fetch: Any = None,
+) -> int:
+    """Trae las actividades recientes de Garmin y las mezcla con la caché.
+
+    `fetch` se inyecta para poder probar esto sin red; por defecto usa Garmin.
+    """
+    from datetime import timedelta
+
+    if fetch is None:
+        from app.integrations.garmin import build_client
+        from app.settings import settings
+
+        def fetch(desde: date, hasta: date) -> list[dict[str, Any]]:  # noqa: ANN202
+            c = build_client(settings)
+            c.connect()
+            return c.raw_activities(desde, hasta)
+
+    frescas = fetch(day - timedelta(days=days - 1), day) or []
+    return save_cache(path, frescas)
+
+
 def merge_rides(cached: Sequence[Ride], fresh: Sequence[Ride]) -> list[Ride]:
     """Une caché y datos frescos. Ante el mismo `activity_id`, gana el fresco.
 

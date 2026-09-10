@@ -41,7 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import repository as repo
-from app.engine.decision import EngineState, apply_execution, decide
+from app.engine.decision import apply_execution, decide
 from app.engine.message import render_telegram
 from app.engine.signals import Checkin, build_signals
 from app.models import HevyWrite, Notification, WorkoutLog
@@ -215,23 +215,29 @@ def _mandar_telegram(
             "Lo de abajo es lo que tocaba hoy; tendrás que montarlo a mano.\n\n"
         ) + texto
 
+    # El registro se escribe SIEMPRE, también cuando no hay a quién avisar.
+    # Salir antes por aquí dejaba sin fila los días en los que la decisión se
+    # tomó y no se contó a nadie, que son justo los que hay que poder encontrar
+    # después: en el histórico no se distinguirían de un día en el que el
+    # mensaje salió bien.
     if client is None:
         res.telegram_status = "skipped"
         res.telegram_reason = "sin cliente de Telegram configurado"
         res.problemas.append(
             "no hay cliente de Telegram: la decisión de hoy no se ha contado a nadie"
         )
-        return
-
-    try:
-        r = client.send(texto, dry_run=dry_run)
-        res.telegram_status = "sent" if r.sent else ("dry_run" if dry_run else "skipped")
-        res.telegram_reason = r.reason
-    except Exception as exc:  # noqa: BLE001
-        res.telegram_status = "error"
-        res.telegram_reason = str(exc)
-        res.problemas.append(f"Telegram: {exc}")
-        log.exception("fallo enviando el mensaje")
+    else:
+        try:
+            r = client.send(texto, dry_run=dry_run)
+            res.telegram_status = (
+                "sent" if r.sent else ("dry_run" if dry_run else "skipped")
+            )
+            res.telegram_reason = r.reason
+        except Exception as exc:  # noqa: BLE001
+            res.telegram_status = "error"
+            res.telegram_reason = str(exc)
+            res.problemas.append(f"Telegram: {exc}")
+            log.exception("fallo enviando el mensaje")
 
     session.add(
         Notification(
@@ -240,7 +246,7 @@ def _mandar_telegram(
             channel="telegram",
             status=res.telegram_status,
             body=texto,
-            error=res.telegram_reason if res.telegram_status == "error" else None,
+            error=res.telegram_reason if res.telegram_status != "sent" else None,
         )
     )
 

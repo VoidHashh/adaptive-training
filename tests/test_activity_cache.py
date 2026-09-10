@@ -11,11 +11,15 @@ from __future__ import annotations
 import json
 from datetime import date, timedelta
 
+import pytest
+
 from app.engine.signals import Ride
 from app.integrations.activity_cache import (
     CachedActivities,
     load_cached_rides,
     merge_rides,
+    refresh_cache,
+    save_cache,
 )
 
 from tests.conftest import LUNES
@@ -156,3 +160,120 @@ def test_fusionar_con_nada_devuelve_lo_que_habia():
 
 def test_cached_activities_vacio_no_esta_disponible():
     assert not CachedActivities().available
+
+
+# ---------------------------------------------------------------------------
+# Escritura
+# ---------------------------------------------------------------------------
+#
+# El fallo que se vigila aquí no da error: el refresco diario trae una ventana
+# corta, y si escribiera encima en vez de mezclar, el histórico largo
+# desaparecería sin que nadie viera nada. `load_cached_rides` no se queja de una
+# caché corta, así que `load_3d_p90` pasaría a valer None y las reglas que lo
+# usan dejarían de evaluarse en silencio.
+
+
+def test_guardar_mezcla_en_vez_de_sobrescribir(tmp_path):
+    f = tmp_path / "activities.json"
+    viejas = [actividad(LUNES - timedelta(days=i), 1000 + i) for i in range(180)]
+    save_cache(f, viejas)
+
+    # El refresco diario: una ventana de tres días.
+    frescas = [actividad(LUNES - timedelta(days=i), 1000 + i) for i in range(3)]
+    total = save_cache(f, frescas)
+
+    assert total == 180, "la ventana corta se ha llevado por delante el histórico"
+    c = load_cached_rides(f)
+    assert c.first_day == LUNES - timedelta(days=179)
+
+
+def test_una_actividad_repetida_no_se_duplica_y_gana_la_fresca(tmp_path):
+    f = tmp_path / "activities.json"
+    vieja = actividad(LUNES, 7)
+    vieja["activityTrainingLoad"] = 100.0
+    save_cache(f, [vieja])
+
+    nueva = actividad(LUNES, 7)
+    nueva["activityTrainingLoad"] = 250.0
+    assert save_cache(f, [nueva]) == 1
+
+    rides = load_cached_rides(f).rides
+    assert len(rides) == 1
+    assert rides[0].training_load == 250.0
+
+
+def test_las_actividades_sin_id_no_se_pierden(tmp_path):
+    """Sin id no se pueden deduplicar, pero descartarlas sería peor."""
+    f = tmp_path / "activities.json"
+    anonima = actividad(LUNES, 1)
+    del anonima["activityId"]
+    assert save_cache(f, [anonima, actividad(LUNES, 2)]) == 2
+
+
+def test_una_cache_ilegible_se_reconstruye_avisando(tmp_path, caplog):
+    """Se pierde el histórico, sí. Pero que conste por qué.
+
+    Callarse aquí dejaría un sistema que un día empieza a calcular percentiles
+    sobre tres días de datos sin que exista ni una línea que lo explique.
+    """
+    f = tmp_path / "activities.json"
+    f.write_text("[{truncado", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        assert save_cache(f, [actividad(LUNES, 1)]) == 1
+    assert "ilegible" in caplog.text
+    assert load_cached_rides(f).available
+
+
+def test_un_volcado_interrumpido_no_corrompe_la_cache_buena(tmp_path, monkeypatch):
+    """Un `json.dump` a medias deja un fichero truncado.
+
+    Y un JSON truncado no es un fichero que falta -eso se detecta y se dice-: es
+    una caché que existe, que no parsea, y que deja el histórico en cero. Por eso
+    se escribe al lado y se renombra: o está la versión vieja o está la nueva.
+
+    Se simula la muerte del proceso a mitad del volcado escribiendo unos bytes y
+    reventando después, que es exactamente la forma del fallo real.
+    """
+    import app.integrations.activity_cache as mod
+
+    f = tmp_path / "activities.json"
+    save_cache(f, [actividad(LUNES - timedelta(days=i), i) for i in range(50)])
+    original = f.read_text(encoding="utf-8")
+
+    def dump_a_medias(obj, fh, **kw):
+        fh.write('[{"activityId": 1, "act')
+        raise OSError("se acabó el disco a mitad de escribir")
+
+    monkeypatch.setattr(mod.json, "dump", dump_a_medias)
+    with pytest.raises(OSError):
+        save_cache(f, [actividad(LUNES, 999)])
+
+    assert f.read_text(encoding="utf-8") == original, (
+        "la caché buena se ha corrompido a mitad de escritura"
+    )
+    monkeypatch.undo()
+    assert len(load_cached_rides(f).rides) == 50
+
+
+def test_refrescar_pide_la_ventana_larga_y_la_mezcla(tmp_path):
+    f = tmp_path / "activities.json"
+    save_cache(f, [actividad(LUNES - timedelta(days=300), 1)])
+
+    pedido: list[tuple[date, date]] = []
+
+    def fetch(desde: date, hasta: date) -> list[dict]:
+        pedido.append((desde, hasta))
+        return [actividad(LUNES, 2)]
+
+    total = refresh_cache(f, LUNES, days=190, fetch=fetch)
+
+    assert pedido == [(LUNES - timedelta(days=189), LUNES)]
+    assert total == 2, "el refresco ha tirado la actividad de hace 300 días"
+
+
+def test_refrescar_sin_novedades_no_borra_la_cache(tmp_path):
+    """Garmin devolviendo vacío no es motivo para quedarse sin histórico."""
+    f = tmp_path / "activities.json"
+    save_cache(f, [actividad(LUNES - timedelta(days=i), i) for i in range(50)])
+    assert refresh_cache(f, LUNES, fetch=lambda desde, hasta: None) == 50

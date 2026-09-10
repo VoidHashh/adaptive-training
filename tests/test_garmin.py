@@ -264,6 +264,53 @@ def test_el_cliente_sin_conectar_se_niega_a_leer():
 # `None` y ni el log ni el informe distinguían uno de otro.
 
 
+# ---------------------------------------------------------------------------
+# Actividades en crudo
+# ---------------------------------------------------------------------------
+
+
+class ApiConActividades:
+    def __init__(self, crudas):
+        self.crudas = crudas
+        self.pedido = None
+
+    def get_activities_by_date(self, desde, hasta, *a, **kw):  # noqa: ANN001
+        self.pedido = (desde, hasta)
+        return self.crudas
+
+
+def test_las_actividades_en_crudo_salen_sin_tocar():
+    """La caché guarda ESTO y no los `Ride` ya parseados.
+
+    El día que `ride_from_activity` aprenda a leer un campo nuevo, un histórico
+    de objetos normalizados no lo tendría: habría que volver a bajar 180 días a
+    una API que limita por IP. Guardando el diccionario tal cual, ese campo ya
+    está en disco esperando. Por eso este test comprueba identidad y no forma.
+    """
+    crudas = [
+        actividad(activityId=1),
+        actividad(activityId=2, activityType={"typeKey": "running"}),
+    ]
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c._api = ApiConActividades(crudas)
+
+    salida = c.raw_activities(date(2026, 9, 1), date(2026, 9, 7))
+
+    assert salida == crudas, "se ha normalizado o filtrado algo por el camino"
+    assert any(a["activityType"]["typeKey"] == "running" for a in salida), (
+        "la caché tiene que guardar TODO, no solo lo que hoy sabemos leer"
+    )
+    # Garmin quiere las fechas en ISO, no objetos `date`.
+    assert c._api.pedido == ("2026-09-01", "2026-09-07")
+
+
+def test_sin_actividades_se_devuelve_una_lista_y_no_None():
+    """Un `None` colándose hasta `save_cache` vaciaría la caché entera."""
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c._api = ApiConActividades(None)
+    assert c.raw_activities(date(2026, 9, 1), date(2026, 9, 7)) == []
+
+
 class ApiQueFalla:
     """Un API de Garmin en el que todo revienta menos las pulsaciones."""
 

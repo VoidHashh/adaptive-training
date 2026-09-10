@@ -361,7 +361,28 @@ class HevyWrite(Base):
 
 
 class Notification(Base):
-    """Mensajes enviados (o intentados) por Telegram."""
+    """Mensajes enviados (o intentados) por Telegram. Append-only.
+
+    POR QUÉ NO HAY UNIQUE SOBRE (date, kind)
+    ----------------------------------------
+    Lo hubo, y rompía el sistema entero de la peor forma posible.
+
+    Rehacer el check-in es una función declarada -`CheckinIn.day` existe justo
+    para eso-. Con la restricción puesta, el segundo envío del día seguía este
+    camino: se guardaba el check-in, se decidía, se escribía la rutina en Hevy,
+    se ENVIABA el mensaje de Telegram, y al ir a apuntar el envío saltaba el
+    `UNIQUE`. La excepción reventaba la petición y hacía `rollback` de toda la
+    transacción, así que la decisión no quedaba guardada.
+
+    Resultado: el usuario recibía en el móvil un plan que no existía en la base
+    de datos, y la API le contestaba un error de SQLAlchemy ilegible. La
+    restricción no impedía el segundo mensaje -ya se había mandado cuando
+    saltaba-: solo destruía el registro de lo que sí había pasado.
+
+    Cada intento de aviso es una fila. Dos mensajes en el móvil son dos filas,
+    porque el registro tiene que parecerse a la realidad: colapsarlos en uno
+    haría que el histórico dijera que solo se avisó una vez.
+    """
 
     __tablename__ = "notifications"
 
@@ -374,4 +395,4 @@ class Notification(Base):
     error: Mapped[str | None] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    __table_args__ = (UniqueConstraint("date", "kind", name="uq_notification_date_kind"),)
+    __table_args__ = (Index("ix_notifications_date_kind", "date", "kind"),)

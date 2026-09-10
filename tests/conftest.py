@@ -10,16 +10,72 @@ Dos decisiones de fondo:
 2. **Ningún test toca la red ni el disco del usuario.** Lo que necesita disco
    usa `tmp_path`; lo que necesita HTTP usa el doble de `FakeHTTP`. Una batería
    que depende de que Garmin conteste no es una batería, es una apuesta.
+
+La regla 2 dejó de ser una convención y pasó a estar cerrada con llave
+(`sin_red`) el día que se comprobó que no bastaba: ver ahí abajo.
 """
 
 from __future__ import annotations
 
 import copy
+import socket
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+
+# ---------------------------------------------------------------------------
+# El cerrojo
+# ---------------------------------------------------------------------------
+
+
+class RedProhibidaEnTests(RuntimeError):
+    pass
+
+
+@pytest.fixture(autouse=True)
+def sin_red(monkeypatch):
+    """Corta la red a nivel de socket durante toda la batería.
+
+    NO es paranoia de manual. Escribiendo `tests/test_api.py` se descubrió que
+    `POST /api/checkin` construye los clientes de verdad con `_clientes(cfg)`,
+    que el `.env` del usuario tiene todas las claves puestas y que `DRY_RUN`
+    está a `false`. Es decir: un test de la API sobrescribió la rutina REAL del
+    usuario en Hevy y le mandó mensajes REALES de Telegram con fechas de mentira.
+
+    Ningún doble lo habría evitado, porque el fallo no estaba en un doble que
+    faltara sino en una ruta que fabrica sus propios clientes por dentro. Por eso
+    el corte va en el sitio más bajo posible -`socket.connect`- donde da igual
+    qué capa lo intente: httpx, garminconnect o lo que se añada mañana.
+
+    El error dice qué host se intentó, porque un `ConnectionError` pelado en
+    mitad de la batería no se distingue de un test mal escrito.
+
+    Se deja pasar el bucle local: el `ProactorEventLoop` de Windows se fabrica su
+    tubería interna con un socket a 127.0.0.1, y `TestClient` lo necesita para
+    arrancar. Cortarlo también tumbaría la batería entera sin proteger de nada,
+    porque en 127.0.0.1 no hay ni Garmin ni Hevy ni Telegram.
+    """
+    real_connect = socket.socket.connect
+    LOCALES = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+    def prohibido(self, address, *args, **kwargs):  # noqa: ANN001
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host.split("%")[0] in LOCALES:
+            return real_connect(self, address, *args, **kwargs)
+        raise RedProhibidaEnTests(
+            f"un test ha intentado abrir una conexión de red a {address!r}. "
+            f"Los tests no hablan con Garmin, Hevy ni Telegram: si el código bajo "
+            f"prueba necesita un cliente, hay que inyectarle un doble. Si esto "
+            f"salta en una ruta de FastAPI, es que la ruta se fabrica el cliente "
+            f"por dentro y hay que sustituir esa función en el test."
+        )
+
+    monkeypatch.setattr(socket.socket, "connect", prohibido)
+    yield
+    monkeypatch.setattr(socket.socket, "connect", real_connect)
 
 from app.config_loader import load_config
 from app.engine.signals import Checkin, DayMetrics, Ride, Signals
