@@ -196,3 +196,79 @@ def test_sin_config_no_revienta(cfg):
     """`_completitud` se llama antes de que el config esté garantizado."""
     _, avisos = _completitud(ventana(7, 3), None)
     assert any("HRV" in a for a in avisos)
+
+
+# ---------------------------------------------------------------------------
+# El ensayo predice sobre la base que va a existir, no sobre la que hay
+# ---------------------------------------------------------------------------
+#
+# `estado_para_el_ensayo` leía la base tal cual y, si la lectura fallaba, seguía
+# EN FRÍO diciéndolo. Decirlo no arreglaba nada: en frío no hay reglas activas y
+# todas las rachas valen cero, o sea que el ensayo predice DE MENOS, que es el
+# error que el propio módulo señala como el más difícil de detectar porque nunca
+# sorprende.
+#
+# Y el motivo por el que la lectura fallaba no era una avería: era una columna
+# nueva en `models.py` que todavía no estaba en `data/app.db`. La aplicación la
+# añade al arrancar (`init_db` -> `ensure_schema`), así que el ensayo estaba
+# prediciendo sobre una base que iba a dejar de existir en cuanto se levantara
+# el contenedor. Pasó de verdad, con las dos columnas de la persistencia de la
+# progresión.
+
+
+@pytest.fixture
+def base_desfasada(tmp_path, monkeypatch):
+    """Una base real a la que le falta una columna, como la de antes de migrar."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import db as appdb
+    from app.models import Base
+    from app.settings import settings
+
+    ruta = tmp_path / "vieja.db"
+    eng = create_engine(f"sqlite:///{ruta}", future=True)
+    Base.metadata.create_all(eng)
+
+    # SQLite no sabe borrar una columna: se rehace la tabla sin ella.
+    with eng.begin() as c:
+        c.exec_driver_sql("ALTER TABLE exercise_targets RENAME TO viejo")
+        c.exec_driver_sql(
+            "CREATE TABLE exercise_targets ("
+            "id INTEGER PRIMARY KEY, routine_key VARCHAR, exercise_key VARCHAR)"
+        )
+        c.exec_driver_sql("DROP TABLE viejo")
+
+    monkeypatch.setattr(appdb, "engine", eng)
+    monkeypatch.setattr(appdb, "SessionLocal", sessionmaker(bind=eng, future=True))
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{ruta}")
+    return ruta
+
+
+def test_el_ensayo_pone_al_dia_el_esquema_en_vez_de_salir_en_frio(base_desfasada, cfg):
+    from app.cli import estado_para_el_ensayo
+
+    _estado, nota = estado_para_el_ensayo(cfg)
+    assert "NO SE PUDO LEER" not in nota, (
+        "una columna que la aplicación añade al arrancar no puede dejar el "
+        "ensayo prediciendo en frío"
+    )
+    assert "leído de la base de datos" in nota
+
+
+def test_el_ensayo_no_se_inventa_una_base_de_datos_que_no_existe(tmp_path, cfg, monkeypatch):
+    """Poner al día no es lo mismo que crear.
+
+    Migrar un fichero que ya está es continuar lo que la aplicación hace al
+    arrancar; fabricarlo por mirar un informe es dejar rastro donde no había
+    nada.
+    """
+    from app.cli import estado_para_el_ensayo
+    from app.settings import settings
+
+    ruta = tmp_path / "no_existe.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{ruta}")
+
+    _estado, nota = estado_para_el_ensayo(cfg)
+    assert "sin base de datos" in nota
+    assert not ruta.exists(), "el ensayo ha creado una base de datos"

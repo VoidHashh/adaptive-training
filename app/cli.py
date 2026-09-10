@@ -436,9 +436,22 @@ def estado_para_el_ensayo(cfg) -> tuple[EngineState, str]:
     que se equivoca siempre en la misma dirección es el que peor se detecta,
     porque nunca sorprende.
 
-    No escribe nada: se lee y se cierra. Un ensayo en seco que dejara rastro en
-    la base de datos sería peor que no tenerlo, y aquí basta con no llamar a
+    No escribe DATOS: se lee y se cierra. Un ensayo en seco que dejara rastro en
+    el histórico sería peor que no tenerlo, y aquí basta con no llamar a
     `save_state`.
+
+    Sí pone el ESQUEMA al día, y son cosas distintas. `ensure_schema` es lo
+    mismo que hace la aplicación al arrancar, así que no ejecutarlo aquí no
+    evita un efecto: lo aplaza, y mientras tanto hace que el ensayo prediga
+    sobre una base de datos que no es la que va a existir dentro de un minuto.
+    Eso ya pasó: una columna nueva en `models.py` que no estaba todavía en
+    `data/app.db` tiraba la lectura entera y el ensayo salía EN FRÍO -sin
+    reglas activas y con todas las rachas a cero-, es decir, prediciendo de
+    menos, que es justo el error que este módulo dice dos párrafos más arriba
+    que es el más difícil de detectar.
+
+    Lo que sigue sin hacerse es CREAR la base: si no hay fichero, no se
+    inventa uno por mirar.
     """
     frio = EngineState(program_start=cfg.program_start)
     ruta = str(settings.database_url).split("///")[-1]
@@ -447,8 +460,9 @@ def estado_para_el_ensayo(cfg) -> tuple[EngineState, str]:
 
     try:
         from app import repository as repo
-        from app.db import SessionLocal
+        from app.db import SessionLocal, ensure_schema
 
+        ensure_schema()
         with SessionLocal() as s:
             estado = repo.load_state(s, program_start=cfg.program_start)
     except Exception as exc:  # noqa: BLE001
