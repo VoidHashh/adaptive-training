@@ -228,6 +228,42 @@ def test_al_parar_la_aplicacion_el_planificador_se_para(arrancada, monkeypatch):
     assert not vivo.running
 
 
+def test_el_log_level_del_env_se_aplica_de_verdad(arrancada, monkeypatch):
+    """Otro interruptor que no estaba conectado a nada.
+
+    `LOG_LEVEL` solo lo aplicaba `cli.py`. Bajo uvicorn -que es como corre esto
+    en el Umbrel- nadie llamaba a `basicConfig`, el logger raíz se quedaba en
+    WARNING y todos los `log.info` del sistema se tiraban. Poner `DEBUG` para ver
+    por qué el motor decidió lo que decidió no producía ni una línea: parecía que
+    el motor no tuviera nada que contar, y `docker compose logs` -lo que el
+    README manda mirar cuando algo va mal- salía vacío por construcción.
+    """
+    import logging
+
+    monkeypatch.setattr(settings, "scheduler_enabled", False)
+    monkeypatch.setattr(settings, "log_level", "DEBUG")
+    previo = logging.getLogger().level
+    try:
+        with TestClient(app):
+            assert logging.getLogger().isEnabledFor(logging.INFO), (
+                "el logger raíz sigue en WARNING con LOG_LEVEL=DEBUG: los logs "
+                "de la aplicación no llegan a `docker compose logs`"
+            )
+            assert logging.getLogger("app.runner").isEnabledFor(logging.DEBUG)
+    finally:
+        logging.getLogger().setLevel(previo)
+
+
+def test_un_log_level_mal_escrito_no_se_traga_en_silencio():
+    """Caer a WARNING por un typo sería este mismo fallo con otra cara: el
+    usuario pidió DEBUG, no lo vería, y culparía al motor."""
+    from app.settings import Settings
+
+    with pytest.raises(Exception) as exc:
+        Settings(log_level="INFORMACION")
+    assert "LOG_LEVEL" in str(exc.value)
+
+
 def test_la_salud_declara_lo_que_falta(cliente):
     """Un sistema arrancado a medias que contesta "ok" es peor que uno caído,
     porque nadie va a mirar."""

@@ -47,6 +47,33 @@ from app.settings import settings
 log = logging.getLogger(__name__)
 
 
+def _configurar_logs() -> None:
+    """Aplica `LOG_LEVEL`. Sin esto la variable no hacía nada dentro de Docker.
+
+    `logging.basicConfig` solo lo llamaba la CLI, así que bajo `uvicorn` -que es
+    como corre esto en el Umbrel- el logger raíz se quedaba en su WARNING por
+    defecto y todos los `log.info` del sistema se tiraban. Efectos:
+
+    - `LOG_LEVEL=DEBUG` en el `.env`, documentado como la forma de ver por qué el
+      motor decidió lo que decidió, no producía ni una línea. Parecía que el
+      motor no tuviera nada que contar.
+    - `docker compose logs`, que es lo que el README manda mirar cuando algo va
+      mal, salía vacío por construcción salvo avisos y excepciones.
+
+    Se toca el logger RAÍZ y no el de `app`: los mensajes interesantes salen de
+    `app.runner`, `app.engine.*`, `app.integrations.*` y `apscheduler`, y
+    configurar uno por uno garantiza olvidarse de alguno el día que se añada un
+    módulo. `force=True` porque uvicorn ya ha instalado sus manejadores para
+    entonces y sin él `basicConfig` no haría nada, que sería este mismo fallo
+    otra vez.
+    """
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
+
 def get_config():
     """El `config.yaml`, cargado una vez por proceso."""
     if not hasattr(get_config, "_cache"):
@@ -71,6 +98,8 @@ async def lifespan(app: FastAPI):
     trabajos sería mentir.
     """
     from app.scheduler import build_scheduler
+
+    _configurar_logs()
 
     init_db()
     faltan = settings.missing_secrets()

@@ -1,0 +1,31 @@
+# Lo primero de este fichero no es el tamaño de la imagen, son los secretos.
+# `COPY . .` sin esto mete dentro de la imagen el `.env` con las credenciales de
+# Garmin y las claves de Hevy y Telegram, y `data/` con el histórico de
+# entrenamientos, los tokens de sesión de Garmin y la caché de actividades. Una
+# imagen se comparte, se sube a un registro y se queda en las capas para
+# siempre: lo que entra aquí ya no se saca.
+.env
+.env.*
+!.env.example
+data/
+legacy/
+
+# Ruido que además invalidaría la caché de capas en cada build
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+tests/
+.claude/
+COMMIT_MSG.txt
+out.txt
+*.out.txt
+Nuevo Documento de texto.txt
+README*.md

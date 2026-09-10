@@ -1,0 +1,53 @@
+services:
+  app:
+    build: .
+    image: adaptive-training:0.1.0
+    container_name: adaptive-training
+    restart: unless-stopped
+
+    # La zona horaria manda más de lo que parece: los trabajos son a las 06:30,
+    # 09:00 y 22:30 HORA LOCAL, y el día del check-in es el del reloj del
+    # servidor. Un contenedor en UTC decide el día equivocado durante dos horas
+    # cada noche sin quejarse. La de verdad la pone `config.yaml` (`timezone`);
+    # esta es para que los logs y el reloj del sistema digan lo mismo.
+    environment:
+      TZ: Europe/Madrid
+    env_file:
+      - .env
+
+    volumes:
+      # UN SOLO volumen, y montado donde el código espera encontrarlo. Dentro
+      # van la base de datos, los tokens de Garmin, la caché de actividades y
+      # las copias de las rutinas de Hevy. Las copias son lo único que permite
+      # deshacer una escritura en Hevy: si esto no persiste, un error se vuelve
+      # irreversible.
+      - ./data:/app/data
+      # Las reglas se editan sin reconstruir la imagen. En solo lectura porque
+      # la aplicación no lo escribe nunca y así un fallo no puede corromperlo.
+      - ./config.yaml:/app/config.yaml:ro
+
+    ports:
+      # Solo al bucle local. Detrás va el proxy de Umbrel; abrirlo a la red sin
+      # nada delante sería dejar el formulario y el histórico a la vista de
+      # cualquiera que esté en el wifi.
+      - "127.0.0.1:8000:8000"
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=8).status == 200 else 1)"
+      interval: 60s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+    logging:
+      # Sin límite, el log de un servicio que lleva meses encendido se come la
+      # tarjeta del Umbrel, y lo primero que falla al llenarse el disco son las
+      # copias de seguridad de Hevy.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
