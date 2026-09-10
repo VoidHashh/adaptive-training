@@ -129,13 +129,39 @@ class EngineState:
     # no tiene memoria y la descarga podría repetirse o saltarse.
     last_deload_start: date | None = None
 
-    def for_routine(self, routine_key: str, keys: list[str]) -> tuple[dict, dict]:
+    def for_routine(
+        self, routine_key: str, keys: list[str]
+    ) -> tuple[dict[str, bool | None], dict[str, int]]:
         """Proyecta el estado (rutina, ejercicio) al formato que espera
-        `plan_progression`, que indexa solo por ejercicio."""
+        `plan_progression`, que indexa solo por ejercicio.
+
+        `compliance` sale con TRES valores, no dos:
+
+            True  -> en la última sesión se completaron todas las series
+                     efectivas de ese ejercicio.
+            False -> no se completaron.
+            None  -> nadie ha reconciliado nunca ese ejercicio.
+
+        El `None` no es un detalle de tipos. Esto ponía `default=True`, es
+        decir: "no tengo ni un registro de este ejercicio" se convertía en
+        "la última sesión fue perfecta". La puerta de progresión pide
+        exactamente ese dato para subir carga, así que en una instalación
+        recién estrenada -o en cualquier ejercicio nuevo dentro de una rutina
+        vieja- el peso subía apoyado en una sesión que no existe.
+
+        `plan_progression` y `evaluate_gate` ya sabían tratar el `None`
+        (`"no hay registro de la última sesión con el que comparar"`); era
+        esta línea la que lo destruía antes de que llegase hasta ellos.
+
+        `clean_sessions` sí conserva el `0` por defecto, y no es una
+        incoherencia: cero sesiones limpias es un valor honesto que CIERRA la
+        puerta, mientras que un `True` inventado la ABRE.
+        """
         clean = {k: int(self.clean_sessions.get((routine_key, k), 0)) for k in keys}
-        comp = {
-            k: bool(self.compliance.get((routine_key, k), True)) for k in keys
-        }
+        comp: dict[str, bool | None] = {}
+        for k in keys:
+            valor = self.compliance.get((routine_key, k))
+            comp[k] = None if valor is None else bool(valor)
         return comp, clean
 
 

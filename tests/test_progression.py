@@ -24,7 +24,7 @@ import copy
 
 import pytest
 
-from app.engine.progression import evaluate_gate
+from app.engine.progression import evaluate_gate, plan_progression
 from app.engine.rules import RuleError
 
 from tests.conftest import LUNES, sig
@@ -142,6 +142,61 @@ def test_sin_registro_de_la_ultima_sesion_no_se_progresa(cfg):
     abierta, motivo = gate(cfg, sig(LUNES, lower_discomfort=1), compliance=None)
     assert not abierta
     assert "no hay registro" in motivo
+
+
+def test_el_motivo_nombra_a_los_ejercicios_sin_registro(cfg):
+    """Un aviso que nombra su causa se arregla desde el móvil.
+
+    Con una rutina en marcha y un ejercicio nuevo, "no hay registro" a secas
+    es un callejón sin salida: nueve ejercicios y ninguna pista de cuál.
+    """
+    abierta, motivo = evaluate_gate(
+        cfg.raw["progression"], "green", sig(LUNES, lower_discomfort=1),
+        None, "dia_1", False,
+        compliance_por_ejercicio={
+            "prensa_horizontal": True,
+            "gemelo_sentado": True,
+            "hip_thrust_barra": None,
+        },
+    )
+    assert not abierta
+    assert "hip_thrust_barra" in motivo
+    assert "prensa_horizontal" not in motivo, "solo los que faltan, no la lista entera"
+
+
+def test_con_la_rutina_entera_sin_estrenar_no_se_listan_los_nueve(cfg):
+    """El primer arranque. Nombrarlos a todos es ruido, no información: son
+    todos, y el mensaje de Telegram no es un volcado del config."""
+    _, motivo = evaluate_gate(
+        cfg.raw["progression"], "green", sig(LUNES, lower_discomfort=1),
+        None, "dia_1", False,
+        compliance_por_ejercicio={"prensa_horizontal": None, "gemelo_sentado": None},
+    )
+    assert motivo == "no hay registro de la última sesión con el que comparar"
+
+
+def test_sin_detalle_el_motivo_sigue_siendo_el_de_siempre(cfg):
+    """`compliance_por_ejercicio` es opcional: quien no lo pase no se rompe."""
+    _, motivo = gate(cfg, sig(LUNES, lower_discomfort=1), compliance=None)
+    assert motivo == "no hay registro de la última sesión con el que comparar"
+
+
+def test_una_rutina_sin_ejercicios_no_abre_la_puerta_por_vacuidad(cfg):
+    """`all([])` es True, y ahí está la trampa.
+
+    Una rutina sin ejercicios no valida hoy como error, así que puede llegar
+    aquí. Si el cumplimiento global se resolviera con `all()` a secas, "no hay
+    nada que comprobar" se convertiría en "todo comprobado y correcto". No
+    tiene consecuencia inmediata -sin ejercicios no hay nada que subir-, pero
+    es la misma confusión entre vacío y conforme que este arreglo persigue.
+    """
+    raw = copy.deepcopy(cfg.raw)
+    raw["routines"]["dia_1"]["exercises"] = []
+    plan = plan_progression(
+        raw, "dia_1", sig(LUNES, lower_discomfort=1), "green", compliance={},
+    )
+    assert not plan.gate_open
+    assert "no hay registro" in plan.gate_reason
 
 
 def test_en_semana_de_descarga_la_progresion_esta_congelada(cfg):

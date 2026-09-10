@@ -187,6 +187,28 @@ def _fmt_kg(v: float) -> str:
     return s.replace(".", ",")  # 62,5 kg, que es como se lee en España
 
 
+def _por_que_sin_registro(detalle: dict[str, bool | None] | None) -> str:
+    """Motivo de cerrar la puerta por falta de registro, nombrando a los
+    ejercicios culpables cuando eso sirve de algo.
+
+    Con la rutina entera sin estrenar la lista no aporta nada -son todos-, y
+    en el primer arranque llenaría el mensaje de Telegram de ruido. Con uno o
+    dos ejercicios nuevos dentro de una rutina en marcha sí aporta: es la
+    diferencia entre "hoy no se sube carga" y "reconcilia el hip thrust".
+    """
+    base = "no hay registro de la última sesión con el que comparar"
+    if not detalle:
+        return base
+    sin = [k for k, v in detalle.items() if v is None]
+    if not sin or len(sin) == len(detalle):
+        return base
+    return (
+        f"{base} en: {', '.join(sin)}. Del resto sí se sabe, pero la puerta no "
+        f"se abre a medias: subir carga apoyándose solo en los ejercicios que "
+        f"tienen registro es progresar con la evidencia elegida."
+    )
+
+
 def evaluate_gate(
     prog_cfg: dict[str, Any],
     light: str,
@@ -194,8 +216,13 @@ def evaluate_gate(
     compliance_ok: bool | None,
     routine_key: str,
     deload_active: bool = False,
+    compliance_por_ejercicio: dict[str, bool | None] | None = None,
 ) -> tuple[bool, str]:
-    """Puerta general. Devuelve (abierta, motivo)."""
+    """Puerta general. Devuelve (abierta, motivo).
+
+    `compliance_por_ejercicio` es opcional y solo sirve para redactar el
+    motivo: la decisión la toma `compliance_ok`, que ya viene resuelto.
+    """
     if deload_active and (prog_cfg.get("deload") or {}).get("freeze_progression", True):
         return False, "semana de descarga: la progresión está congelada"
 
@@ -205,7 +232,7 @@ def evaluate_gate(
 
     if gate.get("require_all_sets_at_target_reps", True):
         if compliance_ok is None:
-            return False, "no hay registro de la última sesión con el que comparar"
+            return False, _por_que_sin_registro(compliance_por_ejercicio)
         if not compliance_ok:
             return False, "en la última sesión no se completaron todas las series efectivas"
 
@@ -640,12 +667,37 @@ def plan_progression(
     )
 
     # Cumplimiento global: la puerta general mira la rutina entera.
-    vals = [compliance.get(e.get("key")) for e in ejercicios]
-    known = [v for v in vals if v is not None]
-    global_compliance = all(known) if known else None
+    #
+    # Son TRES estados, no dos, y se resuelven con el mismo criterio que
+    # `weekend_summary`: si lo confirmado ya decide, lo que falta da igual; si
+    # no, se declara que no se sabe.
+    #
+    #   algún False -> False. Hay un incumplimiento confirmado, y que otros
+    #                  ejercicios no tengan registro no lo va a borrar.
+    #   algún None  -> None.  Los conocidos son todos True, pero un
+    #                  desconocido podría ser False: "todas las series
+    #                  efectivas" NO está confirmado.
+    #   ninguno     -> True.
+    #
+    # El caso de en medio es el que estaba mal. `all(known)` devolvía True con
+    # 3 de 8 ejercicios registrados: la puerta se abría con la evidencia que
+    # había, ignorando los 5 de los que no se sabía nada. Añadir un ejercicio
+    # nuevo a una rutina en marcha bastaba para subir carga sin haberlo hecho
+    # nunca.
+    por_ejercicio: dict[str, bool | None] = {}
+    for e in ejercicios:
+        por_ejercicio[str(e.get("key"))] = compliance.get(e.get("key"))
+    valores = list(por_ejercicio.values())
+    if any(v is False for v in valores):
+        global_compliance: bool | None = False
+    elif not valores or any(v is None for v in valores):
+        global_compliance = None
+    else:
+        global_compliance = True
 
     gate_open, gate_reason = evaluate_gate(
-        prog_cfg, light, signals, global_compliance, routine_key, deload_active
+        prog_cfg, light, signals, global_compliance, routine_key, deload_active,
+        compliance_por_ejercicio=por_ejercicio,
     )
     (sets_ok, sets_why), (reps_ok, reps_why) = evaluate_volume_gates(
         prog_cfg, signals, signals.day, last_routine_light

@@ -294,6 +294,134 @@ def test_el_estado_no_avanza_si_la_sesion_aun_no_se_ha_ejecutado(cfg_summer):
 
 
 # ---------------------------------------------------------------------------
+# "No lo sé" no es "sí": el cumplimiento de la sesión anterior
+# ---------------------------------------------------------------------------
+#
+# `for_routine` proyectaba la ausencia de registro a `True`, es decir: "no
+# tengo ni un apunte de este ejercicio" se convertía en "la última sesión se
+# completó entera". La puerta general pide justo ese dato para subir carga, y
+# `evaluate_gate` ya sabía tratar el `None` -lo cerraba nombrando el motivo-,
+# pero nunca llegaba a verlo. Con una hernia L4-L5 la dirección del fallo
+# importa: la puerta se abría, no se cerraba.
+
+
+def test_un_ejercicio_sin_registro_llega_al_motor_como_no_lo_se(cfg):
+    st = EngineState()
+    comp, clean = st.for_routine("dia_1", ["prensa_horizontal"])
+    assert comp["prensa_horizontal"] is None
+    assert clean["prensa_horizontal"] == 0, (
+        "la racha sí conserva el cero, y no es incoherente: cero sesiones "
+        "limpias es un valor honesto que CIERRA la puerta; un True inventado "
+        "la abre"
+    )
+
+
+def test_un_registro_de_verdad_sigue_pasando_tal_cual(cfg):
+    st = EngineState(compliance={("dia_1", "prensa_horizontal"): False,
+                                 ("dia_1", "gemelo_sentado"): True})
+    comp, _ = st.for_routine("dia_1", ["prensa_horizontal", "gemelo_sentado"])
+    assert comp["prensa_horizontal"] is False
+    assert comp["gemelo_sentado"] is True
+
+
+def test_el_registro_de_otra_rutina_no_vale_por_esta(cfg):
+    """La clave es (rutina, ejercicio). Si no lo fuera, haber cumplido en
+    `dia_3` abriría la puerta del `dia_1` sin haberlo entrenado."""
+    st = EngineState(compliance={("dia_3", "prensa_horizontal"): True})
+    comp, _ = st.for_routine("dia_1", ["prensa_horizontal"])
+    assert comp["prensa_horizontal"] is None
+
+
+def test_en_frio_la_puerta_se_cierra_en_vez_de_abrirse(cfg):
+    """Instalación recién estrenada: no hay ni una sesión reconciliada."""
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), EngineState())
+    assert d.progression is not None
+    assert not d.progression.gate_open
+    assert "no hay registro" in d.progression.gate_reason
+    assert not d.progression.changes, (
+        "y no se mueve nada: la puerta gobierna también el volumen"
+    )
+
+
+def test_un_ejercicio_nuevo_en_una_rutina_en_marcha_frena_a_toda_la_rutina(cfg):
+    """El caso de en medio, que es el que estaba peor.
+
+    Ocho ejercicios con registro y uno estrenado hoy. `all(known)` devolvía
+    True: la puerta se abría con la evidencia que había e ignoraba la que
+    faltaba. Progresar con la evidencia elegida es progresar a ciegas.
+    """
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    nuevo = keys[-1]
+    st = EngineState(
+        compliance={("dia_1", k): True for k in keys if k != nuevo},
+        clean_sessions={("dia_1", k): 5 for k in keys},
+    )
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+
+    assert not d.progression.gate_open
+    assert nuevo in d.progression.gate_reason, "hay que decir CUÁL falta"
+    assert not d.progression.changes
+
+
+def test_con_todos_registrados_y_cumplidos_la_puerta_se_abre(cfg):
+    """El contraste. Si esto no pasara, el arreglo habría congelado el motor
+    entero en vez de tapar un agujero."""
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    st = EngineState(
+        compliance={("dia_1", k): True for k in keys},
+        clean_sessions={("dia_1", k): 5 for k in keys},
+    )
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+
+    assert d.progression.gate_open, d.progression.gate_reason
+    assert d.progression.changes, "con todo en regla algo tiene que subir"
+
+
+def test_una_sola_sesion_reconciliada_desbloquea_la_rutina_entera(cfg):
+    """La otra mitad del arreglo, y la que impide que sea un cierre permanente.
+
+    Cerrar la puerta ante la falta de registro solo es aceptable si el registro
+    se consigue. `advance_state` recorre TODOS los ejercicios de la sesión y a
+    los que no aparecen en `executed` les pone False, no los deja en None: tras
+    una sesión reconciliada no queda ni un `None` en la rutina.
+
+    Si algún día un ejercicio del config dejara de llegar a la sesión, esa
+    clave se quedaría en None para siempre y la rutina no volvería a progresar.
+    Este test es la alarma de eso.
+    """
+    st = EngineState()
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+    st = advance_state(st, d, executed={e["key"]: True for e in d.session.exercises})
+
+    keys_cfg = [e["key"] for e in cfg.raw["routines"][d.session.routine_key]["exercises"]]
+    comp, _ = st.for_routine(d.session.routine_key, keys_cfg)
+    sin_registro = [k for k, v in comp.items() if v is None]
+    assert not sin_registro, (
+        f"estos ejercicios están en config.yaml pero no llegan a la sesión, "
+        f"así que no se reconcilian nunca y congelan la rutina: {sin_registro}"
+    )
+
+
+def test_un_incumplimiento_confirmado_manda_sobre_los_que_faltan(cfg):
+    """Si lo confirmado ya decide, lo que falta da igual.
+
+    Es el criterio de `weekend_summary`. Un False confirmado cierra la puerta
+    por incumplimiento, no por falta de registro: el motivo tiene que decir la
+    verdad, porque es lo que se lee en el móvil.
+    """
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    st = EngineState(
+        compliance={("dia_1", keys[0]): False, ("dia_1", keys[1]): None},
+        clean_sessions={("dia_1", k): 5 for k in keys},
+    )
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+
+    assert not d.progression.gate_open
+    assert "no se completaron" in d.progression.gate_reason
+    assert "no hay registro" not in d.progression.gate_reason
+
+
+# ---------------------------------------------------------------------------
 # Serialización
 # ---------------------------------------------------------------------------
 

@@ -88,9 +88,13 @@ def load_state(session: Session, *, program_start: date | None = None) -> Engine
     for row in session.scalars(select(ExerciseTarget)).all():
         clave = (row.routine_key, row.exercise_key)
         state.clean_sessions[clave] = int(row.clean_streak or 0)
-        # `last_compliant` nulo = todavía no se ha entrenado ese ejercicio. El
-        # motor trata la ausencia como True (`for_routine` usa `default=True`),
-        # así que un ejercicio estrenado no arranca penalizado.
+        # `last_compliant` nulo = todavía no se ha reconciliado ese ejercicio.
+        # La clave se deja AUSENTE a propósito, y hay que no tocarlo: guardar
+        # un False de relleno cerraría la progresión acusando de un fallo que
+        # nadie ha cometido, y guardar un True la abriría sobre una sesión que
+        # no existe. `for_routine` propaga esa ausencia como `None` y
+        # `evaluate_gate` la trata como lo que es: no se sabe, luego no se
+        # sube carga hoy.
         if row.last_compliant is not None:
             state.compliance[clave] = bool(row.last_compliant)
         # La carga vigente. Un JSON ilegible NO se trata como "este ejercicio

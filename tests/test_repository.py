@@ -263,17 +263,23 @@ def test_una_base_vacia_da_un_estado_limpio_y_no_un_error(db):
     assert estado.program_start == LUNES, "esto sí viene, pero del config"
 
 
-def test_un_ejercicio_sin_estrenar_no_arranca_penalizado(db):
-    """`compliance` ausente vale True en el motor (`for_routine`). Guardar un
-    False por defecto cerraría la progresión de un ejercicio nuevo sin que
-    nadie hubiera fallado nada."""
+def test_un_ejercicio_sin_estrenar_no_se_guarda_ni_como_si_ni_como_no(db):
+    """La ausencia se conserva como ausencia hasta arriba.
+
+    Guardar un False de relleno acusaría de un incumplimiento inventado;
+    guardar un True abriría la progresión sobre una sesión que no ha existido.
+    Lo correcto es que no haya fila y que el motor reciba `None`.
+    """
     estado = EngineState(clean_sessions={("dia_1", "sentadilla"): 0})
     save_state(db, estado, day=LUNES)
 
     vuelto = load_state(db)
     assert ("dia_1", "sentadilla") not in vuelto.compliance
     comp, _ = vuelto.for_routine("dia_1", ["sentadilla"])
-    assert comp["sentadilla"] is True
+    assert comp["sentadilla"] is None, (
+        "un True aquí es el fallo silencioso: convierte 'no tengo registro' "
+        "en 'la última sesión fue perfecta' y abre la puerta de la carga"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -353,22 +359,46 @@ def test_la_racha_se_acumula_entre_reinicios_y_el_programa_progresa(db, cfg):
     assert any(v > 0 for v in rachas.values()), f"todas las rachas a cero: {rachas}"
 
 
-def test_sin_guardar_el_estado_no_sube_ninguna_carga(db, cfg):
+def test_sin_guardar_el_estado_no_se_mueve_absolutamente_nada(db, cfg):
     """El contraste que le da valor al test de arriba.
 
-    Mismo bucle, tirando el estado cada día. Si aquí también subiera la carga,
-    el test anterior no estaría midiendo la memoria sino otra cosa.
+    Mismo bucle, tirando el estado cada día.
+
+    Este test comprobaba antes algo más flojo: que sin memoria no subiera la
+    CARGA, dando por bueno que el volumen sí subiera. Y subía: 12 anuncios de
+    subida en tres semanas, repitiendo los mismos -`gemelo_sentado` 12→13 el
+    día 7 y otra vez el día 14-, que es la firma exacta de la amnesia. Anunciar
+    para siempre, avanzar nunca.
+
+    El motivo era `for_routine`, que convertía "no tengo ni un registro de este
+    ejercicio" en "la última sesión fue perfecta". La puerta general se abría
+    con eso, y la puerta gobierna también el volumen. Un contenedor que
+    perdiera la base de datos habría seguido mandando su mensaje cada mañana,
+    con subidas inventadas, sin un solo error en el log.
+
+    Ahora la ausencia de registro cierra la puerta: sin memoria no se mueve
+    nada.
     """
-    subidas = []
+    decisiones = []
     for i in range(21):
         dia = LUNES + timedelta(days=i)
-        d = decide(cfg, dia, sig_completa(dia), EngineState(program_start=cfg.program_start))
-        subidas += d.progression.changes if d.progression else []
+        decisiones.append(
+            decide(cfg, dia, sig_completa(dia), EngineState(program_start=cfg.program_start))
+        )
 
-    assert subidas, "el escenario ya no progresa en absoluto; el test hay que rehacerlo"
-    assert not [e for e in subidas if e.kind == "load"], (
-        "sin memoria no debería poder subir carga: revisa qué mide el test anterior"
-    )
+    subidas = [
+        e for d in decisiones for e in (d.progression.changes if d.progression else [])
+    ]
+    assert not subidas, f"sin memoria no debería moverse nada, y se movió: {subidas}"
+
+    # Y que no se mueva por el motivo correcto, no porque el escenario se haya
+    # quedado por el camino sin una sola sesión de fuerza. Sin esta parte el
+    # test de arriba pasaría aunque `decide` devolviera siempre None.
+    con_rutina = [d.progression for d in decisiones if d.progression]
+    assert con_rutina, "el escenario ya no tiene ni una sesión de fuerza; rehazlo"
+    assert not any(p.gate_open for p in con_rutina)
+    motivos = {p.gate_reason for p in con_rutina}
+    assert any("no hay registro" in m for m in motivos), motivos
 
 
 # ---------------------------------------------------------------------------
