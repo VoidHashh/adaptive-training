@@ -14,9 +14,26 @@ Operadores: gte, gt, lte, lt, eq, ne, in, not_in
             gt_adaptive, gte_adaptive, lt_adaptive, lte_adaptive
                 -> comparan contra un umbral de `adaptive_thresholds`, que se
                    recalcula cada día contra la propia distribución histórica
+            gt_option, gte_option, lt_option, lte_option, eq_option, ne_option
+                -> comparan contra una opción del propio YAML, nombrada por su
+                   ruta: `{gt_option: cycling.weekend.total_hours_threshold}`
 
 Modificador: consecutive_days: N
                 -> la condición debe cumplirse hoy Y los N-1 días anteriores
+
+POR QUÉ EXISTE `_option`
+------------------------
+Sin él, un umbral se escribe dos veces: una en la sección que lo documenta y
+otra, como literal, dentro de la regla. Y entonces las dos copias se separan.
+Pasó: `cycling.weekend.total_hours_threshold: 2.5` llevaba semanas con un
+comentario de calibración explicando por qué era 2,5, y la regla `resaca_finde`
+comparaba contra un `4.0` escrito a mano que no se alcanzaba nunca. La opción
+no estaba mal puesta: es que no la leía nadie.
+
+Un umbral adaptativo puede valer `None` legítimamente -no hay historial
+suficiente- y por eso su rama se salta la regla y lo anota. Una opción NO: si
+la ruta no existe o no es un número, el YAML está mal escrito, y eso es un
+error de arranque, no un dato que falte. Se levanta `RuleError`.
 
 LÓGICA DE TRES VALORES
 ----------------------
@@ -65,11 +82,46 @@ COMPARISONS = {
     "not_in": lambda a, b: a not in b,
 }
 
-_ADAPTIVE_SUFFIX = "_adaptive"
+ADAPTIVE_SUFFIX = "_adaptive"
+OPTION_SUFFIX = "_option"
 
 
 class RuleError(ValueError):
     """Regla mal escrita en el YAML. Es un error de programación, no de datos."""
+
+
+def resolve_option(path: Any, options: dict[str, Any] | None) -> float:
+    """Devuelve el número que hay en `path` ('a.b.c') dentro del YAML crudo.
+
+    Pública a propósito: el `config_loader` la usa para validar en el arranque
+    exactamente lo mismo que el motor resolverá a las 06:30. Si fueran dos
+    implementaciones separadas podrían dejar de coincidir, que es justo la
+    familia de fallo que este operador viene a cerrar.
+
+    Todo lo que no sea un número es error duro. Un `bool` tampoco vale, aunque
+    en Python sea un `int`: comparar 2,5 horas contra `True` da un resultado
+    perfectamente creíble y completamente inventado.
+    """
+    ruta = str(path)
+    if not isinstance(options, dict):
+        raise RuleError(
+            f"la opción '{ruta}' no se puede resolver: no se ha pasado el config"
+        )
+
+    node: Any = options
+    recorrido: list[str] = []
+    for parte in ruta.split("."):
+        if not isinstance(node, dict) or parte not in node:
+            hasta = f" (se llegó hasta '{'.'.join(recorrido)}')" if recorrido else ""
+            raise RuleError(f"la opción '{ruta}' no existe en config.yaml{hasta}")
+        node = node[parte]
+        recorrido.append(parte)
+
+    if isinstance(node, bool) or not isinstance(node, (int, float)):
+        raise RuleError(
+            f"la opción '{ruta}' vale {node!r} y un umbral tiene que ser un número"
+        )
+    return node
 
 
 @dataclass
@@ -115,10 +167,17 @@ class LightDecision:
 
 @dataclass
 class _Ctx:
-    """Acumula lo aprendido durante la evaluación, para poder explicarla."""
+    """Acumula lo aprendido durante la evaluación, para poder explicarla.
+
+    Lleva además `options`, que es lo único que entra en vez de salir: el YAML
+    crudo contra el que se resuelven los operadores `_option`. Viaja aquí y no
+    como parámetro suelto porque si no habría que pasarlo por las cuatro
+    funciones de la evaluación sin que ninguna intermedia lo mire.
+    """
 
     missing: list[str] = field(default_factory=list)
     detail: list[str] = field(default_factory=list)
+    options: dict[str, Any] | None = None
 
 
 def _kleene_all(results: list[bool | None]) -> bool | None:
@@ -197,8 +256,25 @@ def _eval_ops(
 
     results: list[bool | None] = []
     for op, operand in ops.items():
-        if op.endswith(_ADAPTIVE_SUFFIX):
-            base_op = op[: -len(_ADAPTIVE_SUFFIX)]
+        if op.endswith(OPTION_SUFFIX):
+            base_op = op[: -len(OPTION_SUFFIX)]
+            fn = COMPARISONS.get(base_op)
+            if fn is None:
+                raise RuleError(f"operador desconocido: {op}")
+            # Aquí NO se anota como dato que falta: una opción ausente no es un
+            # hueco en los datos del día, es una regla mal escrita.
+            threshold = resolve_option(operand, ctx.options)
+            ok = fn(value, threshold)
+            results.append(ok)
+            if ok:
+                ctx.detail.append(
+                    f"{label} = {_fmt(value)} {base_op} {_fmt(threshold)} "
+                    f"({operand})"
+                )
+            continue
+
+        if op.endswith(ADAPTIVE_SUFFIX):
+            base_op = op[: -len(ADAPTIVE_SUFFIX)]
             threshold = signals.adaptive.get(operand)
             if threshold is None:
                 ctx.missing.append(str(operand))
@@ -237,7 +313,12 @@ def _fmt(value: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def evaluate_rule(rule: dict[str, Any], signals: Signals, level: str = "") -> RuleResult:
+def evaluate_rule(
+    rule: dict[str, Any],
+    signals: Signals,
+    level: str = "",
+    options: dict[str, Any] | None = None,
+) -> RuleResult:
     name = rule.get("name", "<sin nombre>")
     result = RuleResult(name=name, level=level, status=NOT_FIRED)
     result.description = str(rule.get("description", "")).strip()
@@ -253,7 +334,7 @@ def evaluate_rule(rule: dict[str, Any], signals: Signals, level: str = "") -> Ru
             result.detail = [f"solo se evalúa: {', '.join(sorted(wanted))}"]
             return result
 
-    ctx = _Ctx()
+    ctx = _Ctx(options=options)
     outcome = _eval_expr(rule.get("when"), signals, ctx)
 
     result.missing = ctx.missing
@@ -294,7 +375,7 @@ def evaluate_light(config: Any, signals: Signals) -> LightDecision:
     for level in ("red", "amber"):
         level_fired: list[RuleResult] = []
         for rule in thresholds.get(level, []) or []:
-            res = evaluate_rule(rule, signals, level=level)
+            res = evaluate_rule(rule, signals, level=level, options=raw)
             evaluated.append(res)
             if res.status == FIRED:
                 level_fired.append(res)

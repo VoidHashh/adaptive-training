@@ -25,7 +25,13 @@ from typing import Any
 
 import yaml
 
-from app.engine.rules import COMPARISONS
+from app.engine.rules import (
+    ADAPTIVE_SUFFIX,
+    COMPARISONS,
+    OPTION_SUFFIX,
+    RuleError,
+    resolve_option,
+)
 
 
 def _strip_accents(text: str) -> str:
@@ -470,25 +476,78 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"adaptive_thresholds.{name}: min_days_required no puede superar window_days",
         )
 
-    # Toda referencia `gt_adaptive` desde una regla debe existir aquí.
-    def _check_adaptive_refs(node: Any, rule_name: str) -> None:
-        if isinstance(node, dict):
-            for k, v in node.items():
-                if k == "gt_adaptive":
-                    require(
-                        v in adaptive,
-                        f"la regla '{rule_name}' referencia el umbral adaptativo "
-                        f"'{v}', que no está definido en adaptive_thresholds",
-                    )
-                else:
-                    _check_adaptive_refs(v, rule_name)
-        elif isinstance(node, list):
+    # --- operadores: el nombre y, si lo lleva, aquello a lo que apunta -------
+    #
+    # Un operador mal escrito dentro de una regla del semáforo no daba error de
+    # arranque: `evaluate_rule` levanta `RuleError` cuando lo encuentra, o sea a
+    # las 06:30 y con el proceso ya decidiendo. Aquí se comprueba antes.
+    #
+    # Y con los dos operadores que apuntan a otro sitio se comprueba además el
+    # destino, cada uno con su criterio:
+    #   `_adaptive` -> el umbral tiene que estar declarado en
+    #                  `adaptive_thresholds`. Su VALOR puede faltar un día
+    #                  concreto (poco historial) y eso es legítimo.
+    #   `_option`   -> la ruta tiene que resolver a un número HOY, con este
+    #                  fichero delante. No hay un mañana en el que aparezca.
+    def check_op_name(op: Any, where: str) -> None:
+        base = str(op)
+        if base.endswith(OPTION_SUFFIX):
+            base = base[: -len(OPTION_SUFFIX)]
+        elif base.endswith(ADAPTIVE_SUFFIX):
+            base = base[: -len(ADAPTIVE_SUFFIX)]
+        require(
+            base in COMPARISONS,
+            f"{where}: operador desconocido '{op}'. "
+            f"Válidos: {', '.join(sorted(COMPARISONS))} "
+            f"(y sus variantes '_adaptive' y '_option')",
+        )
+
+    def check_op_target(op: Any, operand: Any, where: str) -> None:
+        nombre = str(op)
+        if nombre.endswith(ADAPTIVE_SUFFIX):
+            require(
+                operand in adaptive,
+                f"{where}: referencia el umbral adaptativo '{operand}', que no "
+                f"está definido en adaptive_thresholds",
+            )
+        elif nombre.endswith(OPTION_SUFFIX):
+            # Se resuelve con la MISMA función que usará el motor por la mañana.
+            # Dos implementaciones separadas podrían dejar de coincidir, y esa es
+            # exactamente la avería que este operador viene a cerrar.
+            try:
+                resolve_option(operand, data)
+            except RuleError as e:
+                require(False, f"{where}: {e}")
+
+    # Recorre el `when` de una regla del semáforo, que es el único con gramática
+    # anidada (`all`/`any`/`not` + señales).
+    def check_when(node: Any, where: str) -> None:
+        if isinstance(node, list):
             for item in node:
-                _check_adaptive_refs(item, rule_name)
+                check_when(item, where)
+            return
+        if not isinstance(node, dict):
+            return
+        for k, v in node.items():
+            if k in ("all", "any", "not"):
+                check_when(v, where)
+                continue
+            # `k` es una señal. Su valor es un diccionario de operadores, o el
+            # azúcar `{fatigue: 7}`, que no lleva operador que revisar.
+            if not isinstance(v, dict):
+                continue
+            for op, operand in v.items():
+                if op == "consecutive_days":
+                    continue
+                check_op_name(op, f"{where}, señal '{k}'")
+                check_op_target(op, operand, f"{where}, señal '{k}'")
 
     for light in ("red", "amber"):
         for rule in data["thresholds"].get(light, []):
-            _check_adaptive_refs(rule.get("when"), rule.get("name", "<sin nombre>"))
+            check_when(
+                rule.get("when"),
+                f"la regla '{rule.get('name', '<sin nombre>')}'",
+            )
 
     # --- HIIT ---------------------------------------------------------------
     hiit = data["hiit"]
@@ -911,16 +970,9 @@ def _validate(data: dict[str, Any]) -> list[str]:
             require(False, f"{where}: 'when' debe ser un diccionario de operadores")
             return
         require(bool(when), f"{where}: 'when' está vacío, no compara nada")
-        for op in when:
-            base = str(op)
-            if base.endswith("_adaptive"):
-                base = base[: -len("_adaptive")]
-            require(
-                base in COMPARISONS,
-                f"{where}: operador desconocido '{op}'. "
-                f"Válidos: {', '.join(sorted(COMPARISONS))} "
-                f"(y su variante '_adaptive')",
-            )
+        for op, operand in when.items():
+            check_op_name(op, where)
+            check_op_target(op, operand, where)
 
     def check_keys(obj: Any, allowed: set[str], where: str) -> None:
         if not isinstance(obj, dict):

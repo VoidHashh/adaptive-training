@@ -379,10 +379,16 @@ thresholds:
       # (actividades de Garmin), no lo que se recomendó.
       only_on_weekday: [monday]
       requires: [weekend_intense_rides, weekend_total_hours]
+      # Los dos umbrales viven en `cycling.weekend`, que es donde están sus
+      # comentarios de calibración, y se leen de ahí con `_option`. Antes
+      # estaban escritos aquí como literales, y las dos copias se separaron: la
+      # sección decía 2,5 h y esta regla comparaba contra 4,0 h, que con el
+      # volumen actual no se alcanza nunca. La rama de las horas llevaba
+      # semanas muerta sin que nada lo dijera.
       when:
         any:
-          - {weekend_intense_rides: {gte: 1}}
-          - {weekend_total_hours: {gt: 4.0}}
+          - {weekend_intense_rides: {gte_option: cycling.weekend.intense_rides_threshold}}
+          - {weekend_total_hours: {gt_option: cycling.weekend.total_hours_threshold}}
 
 
 # -----------------------------------------------------------------------------
@@ -902,6 +908,11 @@ cycling:
   # ---------------------------------------------------------------------------
   # Regla del fin de semana (alimenta `resaca_finde` en thresholds.amber)
   # ---------------------------------------------------------------------------
+  # Los dos umbrales de aquí abajo los lee la regla `resaca_finde` con el
+  # operador `_option`, nombrándolos por su ruta. Hasta ahora no los leía nadie:
+  # la regla llevaba sus propios literales y estos dos números eran documentación
+  # de un comportamiento que el motor no tenía. Cambiarlos aquí cambia lo que
+  # decide el lunes; es el único sitio donde se tocan.
   weekend:
     days: [saturday, sunday]
     # RECALIBRAR: este valor debe SUBIR si tu volumen semanal aumenta. Está
