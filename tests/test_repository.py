@@ -63,6 +63,19 @@ def estado_lleno():
     return EngineState(
         clean_sessions={("dia_1", "hip_thrust_barra"): 2, ("dia_2", "remo_t_apoyado"): 0},
         compliance={("dia_1", "hip_thrust_barra"): True, ("dia_2", "remo_t_apoyado"): False},
+        current_sets={
+            ("dia_1", "hip_thrust_barra"): [
+                {"type": "normal", "reps": 10, "weight_kg": 62.5},
+                {"type": "normal", "reps": 10, "weight_kg": 62.5},
+            ],
+            ("dia_2", "remo_t_apoyado"): [{"type": "normal", "reps": 12, "weight_kg": 40.0}],
+        },
+        # Distintos entre sí y distintos de cero: un cero se confundiría con
+        # "nunca guardado" y con el defecto de la columna.
+        sessions_since_progress={
+            ("dia_1", "hip_thrust_barra"): 3,
+            ("dia_2", "remo_t_apoyado"): 7,
+        },
         last_routine_light={"dia_1": "green", "dia_2": "amber"},
         active_rules=[
             ActiveRule(
@@ -135,6 +148,15 @@ def test_el_estado_sobrevive_a_la_ida_y_la_vuelta(db, estado_lleno):
 
     assert vuelto.clean_sessions == estado_lleno.clean_sessions
     assert vuelto.compliance == estado_lleno.compliance
+    assert vuelto.current_sets == estado_lleno.current_sets, (
+        "la carga vigente no ha sobrevivido: el ejercicio volvería al peso de "
+        "partida de config.yaml"
+    )
+    assert vuelto.sessions_since_progress == estado_lleno.sessions_since_progress, (
+        "el turno en la cola no ha sobrevivido: al reiniciar, todos los "
+        "ejercicios volverían a empatar a cero y el cupo lo ganaría siempre el "
+        "primero de la rutina"
+    )
     assert vuelto.last_routine_light == estado_lleno.last_routine_light
     assert vuelto.pending_strength == estado_lleno.pending_strength
     assert vuelto.program_start == estado_lleno.program_start
@@ -441,3 +463,224 @@ def test_decidir_dos_veces_el_mismo_dia_deja_rastro_de_la_primera(db, cfg):
     assert sum(1 for f in todas if f.is_current) == 1
     assert current_decision(db, LUNES).light == segunda.light
     assert segunda.light == "red", "el escenario ya no cambia el semáforo; rehacer"
+
+
+# ---------------------------------------------------------------------------
+# La carga progresada se acumula
+# ---------------------------------------------------------------------------
+
+
+def _tope_vigente(session, rutina: str, ejercicio: str) -> float | None:
+    """El peso de la serie efectiva más pesada, leído de la base de datos."""
+    estado = load_state(session)
+    series = estado.current_sets.get((rutina, ejercicio))
+    if not series:
+        return None
+    pesos = [s.get("weight_kg") or 0 for s in series]
+    return max(pesos) if any(pesos) else None
+
+
+def test_la_carga_progresada_se_acumula_en_vez_de_reiniciarse(db, cfg):
+    """Tres progresiones seguidas del mismo ejercicio tienen que SUMAR.
+
+    Este es el test del fallo más caro que ha tenido el proyecto, y no daba
+    ningún error. La sesión se construía siempre desde `config.yaml` y el
+    incremento se sumaba encima, así que la carga oscilaba entre el peso de
+    partida y ese peso más un escalón, para siempre. Telegram anunciaba
+    "100→105 kg" cada pocas semanas, Hevy mostraba 105 ese día, y la siguiente
+    vez que tocaba esa rutina volvía a 100. Visto desde fuera era un sistema
+    que progresa; medido, era uno que no se mueve.
+
+    Se simulan varios meses entrenando todo lo que se manda, y se mira la carga
+    VIGENTE que queda guardada, no la que se escribe hoy: una semana de descarga
+    escribe menos a propósito y eso no es un retroceso.
+    """
+    raw = cfg.raw
+    rutina = "dia_1"
+    ejercicio = next(
+        e for e in raw["routines"][rutina]["exercises"]
+        if any((s.get("weight_kg") or 0) > 0 for s in e.get("sets") or [])
+    )
+    clave = ejercicio["key"]
+    partida = max((s.get("weight_kg") or 0) for s in ejercicio["sets"])
+    incremento = float(
+        ejercicio.get("increment_kg",
+                      (raw.get("progression") or {}).get("default_increment_kg", 2.5))
+    )
+
+    vistos: list[float] = [partida]
+    for n in range(140):
+        dia = LUNES + timedelta(days=n)
+        estado = load_state(db, program_start=raw.get("program", {}).get("start_date"))
+        decision = decide(cfg, dia, sig_completa(dia), estado)
+        sesion = decision.session
+        if sesion.routine_key == rutina and sesion.kind in {"full", "reduced"}:
+            # Se entrena todo lo mandado: es la única forma de acumular racha.
+            ejecutado = {e["key"]: True for e in sesion.exercises if e.get("key")}
+        else:
+            ejecutado = None
+        nuevo = advance_state(estado, decision, executed=ejecutado)
+        save_state(db, nuevo, day=dia)
+
+        tope = _tope_vigente(db, rutina, clave)
+        if tope is not None and tope != vistos[-1]:
+            vistos.append(tope)
+        if len(vistos) >= 4:
+            break
+
+    esperado = [partida, partida + incremento, partida + 2 * incremento]
+    assert vistos[:3] == esperado, (
+        f"'{clave}' no acumula carga: se ha visto {vistos[:3]} y tenía que ser "
+        f"{esperado}. Si se repite el mismo peso, la progresión se está "
+        f"calculando otra vez sobre el punto de partida de config.yaml."
+    )
+    assert vistos == sorted(vistos), f"la carga ha retrocedido: {vistos}"
+
+
+def _simular(db, cfg, dias: int, rutina: str) -> dict[str, list[list[dict]]]:
+    """Entrena todo lo que se manda y devuelve, por ejercicio, la traza de
+    series vigentes DISTINTAS que han ido quedando guardadas en la base."""
+    raw = cfg.raw
+    traza: dict[str, list[list[dict]]] = {}
+    for n in range(dias):
+        dia = LUNES + timedelta(days=n)
+        estado = load_state(db, program_start=raw.get("program", {}).get("start_date"))
+        decision = decide(cfg, dia, sig_completa(dia), estado)
+        sesion = decision.session
+        if sesion.routine_key == rutina and sesion.kind in {"full", "reduced"}:
+            ejecutado = {e["key"]: True for e in sesion.exercises if e.get("key")}
+        else:
+            ejecutado = None
+        save_state(db, advance_state(estado, decision, executed=ejecutado), day=dia)
+
+        for (rk, ek), series in load_state(db).current_sets.items():
+            if rk != rutina:
+                continue
+            t = traza.setdefault(ek, [])
+            if not t or t[-1] != series:
+                t.append(series)
+    return traza
+
+
+def _claves_por_modo(cfg, rutina: str) -> dict[str, list[str]]:
+    modos: dict[str, list[str]] = {}
+    for e in cfg.raw["routines"][rutina]["exercises"]:
+        modos.setdefault(str(e.get("progression_type")), []).append(e["key"])
+    return modos
+
+
+def test_las_reps_del_modo_volume_se_acumulan(db, cfg):
+    """El volumen tiene el mismo fallo que la carga si no se persiste.
+
+    En `volume` no hay peso que mirar: lo que sube son reps o segundos, y viven
+    dentro de las mismas series. Si el estado no vuelve, el plan de mañana se
+    calcula otra vez sobre las reps de `config.yaml` y el ejercicio se queda
+    clavado en 12→14 para siempre, que es justo lo que no se ve en Telegram
+    porque el mensaje sí anuncia la subida cada vez.
+    """
+    modos = _claves_por_modo(cfg, "dia_1")
+    traza = _simular(db, cfg, 140, "dia_1")
+
+    con_reps = [
+        k for k in modos.get("volume", [])
+        if traza.get(k) and any(s.get("reps") for s in traza[k][0])
+    ]
+    assert con_reps, "config.yaml ya no tiene ningún ejercicio volume por reps"
+
+    for clave in con_reps:
+        serie_reps = [min(int(s["reps"]) for s in v if s.get("reps"))
+                      for v in traza[clave]]
+        assert len(serie_reps) >= 3, (
+            f"'{clave}' solo ha cambiado {len(serie_reps)} vez/veces en 140 días: "
+            f"{serie_reps}. El volumen no está acumulando."
+        )
+        assert serie_reps == sorted(serie_reps), (
+            f"'{clave}' ha RETROCEDIDO en reps: {serie_reps}"
+        )
+        assert serie_reps[2] > serie_reps[0], (
+            f"'{clave}' no suma: {serie_reps[:3]}. Si las reps oscilan entre dos "
+            f"valores, se están recalculando sobre el punto de partida del YAML."
+        )
+
+
+def test_los_segundos_del_modo_volume_se_acumulan(db, cfg):
+    """Lo mismo que las reps, pero para los isométricos (plancha y compañía),
+    que progresan en `duration_s` y no tienen ni peso ni repeticiones."""
+    modos = _claves_por_modo(cfg, "dia_1")
+    traza = _simular(db, cfg, 140, "dia_1")
+
+    con_segundos = [
+        k for k in modos.get("volume", [])
+        if traza.get(k) and any(s.get("duration_s") for s in traza[k][0])
+    ]
+    assert con_segundos, "config.yaml ya no tiene ningún ejercicio volume por tiempo"
+
+    for clave in con_segundos:
+        segs = [min(int(s["duration_s"]) for s in v if s.get("duration_s"))
+                for v in traza[clave]]
+        assert len(segs) >= 3, f"'{clave}' apenas se mueve en 140 días: {segs}"
+        assert segs == sorted(segs), f"'{clave}' ha RETROCEDIDO en segundos: {segs}"
+        assert segs[2] > segs[0], (
+            f"'{clave}' no suma segundos: {segs[:3]}. Se están recalculando sobre "
+            f"el punto de partida del YAML."
+        )
+
+
+def test_las_series_anadidas_en_modo_sets_se_acumulan(db, cfg):
+    """El modo `sets` es el que más importa con una hernia L4-L5.
+
+    Es la vía por la que el sistema añade volumen ANTES que carga -una serie más
+    de hip thrust antes que 5 kg más-, así que si la cuenta de series no vuelve
+    de la base, el ejercicio se queda en las series del YAML y el sistema pasa a
+    subir peso mucho antes de lo que debería. El fallo silencioso aquí no es
+    "progresa menos": es "progresa por donde no toca".
+    """
+    modos = _claves_por_modo(cfg, "dia_1")
+    traza = _simular(db, cfg, 140, "dia_1")
+    claves = [k for k in modos.get("sets", []) if traza.get(k)]
+    assert claves, "config.yaml ya no tiene ningún ejercicio en modo sets"
+
+    for clave in claves:
+        cuentas = [len(v) for v in traza[clave]]
+        assert cuentas == sorted(cuentas), (
+            f"'{clave}' ha PERDIDO series por el camino: {cuentas}"
+        )
+        assert max(cuentas) > cuentas[0], (
+            f"'{clave}' nunca añade una serie: {cuentas}. Con el estado sin "
+            f"persistir, cada día vuelve a las series de config.yaml y la serie "
+            f"añadida ayer desaparece."
+        )
+
+
+def test_ningun_ejercicio_se_queda_sin_progresar_por_perder_siempre_el_cupo(db, cfg):
+    """La cola de los cupos tiene que rotar. Nadie pasa hambre.
+
+    Hay como mucho `max_volume_increases_per_session` subidas de volumen por
+    sesión, y en Día 1 hay más candidatos que cupo casi todas las semanas. El
+    desempate es `queue_policy: waiting_longest`, pero `waiting` lo alimentaba
+    `sessions_since_progress`, que en producción no lo rellenaba NADIE: solo lo
+    pasaban los scripts de simulación. Con el contador siempre a cero el único
+    criterio que quedaba era el orden de la rutina, y los ejercicios del final
+    perdían el cupo todas las veces.
+
+    El daño no era "progresa más despacio". En 140 días simulados el perro de
+    caza no subía ni una sola repetición y la plancha lateral subía una vez,
+    mientras la prensa sumaba carga: los dos que se quedaban parados son los de
+    estabilidad lumbar, que con una hernia L4-L5 son justo los que deben ganar
+    volumen antes de que nada gane peso. Y no había forma de notarlo, porque el
+    mensaje diario era correcto cada mañana: solo decía lo que subía hoy, nunca
+    lo que llevaba medio año sin subir.
+    """
+    modos = _claves_por_modo(cfg, "dia_1")
+    traza = _simular(db, cfg, 140, "dia_1")
+
+    candidatos = [k for k in modos.get("volume", []) if traza.get(k)]
+    assert candidatos, "config.yaml ya no tiene ejercicios en modo volume en dia_1"
+
+    parados = [k for k in candidatos if len(traza[k]) < 2]
+    assert not parados, (
+        f"en 140 días estos ejercicios no progresaron NUNCA: {parados}. "
+        f"Pierden el cupo de volumen en todas las sesiones, así que la cola no "
+        f"está rotando: comprueba que `sessions_since_progress` llega de verdad "
+        f"a `plan_progression` y que avanza en `apply_execution`."
+    )

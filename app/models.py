@@ -30,6 +30,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -211,6 +212,31 @@ class ExerciseTarget(Base):
     exercise_key: Mapped[str] = mapped_column(String(64), index=True)
     template_id: Mapped[str | None] = mapped_column(String(64))
 
+    # LAS SERIES EFECTIVAS VIGENTES, tal y como quedaron tras la última
+    # progresión: `[{"reps": 12, "weight_kg": 105.0}, ...]`.
+    #
+    # Esta columna es la fuente de verdad de la carga. `config.yaml` es el punto
+    # de PARTIDA -de dónde sale cada ejercicio la primera vez- y nada más; en
+    # cuanto hay una progresión manda esto. Sin esta columna la sesión se
+    # construía siempre desde el YAML y el incremento se sumaba encima, así que
+    # la carga oscilaba entre dos valores para siempre: Telegram anunciaba
+    # "100→105 kg" cada pocas semanas y la rutina volvía a 100 a la siguiente.
+    # No daba ningún error; solo no progresaba nunca.
+    #
+    # Se guarda la LISTA entera y no solo el peso máximo porque la rampa importa
+    # y no siempre es reconstruible: en modo `load` el incremento va únicamente a
+    # la serie más pesada, así que 40/40/40 pasa a 42,5/40/40. Guardando solo el
+    # tope habría que repartirlo al releer, y repartirlo mal es cambiar el
+    # entrenamiento sin decirlo.
+    #
+    # Solo las EFECTIVAS. Los calentamientos salen del YAML en cada
+    # construcción, que es lo que ya hacía la progresión: `apply_progression`
+    # separa calentamiento de serie efectiva y solo toca la segunda.
+    current_sets_json: Mapped[str | None] = mapped_column(Text)
+    # Proyección consultable de lo anterior: el peso de la serie efectiva más
+    # pesada. NO es una segunda verdad -se calcula al escribir, en el mismo
+    # sitio y en la misma transacción- pero evita que mirar la progresión de un
+    # ejercicio en SQL obligue a parsear JSON. `docs/analisis.md` la quiere.
     current_target_kg: Mapped[float | None] = mapped_column(Float)
     # Racha de sesiones limpias consecutivas. Se compara con
     # `clean_sessions_required` del ejercicio (2 en cadena posterior).
@@ -223,6 +249,34 @@ class ExerciseTarget(Base):
     # se leería como "la última sesión se falló", que es justo lo contrario de
     # lo que pasó, y la puerta de la progresión se cerraría sola.
     last_compliant: Mapped[bool | None] = mapped_column(Boolean)
+    # Sesiones de ESTA rutina desde la última vez que el ejercicio progresó.
+    #
+    # Es el turno en la cola de los cupos. Cuando hay más candidatos a subir que
+    # `max_volume_increases_per_session`, `queue_policy: waiting_longest` deja
+    # pasar primero al que lleva más esperando; a igualdad manda el orden de la
+    # rutina. Con este contador siempre a cero, el desempate por orden es lo
+    # ÚNICO que decide y los últimos ejercicios de una rutina larga no suben
+    # jamás: en 140 días simulados, el perro de caza y la plancha lateral -los
+    # dos de estabilidad lumbar- perdían el cupo todas las sesiones mientras la
+    # prensa subía carga. El sistema seguía progresando y el mensaje diario
+    # seguía siendo correcto; lo que se rompía en silencio era el orden de
+    # prioridades, justo al revés de "antes volumen que carga".
+    #
+    # Vive aquí y no en memoria porque el proceso se reinicia y la cola no puede
+    # empezar de cero cada vez que se despliega.
+    #
+    # `server_default` y no solo `default=0`: son cosas distintas y aquí la
+    # diferencia decide si el sistema arranca. `default` lo rellena Python al
+    # insertar, así que no existe para el `ALTER TABLE ... ADD COLUMN` que hace
+    # `ensure_schema`; una columna NOT NULL sin defecto EN LA BASE no se puede
+    # añadir a una tabla que ya tiene filas, y `ensure_schema` -con razón- se
+    # niega a arrancar en vez de inventarse el valor. La tabla está vacía hoy y
+    # la migración pasaría, pero en cuanto se entrene una vez deja de estar
+    # vacía, y entonces el fallo aparecería en el despliegue siguiente: de
+    # madrugada, en Umbrel y sin nadie mirando.
+    sessions_since_progress: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0")
+    )
     last_progressed_date: Mapped[date | None] = mapped_column(Date)
     last_session_date: Mapped[date | None] = mapped_column(Date)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

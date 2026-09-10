@@ -15,6 +15,7 @@ from pathlib import Path
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.sql.elements import TextClause
 
 from app.models import Base
 from app.settings import settings
@@ -63,6 +64,38 @@ def _columnas_reales(conn, tabla: str) -> set[str]:
     return {
         fila[1] for fila in conn.exec_driver_sql(f"PRAGMA table_info('{tabla}')")
     }
+
+
+def _sufijo(col) -> str:
+    """`NOT NULL DEFAULT x` para el ADD COLUMN, cuando se pueda ponerlo.
+
+    Sin esto, `ALTER TABLE ADD COLUMN` compilaba solo el TIPO y tiraba a la
+    basura el NOT NULL y el defecto que declara el modelo. El resultado es que
+    una instalación nueva y una actualizada acaban con esquemas DISTINTOS para
+    el mismo código: en la nueva, `create_all` pone `INTEGER NOT NULL DEFAULT 0`;
+    en la actualizada, la columna queda nullable y las filas viejas a NULL. Los
+    dos arrancan, y la diferencia solo se nota el día que algo asume que el dato
+    está y en una de las dos no está.
+
+    Solo se puede inlinear un defecto CONSTANTE: SQLite rechaza los que no lo
+    son -`DEFAULT CURRENT_TIMESTAMP` entre ellos- en un ADD COLUMN. Cuando el
+    defecto no es constante se devuelve "" y la columna se añade como hasta
+    ahora, que sigue siendo seguro porque en ese caso admite nulos.
+    """
+    sd = col.server_default
+    if sd is None:
+        return ""
+    arg = getattr(sd, "arg", None)
+    if isinstance(arg, str):
+        literal = arg
+    elif isinstance(arg, TextClause):
+        literal = arg.text
+    else:
+        return ""  # no constante: func.now() y compañía
+    literal = literal.strip()
+    if not literal:
+        return ""
+    return f"{'' if col.nullable else ' NOT NULL'} DEFAULT {literal}"
 
 
 def ensure_schema(eng: Engine | None = None) -> list[str]:
@@ -138,7 +171,9 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
                     elif nombre not in rehacer:
                         rehacer.append(nombre)
                     continue
-                anadir.append((nombre, col.name, col.type.compile(eng.dialect)))
+                anadir.append(
+                    (nombre, col.name, col.type.compile(eng.dialect) + _sufijo(col))
+                )
 
     if bloqueos:
         raise SchemaDesfasado(

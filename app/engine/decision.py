@@ -108,6 +108,17 @@ class EngineState:
 
     clean_sessions: dict[tuple[str, str], int] = field(default_factory=dict)
     compliance: dict[tuple[str, str], bool] = field(default_factory=dict)
+    # Las series efectivas VIGENTES de cada (rutina, ejercicio). Es la carga
+    # real de hoy, no la de partida: `config.yaml` solo se usa como semilla
+    # mientras esto esté vacío para ese ejercicio. Ver `ExerciseTarget`.
+    current_sets: dict[tuple[str, str], list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
+    # Sesiones de cada rutina desde que ese ejercicio progresó por última vez.
+    # Es el turno en la cola cuando hay más candidatos que cupo. Ver el
+    # comentario largo de `ExerciseTarget.sessions_since_progress`: sin esto,
+    # los últimos ejercicios de una rutina larga no suben nunca.
+    sessions_since_progress: dict[tuple[str, str], int] = field(default_factory=dict)
     # Semáforo del día en que se hizo por última vez CADA rutina. Es el reloj
     # de los frenos de volumen: un rojo en lunes no cancela el viernes.
     last_routine_light: dict[str, str | None] = field(default_factory=dict)
@@ -522,6 +533,14 @@ def decide(
             clean_sessions=clean,
             deload_active=deload.active,
             last_routine_light=state.last_routine_light.get(routine_key),
+            current_sets=state.current_sets,
+            # La cola de los cupos, acotada a esta rutina: `plan_progression`
+            # trabaja con claves de ejercicio a secas.
+            sessions_since_progress={
+                k: v
+                for (rk, k), v in state.sessions_since_progress.items()
+                if rk == routine_key
+            },
         )
 
     # --- 4. sesión ----------------------------------------------------------
@@ -536,6 +555,7 @@ def decide(
         deload_active=deload.active,
         pending_strength=state.pending_strength,
         program_start=state.program_start,
+        current_sets=state.current_sets,
     )
 
     # --- 5. bici ------------------------------------------------------------
@@ -583,6 +603,8 @@ def advance_state(
     new = EngineState(
         clean_sessions=dict(state.clean_sessions),
         compliance=dict(state.compliance),
+        current_sets={k: copy.deepcopy(v) for k, v in state.current_sets.items()},
+        sessions_since_progress=dict(state.sessions_since_progress),
         last_routine_light=dict(state.last_routine_light),
         active_rules=[copy.deepcopy(r) for r in decision.active_rules],
         pending_strength=state.pending_strength,
@@ -594,6 +616,14 @@ def advance_state(
 
     sess = decision.session
     rkey = sess.routine_key
+
+    # La carga vigente se fija por la MAÑANA, no al reconciliar: es la que se
+    # acaba de escribir en Hevy, y es a la que hay que volver mañana aunque esta
+    # noche no se entrene. Si esperara a saber si se ejecutó, un día que se
+    # salta la sesión revertiría la subida ya escrita en la app.
+    if rkey:
+        for clave, series in (sess.target_sets or {}).items():
+            new.current_sets[(rkey, clave)] = copy.deepcopy(series)
 
     # Un rojo aplaza la fuerza en vez de saltársela.
     if decision.light == "red" and decision.calendar_routine:
@@ -662,6 +692,21 @@ def apply_execution(
             # CONSECUTIVAS". Decrementar en vez de resetear convertiría el
             # requisito en una media, que es otra cosa.
             state.clean_sessions[scoped] = 0
+
+    # La cola de los cupos avanza aquí, con el resto de rachas, y no al
+    # planificar: lo que cuenta son las sesiones que de verdad han pasado, no
+    # las veces que se ha mirado. Planificar dos veces el mismo día -a las 07:00
+    # sin check-in y otra vez a las 09:40 con él- no puede colar a nadie en la
+    # cola por delante de los demás.
+    subidos = set(progressed)
+    for ex in exercises:
+        key = ex.get("key")
+        if not key:
+            continue
+        scoped = (routine_key, key)
+        state.sessions_since_progress[scoped] = (
+            0 if key in subidos else state.sessions_since_progress.get(scoped, 0) + 1
+        )
 
     for key in progressed:
         state.clean_sessions[(routine_key, key)] = 0

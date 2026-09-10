@@ -54,6 +54,8 @@ CAMPOS_PERSISTIDOS = frozenset(
     {
         "clean_sessions",
         "compliance",
+        "current_sets",
+        "sessions_since_progress",
         "last_routine_light",
         "active_rules",
         "pending_strength",
@@ -91,6 +93,22 @@ def load_state(session: Session, *, program_start: date | None = None) -> Engine
         # así que un ejercicio estrenado no arranca penalizado.
         if row.last_compliant is not None:
             state.compliance[clave] = bool(row.last_compliant)
+        # La carga vigente. Un JSON ilegible NO se trata como "este ejercicio
+        # empieza de cero": eso devolvería la carga al valor de `config.yaml`
+        # sin decirlo, que es exactamente el fallo que esta columna arregla.
+        if row.current_sets_json:
+            try:
+                series = json.loads(row.current_sets_json)
+            except (ValueError, TypeError) as exc:
+                raise ValueError(
+                    f"la carga guardada de {row.routine_key}/{row.exercise_key} "
+                    f"no se puede leer ({exc}). Es el peso que toca levantar hoy: "
+                    f"seguir sin él significaría volver en silencio al peso de "
+                    f"partida de config.yaml."
+                ) from exc
+            if isinstance(series, list) and series:
+                state.current_sets[clave] = series
+        state.sessions_since_progress[clave] = int(row.sessions_since_progress or 0)
 
     for row in session.scalars(select(RoutineState)).all():
         state.last_routine_light[row.routine_key] = row.last_light
@@ -150,7 +168,12 @@ def _guardar_ejercicios(session: Session, state: EngineState) -> None:
     # `clean_sessions` y `compliance` son dos diccionarios con las mismas
     # claves, pero no siempre las mismas: se recorre la unión para no perder
     # un ejercicio que solo aparezca en uno de los dos.
-    claves = set(state.clean_sessions) | set(state.compliance)
+    claves = (
+        set(state.clean_sessions)
+        | set(state.compliance)
+        | set(state.current_sets)
+        | set(state.sessions_since_progress)
+    )
     if not claves:
         return
 
@@ -166,6 +189,19 @@ def _guardar_ejercicios(session: Session, state: EngineState) -> None:
         fila.clean_streak = int(state.clean_sessions.get((rutina, ejercicio), 0))
         if (rutina, ejercicio) in state.compliance:
             fila.last_compliant = bool(state.compliance[(rutina, ejercicio)])
+
+        series = state.current_sets.get((rutina, ejercicio))
+        if series:
+            fila.current_sets_json = json.dumps(series, ensure_ascii=False)
+            # Proyección para consultas, calculada aquí mismo para que no pueda
+            # discrepar de la lista de la que sale.
+            pesos = [s.get("weight_kg") or 0 for s in series]
+            fila.current_target_kg = max(pesos) if any(pesos) else None
+
+        if (rutina, ejercicio) in state.sessions_since_progress:
+            fila.sessions_since_progress = int(
+                state.sessions_since_progress[(rutina, ejercicio)]
+            )
 
 
 def _guardar_rutinas(session: Session, state: EngineState, day: date | None) -> None:

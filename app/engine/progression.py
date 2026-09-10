@@ -38,6 +38,7 @@ solo entonces pasa a `then`.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -340,6 +341,62 @@ def evaluate_volume_gates(
 # ---------------------------------------------------------------------------
 
 
+def series_efectivas_vigentes(
+    exercise: dict[str, Any], set_cfg: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Las series de un ejercicio que la progresión puede mutar.
+
+    Usa `warmup_flags` a secas, igual que el `_split` de `session_builder`, y a
+    propósito NO como `_effective` de aquí abajo: `_effective` consulta
+    `excludes(set_cfg, "progression_compliance")`, que responde a otra pregunta
+    -si el calentamiento cuenta para dar una sesión por limpia-. Lo que hay que
+    persistir es lo que `apply_progression` toca, y eso es siempre el trabajo
+    efectivo. Mezclar los dos criterios guardaría un día el calentamiento y otro
+    no, según un ajuste que habla de otra cosa.
+    """
+    sets = exercise.get("sets") or []
+    flags = warmup_flags(sets, set_cfg, exercise.get("key"))
+    return [s for s, f in zip(sets, flags, strict=True) if not f]
+
+
+def con_carga_vigente(
+    exercises: list[dict[str, Any]],
+    routine_key: str,
+    current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None,
+    set_cfg: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Los ejercicios del YAML, pero con la carga que de verdad toca hoy.
+
+    `config.yaml` es el punto de PARTIDA de cada ejercicio. En cuanto ese
+    ejercicio ha progresado alguna vez, la serie efectiva vigente vive en la
+    base de datos y es la que manda; el YAML no se reescribe nunca.
+
+    Tiene que llamarse ANTES de planificar y antes de construir, y con el mismo
+    resultado en los dos sitios: si la progresión decidiera sobre los pesos del
+    YAML y la sesión se construyera sobre los de la base, Telegram anunciaría
+    una subida y Hevy recibiría otra.
+
+    El calentamiento se deja como esté en el YAML porque la progresión no lo
+    toca: subir el trabajo de 100 a 105 no cambia con cuánto se calienta.
+    """
+    salida = copy.deepcopy(exercises)
+    if not current_sets:
+        return salida
+
+    for ex in salida:
+        guardadas = current_sets.get((routine_key, str(ex.get("key"))))
+        if not guardadas:
+            # Ejercicio recién estrenado (o recién añadido al YAML): todavía no
+            # tiene historia, así que arranca donde diga el fichero. Este es el
+            # único caso en el que el YAML manda sobre la carga.
+            continue
+        sets = ex.get("sets") or []
+        flags = warmup_flags(sets, set_cfg, ex.get("key"))
+        warm = [s for s, f in zip(sets, flags, strict=True) if f]
+        ex["sets"] = warm + copy.deepcopy(guardadas)
+    return salida
+
+
 def _effective(exercise: dict[str, Any], set_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     sets = exercise.get("sets") or []
     if not excludes(set_cfg, "progression_compliance"):
@@ -538,6 +595,7 @@ def plan_progression(
     deload_active: bool = False,
     sessions_since_progress: dict[str, int] | None = None,
     last_routine_light: str | None = None,
+    current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
 ) -> ProgressionPlan:
     """Decide la progresión de todos los ejercicios de una rutina.
 
@@ -556,6 +614,11 @@ def plan_progression(
     el ámbito lo fija quien llama: con `state_scope: routine_exercise` se
     construyen a partir de la historia de ESTA rutina, de modo que la plancha
     lateral del Día 1 y la del Día 3 no comparten racha.
+
+    `current_sets` es la carga vigente guardada. Se decide SOBRE ella, no sobre
+    los pesos de `config.yaml`: el YAML es solo el punto de partida. Decidir
+    sobre el YAML es lo que hacía que "100→105 kg" se anunciara una y otra vez
+    sin llegar nunca a 107,5.
     """
     raw = config.raw if hasattr(config, "raw") else config
     prog_cfg = raw.get("progression", {}) or {}
@@ -569,8 +632,15 @@ def plan_progression(
     default_mode = str(prog_cfg.get("default_progression_type", DOUBLE))
     default_clean = int(prog_cfg.get("default_clean_sessions_required", 1))
 
+    # La carga vigente, no la de partida. `build_session` hace exactamente lo
+    # mismo con la misma función: si los dos no partieran de aquí, se anunciaría
+    # una subida y se escribiría otra.
+    ejercicios = con_carga_vigente(
+        routine.get("exercises") or [], routine_key, current_sets, set_cfg
+    )
+
     # Cumplimiento global: la puerta general mira la rutina entera.
-    vals = [compliance.get(e.get("key")) for e in (routine.get("exercises") or [])]
+    vals = [compliance.get(e.get("key")) for e in ejercicios]
     known = [v for v in vals if v is not None]
     global_compliance = all(known) if known else None
 
@@ -591,7 +661,7 @@ def plan_progression(
         reps_reason=reps_why if gate_open else gate_reason,
     )
 
-    for exercise in routine.get("exercises") or []:
+    for exercise in ejercicios:
         key = str(exercise.get("key"))
         mode = str(exercise.get("progression_type", default_mode))
         ex = ExerciseProgression(

@@ -143,6 +143,57 @@ def test_migrar_dos_veces_seguidas_no_cambia_nada(vieja):
     assert ensure_schema(vieja) == [], "la segunda pasada no tiene nada que hacer"
 
 
+def _ddl(eng, tabla: str) -> dict[str, tuple]:
+    """Por columna: (tipo, notnull, defecto). Lo que de verdad hay en la base."""
+    with eng.begin() as c:
+        return {
+            f[1]: (f[2], f[3], f[4])
+            for f in c.exec_driver_sql(f"PRAGMA table_info('{tabla}')")
+        }
+
+
+def test_una_instalacion_actualizada_queda_igual_que_una_nueva(vieja, tmp_path):
+    """Migrar tiene que dejar la MISMA tabla que crearla de cero.
+
+    El `ALTER TABLE ... ADD COLUMN` compilaba solo el tipo de la columna y se
+    dejaba por el camino el NOT NULL y el defecto declarados en el modelo. Los
+    dos caminos arrancaban sin quejarse y producían esquemas distintos: en una
+    instalación nueva `sessions_since_progress` era `INTEGER NOT NULL DEFAULT 0`,
+    y en una actualizada quedaba nullable con las filas viejas a NULL.
+
+    Es la peor forma de divergencia porque no la ve nadie: el desarrollo va
+    contra una base recién creada y Umbrel contra una migrada, así que el sitio
+    donde el esquema está mal es justo el único donde no se prueba.
+    """
+    vieja.envejecer("exercise_targets", {"sessions_since_progress", "current_sets_json"})
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO exercise_targets (routine_key, exercise_key, clean_streak) "
+            "VALUES ('dia_1', 'prensa_horizontal', 2)"
+        ))
+
+    ensure_schema(vieja)
+
+    nueva = create_engine(f"sqlite:///{tmp_path / 'nueva.db'}", future=True)
+    Base.metadata.create_all(nueva)
+
+    actualizada, recien_creada = _ddl(vieja, "exercise_targets"), _ddl(nueva, "exercise_targets")
+    dif = {
+        k: (recien_creada.get(k), actualizada.get(k))
+        for k in set(recien_creada) | set(actualizada)
+        if recien_creada.get(k) != actualizada.get(k)
+    }
+    assert not dif, f"nueva vs actualizada difieren en {dif}"
+
+    # Y la fila que ya estaba tiene el defecto, no NULL: es una cola en la que
+    # el ejercicio lleva cero sesiones esperando, no una cola desconocida.
+    with vieja.begin() as c:
+        fila = list(c.execute(text(
+            "SELECT clean_streak, sessions_since_progress FROM exercise_targets"
+        )))
+    assert fila == [(2, 0)], f"la fila vieja no se ha rellenado con el defecto: {fila}"
+
+
 # ---------------------------------------------------------------------------
 # Lo que NO se arregla solo
 # ---------------------------------------------------------------------------

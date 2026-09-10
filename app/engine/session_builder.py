@@ -36,7 +36,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from app.engine.progression import ProgressionPlan, apply_deload_volume
+from app.engine.progression import (
+    ProgressionPlan,
+    apply_deload_volume,
+    con_carga_vigente,
+    series_efectivas_vigentes,
+)
 from app.engine.sets import excludes, warmup_flags
 
 FULL = "full"
@@ -62,6 +67,14 @@ class BuiltSession:
     dropped: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     deferred_from: date | None = None
+    # La carga que queda VIGENTE a partir de hoy, por clave de ejercicio. Se
+    # captura justo después de la progresión y ANTES de la descarga, los
+    # recortes por regla y el ámbar, porque esos tres son modulaciones del día y
+    # no un objetivo nuevo: persistir un ×0,9 de semana de descarga bajaría el
+    # objetivo de verdad y la carga no volvería a subir sola nunca. Lo que se
+    # escribe en Hevy hoy puede ser menos que esto; lo de aquí es a lo que se
+    # vuelve mañana.
+    target_sets: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -346,6 +359,7 @@ def build_session(
     deload_active: bool = False,
     pending_strength: tuple[str, date] | None = None,
     program_start: date | None = None,
+    current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
 ) -> BuiltSession:
     """Construye la sesión del día completa."""
     raw = config.raw if hasattr(config, "raw") else config
@@ -397,7 +411,12 @@ def build_session(
         return out
 
     routine = routines.get(routine_key, {}) or {}
-    exercises = copy.deepcopy(routine.get("exercises") or [])
+    # La carga vigente sale de la base de datos; del YAML solo salen los
+    # ejercicios que aún no han progresado nunca. Misma función que usa
+    # `plan_progression`, para que lo anunciado y lo escrito coincidan.
+    exercises = con_carga_vigente(
+        routine.get("exercises") or [], routine_key, current_sets, set_cfg
+    )
     out = BuiltSession(
         day=day,
         kind=str(action.get("session", FULL)),
@@ -419,6 +438,14 @@ def build_session(
         out.changes.extend(apply_progression(exercises, progression, set_cfg))
     elif progression is not None and progression.changes:
         out.notes.append(f"progresión no aplicada: el semáforo está en {light}")
+
+    # 2b. El objetivo vigente se fija AQUÍ, con la progresión ya aplicada y
+    # antes de que nadie recorte por el día que sea. Ver `BuiltSession.target_sets`.
+    out.target_sets = {
+        str(ex.get("key")): copy.deepcopy(series_efectivas_vigentes(ex, set_cfg))
+        for ex in exercises
+        if ex.get("key")
+    }
 
     # 3. descarga
     if deload_active:
