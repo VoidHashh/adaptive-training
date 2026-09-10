@@ -534,6 +534,15 @@ def test_la_carga_progresada_se_acumula_en_vez_de_reiniciarse(db, cfg):
     161 y 245 en vez de 7, 63 y 126. Si este test vuelve a quedarse corto, mirar
     primero si alguien ha tocado `rep_apply_to` antes de sospechar de la
     persistencia.
+
+    Ese 2,4x asusta más de lo que cuesta, y conviene dejar dicho por qué. Aquí
+    se entrena TODO lo que se manda y no se cierra ninguna puerta nunca, así que
+    la cadencia de reps es lo único que frena. En condiciones reales no lo es:
+    `scripts/sim_12_semanas.py`, con el mismo semáforo y la misma semilla, da 12
+    escalones de carga en 12 semanas con `lowest_first` y 13 con `all_sets`. Uno
+    de diferencia. Lo que manda de verdad son las puertas de volumen -abiertas
+    el 65-71% de las sesiones- y los cupos por sesión; conservar la rampa sale
+    casi gratis. Este test mide el peor caso, no el caso.
     """
     raw = cfg.raw
     rutina = "dia_1"
