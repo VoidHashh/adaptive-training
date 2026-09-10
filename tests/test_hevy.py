@@ -170,6 +170,111 @@ def test_el_cuerpo_construido_contra_el_config_real(cfg):
 
 
 # ---------------------------------------------------------------------------
+# La marca de calentamiento
+# ---------------------------------------------------------------------------
+#
+# `set_types.write_warmup_type_to_hevy` estaba en el YAML desde el principio y
+# no lo leía nadie: `_set_payload` copiaba el `type` de la serie pasara lo que
+# pasara. La opción no decidía nada ni en `true` ni en `false`.
+#
+# Lo que gobierna ahora es la marca que AÑADE el sistema por su cuenta -hoy, la
+# de la heurística de "la primera de cuatro"-. Sin ella, el motor descuenta esa
+# serie del cumplimiento y del volumen mientras la app la sigue enseñando como
+# efectiva: una discrepancia entre lo que el sistema cuenta y lo que el usuario
+# ve, y de las que no dan ningún error.
+
+CUATRO_SIN_MARCAR = [
+    {"reps": 10, "weight_kg": 20},
+    {"reps": 8, "weight_kg": 60},
+    {"reps": 8, "weight_kg": 60},
+    {"reps": 8, "weight_kg": 60},
+]
+
+SET_TYPES = {
+    "source": "api_then_heuristic",
+    "heuristic": {"enabled": True, "sets_gte": 4, "count": 1},
+    "overrides": {},
+}
+
+
+def tipos(sets, set_cfg, **extra) -> list[str]:
+    cfg = {"set_types": {**SET_TYPES, **extra}} if set_cfg else {}
+    s = SesionFalsa(exercises=[ejercicio(sets=sets)])
+    return [x["type"] for x in build_routine_payload(s, cfg)["routine"]["exercises"][0]["sets"]]
+
+
+def test_la_serie_que_el_motor_da_por_calentamiento_sale_marcada():
+    """El caso que hace falta que llegue a Hevy: cuatro series sin marcar."""
+    assert tipos(CUATRO_SIN_MARCAR, True) == ["warmup", "normal", "normal", "normal"]
+
+
+def test_con_la_opcion_apagada_la_marca_del_motor_no_viaja():
+    """El otro lado del interruptor, que es lo que no existía."""
+    assert tipos(
+        CUATRO_SIN_MARCAR, True, write_warmup_type_to_hevy=False
+    ) == ["normal"] * 4
+
+
+def test_apagar_la_opcion_no_borra_las_marcas_que_ya_traia_la_rutina():
+    """La invariante que impide convertir un interruptor en una pérdida de datos.
+
+    Si `false` significara "manda todo como normal", cada mañana el sistema
+    borraría en Hevy los calentamientos que el usuario marcó a mano. Es el mismo
+    razonamiento del `superset_id`: lo que venía con la rutina se reproduce.
+    """
+    marcadas = [{"type": "warmup", "reps": 10}, {"type": "normal", "reps": 8}]
+    assert tipos(marcadas, True, write_warmup_type_to_hevy=False) == [
+        "warmup", "normal",
+    ]
+
+
+def test_la_marca_no_pisa_un_dropset_ni_un_fallo():
+    """Solo AÑADE. Una serie que el motor no considera calentamiento conserva
+    su tipo, aunque no sea `normal`."""
+    sets = [
+        {"reps": 10, "weight_kg": 20},
+        {"type": "dropset", "reps": 8, "weight_kg": 60},
+        {"type": "failure", "reps": 8, "weight_kg": 60},
+        {"reps": 8, "weight_kg": 60},
+    ]
+    assert tipos(sets, True) == ["warmup", "dropset", "failure", "normal"]
+
+
+def test_sin_seccion_set_types_no_se_inventa_ningun_calentamiento():
+    """Coherente con `warmup_flags`: sin la sección no hay heurística, así que
+    tampoco hay marca que escribir. Un cuerpo construido con un config a medias
+    no puede reetiquetar la rutina del usuario."""
+    assert tipos(CUATRO_SIN_MARCAR, False) == ["normal"] * 4
+
+
+def test_el_config_real_escribe_la_marca(cfg):
+    assert cfg.raw["set_types"]["write_warmup_type_to_hevy"] is True
+
+
+def test_con_las_rutinas_de_hoy_la_opcion_no_cambia_ni_una_serie(cfg):
+    """Medido, no supuesto, y escrito para que se note el día que deje de serlo.
+
+    Las 19 series de calentamiento vienen ya declaradas en las rutinas, así que
+    la heurística no añade ninguna y los dos lados del interruptor dan el mismo
+    cuerpo. Ese es su estado de destino, no un defecto. El día que un ejercicio
+    llegue a 4 series sin calentamiento declarado, este test caerá y será la
+    señal de que la opción ha empezado a mandar.
+    """
+    import copy
+
+    for rk, rd in cfg.raw["routines"].items():
+        s = SesionFalsa(routine_key=rk, title=rd.get("title"),
+                        exercises=[dict(e) for e in rd["exercises"]])
+        apagado = copy.deepcopy(cfg)
+        apagado.raw["set_types"]["write_warmup_type_to_hevy"] = False
+        assert build_routine_payload(s, cfg) == build_routine_payload(s, apagado), (
+            f"'{rk}' ya no es indiferente a write_warmup_type_to_hevy: hay algún "
+            f"ejercicio de 4+ series sin calentamiento declarado. Bien: la "
+            f"opción ha empezado a servir para algo. Actualiza este test."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Diff
 # ---------------------------------------------------------------------------
 

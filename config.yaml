@@ -715,11 +715,28 @@ set_types:
     amber_set_reduction: true
   never_drop_warmup: true
 
-  # Si se pone a true, al reescribir la rutina el sistema marcará en Hevy como
-  # `warmup` las series que considere calentamiento, y a partir de ahí la rama
-  # `api` funcionaría sola. Queda en false porque cambiaría visiblemente tus
-  # rutinas y pediste dejarlas como están.
-  write_warmup_type_to_hevy: false
+  # Al reescribir la rutina, las series que el motor DECIDE que son
+  # calentamiento salen del PUT marcadas como `warmup`. Así quedan marcadas en
+  # la app y la próxima lectura las trae ya con el dato: la rama `api` de
+  # `source` resuelve sola y se deja de depender de la heurística de "la
+  # primera de cuatro", que es una suposición sobre la rutina y no un dato.
+  #
+  # Estuvo en `false` y el código escribía el `type` de todas formas, así que la
+  # opción no decidía nada. Lo que gobierna ahora es concretamente esto: la
+  # marca que AÑADE el sistema por su cuenta (hoy, la de la heurística).
+  #
+  # Lo que NO hace, ni en `false`: quitar marcas. Una serie que ya venga como
+  # `warmup`, `dropset` o `failure` se reproduce tal cual, igual que el
+  # `superset_id`. Borrar en Hevy un marcado que puso el usuario sería una
+  # pérdida silenciosa de configuración, que es justo lo que este módulo evita.
+  #
+  # Con las rutinas de hoy la opción no cambia ni una serie -las 19 de
+  # calentamiento ya vienen declaradas y la heurística no añade ninguna-, y ese
+  # es precisamente su estado de destino. Empieza a mandar el día que un
+  # ejercicio llegue a 4 series sin calentamiento declarado: sin ella, el motor
+  # descontaría esa serie del cumplimiento y del volumen mientras la app la
+  # sigue enseñando como efectiva, que es una discrepancia que nadie ve.
+  write_warmup_type_to_hevy: true
 
 
 # -----------------------------------------------------------------------------

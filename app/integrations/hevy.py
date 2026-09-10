@@ -193,14 +193,23 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
     return True
 
 
-def _set_payload(index: int, s: dict[str, Any]) -> dict[str, Any]:
+def _set_payload(
+    index: int, s: dict[str, Any], es_calentamiento: bool = False
+) -> dict[str, Any]:
     """Una serie en el formato exacto que espera Hevy.
 
     Los campos que no aplican van a `null` explícito y no se omiten: así el
     cuerpo tiene siempre la misma forma y una comparación entre lo que había y
     lo que se manda no señala diferencias que no existen.
+
+    `es_calentamiento` es la decisión del motor, no la etiqueta que traía la
+    serie. Solo puede AÑADIR la marca: si la serie ya venía como `dropset` o
+    `failure` y el motor no la considera calentamiento, se respeta lo que
+    había. Este módulo no está para reetiquetar series por su cuenta.
     """
     tipo = str(s.get("type") or "normal").lower()
+    if es_calentamiento:
+        tipo = "warmup"
     return {
         "index": index,
         "type": tipo,
@@ -217,14 +226,30 @@ def build_routine_payload(session: Any, config: Any = None) -> dict[str, Any]:
 
     `session` es el `BuiltSession` del motor. El resultado es exactamente lo
     que viaja por la red: no hay ningún paso de transformación posterior.
+
+    `set_types.write_warmup_type_to_hevy` decide si la marca de calentamiento
+    que calcula el motor se ESCRIBE en Hevy. Con la opción activa, la serie que
+    el motor considera calentamiento sale del PUT como `warmup`, así que la
+    próxima lectura la trae ya marcada y la rama `api` de `set_types.source`
+    resuelve sola: se deja de depender de la heurística de "la primera de
+    cuatro", que es una suposición sobre la rutina y no un dato.
     """
     raw = (config.raw if hasattr(config, "raw") else config) or {}
     routines = raw.get("routines", {}) or {}
     definicion = routines.get(session.routine_key, {}) or {}
+    set_cfg = raw.get("set_types", {}) or {}
+    marcar = bool(set_cfg.get("write_warmup_type_to_hevy", True))
 
     ejercicios: list[dict[str, Any]] = []
     for i, ex in enumerate(session.exercises or []):
         sets = ex.get("sets") or []
+        # Las banderas se piden SIEMPRE, se escriban o no: así el ensayo en seco
+        # y los tests ven el mismo cálculo que la escritura de verdad, y una
+        # excepción de `warmup_flags` no aparece solo el día que se active la
+        # opción.
+        flags = warmup_flags(sets, set_cfg, ex.get("key")) if sets else []
+        if not marcar:
+            flags = [False] * len(sets)
         ejercicios.append(
             {
                 "index": i,
@@ -234,7 +259,10 @@ def build_routine_payload(session: Any, config: Any = None) -> dict[str, Any]:
                 # Se copia tal cual. Omitirlo deshace la superserie en la app.
                 "superset_id": ex.get("superset_id"),
                 "rest_seconds": ex.get("rest_seconds", 0),
-                "sets": [_set_payload(j, s) for j, s in enumerate(sets)],
+                "sets": [
+                    _set_payload(j, s, f)
+                    for j, (s, f) in enumerate(zip(sets, flags, strict=True))
+                ],
             }
         )
 
