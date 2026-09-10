@@ -1,0 +1,65 @@
+# Manifiesto de la aplicación para Umbrel.
+#
+# Esto NO se instala con `docker compose up` a mano. Va por el marco de
+# aplicaciones de Umbrel, y el motivo es de seguridad, no de comodidad:
+#
+#   La aplicación no tiene autenticación propia. Ninguna. `/api/state`,
+#   `/api/decision` y `/api/export` -el CSV con el histórico entero- contestan a
+#   quien pregunte. Instalada a mano y publicada en la red, eso es el historial
+#   médico y de entrenamiento del usuario a la vista de cualquiera que esté en
+#   el wifi. Instalada como aplicación de Umbrel, el `app_proxy` pone delante el
+#   login de Umbrel (y el 2FA si está puesto) sin que haya que escribir una
+#   línea de código.
+#
+# `manifestVersion` es la versión del MARCO de Umbrel que hace falta, no la de
+# esta aplicación. `1` es lo que pide todo el catálogo oficial.
+manifestVersion: 1
+
+# OJO: el identificador tiene que empezar por el `id` del `umbrel-app-store.yml`
+# de la tienda privada. Umbrel lo comprueba en código
+# (`.filter(app => app.id.startsWith(meta.id))`) y una aplicación que no cumpla
+# NO APARECE en la tienda: no da error, simplemente no está en la lista.
+# Con una tienda cuyo `id` sea `roolez`, este id es el correcto.
+id: roolez-adaptive-training
+name: Entrenamiento adaptativo
+version: "0.1.0"
+category: automation
+tagline: Decide la sesión de cada día con Garmin, Hevy y un check-in de siete deslizadores
+
+description: >
+  Cada mañana decide qué versión de la sesión toca, reescribe la rutina de
+  fuerza en Hevy y manda un mensaje de Telegram con la sesión y la indicación de
+  bici. Funciona solo, sin que nadie lo mire.
+
+
+  Las decisiones las toma un motor de reglas explícitas en `config.yaml`. No hay
+  ningún modelo de lenguaje por medio: dos días con los mismos datos dan la
+  misma decisión, y siempre se puede señalar la regla que la tomó.
+
+
+  El check-in son siete deslizadores y un comentario. Un deslizador que no se
+  toca no se envía: el motor tiene un camino para las señales que faltan, y ese
+  camino es mejor que un 5 inventado.
+
+developer: roolez
+website: https://github.com/roolez/adaptive-training
+repo: https://github.com/roolez/adaptive-training
+support: https://github.com/roolez/adaptive-training/issues
+
+dependencies: []
+
+# El puerto por el que Umbrel publica la aplicación en la red local. NO es el
+# 8000 de dentro del contenedor: ese lo alcanza el `app_proxy` por la red de
+# Docker. Tiene que ser único entre TODAS las aplicaciones instaladas en este
+# Umbrel; si choca con otra, la que se instale después no arranca.
+port: 8317
+
+path: ""
+
+# En una tienda privada las entradas de la galería tienen que ser URLs
+# completas (en la oficial se reescriben solas contra el repo de imágenes de
+# Umbrel). Sin capturas que enseñar, se queda vacía.
+gallery: []
+
+submitter: roolez
+submission: https://github.com/roolez/adaptive-training

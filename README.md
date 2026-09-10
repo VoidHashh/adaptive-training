@@ -21,9 +21,25 @@ El check-in son siete deslizadores y un comentario. **Un deslizador que no se
 toca no se envía**: el motor tiene un camino para las señales que faltan y ese
 camino es mejor que un 5 inventado.
 
-## Instalación en Umbrel
+## Instalación
 
-Umbrel es Debian sobre ARM64 o x86 con Docker. No hace falta nada más.
+Antes de elegir cómo instalarlo hay que saber esto: **la aplicación no tiene
+autenticación propia**. Ninguna. `/api/state`, `/api/decision` y `/api/export`
+—el CSV con el histórico entero— contestan a quien pregunte. No es un descuido
+pendiente de arreglar, es lo que decide cuál de los dos caminos vale para qué.
+
+**En Umbrel, por su marco de aplicaciones.** Es el camino bueno para el uso
+real. El `app_proxy` de Umbrel pone delante su login sin escribir una línea de
+código, y es lo único que permite abrir el formulario desde el móvil sin dejar
+el historial de entrenamiento y de salud a la vista de cualquiera que esté en el
+wifi. Los tres ficheros y el procedimiento entero están en
+**[`umbrel/README.md`](umbrel/README.md)**.
+
+**A mano, para desarrollo o para probar.** El `docker-compose.yml` de la raíz
+publica el 8000 **solo en el bucle local**, a propósito: se llega desde la
+propia máquina o por un túnel SSH, **no desde el móvil**. Si se cambia ese
+enlace a `0.0.0.0` para alcanzarlo desde el teléfono, se está publicando el
+histórico entero sin contraseña; para eso está el camino de arriba.
 
 ```bash
 git clone <este-repo> adaptive-training
@@ -56,17 +72,33 @@ curl -s localhost:8000/api/health | python3 -m json.tool
       "decision_fallback": "2026-09-11T09:00:00+02:00",
       "reconcile":         "2026-09-10T22:30:00+02:00"
     }
-  }
+  },
+  "clock": { "timezone": "Europe/Madrid", "offset": "+02:00", "matches": true }
 }
 ```
 
-Mirar esas dos cosas, no solo el `status`:
+Mirar estas tres cosas, no solo el `status`:
 
 - **`secrets_missing` vacío.** Si falta algo, la aplicación arranca igual -para
   poder abrir el formulario y ver qué falta- pero no podrá hacer su trabajo.
 - **`scheduler.running` en `true` y los tres trabajos con hora.** Sin
   planificador la aplicación sirve el formulario, contesta `ok` y no decide
   nunca. Desde fuera se parece muchísimo a una semana de descanso.
+- **`clock.matches` en `true`.** Es el reloj del proceso comparado con la zona
+  del `config.yaml`. Si no coinciden, un check-in enviado de madrugada se guarda
+  con la fecha de ayer y a la mañana siguiente se decide como si no lo hubiera
+  habido.
+
+Las tres las pinta también la PWA nada más abrirla, en rojo y arriba del
+formulario, que es donde de verdad se van a mirar. Este `curl` es para cuando ya
+se sabe que algo pasa.
+
+> **No sirve mirar el `+02:00` de las horas de los trabajos.** Parece la
+> comprobación natural y no comprueba nada: los disparadores se construyen con
+> la zona del `config.yaml`, así que salen en `+02:00` aunque el contenedor esté
+> en UTC —o en Tokio—. Está probado levantando la imagen de las tres formas. Por
+> eso existe `clock`: era una comprobación que no podía fallar, ocupando el
+> sitio de una que sí.
 
 ### Las claves
 
@@ -80,15 +112,32 @@ Mirar esas dos cosas, no solo el `status`:
 ### Empezar en seco
 
 `DRY_RUN=true` los primeros días. El sistema decide, guarda y registra, pero no
-toca Hevy ni manda Telegram. Cuando lo que decida tenga sentido, se pone en
-`false` y se reinicia.
+toca Hevy ni manda Telegram. Se quita cuando lo que decida coincida con lo que
+uno habría hecho, no antes.
+
+Mientras esté puesto, la PWA lo dice en ámbar al abrirla. Es la razón de que ese
+aviso exista: un silencio *a propósito* y una avería se parecen demasiado desde
+el móvil, y las dos se leen igual —no llega mensaje—.
 
 ### El formulario en el móvil
 
-Abrir `http://umbrel.local:8000` (o el dominio que ponga Umbrel delante) y
-"Añadir a pantalla de inicio". Se instala como una aplicación y arranca sin
-conexión, aunque **sin red no dice nada del día**: eso es deliberado, porque un
-semáforo de ayer pintado como el de hoy no se distingue de la verdad.
+Instalado en Umbrel: `http://umbrel.local:8317`, el puerto del
+`umbrel/umbrel-app.yml`. Pedirá el login de Umbrel, que es el `app_proxy`
+haciendo su trabajo.
+
+**No se instalará como aplicación de verdad, y no es un fallo.** "Añadir a
+pantalla de inicio" deja un acceso directo, pero el service worker **no se
+registra sobre HTTP**: los navegadores solo lo permiten en contexto seguro
+(HTTPS, o `localhost`), y Umbrel sirve las aplicaciones en HTTP dentro de la red
+local. Lo que eso quita:
+
+- **No hay arranque sin conexión.** Sin red no se abre nada, en vez de abrirse y
+  decir que no hay red.
+- Todo lo demás —el formulario, el envío, los avisos— funciona igual.
+
+Para el modo aplicación completo hace falta HTTPS por delante (un túnel, o un
+proxy con certificado). No lo hay hoy, y el uso normal —abrirlo por la mañana
+con wifi— no lo necesita.
 
 ## Dónde vive cada cosa
 
@@ -108,10 +157,15 @@ que todo cuelgue de un único volumen.
 
 ## Actualizar
 
+A mano:
+
 ```bash
 git pull
 docker compose up -d --build
 ```
+
+En Umbrel se publica una imagen nueva y se actualiza desde su interfaz;
+el procedimiento está en [`umbrel/README.md`](umbrel/README.md).
 
 La base de datos se pone al día sola cuando los cambios son seguros -añadir una
 columna que admite nulos, rehacer una tabla vacía-. Cuando no lo son **se niega
@@ -124,6 +178,15 @@ significaría reventar más tarde, de noche y sin nadie delante.
 docker compose logs -f --tail=100
 curl -s localhost:8000/api/health | python3 -m json.tool
 curl -s "localhost:8000/api/decision?day=$(date +%F)" | python3 -m json.tool
+```
+
+En Umbrel no hay `localhost:8000` -el contenedor no publica puertos-, así que se
+pregunta desde dentro:
+
+```bash
+docker logs -f --tail=100 roolez-adaptive-training_server_1
+docker exec roolez-adaptive-training_server_1 \
+  python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health')))"
 ```
 
 Un trabajo que falla o que no llega a ejecutarse **manda un aviso por
@@ -153,7 +216,7 @@ app/api.py       FastAPI: la API del formulario y, en su `lifespan`, los
                  misma base son dos decisiones pisándose el mismo día.
 app/scheduler.py APScheduler con las horas del `config.yaml`.
 static/          La PWA. Sin dependencias ni compilación.
-tests/           458 tests.
+tests/           782 tests.
 ```
 
 ### La idea que se repite en todo el código

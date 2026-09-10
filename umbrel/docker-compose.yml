@@ -1,0 +1,111 @@
+# Compose para el marco de aplicaciones de Umbrel.
+#
+# NO es el `docker-compose.yml` de la raíz del repositorio. Aquel sirve para
+# desarrollo y para una instalación a mano en cualquier Debian; este es el que
+# entiende Umbrel, y las diferencias no son cosméticas:
+#
+#   - No publica puertos. En Umbrel el `app_proxy` llega al contenedor por la
+#     red de Docker; publicar el 8000 además de eso sería abrir una puerta sin
+#     login al lado de la que sí lo tiene.
+#   - No construye la imagen. Umbrel rechaza `build:` a propósito: instala, no
+#     compila.
+#   - Los volúmenes cuelgan de `${APP_DATA_DIR}`, que es lo que Umbrel respalda
+#     y conserva entre actualizaciones.
+
+# Sin `version:`. El catálogo oficial todavía arrastra un `version: "3.7"`, pero
+# compose lo ignora desde la v2 y avisa por cada invocación: un aviso constante
+# en los logs es ruido, y el ruido es donde se esconden los avisos de verdad.
+services:
+  # El proxy de Umbrel. No lleva `image:` ni `build:`: el marco lo rellena.
+  #
+  # Aquí es donde se gana la autenticación. `PROXY_AUTH_ADD` vale `true` por
+  # defecto, así que NO se pone: escribirlo sería repetir el valor que ya trae y
+  # dar a entender que se puede quitar. Con esto delante, entrar a la aplicación
+  # exige haber entrado antes en Umbrel.
+  app_proxy:
+    environment:
+      # El nombre del CONTENEDOR, no el del servicio. Umbrel lo compone como
+      # `<id-de-la-aplicación>_<servicio>_1` y lo inyecta él mismo, por eso aquí
+      # abajo no hay ningún `container_name`. Si este nombre no coincide, el
+      # proxy no encuentra nada y la aplicación sale en blanco.
+      APP_HOST: roolez-adaptive-training_server_1
+      APP_PORT: 8000
+
+  server:
+    # Imagen ya construida, con el digest fijado.
+    #
+    # Se fija el digest del ÍNDICE multiarquitectura (el que sale de
+    # `docker buildx imagetools inspect`), no el de una arquitectura suelta: el
+    # mismo compose tiene que servir para un Umbrel de Raspberry (arm64) y para
+    # uno x86.
+    #
+    # PENDIENTE: sustituir por la imagen y el digest reales una vez publicada.
+    # Ver `umbrel/README.md`.
+    image: ghcr.io/roolez/adaptive-training:0.1.0
+    restart: on-failure
+    stop_grace_period: 1m
+
+    # El mismo 1000:1000 con el que Umbrel crea `${APP_DATA_DIR}`. La imagen ya
+    # trae ese usuario; esto lo deja escrito donde se ve, porque con otro UID el
+    # contenedor arranca y luego no puede escribir su propia base de datos.
+    user: "1000:1000"
+
+    environment:
+      # Los trabajos son a las 06:30, 09:00 y 22:30 HORA LOCAL, y el día del
+      # check-in es el del reloj del servidor. Un contenedor en UTC decide el
+      # día equivocado durante dos horas cada noche sin quejarse. La zona de
+      # verdad la pone `config.yaml`; esta es para que los logs coincidan.
+      TZ: Europe/Madrid
+
+    # Los secretos, por fichero y con RUTA ABSOLUTA.
+    #
+    # Absoluta y no `.env` a secas: Umbrel invoca a compose con varios `--file`,
+    # y el primero no está en el directorio de la aplicación, así que una ruta
+    # relativa no se resuelve donde uno cree.
+    #
+    # `required: false` es deliberado y es la parte discutible. Sin él, un
+    # Umbrel recién instalado sin `.env` no arranca la aplicación: falla el
+    # `compose up` y en la interfaz de Umbrel eso es un error genérico de
+    # instalación, sin ningún sitio donde leer qué falta. Con él, la aplicación
+    # arranca, se puede abrir, y lo primero que enseña en el móvil es qué claves
+    # faltan -eso lo pinta la PWA leyendo `secrets_missing` de `/api/health`-.
+    # Arrancar a medio configurar solo es aceptable PORQUE se dice; si algún día
+    # se quita ese aviso de la PWA, hay que volver a poner esto en `required`.
+    env_file:
+      - path: ${APP_DATA_DIR}/.env
+        required: false
+
+    volumes:
+      # UN SOLO volumen, montado donde el código lo espera. Dentro van la base
+      # de datos, los tokens de Garmin, la caché de actividades y las copias de
+      # las rutinas de Hevy. Las copias son lo único que permite deshacer una
+      # escritura en Hevy: si esto no persiste, un error se vuelve irreversible.
+      - ${APP_DATA_DIR}/data:/app/data
+
+      # Las reglas, para poder editarlas sin reconstruir la imagen.
+      #
+      # En solo lectura porque la aplicación no lo escribe nunca. Y OJO con el
+      # arranque en frío: si el fichero no existe, Docker crea un DIRECTORIO con
+      # ese nombre, `load_config` no encuentra un YAML y la aplicación no
+      # levanta. Hay que copiarlo antes de instalar; está en `umbrel/README.md`.
+      - ${APP_DATA_DIR}/config.yaml:/app/config.yaml:ro
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=8).status == 200 else 1)"
+      interval: 60s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
+    logging:
+      # Sin límite, el log de un servicio que lleva meses encendido se come la
+      # tarjeta del Umbrel, y lo primero que falla al llenarse el disco son las
+      # copias de seguridad de Hevy.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -29,3 +29,15 @@ out.txt
 *.out.txt
 Nuevo Documento de texto.txt
 README*.md
+
+# Nada de esto entra en la imagen -el `Dockerfile` copia `app/`, `static/` y
+# `config.yaml`, uno por uno, no un `COPY . .`-, pero sí viaja al demonio de
+# Docker como contexto en cada build. `docs/` y `scripts/` son herramientas de
+# desarrollo; `umbrel/` son los ficheros que consume el marco de aplicaciones
+# de Umbrel DESDE FUERA, y no pinta nada dentro del contenedor que describen.
+#
+# `umbrel/` aparte: el `README*.md` de arriba solo casa en la raíz del
+# contexto, así que sin esta línea `umbrel/README.md` sí se enviaría.
+docs/
+scripts/
+umbrel/

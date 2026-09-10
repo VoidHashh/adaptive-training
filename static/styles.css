@@ -52,6 +52,9 @@ body {
 }
 .aviso.tenue { color: var(--tenue); }
 .aviso.ojo { border-color: var(--ambar); color: #f3d9a4; }
+.aviso.mal { border-color: var(--rojo); color: #f5c2c0; }
+.aviso strong { display: block; margin-bottom: 0.2rem; }
+.aviso ul { margin: 0.35rem 0 0; padding-left: 1.1rem; }
 
 /* --- deslizadores ------------------------------------------------------- */
 

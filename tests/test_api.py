@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,7 +25,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app import repository as repo
-from app.api import app, get_config
+from app.api import app, get_config, _estado_del_reloj
 from app.db import get_session
 from app.models import Base
 from app.settings import settings
@@ -729,3 +731,197 @@ def test_el_checkin_manda_tambien_la_etiqueta_del_comentario(cliente):
     `config.yaml` no cambiaría nada y nadie sabría por qué."""
     cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
     assert cuerpo["comment_label"]
+
+
+# ---------------------------------------------------------------------------
+# El estado del sistema llega al móvil
+# ---------------------------------------------------------------------------
+#
+# `/api/health` decía desde el principio qué secretos faltan y si el
+# planificador está vivo, y su único lector era el healthcheck de Docker, que
+# solo comprueba que el 200 llegue. O sea: la instalación a medio configurar
+# -formulario que se envía y se guarda, Hevy que no se reescribe, Telegram que
+# no llega- no se veía desde el único sitio donde se mira esto, que es el móvil.
+#
+# Estos tests sujetan los dos extremos del cable. Que la API siga diciéndolo, y
+# que la PWA siga leyéndolo con el mismo nombre.
+
+
+CLAVES_QUE_LEE_LA_PWA = ("secrets_missing", "dry_run", "scheduler", "clock")
+CLAVES_DEL_PLANIFICADOR = ("running", "jobs", "error")
+CLAVES_DEL_RELOJ = ("timezone", "offset", "matches")
+
+
+def _codigo_pwa(cliente) -> str:
+    """El JavaScript de la PWA SIN comentarios.
+
+    Se quitan a propósito. Un test que busca `secrets_missing` en el fichero
+    entero se conforma con encontrarlo en un comentario que lo menciona, y un
+    comentario no lee nada: la comprobación pasaría con el código ya desconectado.
+    Es la misma distinción que en el `config.yaml` -una clave es un interruptor,
+    un comentario es documentación- aplicada al sitio donde se comprueba.
+    """
+    codigo = cliente.get("/app.js").text
+    codigo = re.sub(r"/\*.*?\*/", "", codigo, flags=re.DOTALL)   # /* ... */
+    codigo = re.sub(r"(?m)^\s*//.*$", "", codigo)                # // línea entera
+    return codigo
+
+
+def test_health_sigue_diciendo_lo_que_la_pwa_va_a_pintar(cliente):
+    cuerpo = cliente.get("/api/health").json()
+    for clave in CLAVES_QUE_LEE_LA_PWA:
+        assert clave in cuerpo, f"/api/health ya no devuelve '{clave}'"
+    for clave in CLAVES_DEL_PLANIFICADOR:
+        assert clave in cuerpo["scheduler"], f"scheduler ya no lleva '{clave}'"
+    for clave in CLAVES_DEL_RELOJ:
+        assert clave in cuerpo["clock"], f"clock ya no lleva '{clave}'"
+
+
+def test_la_pwa_pregunta_por_la_salud_del_sistema(cliente):
+    """Sin esta llamada todo lo demás de esta sección es decorado."""
+    assert "/api/health" in _codigo_pwa(cliente), (
+        "la PWA ha dejado de preguntar por /api/health: una instalación sin "
+        "claves o sin planificador vuelve a ser invisible desde el móvil"
+    )
+
+
+@pytest.mark.parametrize(
+    "clave", CLAVES_QUE_LEE_LA_PWA + CLAVES_DEL_PLANIFICADOR + CLAVES_DEL_RELOJ
+)
+def test_la_pwa_lee_cada_clave_con_el_nombre_que_la_api_le_da(cliente, clave):
+    """El fallo que esto persigue no da error en ninguna parte.
+
+    Renombrar `secrets_missing` en `app/api.py` deja el `s.secrets_missing` de
+    `app.js` valiendo `undefined`, `[].length` no salta, y el aviso deja de
+    pintarse. La API contesta 200, la PWA carga, y lo único que cambia es que
+    nadie vuelve a enterarse de que faltan las claves.
+    """
+    assert clave in _codigo_pwa(cliente), (
+        f"la PWA ya no lee '{clave}'. Si se ha renombrado en la API, hay que "
+        f"renombrarlo también en `static/app.js`: aquí un nombre que no "
+        f"coincide no es un error, es un aviso que deja de aparecer"
+    )
+
+
+def test_el_modo_en_seco_tambien_se_avisa(cliente):
+    """En seco NO llega mensaje de Telegram, y eso es correcto.
+
+    Es el único de los tres avisos que no denuncia una avería. Está por lo
+    contrario: sin él, el silencio deliberado de `DRY_RUN=true` se lee como una
+    avería y se acaba tocando lo que no está roto.
+    """
+    codigo = _codigo_pwa(cliente)
+    assert "dry_run" in codigo
+    # Dentro de la rama de `dry_run`, no en cualquier parte del fichero: lo que
+    # importa es que el aviso lo dispare ESA condición y no otra.
+    rama = codigo.split("if (s.dry_run)", 1)
+    assert len(rama) == 2, "ya no hay una rama que dependa de dry_run"
+    assert "seco" in rama[1][:600].lower(), (
+        "la rama de dry_run ya no dice que el silencio es deliberado: sin eso, "
+        "un día sin mensaje de Telegram se lee como una avería"
+    )
+
+
+class _CfgConZona:
+    """Un `config` de mentira del que solo se mira la zona horaria."""
+
+    def __init__(self, timezone: str) -> None:
+        self.timezone = timezone
+
+
+def _zona_con_otro_desplazamiento() -> str:
+    """Una zona que HOY no coincide con el reloj de esta máquina.
+
+    Se busca en vez de escribirla a mano porque el desplazamiento local depende
+    de dónde corran los tests y de si es verano. Una constante convertiría este
+    test en un test que pasa o falla según el mes.
+    """
+    from datetime import datetime, timezone as tz
+
+    ahora = datetime.now(tz.utc)
+    local = ahora.astimezone().utcoffset()
+    for nombre in ("Pacific/Kiritimati", "Pacific/Midway", "Asia/Tokyo", "UTC"):
+        if ahora.astimezone(ZoneInfo(nombre)).utcoffset() != local:
+            return nombre
+    raise AssertionError("no se encontró ninguna zona distinta de la local")
+
+
+def test_el_aviso_del_reloj_puede_fallar_de_verdad():
+    """El test central de esta sección, y el motivo de que exista.
+
+    La comprobación que había antes -mirar que los trabajos del planificador
+    salgan en `+02:00` y no en `+00:00`- NO PUEDE FALLAR NUNCA: los disparadores
+    se construyen con `ZoneInfo(cfg.timezone)`, así que dan `+02:00` aunque el
+    contenedor esté en UTC. Comprobado levantando la imagen sin `TZ`.
+
+    Una comprobación que no puede fallar es peor que ninguna, porque ocupa su
+    sitio y tranquiliza. Así que lo que se sujeta aquí no es que el aviso exista,
+    es que sepa decir que NO.
+    """
+    otra = _zona_con_otro_desplazamiento()
+    estado = _estado_del_reloj(_CfgConZona(otra))
+    assert estado["matches"] is False, (
+        f"el reloj local y {otra} tienen desplazamientos distintos y el aviso "
+        f"dice que coinciden: vuelve a ser una comprobación que no puede fallar"
+    )
+    assert estado["offset"] is not None
+
+
+def test_el_aviso_del_reloj_no_grita_cuando_todo_esta_bien():
+    """La otra mitad: un aviso que salta siempre se aprende a ignorar."""
+    from datetime import datetime, timezone as tz
+
+    ahora = datetime.now(tz.utc)
+    local = ahora.astimezone().utcoffset()
+    # Se compara contra una zona con el MISMO desplazamiento que la local, no
+    # contra el nombre de la local: son el mismo día a la misma hora, que es lo
+    # único que decide bajo qué fecha se guarda un check-in.
+    misma = next(
+        (
+            n
+            for n in ("Europe/Madrid", "Europe/Paris", "UTC", "Asia/Tokyo",
+                      "America/New_York", "Pacific/Kiritimati")
+            if ahora.astimezone(ZoneInfo(n)).utcoffset() == local
+        ),
+        None,
+    )
+    assert misma is not None, "ninguna zona candidata coincide con el reloj local"
+    estado = _estado_del_reloj(_CfgConZona(misma))
+    assert estado["matches"] is True, (
+        f"{misma} tiene el mismo desplazamiento que el reloj local y aun así "
+        f"salta el aviso: un aviso falso enseña a no leer los avisos"
+    )
+    assert estado["error"] is None
+
+
+def test_una_zona_mal_escrita_en_el_config_se_dice_y_no_revienta_el_health():
+    """`/api/health` es lo que se mira cuando algo va mal; no puede caerse.
+
+    Una zona inventada en el `config.yaml` haría saltar a `ZoneInfo`. Si eso
+    subiera, el health devolvería 500 justo el día que hace falta leerlo, y el
+    healthcheck de Docker reiniciaría el contenedor en bucle sin decir por qué.
+    """
+    estado = _estado_del_reloj(_CfgConZona("Europa/Madrid_mal_escrito"))
+    assert estado["matches"] is False
+    assert estado["error"] and "config.yaml" in estado["error"]
+
+
+def test_un_health_que_falla_no_se_lleva_por_delante_el_formulario(cliente):
+    """El check-in es lo importante; el panel es un extra.
+
+    Van en dos llamadas separadas y sin `await` entre ellas justo por esto: el
+    día que `/api/health` se caiga o tarde, el formulario tiene que salir igual.
+    """
+    codigo = _codigo_pwa(cliente)
+    # La llamada suelta, a principio de línea, y NO la definición: buscar
+    # "comprobarSalud()" a secas también encuentra `function comprobarSalud()`,
+    # así que borrar la llamada y dejar la función habría pasado el test.
+    lineas = [ln.strip() for ln in codigo.splitlines()]
+    assert "comprobarSalud();" in lineas, (
+        "nadie llama a comprobarSalud(): la función existe y no la ejecuta "
+        "nadie, que es exactamente el fallo que esta sección venía a cerrar"
+    )
+    assert "await comprobarSalud();" not in lineas, (
+        "encadenar el panel al arranque hace que un /api/health lento retrase "
+        "el formulario, que es lo único que hay que rellenar por la mañana"
+    )

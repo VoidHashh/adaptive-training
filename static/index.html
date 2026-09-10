@@ -22,6 +22,19 @@
   </header>
 
   <!--
+    El estado del SISTEMA, no el del check-in. Va antes del formulario, fuera de
+    él y sin esperar a que cargue, porque avisa de cosas que no se notan
+    rellenándolo: sin las claves de Hevy y Telegram el formulario se envía y se
+    guarda igual, y luego no se escribe la rutina ni llega el mensaje. Desde el
+    móvil eso es idéntico a un día de descanso.
+
+    `/api/health` ya devolvía `secrets_missing` y el estado del planificador
+    desde el principio; lo que no había era nadie que lo leyera salvo el
+    healthcheck de Docker, que solo mira que conteste 200.
+  -->
+  <section id="salud" hidden></section>
+
+  <!--
     Se rellena desde `/api/checkin/today`, que devuelve los deslizadores tal y
     como están en el `config.yaml`. Aquí no hay ninguna lista de deslizadores
     escrita a mano: si la hubiera, añadir uno al YAML lo dejaría fuera del

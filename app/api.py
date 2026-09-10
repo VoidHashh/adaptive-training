@@ -26,9 +26,10 @@ import csv
 import io
 import logging
 from contextlib import asynccontextmanager
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -203,7 +204,62 @@ def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
         # trabajos hay y cuándo toca cada uno, porque "arrancado" tampoco basta:
         # un planificador vivo con cero trabajos falla exactamente igual.
         "scheduler": _estado_planificador(request),
+        "clock": _estado_del_reloj(cfg),
     }
+
+
+def _estado_del_reloj(cfg) -> dict[str, Any]:
+    """¿Deciden el mismo día el reloj del proceso y el `config.yaml`?
+
+    Hace falta preguntarlo aparte, y la razón es que la respuesta obvia NO
+    sirve. Mirar la hora de los trabajos del planificador parece la comprobación
+    natural -"que ponga +02:00 y no +00:00"- pero no comprueba nada: los
+    disparadores se construyen con `ZoneInfo(cfg.timezone)`, así que salen en
+    `+02:00` aunque el contenedor esté en UTC y aunque `TZ` no exista. Es una
+    comprobación que no puede fallar, y una comprobación que no puede fallar
+    tranquiliza sin mirar.
+
+    Lo que sí depende del reloj del proceso son los nueve `date.today()` y
+    `datetime.now()` repartidos por `api.py`, `scheduler.py`, `cli.py` y
+    `hevy.py`: ahí es donde se decide bajo qué día se guarda un check-in. Con el
+    contenedor en UTC y las reglas en Europe/Madrid, un check-in enviado entre
+    las 00:00 y las 02:00 se archiva con la fecha de AYER, y a la mañana
+    siguiente el trabajo de las 09:00 decide como si no lo hubiera habido.
+
+    Se comparan DESPLAZAMIENTOS, no nombres de zona. El nombre puede diferir sin
+    consecuencias -Europe/Madrid y Europe/Paris son el mismo día a la misma
+    hora-, y lo único que elige la fecha es el desplazamiento. Comparar nombres
+    daría avisos falsos; comparar desplazamientos avisa cuando, y solo cuando,
+    las dos fuentes pueden ya discrepar en qué día es hoy.
+    """
+    ahora = datetime.now(timezone.utc)
+    del_reloj = ahora.astimezone().utcoffset()
+    try:
+        de_las_reglas = ahora.astimezone(ZoneInfo(cfg.timezone)).utcoffset()
+    except Exception as e:  # zona escrita mal en el `config.yaml`
+        return {
+            "timezone": cfg.timezone,
+            "offset": None,
+            "matches": False,
+            "error": f"zona horaria desconocida en config.yaml: {e}",
+        }
+
+    return {
+        "timezone": cfg.timezone,
+        # El del PROCESO, que es el que manda en `date.today()`.
+        "offset": _iso_offset(del_reloj),
+        "matches": del_reloj == de_las_reglas,
+        "error": None,
+    }
+
+
+def _iso_offset(delta: timedelta | None) -> str | None:
+    if delta is None:
+        return None
+    total = int(delta.total_seconds())
+    signo = "-" if total < 0 else "+"
+    horas, resto = divmod(abs(total), 3600)
+    return f"{signo}{horas:02d}:{resto // 60:02d}"
 
 
 def _estado_planificador(request: Request) -> dict[str, Any]:

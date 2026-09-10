@@ -24,6 +24,7 @@
 const API = {
   hoy: "/api/checkin/today",
   enviar: "/api/checkin",
+  salud: "/api/health",
 };
 
 // Lo último que se escribió, por si el envío no llega. No es una cola: no se
@@ -363,13 +364,128 @@ function escapar(s) {
   }[c]));
 }
 
+// ---------------------------------------------------------------------------
+// El estado del sistema
+// ---------------------------------------------------------------------------
+
+/* Lo que se avisa aquí NO se nota rellenando el formulario.
+ *
+ * Sin las claves de Hevy y Telegram el check-in se envía, se guarda y se
+ * decide; lo que no ocurre es lo de después: ni se reescribe la rutina ni llega
+ * el mensaje. Desde el móvil eso son dos cosas idénticas -no llega nada- y una
+ * de ellas es una avería. Igual con el planificador parado: la aplicación sirve
+ * el formulario, contesta 200 y no decide nunca.
+ *
+ * `/api/health` ya lo contaba todo. El healthcheck de Docker era su único
+ * lector, y solo mira que el 200 llegue.
+ *
+ * El caso raro es `dry_run`, y por eso también se pinta: en seco el silencio es
+ * DELIBERADO. Sin decirlo, un día sin mensaje de Telegram se lee como una
+ * avería y se acaba tocando lo que no está roto.
+ */
+async function comprobarSalud() {
+  let s;
+  try {
+    const r = await fetch(API.salud, { cache: "no-store" });
+    if (!r.ok) throw new Error(String(r.status));
+    s = await r.json();
+  } catch {
+    // Callar a propósito: si no hay servidor, `arrancar()` ya lo dice arriba y
+    // con todas las letras. Dos avisos de la misma causa se leen como dos
+    // problemas distintos.
+    return;
+  }
+
+  const avisos = [];
+
+  const faltan = s.secrets_missing || [];
+  if (faltan.length) {
+    avisos.push({
+      clase: "mal",
+      titulo: "Faltan credenciales: el sistema no puede actuar.",
+      cuerpo:
+        "Lo que envíes se guarda y se decide, pero no se reescribirá la " +
+        "rutina en Hevy ni llegará el mensaje.",
+      lista: faltan,
+    });
+  }
+
+  const plan = s.scheduler || {};
+  const trabajos = Object.keys(plan.jobs || {});
+  if (!plan.running || trabajos.length === 0) {
+    avisos.push({
+      clase: "mal",
+      titulo: "El planificador no está en marcha: no va a decidir solo.",
+      cuerpo: plan.error
+        ? `El servidor dice: ${plan.error}`
+        : "Nadie refrescará Garmin por la mañana ni decidirá si no hay " +
+          "check-in. El formulario sigue funcionando a mano.",
+    });
+  }
+
+  const reloj = s.clock || {};
+  if (reloj.matches === false) {
+    avisos.push({
+      clase: "mal",
+      titulo: "El reloj del servidor no va con las reglas.",
+      cuerpo: reloj.error
+        ? `El servidor dice: ${reloj.error}`
+        : `Las reglas están en ${reloj.timezone} y el servidor va en ` +
+          `${reloj.offset}. Un check-in de madrugada se guardará con la fecha ` +
+          `de ayer, y mañana se decidirá como si no lo hubieras enviado.`,
+    });
+  }
+
+  if (s.dry_run) {
+    avisos.push({
+      clase: "ojo",
+      titulo: "Modo en seco.",
+      cuerpo:
+        "Se decide y se guarda todo, pero a propósito no se toca Hevy ni se " +
+        "envía Telegram. Si hoy no llega mensaje, es esto y no una avería.",
+    });
+  }
+
+  if (!avisos.length) return;
+
+  const caja = $("salud");
+  caja.innerHTML = avisos.map((a) => (
+    `<p class="aviso ${a.clase}">` +
+      `<strong>${escapar(a.titulo)}</strong>` +
+      `${escapar(a.cuerpo)}` +
+      (a.lista
+        ? `<ul>${a.lista.map((x) => `<li>${escapar(x)}</li>`).join("")}</ul>`
+        : "") +
+    `</p>`
+  )).join("");
+  caja.hidden = false;
+}
+
 $("formulario").addEventListener("submit", enviar);
 $("comentarios").addEventListener("input", guardarBorrador);
 arrancar();
+// Aparte de `arrancar()` y sin `await`: son dos preguntas independientes. Un
+// `/api/health` lento no debe retrasar el formulario, y un formulario que no
+// carga no debe tapar el motivo por el que no carga.
+comprobarSalud();
 
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch((e) => {
     // Sin service worker la aplicación funciona igual, solo que sin instalar.
     console.warn("service worker no registrado:", e);
   });
+} else {
+  // Este `else` no sobra. Servida por Umbrel la condición es FALSA -HTTP en la
+  // red local no es contexto seguro, y ahí el navegador ni siquiera expone
+  // `serviceWorker`-, así que sin esto no se registra nada Y no se dice nada:
+  // el `.catch` de arriba no llega a correr. Queda un "añadir a pantalla de
+  // inicio" que no instala nada y ni una pista de por qué.
+  //
+  // A la consola y no a la pantalla, a propósito: esto no afecta a decidir, y
+  // un aviso permanente sobre algo que hoy no se va a arreglar solo enseña a
+  // ignorar los avisos -que son justo los que sí hay que leer-.
+  console.info(
+    "service worker omitido: requiere contexto seguro (HTTPS o localhost). " +
+    "La aplicación funciona igual, pero no arranca sin conexión."
+  );
 }
