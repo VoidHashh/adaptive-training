@@ -207,6 +207,13 @@ class DayDecision:
     notes: list[str] = field(default_factory=list)
     config_hash: str | None = None
     source: str = "checkin"
+    # La sesión aplazada que hoy ha caducado, si la hay: (rutina, día en que se
+    # aplazó). Va en la decisión y no en `EngineState` porque no es algo que se
+    # recuerde, es algo que ha pasado HOY y hay que contar. `advance_state` la
+    # usa para borrar el aplazamiento, y `to_dict` para que quede en el
+    # histórico: dentro de tres semanas, "esa semana entrené una vez menos" se
+    # explica aquí o no se explica.
+    expired_deferral: tuple[str, date] | None = None
 
     @property
     def weekday(self) -> str:
@@ -230,6 +237,14 @@ class DayDecision:
             "bike": self.bike.to_dict() if self.bike else None,
             "progression": _progression_dict(self.progression),
             "notes": self.notes,
+            "expired_deferral": (
+                {
+                    "routine": self.expired_deferral[0],
+                    "deferred_from": self.expired_deferral[1].isoformat(),
+                }
+                if self.expired_deferral
+                else None
+            ),
         }
 
 
@@ -532,14 +547,27 @@ def decide(
     # La sesión aplazada por un rojo se recupera en el primer verde libre.
     # `build_session` toma la decisión final, pero la progresión necesita saber
     # QUÉ rutina se va a planificar, así que se replica el criterio aquí.
-    if routine_key is None and state.pending_strength and light == "green":
+    #
+    # La caducidad se mira SIEMPRE, no solo en los días verdes y libres. Antes
+    # colgaba de ese `if`, y por eso un aplazamiento podía caducar sin que nadie
+    # llegara nunca a comprobarlo: bastaba con que los días siguientes tocara
+    # bici o el semáforo no fuese verde, que es justo lo que pasa cuando se
+    # arrastra una mala racha. La sesión se perdía en el único escenario en el
+    # que de verdad importa saberlo.
+    expired_deferral: tuple[str, date] | None = None
+    if state.pending_strength:
         pkey, pday = state.pending_strength
         expires = int(
             ((raw.get("actions", {}) or {}).get("red", {}) or {}).get(
                 "defer_expires_days", 7
             )
         )
-        if (day - pday).days <= expires and not plan_today.get("bike"):
+        if (day - pday).days > expires:
+            # Solo el dato estructurado. El texto lo redacta `message.py`, que
+            # es quien sabe a quién se lo está contando, y así no hay dos
+            # frases distintas para el mismo hecho ni que deduplicarlas luego.
+            expired_deferral = (pkey, pday)
+        elif routine_key is None and light == "green" and not plan_today.get("bike"):
             routine_key = pkey
             notes.append(f"se recupera la sesión '{pkey}' aplazada el {pday}")
 
@@ -602,6 +630,7 @@ def decide(
         notes=notes,
         config_hash=getattr(config, "hash", None),
         source=source,
+        expired_deferral=expired_deferral,
     )
 
 
@@ -655,6 +684,29 @@ def advance_state(
     if decision.light == "red" and decision.calendar_routine:
         new.pending_strength = (decision.calendar_routine, decision.day)
     elif rkey and sess.kind in {"full", "reduced"}:
+        # Solo lo borra la rutina que estaba pendiente, no una cualquiera.
+        #
+        # Esto era `new.pending_strength = None` a secas, y el efecto era este:
+        # un lunes en rojo aplaza `dia_1`; el jueves toca `dia_2` por
+        # calendario; planificar `dia_2` -ni siquiera ejecutarlo- borraba el
+        # `dia_1` aplazado. La sesión que un rojo había protegido desaparecía
+        # por haber entrenado otra cosa, sin ejecutarse y sin decir nada. El
+        # aplazamiento existe justamente para que un día malo no cueste una
+        # sesión, y así costaba la sesión igual pero en diferido.
+        pendiente = new.pending_strength
+        if pendiente and pendiente[0] == rkey:
+            new.pending_strength = None
+
+    # Un aplazamiento caducado se borra, y quien decidió que había caducado fue
+    # `decide` -que es quien tiene el config con `defer_expires_days`-. Aquí
+    # solo se ejecuta.
+    #
+    # Antes no lo borraba nadie: pasados los días, la fila se quedaba en la base
+    # para siempre, `decide` ya no la miraba nunca más y la sesión aplazada
+    # dejaba de existir sin que se enterase nadie. Borrarla en silencio sería el
+    # mismo fallo con la base más limpia, así que `decide` además lo cuenta en
+    # las notas: una sesión perdida es información de entrenamiento.
+    if decision.expired_deferral:
         new.pending_strength = None
 
     if executed is None or not rkey or sess.kind not in {"full", "reduced"}:

@@ -78,6 +78,73 @@ def test_lo_pendiente_se_recupera_en_el_siguiente_dia_libre_y_verde(cfg):
     assert st2.pending_strength is None, "el pendiente se consume al recuperarlo"
 
 
+def test_entrenar_otra_rutina_no_se_lleva_por_delante_la_aplazada(cfg):
+    """El aplazamiento existe para que un día malo no cueste una sesión.
+
+    Esto lo borraba `advance_state` con un `pending_strength = None` a secas:
+    un lunes rojo aplazaba `dia_1`, el jueves tocaba `dia_2` por calendario, y
+    PLANIFICAR el `dia_2` -ni siquiera ejecutarlo- borraba el `dia_1`. La
+    sesión que el rojo había protegido desaparecía por haber entrenado otra
+    cosa. Costaba la sesión igual, pero tres días más tarde y sin decirlo.
+    """
+    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    st = advance_state(EngineState(), rojo, executed={})
+    assert st.pending_strength == ("dia_1", LUNES)
+
+    jueves = LUNES + timedelta(days=3)
+    d2 = decide(cfg, jueves, sig(jueves, lower_discomfort=1), st)
+    assert d2.session.routine_key == "dia_2", "el escenario necesita OTRA rutina"
+
+    st2 = advance_state(st, d2, executed={k["key"]: True for k in d2.session.exercises})
+    assert st2.pending_strength == ("dia_1", LUNES), (
+        "haber hecho dia_2 no es haber hecho el dia_1 que quedaba pendiente"
+    )
+
+
+def test_un_aplazamiento_que_caduca_se_borra_y_se_cuenta(cfg):
+    """Antes no lo borraba nadie y no lo contaba nadie.
+
+    Pasados los `defer_expires_days`, `decide` dejaba de mirar la fila y la
+    sesión aplazada se evaporaba: ni se recuperaba, ni se limpiaba, ni se
+    avisaba. Una sesión de fuerza menos esa semana, sin rastro.
+    """
+    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    st = advance_state(EngineState(), rojo, executed={})
+
+    tarde = LUNES + timedelta(days=9)  # defer_expires_days = 7
+    d = decide(cfg, tarde, sig(tarde, lower_discomfort=1), st)
+    assert d.expired_deferral == ("dia_1", LUNES)
+
+    st2 = advance_state(st, d, executed=None)
+    assert st2.pending_strength is None, "caducado y encima sin limpiar"
+
+
+def test_la_caducidad_se_mira_aunque_el_dia_no_sea_verde_ni_libre(cfg):
+    """La comprobación colgaba del `if` que recupera la sesión, que solo entra
+    en días verdes y sin bici. O sea: se dejaba de comprobar exactamente
+    cuando se arrastra una mala racha, que es cuando un aplazamiento caduca."""
+    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    st = advance_state(EngineState(), rojo, executed={})
+
+    tarde = LUNES + timedelta(days=9)
+    d = decide(cfg, tarde, sig(tarde, lower_discomfort=7), st)  # otro rojo
+    assert d.light == "red"
+    assert d.expired_deferral == ("dia_1", LUNES)
+
+
+def test_dentro_de_plazo_no_caduca_nada(cfg):
+    """El contraste: sin esto, un `expired_deferral` siempre activo pasaría los
+    dos tests de arriba y borraría todos los aplazamientos al día siguiente."""
+    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    st = advance_state(EngineState(), rojo, executed={})
+
+    pronto = LUNES + timedelta(days=2)
+    d = decide(cfg, pronto, sig(pronto, lower_discomfort=1), st)
+    assert d.expired_deferral is None
+    st2 = advance_state(st, d, executed=None)
+    assert st2.pending_strength is not None or d.session.routine_key == "dia_1"
+
+
 # ---------------------------------------------------------------------------
 # Reglas especiales: vigencia por calendario, no por síntoma de hoy
 # ---------------------------------------------------------------------------

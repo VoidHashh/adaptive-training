@@ -207,6 +207,25 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         for n in degradaciones:
             L.append(f"• {n}")
 
+    # --- una sesión que se ha perdido ---------------------------------------
+    # FUERA de `include_reasoning`, por el mismo motivo que el bloque de
+    # arriba. Que un aplazamiento haya caducado no es "por qué he decidido
+    # esto": es "esta semana has entrenado una vez menos". Es un hecho del
+    # programa, y con el razonamiento apagado este mensaje era el único sitio
+    # donde podía constar y no constaba en ninguno.
+    #
+    # Antes ni siquiera se detectaba: la sesión aplazada se quedaba en la base
+    # de datos, nadie volvía a mirarla y desaparecía en silencio.
+    if decision.expired_deferral:
+        rutina, aplazada = decision.expired_deferral
+        L.append("")
+        L.append("⏳ <b>Sesión perdida</b>")
+        L.append(
+            f"• '{rutina}', aplazada el {aplazada.isoformat()}, ha caducado sin "
+            f"que haya habido un día libre y en verde para recuperarla. No se "
+            f"recupera sola: si la quieres, hay que meterla a mano."
+        )
+
     # --- por qué ------------------------------------------------------------
     if incluir_motivo:
         L.append("")

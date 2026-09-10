@@ -255,6 +255,58 @@ def test_la_fuerza_que_queda_pendiente_se_dice(cfg):
     assert "queda pendiente" in txt
 
 
+def test_la_sesion_que_caduca_se_dice_aunque_el_razonamiento_este_apagado(
+    cfg_sin_motivo,
+):
+    """Perder una sesión es un hecho del programa, no la explicación de una
+    decisión.
+
+    Es la misma frontera que el bloque de "Decidido con datos incompletos":
+    dentro de `include_reasoning` van los porqués, y quien lo apaga está
+    diciendo "no me cuentes cómo lo has razonado", no "no me digas que esta
+    semana has entrenado una vez menos". Un aplazamiento que caduca es lo
+    segundo, y además es lo único que distingue una sesión perdida de una
+    sesión que sigue esperando.
+    """
+    from datetime import timedelta
+
+    from app.engine.decision import advance_state
+
+    cfg = cfg_sin_motivo
+    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    st = advance_state(EngineState(), rojo, executed={})
+    assert st.pending_strength, "el lunes rojo ya no aplaza; rehaz el test"
+    rutina, aplazada = st.pending_strength
+
+    # Sin pasar por los días intermedios: si se decidiera cada día, alguno
+    # verde y libre la recuperaría antes de caducar, que es justo lo que este
+    # test NO quiere.
+    tarde = LUNES + timedelta(days=9)
+    d = decide(cfg, tarde, sig(tarde), st)
+    assert d.expired_deferral == (rutina, aplazada)
+
+    txt = render_plain(d, cfg)
+    assert "Sesión perdida" in txt
+    assert rutina in txt, "hay que decir CUÁL se ha perdido"
+    assert aplazada.isoformat() in txt, "y de qué día era"
+    assert txt.count("Sesión perdida") == 1
+
+
+def test_dentro_de_plazo_el_mensaje_no_da_por_perdida_la_sesion(cfg_sin_motivo):
+    """Guarda del de arriba: un aviso que saliera siempre no informa de nada."""
+    from datetime import timedelta
+
+    from app.engine.decision import advance_state
+
+    cfg = cfg_sin_motivo
+    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    st = advance_state(EngineState(), rojo, executed={})
+
+    pronto = LUNES + timedelta(days=2)
+    d = decide(cfg, pronto, sig(pronto), st)
+    assert "Sesión perdida" not in render_plain(d, cfg)
+
+
 def test_el_motivo_de_la_descarga_no_se_cuela_cuando_no_hay_descarga(cfg):
     """El motor apunta `descarga: <motivo>` TODOS los días, también el día que
     no toca descarga. Volcar los apuntes tal cual metía en el mensaje un "no
