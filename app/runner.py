@@ -125,6 +125,7 @@ def run_daily(
 
     res = DailyResult(day=day, decision=decision)
     fila = repo.save_decision(session, decision)
+    _guardar_lo_leido(session, signals, metrics, res)
 
     _escribir_hevy(session, cfg, decision, fila, res, hevy_client, dry_run)
     _mandar_telegram(session, cfg, decision, res, telegram_client, dry_run)
@@ -136,6 +137,41 @@ def run_daily(
 
     repo.save_state(session, advance_state(state, decision), day=day)
     return res
+
+
+def _guardar_lo_leido(
+    session: Session, signals: Any, metrics: list, res: DailyResult
+) -> None:
+    """Deja en la base lo que se leyó de Garmin, no solo lo que se decidió con ello.
+
+    Va aquí y no en el trabajo de las 06:30 porque aquí es donde existen las dos
+    cosas a la vez: las métricas crudas y la clasificación de cada salida, que
+    depende del `config.yaml` de hoy y no se puede reconstruir después.
+
+    NO TUMBA LA MAÑANA. Si esto falla, la decisión ya está tomada y guardada, y
+    el mensaje tiene que salir igual: perder un día de histórico es malo, pero
+    quedarse sin plan porque no se pudo archivar una fila es peor. Se anota en
+    `problemas`, que es lo que el usuario acaba viendo, en vez de en un log que
+    nadie lee.
+    """
+    try:
+        cargas = {
+            d: (
+                signals.history.get("load_3d", {}).get(d),
+                signals.history.get("load_7d", {}).get(d),
+            )
+            for d in {m.date for m in metrics or [] if getattr(m, "date", None)}
+        }
+        dias = repo.upsert_daily_metrics(session, metrics, loads=cargas)
+        salidas = repo.upsert_activities(session, signals.rides)
+        log.debug("archivados %d día(s) de wellness y %d salida(s)", dias, salidas)
+    except Exception as exc:  # noqa: BLE001
+        res.problemas.append(
+            f"no se pudo archivar lo leído de Garmin ({exc}): la decisión de hoy "
+            f"está guardada, pero los datos con los que se tomó no. Un día que no "
+            f"se guarda no se recupera."
+        )
+        log.exception("fallo archivando métricas y actividades")
 
 
 def _escribir_hevy(

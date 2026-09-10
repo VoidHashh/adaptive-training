@@ -25,6 +25,7 @@ test lo dice por su nombre.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import fields as dataclass_fields
 from datetime import date
 from typing import Any
@@ -42,6 +43,8 @@ from app.models import (
 )
 from app.models import Checkin as CheckinRow
 from app.models import Decision as DecisionRow
+
+log = logging.getLogger(__name__)
 
 # Los campos de `EngineState` que este módulo sabe guardar y recuperar. La
 # lista está escrita a mano a propósito: es lo que permite que un campo nuevo
@@ -442,6 +445,168 @@ def progressed_keys(fila: DecisionRow | None) -> list[str]:
 
 def _json(valor: Any) -> str | None:
     return json.dumps(valor, ensure_ascii=False, default=str) if valor is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Lo que se lee de Garmin, guardado
+# ---------------------------------------------------------------------------
+#
+# POR QUÉ ESTAS DOS FUNCIONES EXISTEN
+# -----------------------------------
+# `daily_metrics` y `activities` llevaban desde el primer día declaradas en
+# `models.py` y sin que NADIE las escribiera. El sistema leía las métricas de
+# Garmin cada mañana, decidía con ellas y las tiraba. Sobrevivía una copia
+# parcial dentro de `decisions.inputs_snapshot_json` -solo de los días en que
+# hubo decisión, y solo de las señales que el motor evalúa-, y las salidas
+# clasificadas ni eso: `Signals.rides` está fuera de `values` a propósito, así
+# que la clasificación (suave/media/intensa) no entraba en el snapshot.
+#
+# Eso no daba ningún error. Simplemente, el día que se quiera responder a
+# "¿cuántos días de HRV cuesta una salida intensa?" no habrá contra qué
+# responder, y no se podrá arreglar hacia atrás: un día que no se guarda no se
+# recupera. Ver `docs/analisis.md`.
+#
+# LA REGLA QUE GOBIERNA LAS DOS: UN `None` NUEVO NO PISA UN DATO VIEJO
+# --------------------------------------------------------------------
+# Estas funciones se llaman con una ventana de varios días, todas las mañanas,
+# así que cada día se reescribe unas cuantas veces. Si Garmin contesta hoy y
+# mañana falla la llamada de HRV de ese mismo día -un 429, un timeout-, la
+# segunda pasada traería `hrv=None`. Copiarlo encima borraría el dato bueno sin
+# un solo error: la fila seguiría ahí, con un hueco, indistinguible de un día en
+# que el reloj no se llevó puesto.
+
+
+def upsert_daily_metrics(
+    session: Session,
+    metrics: Any,
+    *,
+    loads: dict[date, tuple[float | None, float | None]] | None = None,
+) -> int:
+    """Guarda la ventana de wellness. Devuelve cuántos días se han tocado.
+
+    `loads` son las cargas acumuladas ya calculadas por el motor
+    (`signals.history["load_3d"]` y `["load_7d"]`). Se pasan en vez de
+    recalcularse aquí para que la carga guardada sea EXACTAMENTE la que se usó
+    para decidir; recalcularla más tarde con otra caché daría otro número y la
+    auditoría del semáforo compararía contra algo que nunca se evaluó.
+    """
+    from app.models import DailyMetrics
+
+    campos = ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery", "readiness")
+    tocados = 0
+
+    for m in metrics or []:
+        dia = getattr(m, "date", None)
+        if dia is None:
+            continue
+
+        fila = session.scalars(
+            select(DailyMetrics).where(DailyMetrics.date == dia)
+        ).first()
+        if fila is None:
+            fila = DailyMetrics(date=dia)
+            session.add(fila)
+
+        for campo in campos:
+            nuevo = getattr(m, campo, None)
+            if nuevo is not None:
+                setattr(fila, campo, nuevo)
+
+        if loads is not None:
+            l3, l7 = loads.get(dia, (None, None))
+            if l3 is not None:
+                fila.load_3d = l3
+            if l7 is not None:
+                fila.load_7d = l7
+
+        # `partial` no es cosmético: es la diferencia entre "esa noche no dormí
+        # con el reloj" y "esa mañana Garmin no contestó". Sin la marca, los dos
+        # casos son la misma fila con un hueco, y el segundo se podría reintentar
+        # mientras que el primero no.
+        huecos = [c for c in campos if getattr(fila, c, None) is None]
+        fila.fetch_status = "partial" if huecos else "ok"
+        fila.fetch_error = (
+            "sin dato de: " + ", ".join(huecos) if huecos else None
+        )
+        tocados += 1
+
+    session.flush()
+    return tocados
+
+
+def upsert_activities(session: Session, classified: Any) -> int:
+    """Guarda las salidas YA CLASIFICADAS. Devuelve cuántas se han tocado.
+
+    Se guarda la clasificación (`intensity_level`, `classification_source`,
+    `training_load`, `training_load_estimated`) y no solo los datos crudos,
+    porque la clasificación depende de los umbrales del `config.yaml` del día en
+    que se hizo. Reclasificar dentro de seis semanas con un YAML ya cambiado
+    daría otras etiquetas, y entonces "el lumbar sube después de una salida
+    intensa" se estaría midiendo contra unas intensas que en su momento no lo
+    fueron.
+
+    El crudo de Garmin NO se copia aquí: vive en `data/cache/activities.json`,
+    que se fusiona y nunca se poda, así que ya está a salvo. Lo que no está en
+    ningún otro sitio es esto.
+    """
+    from app.models import Activity
+
+    tocadas = 0
+    sin_id = 0
+
+    for c in classified or []:
+        ride = getattr(c, "ride", c)
+        aid = getattr(ride, "activity_id", None)
+        if aid is None:
+            # Solo las salidas sintéticas de los tests llegan sin id; las de
+            # Garmin siempre lo traen. No se inventa una clave: dos salidas sin
+            # id el mismo día se fundirían en una y la carga del día bajaría.
+            sin_id += 1
+            continue
+
+        fila = session.scalars(
+            select(Activity).where(Activity.garmin_activity_id == int(aid))
+        ).first()
+        if fila is None:
+            fila = Activity(garmin_activity_id=int(aid), date=ride.date)
+            session.add(fila)
+
+        fila.date = ride.date
+        fila.name = getattr(ride, "name", None) or fila.name
+        fila.is_cycling = bool(getattr(ride, "is_cycling", True))
+        for origen, destino in (
+            ("duration_s", "duration_s"),
+            ("distance_m", "distance_m"),
+            ("training_load", "training_load"),
+            ("aerobic_te", "aerobic_te"),
+            ("anaerobic_te", "anaerobic_te"),
+        ):
+            nuevo = getattr(ride, origen, None)
+            if nuevo is not None:
+                setattr(fila, destino, nuevo)
+
+        zonas = getattr(ride, "zones", None) or ()
+        for i, segundos in enumerate(zonas[:5], start=1):
+            if segundos is not None:
+                setattr(fila, f"hr_zone_{i}_s", float(segundos))
+
+        fila.intensity_level = getattr(c, "level", None) or fila.intensity_level
+        fila.classification_source = (
+            getattr(c, "source", None) or fila.classification_source
+        )
+        # La carga estimada SÍ se guarda, pero marcada. Un número estimado y uno
+        # medido no se pueden promediar como si fueran lo mismo, y sin la marca
+        # nadie sabría cuáles eran cuáles.
+        if getattr(c, "load_known", True) and getattr(c, "load", None) is not None:
+            fila.training_load = float(c.load)
+            fila.training_load_estimated = bool(getattr(c, "load_estimated", False))
+        tocadas += 1
+
+    if sin_id:
+        log.info("%d salida(s) sin activity_id: no se guardan en `activities`", sin_id)
+
+    session.flush()
+    return tocadas
 
 
 def state_as_dict(state: EngineState) -> dict[str, Any]:

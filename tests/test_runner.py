@@ -189,6 +189,126 @@ def test_la_decision_se_guarda_con_su_progresion(db, cfg):
 
 
 # ---------------------------------------------------------------------------
+# Lo que se leyó de Garmin, archivado
+# ---------------------------------------------------------------------------
+#
+# Estas tablas existían vacías desde el primer día: `models.py` las declaraba y
+# no las escribía nadie. No daba ningún error -el sistema decidía igual de bien-
+# y por eso hacen falta estos tests: el fallo que impiden no se nota mirando el
+# sistema funcionar, solo semanas después, cuando no hay contra qué analizar.
+
+
+def test_la_mañana_archiva_lo_que_leyo_de_garmin(db, cfg):
+    from app.models import DailyMetrics
+
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+
+    filas = db.scalars(select(DailyMetrics)).all()
+    assert filas, (
+        "el sistema ha decidido con las métricas de Garmin y no ha guardado "
+        "ninguna: mañana no habrá contra qué correlacionar el check-in"
+    )
+    hoy = next((f for f in filas if f.date == LUNES), None)
+    assert hoy is not None and hoy.hrv == 60.0 and hoy.rhr == 50.0
+
+
+def test_las_salidas_se_archivan_con_su_clasificacion(db, cfg):
+    """La etiqueta, no solo los números.
+
+    `suave/media/intensa` depende de los umbrales del `config.yaml` del día en
+    que se clasificó. Guardar solo la carga y reclasificar dentro de seis semanas
+    con un YAML ya retocado daría otras etiquetas, y la pregunta "¿cuántos días
+    de HRV cuesta una salida intensa?" se respondería sobre unas intensas que en
+    su momento no lo fueron.
+    """
+    from app.models import Activity
+    from tests.conftest import ride
+
+    salida = ride(LUNES, load=180.0, zones=(600, 900, 1200, 600, 300), activity_id=77)
+    run_daily(
+        db, cfg, LUNES,
+        metrics=metricas(), rides=[salida],
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+
+    fila = db.scalars(
+        select(Activity).where(Activity.garmin_activity_id == 77)
+    ).first()
+    assert fila is not None, "la salida se ha clasificado, se ha usado y se ha tirado"
+    assert fila.intensity_level, "sin etiqueta la fila no sirve para la vista 3"
+    assert fila.classification_source, "y sin saber de dónde salió, tampoco"
+    assert fila.date == LUNES
+    assert fila.hr_zone_3_s == 1200.0
+
+
+def test_archivar_dos_veces_el_mismo_dia_no_duplica(db, cfg):
+    """La ventana se relee cada mañana: siete días archivados siete veces."""
+    from app.models import Activity, DailyMetrics
+    from tests.conftest import ride
+
+    salida = ride(LUNES, load=180.0, zones=(600, 900, 1200, 600, 300), activity_id=77)
+    for _ in range(3):
+        run_daily(
+            db, cfg, LUNES,
+            metrics=metricas(), rides=[salida],
+            hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+        )
+
+    assert len(db.scalars(select(DailyMetrics)).all()) == 10
+    assert len(db.scalars(select(Activity)).all()) == 1
+
+
+def test_un_hueco_de_hoy_no_borra_el_dato_de_ayer(db, cfg):
+    """El fallo silencioso que esta función tiene prohibido cometer.
+
+    Garmin falla a ratos. Si la relectura de mañana trae `hrv=None` para un día
+    que ayer sí tenía dato, copiarlo encima borraría el dato bueno sin un solo
+    error: quedaría una fila con un hueco, idéntica a la de un día en que el
+    reloj se quedó en la mesilla.
+    """
+    from app.models import DailyMetrics
+
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert db.scalars(
+        select(DailyMetrics).where(DailyMetrics.date == LUNES)
+    ).first().hrv == 60.0
+
+    # Segunda pasada, esta vez Garmin no contesta lo del HRV.
+    mudas = dias(LUNES, 10, hrv=None, rhr=51.0, sleep_min=450, sleep_score=80)
+    run_daily(
+        db, cfg, LUNES,
+        metrics=mudas, rides=[],
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+
+    fila = db.scalars(
+        select(DailyMetrics).where(DailyMetrics.date == LUNES)
+    ).first()
+    assert fila.hrv == 60.0, "un None de hoy ha borrado el dato bueno de ayer"
+    assert fila.rhr == 51.0, "y el dato que SÍ venía tiene que actualizarse"
+
+
+def test_si_archivar_falla_la_mañana_termina_y_se_dice(db, cfg, monkeypatch):
+    """Perder un día de histórico es malo; quedarse sin plan por eso, peor.
+
+    Pero tampoco puede pasar callando: el aviso viaja en `problemas`, que es lo
+    que el usuario acaba viendo, no un log que nadie abre.
+    """
+    def revienta(*a, **k):
+        raise RuntimeError("la tabla no existe")
+
+    monkeypatch.setattr("app.repository.upsert_daily_metrics", revienta)
+
+    tg = TelegramFalso()
+    res = corre(db, cfg, hevy=HevyFalso(), tg=tg)
+
+    assert res.telegram_status == "sent", "la mañana se ha caído por no poder archivar"
+    assert any("archivar" in p for p in res.problemas), (
+        f"ha fallado el archivo y no se dice: {res.problemas}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # La noche
 # ---------------------------------------------------------------------------
 
