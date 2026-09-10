@@ -1,4 +1,4 @@
-"""Lectura de Garmin Connect: wellness diario y actividades.
+﻿"""Lectura de Garmin Connect: wellness diario y actividades.
 
 Devuelve directamente los tipos del motor (`DayMetrics`, `Ride`) para que
 `build_signals` no tenga que saber nada de Garmin. Si algún día se cambia de
@@ -125,17 +125,55 @@ def _is_rate_limit(exc: Exception) -> bool:
     return "429" in txt or "too many requests" in txt or "rate" in txt and "limit" in txt
 
 
-def _retry(fn, *args, what: str = "", sink: list[str] | None = None, **kwargs) -> Any:
-    """Ejecuta `fn` reintentando solo los 429, con espera exponencial.
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Cuántas veces insistir ante un 429 y cuánto esperar entre intentos.
+
+    Existe porque `schedule.garmin_retry` llevaba declarado desde el principio en
+    el `config.yaml` -3 intentos, esperas de 60/300/900 s- y no lo leía nadie: el
+    código reintentaba 5 veces con esperas de 2, 4, 8, 16 y 32 segundos. No era
+    una función que faltara, era una CONTRADICCIÓN: el YAML prometía un cuarto de
+    hora de margen y el código se rendía en uno.
+
+    Y la diferencia importa justo el día que importa. Un 429 no se quita en dos
+    segundos; Garmin limita por IP durante minutos. Con el backoff exponencial
+    corto los cinco intentos caben dentro del mismo bloqueo, así que reintentar
+    no servía de nada más que para insistirle a una puerta cerrada.
+
+    Sin `backoffs` se vuelve al exponencial de siempre, para que un `config.yaml`
+    sin la sección se comporte como antes en vez de quedarse sin reintentos.
+    """
+
+    attempts: int = MAX_RETRIES
+    backoffs: tuple[float, ...] = ()
+
+    def espera(self, intento: int) -> float:
+        """Segundos a esperar DESPUÉS del intento `intento` (1-indexado)."""
+        if self.backoffs:
+            # El validador exige que la lista cubra todas las esperas, así que
+            # este `min` solo protege de un uso directo desde código.
+            return float(self.backoffs[min(intento - 1, len(self.backoffs) - 1)])
+        return BASE_BACKOFF * (2 ** (intento - 1))
+
+
+def _retry(
+    fn,
+    *args,
+    what: str = "",
+    sink: list[str] | None = None,
+    policy: RetryPolicy | None = None,
+    **kwargs,
+) -> Any:
+    """Ejecuta `fn` reintentando solo los 429, con la espera que diga la política.
 
     `sink` recoge una línea por cada 429 encontrado, incluidos los que luego se
     superan al reintentar. Eso importa: un 429 que se sobrevive sigue siendo un
     aviso de que la IP está limitada, y el informe tiene que poder contarlo en
     vez de presentar el resultado como si la lectura hubiera ido fina.
     """
-    delay = BASE_BACKOFF
+    pol = policy or RetryPolicy()
     last: Exception | None = None
-    for intento in range(1, MAX_RETRIES + 1):
+    for intento in range(1, pol.attempts + 1):
         try:
             return fn(*args, **kwargs)
         except Exception as exc:  # noqa: BLE001 - la librería lanza de todo
@@ -144,17 +182,23 @@ def _retry(fn, *args, what: str = "", sink: list[str] | None = None, **kwargs) -
                 raise
             etiqueta = what or getattr(fn, "__name__", "?")
             if sink is not None:
-                sink.append(f"429 en '{etiqueta}' (intento {intento}/{MAX_RETRIES})")
-            if intento == MAX_RETRIES:
-                break
-            log.warning(
-                "Garmin 429 en %s (intento %d/%d), espero %.0f s",
-                etiqueta, intento, MAX_RETRIES, delay,
-            )
-            time.sleep(delay)
-            delay *= 2
+                sink.append(f"429 en '{etiqueta}' (intento {intento}/{pol.attempts})")
+            # Se espera SOLO entre intentos, nunca después del último: dormir
+            # quince minutos para luego rendirse retrasa el aviso sin mejorar
+            # nada. Esto es un `if` y no un `break` a propósito. Con el `break`
+            # había dos condiciones de parada -el límite del bucle y esta- y la
+            # del bucle no decidía nada: cambiarla no alteraba el
+            # comportamiento, así que un día podía desincronizarse de la otra
+            # sin que ningún test lo notara.
+            if intento < pol.attempts:
+                delay = pol.espera(intento)
+                log.warning(
+                    "Garmin 429 en %s (intento %d/%d), espero %.0f s",
+                    etiqueta, intento, pol.attempts, delay,
+                )
+                time.sleep(delay)
     raise GarminRateLimited(
-        f"Garmin sigue devolviendo 429 en '{what}' tras {MAX_RETRIES} intentos. "
+        f"Garmin sigue devolviendo 429 en '{what}' tras {pol.attempts} intentos. "
         f"No se decide con datos a medias: mejor fallar y reintentar más tarde."
     ) from last
 
@@ -166,6 +210,10 @@ class GarminClient:
     email: str
     password: str
     token_dir: str
+    # La política de reintentos sale del `config.yaml` (`schedule.garmin_retry`).
+    # Por defecto, la de siempre: así un cliente construido a mano en un test
+    # sigue comportándose igual sin tener que pasarle un config entero.
+    retry: RetryPolicy = field(default_factory=RetryPolicy)
     _api: Any = None
     # Cada 429 encontrado, incluidos los superados al reintentar. El informe lo
     # lee para no presentar como lectura limpia algo que costó cinco intentos.
@@ -197,7 +245,7 @@ class GarminClient:
             log.info("Garmin: sesión reanudada desde %s", self.token_dir)
         except Exception:  # noqa: BLE001
             log.info("Garmin: sesión no reutilizable, haciendo login")
-            _retry(api.login, what="login", sink=self.rate_limit_events)
+            _retry(api.login, what="login", sink=self.rate_limit_events, policy=self.retry)
             try:
                 api.garth.dump(self.token_dir)
             except Exception:  # noqa: BLE001 - guardar es best-effort
@@ -227,7 +275,7 @@ class GarminClient:
         hrv = rhr = sleep_min = sleep_score = battery = None
 
         try:
-            data = _retry(self._api.get_hrv_data, iso, what="hrv", sink=self.rate_limit_events) or {}
+            data = _retry(self._api.get_hrv_data, iso, what="hrv", sink=self.rate_limit_events, policy=self.retry) or {}
             summary = (data or {}).get("hrvSummary") or {}
             hrv = summary.get("lastNightAvg")
         except GarminError:
@@ -236,7 +284,7 @@ class GarminClient:
             self._fallo(iso, "hrv", exc)
 
         try:
-            stats = _retry(self._api.get_stats, iso, what="stats", sink=self.rate_limit_events) or {}
+            stats = _retry(self._api.get_stats, iso, what="stats", sink=self.rate_limit_events, policy=self.retry) or {}
             rhr = stats.get("restingHeartRate")
         except GarminError:
             raise
@@ -244,7 +292,7 @@ class GarminClient:
             self._fallo(iso, "rhr", exc)
 
         try:
-            sleep = _retry(self._api.get_sleep_data, iso, what="sleep", sink=self.rate_limit_events) or {}
+            sleep = _retry(self._api.get_sleep_data, iso, what="sleep", sink=self.rate_limit_events, policy=self.retry) or {}
             dto = (sleep or {}).get("dailySleepDTO") or {}
             secs = dto.get("sleepTimeSeconds")
             if secs:
@@ -258,7 +306,7 @@ class GarminClient:
             self._fallo(iso, "sueño", exc)
 
         try:
-            bb = _retry(self._api.get_body_battery, iso, iso, what="body_battery", sink=self.rate_limit_events)
+            bb = _retry(self._api.get_body_battery, iso, iso, what="body_battery", sink=self.rate_limit_events, policy=self.retry)
             if bb:
                 niveles = (bb[0] or {}).get("bodyBatteryValuesArray") or []
                 # El valor útil es el de la mañana, no el máximo del día: el
@@ -296,7 +344,7 @@ class GarminClient:
             self._api.get_activities_by_date,
             start.isoformat(), end.isoformat(),
             what="activities",
-            sink=self.rate_limit_events,
+            sink=self.rate_limit_events, policy=self.retry,
         ) or []
 
     def rides(self, start: date, end: date) -> list[Ride]:
@@ -328,7 +376,19 @@ class GarminClient:
         return metrics, self.rides(min(rides_start, start), day)
 
 
-def build_client(settings: Any) -> GarminClient:
+def retry_policy_from_config(config: Any = None) -> RetryPolicy:
+    """Lee `schedule.garmin_retry`. Sin sección, la política de siempre."""
+    raw = (config.raw if hasattr(config, "raw") else config) or {}
+    r = ((raw.get("schedule") or {}).get("garmin_retry") or {})
+    if not r:
+        return RetryPolicy()
+    return RetryPolicy(
+        attempts=int(r.get("attempts", MAX_RETRIES)),
+        backoffs=tuple(float(x) for x in (r.get("backoff_seconds") or [])),
+    )
+
+
+def build_client(settings: Any, config: Any = None) -> GarminClient:
     if not settings.garmin_email or not settings.garmin_password:
         raise GarminError(
             "Faltan GARMIN_EMAIL y/o GARMIN_PASSWORD. Ponlos en el fichero .env "
@@ -339,4 +399,5 @@ def build_client(settings: Any) -> GarminClient:
         email=settings.garmin_email,
         password=settings.garmin_password,
         token_dir=token_dir,
+        retry=retry_policy_from_config(config),
     )

@@ -845,6 +845,112 @@ def _validate(data: dict[str, Any]) -> list[str]:
             if isinstance(cond, dict) and "when" in cond:
                 check_ops(cond.get("when"), f"{where}[{j}]")
 
+    # --- los interruptores de salida -----------------------------------------
+    #
+    # Aquí una clave decorativa cuesta más que en cualquier otro sitio, porque
+    # el usuario la pone precisamente para APAGAR algo. `notifications.telegram`
+    # llegó a declarar un `enabled: true` que no leía nadie: el único freno real
+    # es `integrations.telegram.send_enabled`, que se comprueba dentro de
+    # `send()`. Quien lo hubiera puesto en `false` para callar el bot habría
+    # seguido recibiendo mensajes, y el config le habría dado la razón por
+    # escrito.
+    #
+    # Un interruptor que no está conectado a nada es peor que no tener
+    # interruptor: promete un control que no existe.
+    integ = data.get("integrations") or {}
+    check_keys(integ, {"hevy", "telegram"}, "integrations")
+    check_keys(
+        integ.get("hevy") or {},
+        {"write_enabled", "backup"},
+        "integrations.hevy",
+    )
+    check_keys(
+        (integ.get("hevy") or {}).get("backup") or {},
+        {"enabled", "keep_last"},
+        "integrations.hevy.backup",
+    )
+    check_keys(
+        integ.get("telegram") or {}, {"send_enabled"}, "integrations.telegram"
+    )
+
+    notif = data.get("notifications") or {}
+    check_keys(notif, {"telegram"}, "notifications")
+    check_keys(
+        notif.get("telegram") or {},
+        {"include_reasoning"},
+        "notifications.telegram",
+    )
+
+    # --- las horas y el reintento de Garmin ----------------------------------
+    #
+    # `garmin_retry` estuvo declarado aquí sin que lo leyera nadie mientras el
+    # código reintentaba con otros números. No es lo mismo que una clave
+    # sobrante: era una contradicción, y la que perdía era la del YAML, que es
+    # la que se lee cuando hay que entender qué hace el sistema.
+    sched = data.get("schedule") or {}
+    check_keys(
+        sched,
+        {
+            "garmin_fetch_time",
+            "fallback_decision_time",
+            "evening_summary_time",
+            "garmin_retry",
+        },
+        "schedule",
+    )
+    for clave in ("garmin_fetch_time", "fallback_decision_time", "evening_summary_time"):
+        v = sched.get(clave)
+        if v is None:
+            continue
+        partes = str(v).split(":")
+        ok = len(partes) >= 2
+        if ok:
+            try:
+                h, m = int(partes[0]), int(partes[1])
+                ok = 0 <= h <= 23 and 0 <= m <= 59
+            except ValueError:
+                ok = False
+        require(
+            ok,
+            f"schedule.{clave}: '{v}' no es una hora 'HH:MM' válida. Una hora "
+            f"ilegible reventaría al montar el scheduler, y sería a las seis de "
+            f"la mañana del día que se despliegue",
+        )
+
+    retry = sched.get("garmin_retry") or {}
+    if retry:
+        check_keys(
+            retry,
+            {"attempts", "backoff_seconds"},
+            "schedule.garmin_retry",
+        )
+        intentos = retry.get("attempts")
+        require(
+            intentos is None or (isinstance(intentos, int) and intentos >= 1),
+            f"schedule.garmin_retry.attempts: '{intentos}' debe ser un entero "
+            f">= 1. Con 0 no se llama a Garmin ni una vez",
+        )
+        esperas = retry.get("backoff_seconds")
+        if esperas is not None:
+            require(
+                isinstance(esperas, list) and all(
+                    isinstance(x, (int, float)) and x >= 0 for x in esperas
+                ),
+                "schedule.garmin_retry.backoff_seconds: debe ser una lista de "
+                "segundos (números no negativos)",
+            )
+            # Entre N intentos hay N-1 esperas. Si la lista se queda corta, la
+            # última se repetiría: nadie lo vería y el margen real no sería el
+            # que pone aquí. Mejor no arrancar.
+            if isinstance(esperas, list) and isinstance(intentos, int):
+                require(
+                    len(esperas) >= intentos - 1,
+                    f"schedule.garmin_retry: {intentos} intentos necesitan "
+                    f"{intentos - 1} esperas y solo hay {len(esperas)}. "
+                    f"Completa 'backoff_seconds': si no, la última se repetiría "
+                    f"y el margen real no sería el que dice este archivo",
+                )
+
     return errors
 
 

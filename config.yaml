@@ -1582,17 +1582,34 @@ schedule:
   fallback_decision_time: "09:00"   # si no hay check-in, decide solo con Garmin
   evening_summary_time: "22:30"     # captura lo entrenado para el histórico
 
+  # Reintentos ante un 429. Garmin limita por IP durante MINUTOS, así que las
+  # esperas van en esa escala: insistir cada dos segundos solo gasta intentos
+  # dentro del mismo bloqueo.
+  #
+  # Entre N intentos hay N-1 esperas, y el validador lo exige: una lista corta
+  # repetiría la última en silencio y el margen real no sería el que se lee aquí.
+  #
+  # No hay `notify_on_final_failure`: un 429 que sobrevive a todos los intentos
+  # sale del trabajo como excepción, y el avisador del scheduler manda por
+  # Telegram CUALQUIER trabajo que falle. Es incondicional a propósito. La única
+  # posición útil de ese interruptor era `true`, y tenerlo escrito sugería que
+  # existía la otra.
   garmin_retry:
     attempts: 3
     backoff_seconds: [60, 300, 900]
-    notify_on_final_failure: true
 
+# Aquí SOLO va lo que cambia el contenido del mensaje. El interruptor de
+# encendido y apagado es uno y está arriba: `integrations.telegram.send_enabled`,
+# que se comprueba dentro de `send()`, en el único sitio por el que pasan todos
+# los envíos.
+#
+# Hubo aquí un `enabled: true` que no leía nadie, y tres `send_on_*` igual de
+# decorativos. Un interruptor desconectado es peor que no tenerlo: quien pusiera
+# `enabled: false` para callar el bot habría seguido recibiendo mensajes, con el
+# config dándole la razón por escrito. El validador ahora rechaza al arrancar
+# cualquier clave de esta sección que el código no lea.
 notifications:
   telegram:
-    enabled: true
     # El token y el chat ID van en .env, NUNCA aquí.
     # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
-    send_on_decision: true
-    send_on_special_rule: true
-    send_on_error: true
     include_reasoning: true     # incluye qué regla disparó el semáforo

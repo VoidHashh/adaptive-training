@@ -241,9 +241,147 @@ class SettingsFalsos:
     garmin_token_dir = "/tmp/tokens"
 
 
+class SettingsConCredenciales(SettingsFalsos):
+    garmin_email = "a@b.c"
+    garmin_password = "x"
+
+
 def test_sin_credenciales_no_se_construye_el_cliente():
     with pytest.raises(GarminError, match="GARMIN_EMAIL"):
         garmin.build_client(SettingsFalsos())
+
+
+# ---------------------------------------------------------------------------
+# La política de reintentos sale del config, no de dos constantes
+# ---------------------------------------------------------------------------
+#
+# `schedule.garmin_retry` llevaba declarado desde el principio -3 intentos,
+# esperas de 60/300/900 s- y no lo leía nadie: el código reintentaba 5 veces con
+# esperas de 2, 4, 8, 16 y 32. No era una función que faltara, era una
+# CONTRADICCIÓN, y la que perdía era la del YAML, que es la que se lee cuando
+# alguien quiere entender qué hace el sistema.
+
+
+def test_la_politica_sale_del_config():
+    cfg = {"schedule": {"garmin_retry": {
+        "attempts": 3, "backoff_seconds": [60, 300, 900]
+    }}}
+    p = garmin.retry_policy_from_config(cfg)
+    assert p.attempts == 3
+    assert p.espera(1) == 60.0
+    assert p.espera(2) == 300.0
+
+
+def test_sin_seccion_se_mantiene_el_exponencial_de_siempre():
+    """Un config sin la sección no puede quedarse SIN reintentos.
+
+    El defecto de un ajuste que falta tiene que ser el comportamiento anterior,
+    no el vacío: si no, añadir validación al YAML apagaría la resiliencia de
+    quien no se haya enterado.
+    """
+    p = garmin.retry_policy_from_config({})
+    assert p.attempts == MAX_RETRIES
+    assert [p.espera(i) for i in (1, 2, 3)] == [2.0, 4.0, 8.0]
+
+
+def test_el_cliente_construido_lleva_la_politica_del_config():
+    """El eslabón que faltaba: leerla y no usarla no arregla nada."""
+    cfg = {"schedule": {"garmin_retry": {
+        "attempts": 2, "backoff_seconds": [45]
+    }}}
+    c = garmin.build_client(SettingsConCredenciales(), cfg)
+    assert c.retry.attempts == 2
+    assert c.retry.espera(1) == 45.0
+
+
+def test_reintentar_respeta_los_intentos_y_las_esperas_de_la_politica(monkeypatch):
+    """Se comprueban las ESPERAS, no solo el número de intentos.
+
+    Contar intentos deja pasar el fallo que motivó todo esto: cinco reintentos
+    con esperas de dos segundos caben enteros dentro del mismo bloqueo de
+    Garmin, así que el sistema insiste cinco veces a una puerta cerrada y se
+    rinde en un minuto. El margen real es la suma de las esperas, y es lo único
+    que decide si el 429 se sobrevive.
+    """
+    dormido: list[float] = []
+    monkeypatch.setattr(garmin.time, "sleep", lambda s: dormido.append(s))
+
+    pol = garmin.RetryPolicy(attempts=3, backoffs=(60.0, 300.0, 900.0))
+    intentos = {"n": 0}
+
+    def siempre_429():
+        intentos["n"] += 1
+        raise RuntimeError("429")
+
+    with pytest.raises(GarminRateLimited):
+        _retry(siempre_429, what="hrv", policy=pol)
+
+    assert intentos["n"] == 3, "se intenta exactamente lo que dice el config"
+    assert dormido == [60.0, 300.0], "entre 3 intentos hay 2 esperas"
+    assert sum(dormido) == 360.0, (
+        "seis minutos de margen; con el exponencial corto eran 6 segundos"
+    )
+
+
+def test_menos_intentos_que_el_defecto_se_respetan(monkeypatch):
+    """Con `attempts` por DEBAJO de `MAX_RETRIES`, para poder notar la diferencia.
+
+    Si el bucle se guiara por la constante en vez de por la política, un config
+    que pide 2 intentos haría 5. Contra una API que limita por IP eso no es un
+    detalle: son tres llamadas de más justo cuando ya te está diciendo que
+    pares.
+    """
+    monkeypatch.setattr(garmin.time, "sleep", lambda *_: None)
+    intentos = {"n": 0}
+
+    def siempre_429():
+        intentos["n"] += 1
+        raise RuntimeError("429")
+
+    with pytest.raises(GarminRateLimited):
+        _retry(siempre_429, what="hrv", policy=garmin.RetryPolicy(attempts=2))
+
+    assert intentos["n"] == 2, f"{MAX_RETRIES=} no manda sobre el config"
+
+
+def test_no_se_espera_despues_del_ultimo_intento(monkeypatch):
+    """Dormir para luego rendirse solo retrasa el aviso.
+
+    Con las esperas del config real serían quince minutos de más antes de que
+    el mensaje de error llegue al móvil.
+    """
+    dormido: list[float] = []
+    monkeypatch.setattr(garmin.time, "sleep", lambda s: dormido.append(s))
+
+    def siempre_429():
+        raise RuntimeError("429")
+
+    with pytest.raises(GarminRateLimited):
+        _retry(
+            siempre_429, what="hrv",
+            policy=garmin.RetryPolicy(attempts=3, backoffs=(60.0, 300.0, 900.0)),
+        )
+
+    assert len(dormido) == 2, "3 intentos, 2 esperas: la tercera no se duerme"
+    assert 900.0 not in dormido
+
+
+def test_la_politica_del_config_de_verdad_da_mas_margen_que_el_defecto():
+    """La comprobación que da sentido al cambio, medida sobre el config real."""
+    from app.config_loader import load_config
+    from app.settings import REPO_ROOT
+
+    real = garmin.retry_policy_from_config(load_config(REPO_ROOT / "config.yaml"))
+    defecto = garmin.RetryPolicy()
+
+    margen = sum(real.espera(i) for i in range(1, real.attempts))
+    antes = sum(defecto.espera(i) for i in range(1, defecto.attempts))
+
+    assert margen > antes, (
+        f"el config da {margen:.0f} s de margen y el defecto {antes:.0f} s: "
+        f"si esto se invierte, un 429 real vuelve a no sobrevivirse"
+    )
+    assert margen >= 300, "un 429 de Garmin dura minutos, no segundos"
 
 
 def test_el_cliente_sin_conectar_se_niega_a_leer():

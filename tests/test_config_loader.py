@@ -373,3 +373,114 @@ def test_el_config_del_repo_carga_desde_disco():
     c = load_config(REPO_ROOT / "config.yaml")
     assert c.hash and len(c.hash) == 16
     assert c.program_start == date(2026, 9, 8)
+
+
+# ---------------------------------------------------------------------------
+# Interruptores decorativos
+# ---------------------------------------------------------------------------
+#
+# La peor clave del YAML no es la que está mal escrita: es la que está bien
+# escrita y no la lee nadie. `notifications.telegram` declaraba un `enabled:
+# true` y tres `send_on_*` que ningún módulo consultaba. El único freno real es
+# `integrations.telegram.send_enabled`, comprobado dentro de `send()`.
+#
+# Quien pusiera `enabled: false` para callar el bot habría seguido recibiendo
+# mensajes, y el archivo de configuración le habría dado la razón por escrito.
+# Un interruptor desconectado es peor que no tener interruptor: promete un
+# control que no existe.
+
+
+@pytest.mark.parametrize(
+    "seccion, clave",
+    [
+        ("notifications", "enabled"),
+        ("notifications", "send_on_decision"),
+        ("notifications", "send_on_error"),
+        ("integrations", "notify_enabled"),
+    ],
+)
+def test_un_interruptor_que_no_lee_nadie_no_arranca(cfg_copia, seccion, clave):
+    cfg_copia.raw[seccion]["telegram"][clave] = False
+    msg = errores(cfg_copia.raw)
+    assert clave in msg
+    assert "ignorando en silencio" in msg
+
+
+def test_el_unico_freno_de_telegram_sigue_estando_permitido(cfg_copia):
+    """El otro lado del filo: la validación no puede prohibir el freno bueno."""
+    cfg_copia.raw["integrations"]["telegram"]["send_enabled"] = False
+    assert "telegram" not in errores(cfg_copia.raw)
+
+
+def test_el_config_del_repo_no_declara_interruptores_muertos():
+    """Sobre el archivo real, no sobre uno inventado en el test."""
+    c = load_config(REPO_ROOT / "config.yaml")
+    notif = (c.raw.get("notifications") or {}).get("telegram") or {}
+    assert set(notif) == {"include_reasoning"}, (
+        f"claves que no lee nadie en notifications.telegram: "
+        f"{set(notif) - {'include_reasoning'}}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# El reintento de Garmin
+# ---------------------------------------------------------------------------
+
+
+def test_una_lista_de_esperas_corta_no_arranca(cfg_copia):
+    """Entre N intentos hay N-1 esperas.
+
+    Con la lista corta la última se repetiría y nadie lo vería: el margen real
+    no sería el que dice el archivo, que es justo el número que alguien mira
+    cuando quiere saber si un 429 se sobrevive.
+    """
+    cfg_copia.raw["schedule"]["garmin_retry"] = {
+        "attempts": 5, "backoff_seconds": [60, 300]
+    }
+    msg = errores(cfg_copia.raw)
+    assert "4 esperas" in msg and "solo hay 2" in msg
+
+
+def test_cero_intentos_no_arranca(cfg_copia):
+    """Con 0 no se llama a Garmin ni una vez, y el día se queda sin datos."""
+    cfg_copia.raw["schedule"]["garmin_retry"] = {"attempts": 0}
+    assert "attempts" in errores(cfg_copia.raw)
+
+
+def test_una_hora_ilegible_no_arranca(cfg_copia):
+    """Reventaría al montar el scheduler, a las seis de la mañana del día del
+    despliegue y con nadie delante."""
+    cfg_copia.raw["schedule"]["garmin_fetch_time"] = "06h30"
+    assert "HH:MM" in errores(cfg_copia.raw)
+
+
+def test_una_hora_fuera_de_rango_no_arranca(cfg_copia):
+    cfg_copia.raw["schedule"]["fallback_decision_time"] = "25:00"
+    assert "HH:MM" in errores(cfg_copia.raw)
+
+
+def test_una_hora_sin_dos_puntos_no_arranca(cfg_copia):
+    """El caso que se cuela si solo se comprueba que los trozos sean números.
+
+    `"0630"` parte en una sola pieza: `int("0630")` vale 630 y no protesta, así
+    que la validación pasaría y el fallo saltaría después, al montar el
+    scheduler, buscando el segundo trozo que no existe.
+    """
+    cfg_copia.raw["schedule"]["garmin_fetch_time"] = "0630"
+    assert "HH:MM" in errores(cfg_copia.raw)
+
+
+def test_una_seccion_entera_que_no_lee_nadie_no_arranca(cfg_copia):
+    """No solo las claves de dentro: también un canal que no existe.
+
+    `notifications.email` se escribiría con toda la buena fe y no mandaría
+    jamás un correo. El silencio es el peor fallo de este sistema, y aquí
+    vendría acompañado de un archivo de configuración que promete lo contrario.
+    """
+    cfg_copia.raw["notifications"]["email"] = {"to": "yo@ejemplo.com"}
+    assert "email" in errores(cfg_copia.raw)
+
+
+def test_una_integracion_que_no_existe_no_arranca(cfg_copia):
+    cfg_copia.raw["integrations"]["strava"] = {"write_enabled": True}
+    assert "strava" in errores(cfg_copia.raw)

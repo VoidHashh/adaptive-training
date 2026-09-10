@@ -162,7 +162,7 @@ def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
     from app.integrations.garmin import build_client
     from app.settings import REPO_ROOT, settings
 
-    client = build_client(settings)
+    client = build_client(settings, cfg)
     client.connect()
     metrics, rides = client.window(day, 7, ride_days=RIDE_HISTORY_DAYS)
 
