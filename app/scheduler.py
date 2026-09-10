@@ -120,9 +120,25 @@ def job_reconcile(
     """
     day = day or date.today()
     if hevy_client is None:
-        log.warning("reconciliación: sin cliente de Hevy, no se puede saber "
-                    "qué se entrenó y las rachas se quedan quietas")
-        return []
+        # Se lanza en vez de devolver [], y no es una elección de estilo: es la
+        # ÚNICA forma de que esto se sepa. Un WARNING en el log a las 22:30, en
+        # un hilo de APScheduler y en un Umbrel al que nadie se conecta, es
+        # exactamente igual de visible que no escribir nada.
+        #
+        # Lanzando, salta `_avisador` (EVENT_JOB_ERROR) y llega un Telegram.
+        #
+        # Lo que se pierde callando no es un log: sin reconciliación no se sabe
+        # qué se entrenó, así que el cumplimiento no se registra, las rachas se
+        # quedan quietas y la progresión se para. Y se para EN SILENCIO, con la
+        # peor forma posible de enterarse: notar semanas después que no sube
+        # nada y no tener por dónde empezar a mirar, porque el sistema lleva
+        # todo ese tiempo mandando su mensaje de las nueve como si tal cosa.
+        raise RuntimeError(
+            "reconciliación sin cliente de Hevy: no se puede saber qué se "
+            "entrenó, así que el cumplimiento no se registra, las rachas se "
+            "quedan quietas y la progresión se para. Revisa HEVY_API_KEY en "
+            "el .env."
+        )
 
     desde = day - timedelta(days=dias_atras)
     workouts = hevy_client.get_workouts(since=desde)

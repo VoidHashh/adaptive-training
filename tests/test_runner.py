@@ -169,6 +169,41 @@ def test_un_fallo_de_hevy_queda_registrado(db, cfg):
     assert fila.error
 
 
+def test_sin_cliente_de_hevy_el_mensaje_no_describe_una_rutina_que_no_esta(db, cfg):
+    """El caso simétrico al de arriba, que no se avisaba.
+
+    Sin cliente el estado era "skipped", y el aviso de arriba del mensaje solo
+    se pone cuando es "error". Resultado: el mensaje de las nueve describía con
+    todo detalle -ejercicios, series, kilos- una sesión que en Hevy no estaba.
+    Se abre la app, se ve la rutina de la semana pasada y se entrena esa,
+    creyendo que es la de hoy porque el mensaje acaba de decirlo.
+
+    `api._clientes` se traga la excepción del constructor en un WARNING, así
+    que un HEVY_API_KEY mal escrito en el .env producía exactamente esto y
+    ningún síntoma.
+    """
+    tg = TelegramFalso()
+    res = corre(db, cfg, hevy=None, tg=tg)
+
+    assert res.hevy_status == "error"
+    assert tg.enviados, "sin Hevy el mensaje tiene que salir igual"
+    assert "NO se ha escrito en Hevy" in tg.enviados[0]
+    assert any("HEVY_API_KEY" in p for p in res.problemas), (
+        "hay que decir por dónde empezar a mirar"
+    )
+
+
+def test_sin_cliente_de_hevy_el_intento_queda_registrado(db, cfg):
+    """Que no haya cliente no exime de dejar la fila.
+
+    En el histórico, un día sin fila de HevyWrite y un día que no tocaba Hevy
+    son indistinguibles.
+    """
+    corre(db, cfg, hevy=None, tg=TelegramFalso())
+    fila = db.scalars(select(HevyWrite)).first()
+    assert fila is not None and fila.status == "error"
+
+
 def test_sin_cliente_de_telegram_se_avisa_de_que_nadie_se_ha_enterado(db, cfg):
     """Un sistema que decide y no lo cuenta ha fallado, aunque no dé error."""
     res = corre(db, cfg, hevy=HevyFalso(), tg=None)

@@ -82,10 +82,46 @@ class BikeRecommendation:
         return base
 
 
+class BikeConfigError(ValueError):
+    """Un nivel de bici que no está en `intensity_order`."""
+
+
 def _cap(level: str, ceiling: str, order: list[str]) -> str:
-    """Recorta `level` al techo `ceiling` según el orden de intensidad."""
-    if ceiling not in order or level not in order:
-        return level
+    """Recorta `level` al techo `ceiling` según el orden de intensidad.
+
+    Un nivel desconocido revienta, y antes devolvía `level` intacto.
+
+    Devolver `level` es no recortar, y no recortar es justo lo contrario de lo
+    que hace esta función. El techo sale de `actions.<luz>.bike_max`: si dice
+    'moderada' y `intensity_order` no tiene ese nombre -por una errata, o por
+    haber renombrado un nivel en la lista y no aquí-, el techo del semáforo
+    dejaba de existir en silencio.
+
+    El día que se notaría es un ROJO. El punto de partida del sábado es
+    'intensa', el techo rojo tendría que bajarlo a 'descanso', y sin techo se
+    sale a hacer la intensa del sábado con el semáforo en rojo. La
+    recomendación además no lo mencionaría: sin recorte no hay `downgrades`,
+    así que el mensaje enseñaría "Bici: intensa" sin una sola pega, que es peor
+    que no decir nada.
+
+    Dicho con precisión, hoy esto NO puede pasar por el camino del YAML:
+    `config_loader` ya comprueba que los tres `actions.<luz>.bike_max`, los
+    `baseline_by_weekday` y `after_intense_downgrade_to` estén en
+    `intensity_order`, y lo hace al arrancar, que es donde mejor duele. Esta
+    guarda es la segunda línea: sirve para el día que alguien llame a `_cap`
+    con un techo que no venga del config, y sobre todo para que el modo de
+    fallo de esta función sea "para" y no "sigue sin recortar". Una función
+    cuyo trabajo es poner un techo no puede tener una rama que consiste en no
+    ponerlo.
+    """
+    for nombre, valor in (("nivel", level), ("techo", ceiling)):
+        if valor not in order:
+            raise BikeConfigError(
+                f"{nombre} de bici desconocido: '{valor}' no está en "
+                f"intensity_order ({order}). Sin él no se puede comparar la "
+                f"intensidad, y devolver el nivel sin tocar sería quitarle el "
+                f"techo al semáforo sin decirlo"
+            )
     return level if order.index(level) <= order.index(ceiling) else ceiling
 
 

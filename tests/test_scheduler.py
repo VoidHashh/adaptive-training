@@ -135,15 +135,54 @@ def test_el_fallback_avisa_por_telegram(en_memoria, cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_reconciliar_sin_cliente_no_revienta_pero_no_inventa(en_memoria, cfg, caplog):
-    """Sin Hevy no se sabe qué se entrenó. Las rachas se quedan quietas.
+def test_reconciliar_sin_cliente_revienta_en_vez_de_callar(en_memoria, cfg):
+    """Sin Hevy no se sabe qué se entrenó, y eso tiene que doler.
 
-    Lo que NO puede pasar es que se den por hechas: detrás de la racha va la
-    subida de carga.
+    Las rachas se quedan quietas -eso estaba bien y sigue igual: darlas por
+    hechas subiría la carga sin haber entrenado-, pero antes se quedaban
+    quietas en SILENCIO. Un WARNING a las 22:30, en un hilo de APScheduler y
+    en un Umbrel al que nadie se conecta, no lo lee nadie nunca.
+
+    Y lo que se pierde no es un log: sin reconciliación no se registra el
+    cumplimiento, las rachas no avanzan y la progresión se para. La forma de
+    enterarse era notar semanas después que no sube nada, sin ningún hilo del
+    que tirar, porque el mensaje de las nueve seguía llegando como si tal cosa.
+
+    Lanzando salta `_avisador` (EVENT_JOB_ERROR) y llega un Telegram esa misma
+    noche.
     """
-    with caplog.at_level("WARNING"):
-        assert job_reconcile(cfg, day=LUNES, hevy_client=None) == []
-    assert "sin cliente de Hevy" in caplog.text
+    with pytest.raises(RuntimeError) as exc:
+        job_reconcile(cfg, day=LUNES, hevy_client=None)
+
+    msg = str(exc.value)
+    assert "progresión se para" in msg
+    assert "HEVY_API_KEY" in msg, "el error tiene que decir por dónde empezar"
+
+
+def test_el_avisador_manda_telegram_cuando_la_reconciliacion_revienta():
+    """La cadena entera: excepción -> listener -> Telegram.
+
+    Probar solo que lanza no sirve de nada si el aviso no llega: el motivo de
+    lanzar es justamente que llegue.
+    """
+    from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent
+
+    from app.scheduler import _avisador
+
+    enviados = []
+
+    class Tg:
+        def send(self, texto, **kw):
+            enviados.append(texto)
+
+    _avisador(Tg())(
+        JobExecutionEvent(
+            EVENT_JOB_ERROR, "reconcile", None, None,
+            exception=RuntimeError("sin cliente de Hevy"),
+        )
+    )
+    assert len(enviados) == 1
+    assert "reconcile" in enviados[0]
 
 
 def test_reconciliar_mira_hacia_atras_y_no_solo_hoy(en_memoria, cfg):

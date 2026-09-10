@@ -193,8 +193,29 @@ def _escribir_hevy(
 
     payload = build_routine_payload(s, cfg)
     if client is None:
-        res.hevy_status = "skipped"
-        res.hevy_reason = "sin cliente de Hevy configurado"
+        # "error" y NO "skipped", que es lo que ponía. La diferencia decide si
+        # el usuario se entera: el aviso de arriba del mensaje ("la rutina NO se
+        # ha escrito en Hevy") se pone solo cuando el estado es "error", así que
+        # marcarlo como salto dejaba el mensaje describiendo con todo detalle
+        # una sesión que en Hevy no estaba. Se abre la app, se ve la rutina de
+        # la semana pasada y se entrena esa.
+        #
+        # Un salto legítimo sí existe y sigue siendo salto: que hoy la sesión no
+        # toque Hevy (arriba) o que `integrations.hevy.write_enabled` esté en
+        # false, que es el interruptor de verdad y se resuelve dentro de
+        # `write_routine`. Llegar hasta aquí sin cliente es otra cosa: significa
+        # que la sesión SÍ quería escribirse y el cliente no se pudo construir
+        # -normalmente HEVY_API_KEY ausente o mal escrita en el .env-. Eso es
+        # una avería de configuración, no una decisión.
+        #
+        # `api._clientes` se traga esa excepción y la deja en un WARNING del
+        # log, que en Umbrel no lee nadie a las nueve de la mañana.
+        res.hevy_status = "error"
+        res.hevy_reason = (
+            "no hay cliente de Hevy (revisa HEVY_API_KEY en el .env): la rutina "
+            "de hoy sigue siendo la anterior"
+        )
+        res.problemas.append(f"Hevy: {res.hevy_reason}")
         _anotar_hevy(session, decision, fila, res, payload)
         return
 
