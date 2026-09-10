@@ -340,3 +340,32 @@ def test_el_avisador_queda_enganchado(cfg):
     mascaras = [m for _, m in sched._listeners]
     assert any(m & EVENT_JOB_ERROR for m in mascaras)
     assert any(m & EVENT_JOB_MISSED for m in mascaras)
+
+
+# ---------------------------------------------------------------------------
+# Cuántos días de wellness se le piden a Garmin
+# ---------------------------------------------------------------------------
+
+
+def test_la_ventana_de_wellness_sale_del_config_y_no_de_un_7_a_pelo(cfg_copia):
+    """Estaba escrito `7` en `_fetch_garmin` y 7 en `baseline.window_days`.
+
+    Que coincidieran era el estado inicial, no una relación. Subir
+    `window_days` a 14 no movía la petición: la línea base de HRV se quedaba
+    por debajo de `min_days_required` para siempre y el sistema informaba de
+    que faltaban datos que estaban en Garmin sin pedir. Ese fallo no se
+    diagnostica desde el síntoma, porque el síntoma acusa a Garmin.
+    """
+    from app.scheduler import dias_de_wellness
+
+    cfg_copia.raw["baseline"]["window_days"] = 14
+    assert dias_de_wellness(cfg_copia) == 15
+
+
+def test_se_pide_un_dia_mas_que_la_ventana(cfg):
+    """`_baseline_for` cuenta desde `day - 1`, así que con `window_days` justos
+    entraban `window_days - 1` días y la media se calculaba sobre uno menos de
+    los que dice el config."""
+    from app.scheduler import dias_de_wellness
+
+    assert dias_de_wellness(cfg) == int(cfg.raw["baseline"]["window_days"]) + 1

@@ -252,14 +252,6 @@ adaptive_thresholds:
     include_zero_days: true
 
 
-cold_start:
-  # Al arrancar, el sistema intenta rellenar la línea base hacia atrás con
-  # get_hrv_data_range / FC en reposo. Si no hay suficientes días:
-  backfill_days: 30
-  on_insufficient_data: subjective_only   # subjective_only | assume_green
-  notify: true              # avisa por Telegram de que decide a ciegas
-
-
 # -----------------------------------------------------------------------------
 # 2. FORMULARIO DIARIO (PWA) — deslizadores 1..10
 # -----------------------------------------------------------------------------

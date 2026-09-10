@@ -156,6 +156,31 @@ def job_fetch_garmin(
     )
 
 
+def dias_de_wellness(cfg: Any) -> int:
+    """Cuántos días de wellness hay que pedirle a Garmin, según el config.
+
+    Estaba escrito `7` a pelo, con un comentario en `GarminClient.window`
+    diciendo que 7 bastaba "porque las líneas base usan una ventana de esa
+    escala". La escala la fija `baseline.window_days`, que es un número que el
+    usuario puede cambiar, y cambiarlo no movía esto: subirlo a 14 dejaba la
+    línea base de HRV por debajo de `min_days_required` para siempre, y el
+    sistema informaba de que no había datos suficientes mientras los datos
+    estaban en Garmin sin pedir. Un fallo así no se diagnostica desde el
+    síntoma, porque el síntoma acusa a Garmin.
+
+    Se pide `window_days + 1`: la ventana son los días ANTERIORES a la fecha
+    (`_baseline_for` cuenta desde `day - 1`), así que con `window_days` justos
+    entraban solo `window_days - 1`. Con el config actual, 8 en vez de 7.
+
+    El histórico largo -el que necesitan `load_3d_p90` y `load_7d_p90`- NO sale
+    de aquí: son salidas, vienen en una sola llamada por rango y se piden con
+    `RIDE_HISTORY_DAYS`. El wellness se consulta día a día y cada día son
+    varias peticiones, así que este número se mantiene pequeño a propósito.
+    """
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    return int((raw.get("baseline") or {}).get("window_days", 7)) + 1
+
+
 def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
     """Lectura real de Garmin. Aislada para poder inyectar otra en los tests."""
     from app.integrations.activity_cache import load_cached_rides, merge_rides
@@ -164,7 +189,9 @@ def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
 
     client = build_client(settings, cfg)
     client.connect()
-    metrics, rides = client.window(day, 7, ride_days=RIDE_HISTORY_DAYS)
+    metrics, rides = client.window(
+        day, dias_de_wellness(cfg), ride_days=RIDE_HISTORY_DAYS
+    )
 
     cache = load_cached_rides(REPO_ROOT / "data" / "cache" / "activities.json")
     return metrics, merge_rides(cache.rides if cache.available else [], rides)

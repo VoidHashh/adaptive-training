@@ -158,6 +158,96 @@ def _validate(data: dict[str, Any]) -> list[str]:
     if errors:
         return errors  # sin las secciones base no tiene sentido seguir
 
+    # --- secciones conocidas ------------------------------------------------
+    # El mismo criterio que ya se aplica DENTRO de `integrations`, `brakes` o
+    # `volume_safety`, aplicado por fin al nivel de arriba, que era el único
+    # sitio donde no se miraba. Escribir `special_rule:` en vez de
+    # `special_rules:` daba un arranque limpio y cero reglas especiales: el
+    # sistema decidía todos los días sin mirar ninguna, y no había forma de
+    # notarlo salvo echar de menos un ámbar que nunca llegaba.
+    #
+    # Una sección entera ignorada en silencio es el fallo más caro de todos,
+    # porque una sección es justo donde se escribe lo que no es el defecto.
+    #
+    # NO ESTÁN EN LA LISTA, A PROPÓSITO
+    # ---------------------------------
+    # `rules`: nunca la ha leído nadie. Tenía bloque de validación propio
+    # (comprobaba los operadores de sus `when`), así que escribirla en vez de
+    # `special_rules` pasaba la validación con nota y no hacía absolutamente
+    # nada. Un validador que revisa a conciencia una sección muerta es peor
+    # que uno que no la mira: certifica por escrito que está bien puesta.
+    #
+    # `cold_start`: ver el error de más abajo.
+    SECCIONES = {
+        "version",
+        "timezone",
+        "program",
+        "baseline",
+        "adaptive_thresholds",
+        "checkin_sliders",
+        "checkin_comment",
+        "thresholds",
+        "actions",
+        "safety",
+        "progression",
+        "calendar",
+        "schedule",
+        "routines",
+        "set_types",
+        "special_rules",
+        "recovery_blocks",
+        "cycling",
+        "hiit",
+        "integrations",
+        "notifications",
+    }
+    for k in data:
+        require(
+            k in SECCIONES,
+            f"sección desconocida '{k}' en la raíz de config.yaml. Válidas: "
+            f"{', '.join(sorted(SECCIONES))}. Si es una errata, TODO lo que "
+            f"hay dentro se estaría ignorando en silencio",
+        )
+
+    # `version` estaba escrito y no lo miraba nadie. O sirve para algo o sobra:
+    # dejarlo decorativo es prometer que el cargador sabe leer formatos viejos.
+    # Sabe leer uno, y ahora lo dice.
+    version = data.get("version", 1)
+    require(
+        version == 1,
+        f"version: {version!r} no la entiende este cargador, que solo lee la 1. "
+        f"Si vienes de un config.yaml más nuevo, actualiza el código antes de "
+        f"arrancar: leerlo con las claves de la 1 sería inventarse la mitad",
+    )
+
+    # `cold_start` describía un arranque en frío que nunca se programó, y las
+    # tres claves prometen cosas que hoy se resuelven en otro sitio:
+    #
+    #   backfill_days       -> no hay relleno hacia atrás; la ventana de
+    #                          bienestar que se pide a Garmin es
+    #                          `baseline.window_days`.
+    #   on_insufficient_data-> lo cubren `baseline.min_days_required` y el
+    #                          `min_days_required` de cada umbral adaptativo,
+    #                          que además degradan señal a señal en vez de
+    #                          poner el día entero en un modo global.
+    #   notify              -> ya se hace SIEMPRE y no es opcional:
+    #                          `message.py` vuelca `signals.notes` fuera de
+    #                          `include_reasoning`, así que un día decidido con
+    #                          datos incompletos lo dice aunque el razonamiento
+    #                          esté apagado.
+    #
+    # Se rechaza en vez de ignorarse porque `notify: true` se lee como una
+    # garantía de aviso, y una garantía que nadie cumple es exactamente lo que
+    # no puede quedar escrito en este fichero.
+    require(
+        "cold_start" not in data,
+        "cold_start ya no se usa y no lo leía nadie: 'backfill_days' se llama "
+        "ahora baseline.window_days, 'on_insufficient_data' lo cubren los "
+        "min_days_required de baseline y de cada adaptive_thresholds, y "
+        "'notify' es incondicional (los días con datos incompletos se avisan "
+        "siempre en el mensaje). Bórralo.",
+    )
+
     # --- origen del programa ------------------------------------------------
     # Se valida aquí arriba y con dureza. `program.start` es el origen desde el
     # que se cuentan las semanas de descarga: sin él la descarga no se activa
@@ -890,14 +980,6 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 f"{where}: '{fkey}'={f} debe estar en (0, 1]: estas reglas "
                 f"recortan carga, no la suben",
             )
-
-    for i, rule in enumerate(data.get("rules") or []):
-        where = f"rules[{i}] ('{rule.get('name', 'sin nombre')}')"
-        if "when" in rule:
-            check_ops(rule.get("when"), where)
-        for j, cond in enumerate(rule.get("all_of") or rule.get("any_of") or []):
-            if isinstance(cond, dict) and "when" in cond:
-                check_ops(cond.get("when"), f"{where}[{j}]")
 
     # --- los interruptores de salida -----------------------------------------
     #

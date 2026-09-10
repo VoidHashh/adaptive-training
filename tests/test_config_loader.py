@@ -60,6 +60,67 @@ def _regla(data, nombre) -> dict:
     return next(r for r in data["special_rules"] if r["name"] == nombre)
 
 
+# --- la errata de nivel de arriba, que era la única que no se miraba -------
+
+
+@pytest.mark.parametrize(
+    "buena,errata",
+    [
+        ("special_rules", "special_rule"),
+        ("adaptive_thresholds", "adaptative_thresholds"),
+        ("recovery_blocks", "recovery_block"),
+        ("set_types", "sets_types"),
+        ("notifications", "notification"),
+        ("safety", "safty"),
+    ],
+)
+def test_una_seccion_mal_escrita_no_se_ignora_entera(cfg_copia, buena, errata):
+    """Escribir mal el nombre de una sección la borraba, en silencio.
+
+    `special_rule:` en vez de `special_rules:` arrancaba limpio y con cero
+    reglas especiales: el sistema decidía todos los días sin mirar ninguna. No
+    hay forma de notarlo desde fuera salvo echar de menos un ámbar que nunca
+    llega, y eso tarda semanas y se confunde con estar recuperado.
+
+    Es el fallo más caro de la familia porque una sección es exactamente donde
+    se escribe lo que NO es el comportamiento por defecto.
+    """
+    cfg_copia.raw[errata] = cfg_copia.raw.pop(buena)
+    msg = errores(cfg_copia.raw)
+    assert errata in msg
+    assert buena in msg, "el error tiene que decir cuál era la buena"
+
+
+def test_la_seccion_rules_se_rechaza_por_no_leerla_nadie(cfg_copia):
+    """`rules` tenía validación propia y ningún lector.
+
+    Escribirla en vez de `special_rules` pasaba la validación con nota -se le
+    revisaban hasta los operadores de sus `when`- y no hacía nada. Un validador
+    que revisa a conciencia una sección muerta es peor que uno que no la mira:
+    certifica por escrito que está bien puesta.
+    """
+    cfg_copia.raw["rules"] = cfg_copia.raw["special_rules"]
+    assert "rules" in errores(cfg_copia.raw)
+
+
+def test_cold_start_se_rechaza_en_vez_de_ignorarse(cfg_copia):
+    """Prometía por escrito un aviso que nadie daba.
+
+    `notify: true` se lee como una garantía. El aviso existe -y además es
+    incondicional-, pero no porque lo dijera esta clave. Que coincidieran era
+    suerte: poner `notify: false` no habría callado nada.
+    """
+    cfg_copia.raw["cold_start"] = {"backfill_days": 30, "notify": True}
+    msg = errores(cfg_copia.raw)
+    assert "cold_start" in msg
+    assert "baseline.window_days" in msg, "hay que decir dónde vive ahora"
+
+
+def test_una_version_futura_no_se_lee_con_las_claves_de_la_vieja(cfg_copia):
+    cfg_copia.raw["version"] = 2
+    assert "version" in errores(cfg_copia.raw)
+
+
 def test_una_errata_en_duration_days_no_pasa_desapercibida(cfg_copia):
     """`durantion_days` dejaba la retirada de peso muerto en 1 día en vez de 14.
 
