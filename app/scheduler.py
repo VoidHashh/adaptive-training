@@ -78,6 +78,7 @@ def job_decision(
     fetch: Callable | None = None,
     hevy_client: Any = None,
     telegram_client: Any = None,
+    client_errors: dict[str, str] | None = None,
     dry_run: bool = False,
     solo_si_falta_checkin: bool = True,
 ) -> Any:
@@ -100,6 +101,7 @@ def job_decision(
             s, cfg, day,
             metrics=metrics, rides=rides,
             hevy_client=hevy_client, telegram_client=telegram_client,
+            client_errors=client_errors,
             dry_run=dry_run, source=source,
         )
 
@@ -223,6 +225,7 @@ def build_scheduler(
     *,
     hevy_client: Any = None,
     telegram_client: Any = None,
+    client_errors: dict[str, str] | None = None,
     dry_run: bool = False,
     start: bool = True,
 ) -> BackgroundScheduler:
@@ -253,6 +256,7 @@ def build_scheduler(
         args=[cfg],
         kwargs={
             "hevy_client": hevy_client, "telegram_client": telegram_client,
+            "client_errors": client_errors,
             "dry_run": dry_run, "source": "fallback_0900",
             "solo_si_falta_checkin": True,
         },

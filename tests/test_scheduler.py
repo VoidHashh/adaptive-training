@@ -382,6 +382,48 @@ def test_el_avisador_queda_enganchado(cfg):
 
 
 # ---------------------------------------------------------------------------
+# El motivo de que no haya cliente llega hasta las 09:00
+# ---------------------------------------------------------------------------
+#
+# `api._clientes` averigua POR QUÉ no se pudo construir cada cliente, pero eso
+# solo sirve si el dato recorre entero el cable hasta `run_daily`. Y el tramo
+# que importa es justo este: el trabajo de las 09:00 es el que corre solo, sin
+# nadie delante que pueda mirar el log.
+#
+# Un cable cortado aquí no da error ni cambia ningún estado. Simplemente el
+# aviso del mensaje vuelve a adivinar la causa, que es indistinguible de
+# acertarla salvo el día que la causa es otra.
+
+
+def test_el_trabajo_de_las_nueve_lleva_los_motivos_de_los_clientes(cfg):
+    sched = build_scheduler(
+        cfg, client_errors={"hevy": "falta HEVY_API_KEY"}, start=False
+    )
+    trabajo = sched.get_job("decision_fallback")
+    assert trabajo.kwargs.get("client_errors") == {"hevy": "falta HEVY_API_KEY"}
+
+
+def test_job_decision_le_pasa_los_motivos_a_run_daily(cfg, monkeypatch):
+    """El último tramo: recibirlos y no reenviarlos es igual de mudo."""
+    visto: dict = {}
+
+    def falso_run_daily(*a, **kw):
+        visto.update(kw)
+        return None
+
+    monkeypatch.setattr("app.scheduler.run_daily", falso_run_daily)
+    monkeypatch.setattr(
+        "app.scheduler._fetch_garmin", lambda cfg_, day: ([], [])
+    )
+
+    job_decision(
+        cfg, day=LUNES, client_errors={"telegram": "falta TELEGRAM_CHAT_ID"},
+        solo_si_falta_checkin=False,
+    )
+    assert visto.get("client_errors") == {"telegram": "falta TELEGRAM_CHAT_ID"}
+
+
+# ---------------------------------------------------------------------------
 # Cuántos días de wellness se le piden a Garmin
 # ---------------------------------------------------------------------------
 

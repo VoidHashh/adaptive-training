@@ -211,6 +211,55 @@ def test_sin_cliente_de_telegram_se_avisa_de_que_nadie_se_ha_enterado(db, cfg):
     assert any("no se ha contado a nadie" in p for p in res.problemas)
 
 
+# --- el aviso nombra su causa en vez de adivinarla -------------------------
+#
+# Que no haya cliente ya se avisa. Lo que se perdía era POR QUÉ: `api._clientes`
+# dejaba la excepción del constructor en un `log.warning` y el aviso tenía que
+# suponer la causa más probable. Un aviso que nombra su causa se arregla desde
+# el móvil; uno que la adivina obliga a entrar por SSH a leer un log.
+
+
+def test_el_motivo_real_de_no_haber_cliente_de_hevy_llega_al_mensaje(db, cfg):
+    tg = TelegramFalso()
+    res = corre(
+        db, cfg, hevy=None, tg=tg,
+        client_errors={"hevy": "la rutina 'empuje' no está en routine_ids"},
+    )
+    assert "routine_ids" in res.hevy_reason
+    assert "routine_ids" in tg.enviados[0], (
+        "el motivo tiene que verse donde se lee, no solo en el objeto"
+    )
+
+
+def test_sin_motivo_se_mantiene_la_sospecha_mas_probable(db, cfg):
+    """Un `client_errors` que no llega no puede dejar el aviso mudo.
+
+    Es el caso de cualquier llamada que no venga de `api._clientes`: sigue
+    habiendo que decir por dónde empezar a mirar.
+    """
+    res = corre(db, cfg, hevy=None, tg=TelegramFalso())
+    assert "HEVY_API_KEY" in res.hevy_reason
+
+
+def test_el_motivo_real_de_no_haber_telegram_queda_en_los_problemas(db, cfg):
+    res = corre(
+        db, cfg, hevy=HevyFalso(), tg=None,
+        client_errors={"telegram": "falta TELEGRAM_CHAT_ID"},
+    )
+    assert res.telegram_reason == "falta TELEGRAM_CHAT_ID"
+    assert any("TELEGRAM_CHAT_ID" in p for p in res.problemas)
+
+
+def test_el_motivo_de_un_cliente_no_se_le_atribuye_al_otro(db, cfg):
+    """Dos fallos distintos con el mismo texto serían peor que ninguno."""
+    res = corre(
+        db, cfg, hevy=None, tg=None,
+        client_errors={"hevy": "API key de Hevy inválida"},
+    )
+    assert "API key de Hevy" in res.hevy_reason
+    assert "API key de Hevy" not in (res.telegram_reason or "")
+
+
 def test_la_decision_se_guarda_con_su_progresion(db, cfg):
     """Sin esto la noche no puede saber qué subió, y la racha sobreviviría."""
     from app.models import Decision as DecisionRow

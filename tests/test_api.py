@@ -64,7 +64,8 @@ def cliente(db, cfg, monkeypatch):
     crea las tablas sobre el motor real de `app/db.py`. Un test no puede tocar la
     base del usuario.
 
-    `_clientes` se sustituye por lo mismo que devolvería sin claves: (None, None).
+    `_clientes` se sustituye por lo mismo que devolvería sin claves: ningún
+    cliente y ningún motivo.
     No es cosmético. `POST /api/checkin` fabrica los clientes por dentro, y con
     el `.env` real del usuario -claves puestas, `DRY_RUN=false`- estos tests
     sobrescribieron su rutina de verdad en Hevy y le mandaron mensajes de verdad
@@ -76,7 +77,7 @@ def cliente(db, cfg, monkeypatch):
         return dias(day, 10, hrv=60.0, rhr=50.0, sleep_min=450, sleep_score=80), []
 
     monkeypatch.setattr("app.scheduler._fetch_garmin", fetch)
-    monkeypatch.setattr("app.api._clientes", lambda cfg_: (None, None))
+    monkeypatch.setattr("app.api._clientes", lambda cfg_: (None, None, {}))
 
     app.dependency_overrides[get_session] = lambda: db
     app.dependency_overrides[get_config] = lambda: cfg
@@ -108,14 +109,15 @@ def test_sin_el_doble_de_clientes_la_ruta_choca_contra_el_cerrojo(db, cfg, monke
     escapó la primera vez.
 
     El `skip` de arriba no es un adorno. Sin claves en el `.env`, `_clientes`
-    devuelve (None, None), no se intenta ninguna conexión y el test pasaría sin
+    no devuelve ningún cliente, no se intenta ninguna conexión y el test pasaría sin
     haber comprobado nada -el mismo vacío que ya mordió una vez en este
     proyecto-. Si no hay clientes que construir, aquí no hay nada que demostrar.
     """
     from app.api import _clientes
     from tests.conftest import RedProhibidaEnTests
 
-    if all(c is None for c in _clientes(cfg)):
+    hevy, tg, _ = _clientes(cfg)
+    if hevy is None and tg is None:
         pytest.skip("sin claves en el .env no hay clientes reales que bloquear")
 
     def fetch(cfg_, day):
@@ -140,6 +142,53 @@ def test_sin_el_doble_de_clientes_la_ruta_choca_contra_el_cerrojo(db, cfg, monke
 
 
 # ---------------------------------------------------------------------------
+# Por qué no hay cliente, y no solo que no lo hay
+# ---------------------------------------------------------------------------
+#
+# `_clientes` dejaba la excepción del constructor en un `log.warning` y devolvía
+# un None pelado. Que no hubiera cliente sí se avisaba -el runner marca la
+# escritura como error y lo pone arriba del mensaje-, pero el aviso tenía que
+# ADIVINAR la causa. Adivinar cuando se sabe manda a mirar donde no es, y a las
+# nueve de la mañana la diferencia es arreglarlo desde el móvil o entrar por
+# SSH a leer un log.
+
+
+def test_clientes_devuelve_el_motivo_de_cada_fallo(cfg, monkeypatch):
+    monkeypatch.setattr(
+        "app.integrations.hevy.build_client",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("falta HEVY_API_KEY")),
+    )
+    monkeypatch.setattr(
+        "app.integrations.telegram.build_client",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("falta TELEGRAM_CHAT_ID")),
+    )
+    from app.api import _clientes
+
+    hevy, tg, motivos = _clientes(cfg)
+    assert hevy is None and tg is None
+    assert "HEVY_API_KEY" in motivos["hevy"]
+    assert "TELEGRAM_CHAT_ID" in motivos["telegram"]
+
+
+def test_un_cliente_que_se_construye_no_deja_motivo(cfg, monkeypatch):
+    """La lista de motivos no puede ser una lista de clientes.
+
+    Si un cliente sano dejara entrada, el mensaje avisaría de una avería que no
+    existe y el aviso dejaría de significar nada.
+    """
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: object())
+    monkeypatch.setattr(
+        "app.integrations.telegram.build_client",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("falta TELEGRAM_CHAT_ID")),
+    )
+    from app.api import _clientes
+
+    _hevy, _tg, motivos = _clientes(cfg)
+    assert "hevy" not in motivos
+    assert set(motivos) == {"telegram"}
+
+
+# ---------------------------------------------------------------------------
 # Salud
 # ---------------------------------------------------------------------------
 
@@ -155,7 +204,7 @@ def arrancada(cfg, monkeypatch):
     `init_db` y los clientes.
     """
     monkeypatch.setattr("app.api.init_db", lambda: None)
-    monkeypatch.setattr("app.api._clientes", lambda cfg_: (None, None))
+    monkeypatch.setattr("app.api._clientes", lambda cfg_: (None, None, {}))
     monkeypatch.setattr("app.api.get_config", lambda: cfg)
     app.dependency_overrides[get_config] = lambda: cfg
     try:

@@ -100,6 +100,9 @@ def run_daily(
     rides: list,
     hevy_client: Any = None,
     telegram_client: Any = None,
+    # Por qué NO se pudo construir cada cliente, cuando no se pudo. Lo llena
+    # `api._clientes`, que es el único sitio donde se construyen.
+    client_errors: dict[str, str] | None = None,
     dry_run: bool = False,
     source: str = "scheduler",
 ) -> DailyResult:
@@ -127,8 +130,15 @@ def run_daily(
     fila = repo.save_decision(session, decision)
     _guardar_lo_leido(session, signals, metrics, res)
 
-    _escribir_hevy(session, cfg, decision, fila, res, hevy_client, dry_run)
-    _mandar_telegram(session, cfg, decision, res, telegram_client, dry_run)
+    motivos = client_errors or {}
+    _escribir_hevy(
+        session, cfg, decision, fila, res, hevy_client, dry_run,
+        motivo_sin_cliente=motivos.get("hevy"),
+    )
+    _mandar_telegram(
+        session, cfg, decision, res, telegram_client, dry_run,
+        motivo_sin_cliente=motivos.get("telegram"),
+    )
 
     # El estado se guarda al final y SIN `executed`: a estas horas la sesión no
     # se ha hecho todavía. Lo que avanza aquí son las reglas activas, el
@@ -182,6 +192,7 @@ def _escribir_hevy(
     res: DailyResult,
     client: Any,
     dry_run: bool,
+    motivo_sin_cliente: str | None = None,
 ) -> None:
     from app.integrations.hevy import build_routine_payload
 
@@ -211,9 +222,12 @@ def _escribir_hevy(
         # `api._clientes` se traga esa excepción y la deja en un WARNING del
         # log, que en Umbrel no lee nadie a las nueve de la mañana.
         res.hevy_status = "error"
+        # El motivo real si viaja, y la sospecha más probable si no. Adivinar
+        # cuando se sabe manda a mirar donde no es.
+        causa = motivo_sin_cliente or "revisa HEVY_API_KEY en el .env"
         res.hevy_reason = (
-            "no hay cliente de Hevy (revisa HEVY_API_KEY en el .env): la rutina "
-            "de hoy sigue siendo la anterior"
+            f"no hay cliente de Hevy ({causa}): la rutina de hoy sigue siendo "
+            f"la anterior"
         )
         res.problemas.append(f"Hevy: {res.hevy_reason}")
         _anotar_hevy(session, decision, fila, res, payload)
@@ -260,6 +274,7 @@ def _mandar_telegram(
     res: DailyResult,
     client: Any,
     dry_run: bool,
+    motivo_sin_cliente: str | None = None,
 ) -> None:
     texto = render_telegram(decision, cfg)
 
@@ -279,9 +294,10 @@ def _mandar_telegram(
     # mensaje salió bien.
     if client is None:
         res.telegram_status = "skipped"
-        res.telegram_reason = "sin cliente de Telegram configurado"
+        res.telegram_reason = motivo_sin_cliente or "sin cliente de Telegram configurado"
         res.problemas.append(
-            "no hay cliente de Telegram: la decisión de hoy no se ha contado a nadie"
+            f"no hay cliente de Telegram ({res.telegram_reason}): la decisión "
+            f"de hoy no se ha contado a nadie"
         )
     else:
         try:

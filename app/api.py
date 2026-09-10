@@ -113,11 +113,12 @@ async def lifespan(app: FastAPI):
     if settings.scheduler_enabled:
         try:
             cfg = get_config()
-            hevy, tg = _clientes(cfg)
+            hevy, tg, motivos = _clientes(cfg)
             app.state.scheduler = build_scheduler(
                 cfg,
                 hevy_client=hevy,
                 telegram_client=tg,
+                client_errors=motivos,
                 dry_run=settings.dry_run,
             )
             log.info(
@@ -302,10 +303,10 @@ def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
         }
 
     try:
-        hevy, tg = _clientes(cfg)
+        hevy, tg, motivos = _clientes(cfg)
         res = run_daily(
             s, cfg, day, metrics=metrics, rides=rides,
-            hevy_client=hevy, telegram_client=tg,
+            hevy_client=hevy, telegram_client=tg, client_errors=motivos,
             dry_run=settings.dry_run, source=source,
         )
     except Exception as exc:  # noqa: BLE001
@@ -330,20 +331,36 @@ def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
     }
 
 
-def _clientes(cfg) -> tuple[Any, Any]:
+def _clientes(cfg) -> tuple[Any, Any, dict[str, str]]:
+    """Construye los dos clientes. El tercer elemento es POR QUÉ falló cada uno.
+
+    Antes se devolvía solo `(hevy, tg)` y el motivo se quedaba en un
+    `log.warning` que en Umbrel no lee nadie a las nueve de la mañana. El
+    resultado no era invisible -el runner ya marca la escritura como error y lo
+    pone arriba del mensaje-, pero sí ANÓNIMO: el aviso tenía que adivinar la
+    causa ("revisa HEVY_API_KEY en el .env"), que es la más probable y no la
+    única. Si lo que falla es otra cosa, la adivinanza manda a mirar donde no
+    es y el error real solo existe en un fichero de log.
+
+    Un aviso que nombra su causa se arregla desde el móvil; uno que la adivina
+    obliga a entrar por SSH.
+    """
     from app.integrations.hevy import build_client as hevy_client
     from app.integrations.telegram import build_client as tg_client
 
     hevy = tg = None
+    motivos: dict[str, str] = {}
     try:
         hevy = hevy_client(settings, cfg)
     except Exception as exc:  # noqa: BLE001
+        motivos["hevy"] = str(exc)
         log.warning("sin cliente de Hevy: %s", exc)
     try:
         tg = tg_client(settings, cfg)
     except Exception as exc:  # noqa: BLE001
+        motivos["telegram"] = str(exc)
         log.warning("sin cliente de Telegram: %s", exc)
-    return hevy, tg
+    return hevy, tg, motivos
 
 
 @app.get("/api/decision")
@@ -386,7 +403,7 @@ def post_reconcile(
     from app.runner import run_reconcile
 
     day = day or date.today()
-    hevy, _ = _clientes(cfg)
+    hevy, _, _ = _clientes(cfg)
     if hevy is None:
         raise HTTPException(status_code=503, detail="sin cliente de Hevy")
 
