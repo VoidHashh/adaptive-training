@@ -42,6 +42,7 @@ from app.engine.progression import (
     con_carga_vigente,
     series_efectivas_vigentes,
 )
+from app.engine.rules import RuleError
 from app.engine.sets import excludes, warmup_flags
 
 FULL = "full"
@@ -276,17 +277,71 @@ def apply_rule_load_cuts(
     devolverlo por encima del punto del que la regla lo estaba bajando. El
     recorte tiene que ser lo último que toca la carga para que sea un recorte
     de verdad y no una sugerencia.
+
+    UNA REGLA QUE DISPARA Y NO RECORTA NADA ES UN ERROR
+    ---------------------------------------------------
+    Que el ejercicio no esté en la rutina de HOY es normal: una regla sobre el
+    peso muerto no hace nada un día de empuje, y ahí callar es lo correcto.
+
+    Lo que no puede pasar en silencio es que el ejercicio SÍ esté en la sesión y
+    aun así no se recorte nada, que ocurre cuando ninguna de sus series tiene
+    peso: un ejercicio a 0 kg -porque todavía no se ha registrado la carga en
+    Hevy- multiplicado por 0,7 sigue siendo 0. El recorte no se aplica, no se
+    apunta en `changes`... y el mensaje de la mañana SIGUE anunciando la regla,
+    porque `message.py` lista las reglas activas por nombre sin mirar si han
+    hecho algo. El resultado es leer "descarga lumbar activa" y entrenar sin
+    ninguna descarga. Con una hernia L4-L5 esa diferencia se paga con la
+    espalda, así que aquí se para.
     """
     log: list[str] = []
+    presentes = {str(e.get("key")) for e in exercises}
+
     for rule in active_rules:
         rl = (rule.get("action", {}) or {}).get("reduce_load") or {}
         if not rl:
             continue
+        objetivos = [str(k) for k in (rl.get("exercises") or [])]
         entries = apply_load_factor(
-            exercises, float(rl.get("factor", 1.0)), list(rl.get("exercises") or [])
+            exercises, float(rl.get("factor", 1.0)), objetivos or None
         )
         for entry in entries:
             log.append(f"'{rule.get('name')}': {entry}")
+
+        # Si `exercises` está vacío no hay sesión que recortar (día rojo, bloque
+        # de recuperación) y no hay nada que denunciar.
+        if not presentes:
+            continue
+
+        pct = int(float(rl.get("factor", 1.0)) * 100)
+        con_peso = {
+            str(e.get("key"))
+            for e in exercises
+            if any(s.get("weight_kg") for s in e.get("sets") or [])
+        }
+
+        if objetivos:
+            # La regla NOMBRA ejercicios: nombrarlos es afirmar algo sobre cada
+            # uno. Los que estén hoy en la sesión tienen que recortarse todos.
+            mudos = sorted((set(objetivos) & presentes) - con_peso)
+            if mudos:
+                raise RuleError(
+                    f"la regla '{rule.get('name')}' recorta la carga al {pct}% "
+                    f"de {mudos}, esos ejercicios SÍ están en la sesión de hoy y "
+                    f"aun así no se ha recortado nada: ninguna de sus series "
+                    f"tiene peso. El mensaje anunciaría la regla como activa y se "
+                    f"entrenaría sin recorte. Registra la carga de esos "
+                    f"ejercicios en config.yaml o quítalos de la regla."
+                )
+        elif not con_peso:
+            # Recorte para toda la sesión. Que no toque los ejercicios de peso
+            # corporal es normal -una plancha no se multiplica por 0,7-, así que
+            # solo es un error si no ha recortado absolutamente nada.
+            raise RuleError(
+                f"la regla '{rule.get('name')}' recorta la carga de toda la "
+                f"sesión al {pct}% y no ha recortado NADA: ningún ejercicio de "
+                f"hoy tiene peso registrado. La regla se anunciaría como activa "
+                f"sin haber cambiado una sola serie."
+            )
     return log
 
 
