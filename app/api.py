@@ -27,10 +27,12 @@ import io
 import logging
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -136,7 +138,14 @@ def checkin_today(
         "submitted": fila is not None,
         "values": repo.checkin_values(fila),
         "comments": getattr(fila, "comments", None),
+        # La PWA no lleva ninguna lista de deslizadores escrita a mano: los pinta
+        # a partir de esto. Si los tuviera escritos, añadir uno al `config.yaml`
+        # lo dejaría fuera del formulario y el sistema decidiría sin ese dato sin
+        # que nadie lo notara.
         "sliders": cfg.raw.get("checkin_sliders", []),
+        "comment_label": (cfg.raw.get("checkin_comment") or {}).get(
+            "label", "Comentarios"
+        ),
     }
 
 
@@ -349,3 +358,37 @@ def export_csv(
             )
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# La PWA
+#
+# Se monta LA ÚLTIMA y en la raíz. `StaticFiles` en "/" se traga todo lo que no
+# haya casado antes, así que si esto subiera de sitio se comería `/api/...` y la
+# aplicación entera contestaría 404 en HTML. Va aquí abajo a propósito.
+# ---------------------------------------------------------------------------
+
+_ESTATICOS = Path(__file__).resolve().parent.parent / "static"
+
+if _ESTATICOS.is_dir():
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker() -> FileResponse:
+        """El service worker se sirve aparte por el ámbito.
+
+        Un service worker solo controla las rutas por debajo de donde se sirve.
+        Servido desde `/static/sw.js` gobernaría `/static/...` y nada más, o sea
+        que la aplicación no se podría instalar y no habría ningún error: solo
+        no saldría el botón de instalar. `Service-Worker-Allowed` no hace falta
+        si el fichero está en la raíz, que es lo que se hace aquí.
+        """
+        return FileResponse(
+            _ESTATICOS / "sw.js",
+            media_type="application/javascript",
+            # Sin esto, el navegador puede quedarse con un worker viejo y la
+            # actualización del contenedor no llegaría nunca al móvil.
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    app.mount("/", StaticFiles(directory=_ESTATICOS, html=True), name="pwa")
+else:  # pragma: no cover
+    log.warning("no hay carpeta `static/`: la PWA no se sirve")

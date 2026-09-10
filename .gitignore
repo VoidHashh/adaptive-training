@@ -28,6 +28,9 @@ Thumbs.db
 .vscode/
 .claude/settings.local.json
 
+# Borrador del mensaje del commit en curso, no forma parte del proyecto
+/COMMIT_MSG.txt
+
 # Salidas de ejecuciones manuales (pueden contener datos del usuario)
 /out.txt
 *.out.txt

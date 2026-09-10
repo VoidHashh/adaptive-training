@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img"
+     aria-label="Semáforo de entrenamiento">
+  <!-- Un semáforo, que es lo que decide el día: verde, ámbar, rojo. -->
+  <rect width="512" height="512" rx="96" fill="#14161a"/>
+  <rect x="176" y="72" width="160" height="368" rx="80"
+        fill="#1c2027" stroke="#2b313b" stroke-width="12"/>
+  <circle cx="256" cy="152" r="46" fill="#d1453b"/>
+  <circle cx="256" cy="256" r="46" fill="#d99b21"/>
+  <circle cx="256" cy="360" r="46" fill="#2f9e5e"/>
+</svg>

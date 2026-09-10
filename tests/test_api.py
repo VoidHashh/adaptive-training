@@ -480,3 +480,72 @@ def test_el_csv_de_un_rango_vacio_es_solo_la_cabecera(cliente):
     r = cliente.get(f"/api/export?desde={LUNES}&hasta={LUNES}")
     filas = [f for f in csv.reader(io.StringIO(r.text), delimiter=";") if f]
     assert len(filas) == 1
+
+
+# ---------------------------------------------------------------------------
+# La PWA
+# ---------------------------------------------------------------------------
+#
+# `StaticFiles` montado en "/" se traga todo lo que no haya casado antes. Es un
+# fallo que no se ve mirando el código -el montaje está a 400 líneas de las
+# rutas- y que en producción se manifiesta como la aplicación entera
+# contestando HTML a `/api/...`. Estos tests son el único sitio donde eso salta.
+
+
+def test_la_raiz_sirve_el_armazon_de_la_pwa(cliente):
+    r = cliente.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "deslizadores" in r.text, (
+        "el formulario se pinta dentro de este hueco; sin él no hay check-in"
+    )
+
+
+def test_montar_la_pwa_no_se_come_la_api(cliente):
+    """El montaje en "/" va el último a propósito. Si alguien lo sube de sitio,
+    esto es lo que se entera."""
+    for ruta in ("/api/health", f"/api/checkin/today?day={LUNES}"):
+        r = cliente.get(ruta)
+        assert r.status_code == 200, f"{ruta} devolvió {r.status_code}"
+        assert "application/json" in r.headers["content-type"], (
+            f"{ruta} ya no contesta JSON: la PWA se ha tragado la API"
+        )
+
+
+def test_una_ruta_de_api_que_no_existe_es_un_404_y_no_el_index(cliente):
+    """`html=True` sirve `index.html` cuando no encuentra el fichero. Para una
+    ruta de `/api/` eso convierte un 404 honesto en un 200 con HTML dentro, que
+    el cliente parsea como JSON y revienta lejos de aquí."""
+    r = cliente.get("/api/no-existe-esto")
+    assert r.status_code == 404
+    assert "<html" not in r.text.lower()
+
+
+def test_el_service_worker_se_sirve_desde_la_raiz(cliente):
+    """El ámbito de un service worker es la carpeta desde la que se sirve. Desde
+    `/static/sw.js` no cubriría `/`, la PWA no se instalaría y no habría ningún
+    error: simplemente no aparecería el botón. Un fallo mudo de manual."""
+    r = cliente.get("/sw.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers["content-type"]
+    assert "no-cache" in r.headers.get("cache-control", ""), (
+        "un service worker cacheado se queda clavado en la versión vieja y ya no "
+        "hay forma de actualizar la aplicación desde el móvil"
+    )
+
+
+def test_el_service_worker_no_cachea_nada_de_la_api(cliente):
+    """Una respuesta cacheada de `/api/checkin/today` abre el formulario diciendo
+    "ya está hecho" un día que no lo está, y el sistema decide sin check-in."""
+    codigo = cliente.get("/sw.js").text
+    assert '"/api/"' in codigo or "'/api/'" in codigo
+    assert "/api/" not in codigo.split("ARMAZON")[1].split("]")[0], (
+        "hay una ruta de la API en la lista de cosas que se precachean"
+    )
+
+
+def test_el_checkin_manda_tambien_la_etiqueta_del_comentario(cliente):
+    """Igual que los deslizadores: escrita a mano en la PWA, cambiarla en el
+    `config.yaml` no cambiaría nada y nadie sabría por qué."""
+    cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
+    assert cuerpo["comment_label"]

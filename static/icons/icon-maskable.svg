@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img"
+     aria-label="Semáforo de entrenamiento">
+  <!-- Versión `maskable`: el dibujo cabe dentro del 80% central, que es lo que
+       Android garantiza no recortar al aplicarle la forma del sistema. -->
+  <rect width="512" height="512" fill="#14161a"/>
+  <rect x="204" y="128" width="104" height="256" rx="52"
+        fill="#1c2027" stroke="#2b313b" stroke-width="10"/>
+  <circle cx="256" cy="180" r="30" fill="#d1453b"/>
+  <circle cx="256" cy="256" r="30" fill="#d99b21"/>
+  <circle cx="256" cy="332" r="30" fill="#2f9e5e"/>
+</svg>

@@ -1,0 +1,204 @@
+/*
+ * Pantalla de móvil, de mañana temprano y a veces a oscuras. De ahí el fondo
+ * oscuro, el tamaño de letra grande y los objetivos táctiles anchos: esto se usa
+ * medio dormido y con una mano.
+ */
+
+:root {
+  --fondo: #14161a;
+  --caja: #1c2027;
+  --borde: #2b313b;
+  --texto: #e7eaef;
+  --tenue: #9aa4b2;
+  --verde: #2f9e5e;
+  --ambar: #d99b21;
+  --rojo: #d1453b;
+  --acento: #4c8dff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 1rem 1rem calc(2rem + env(safe-area-inset-bottom));
+  background: var(--fondo);
+  color: var(--texto);
+  font: 17px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+#app { max-width: 34rem; margin: 0 auto; }
+
+.cab { margin-bottom: 1.25rem; }
+.cab h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
+/* `capitalize` pondría mayúscula en cada palabra: "Jueves, 10 De Septiembre".
+ * En español solo la lleva la primera. */
+.fecha { margin: 0.15rem 0 0; color: var(--tenue); }
+.fecha::first-letter { text-transform: uppercase; }
+
+.cargando { color: var(--tenue); padding: 2rem 0; }
+.cargando.mal { color: var(--texto); border-left: 3px solid var(--rojo); padding-left: 0.9rem; }
+.tenue { color: var(--tenue); }
+
+/* --- avisos ------------------------------------------------------------- */
+
+.aviso {
+  margin: 0 0 1rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.5rem;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  font-size: 0.94rem;
+}
+.aviso.tenue { color: var(--tenue); }
+.aviso.ojo { border-color: var(--ambar); color: #f3d9a4; }
+
+/* --- deslizadores ------------------------------------------------------- */
+
+.slider {
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-radius: 0.65rem;
+  padding: 0.85rem 0.9rem 0.7rem;
+  margin-bottom: 0.7rem;
+}
+
+.linea {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+.linea label { font-weight: 600; font-size: 0.97rem; }
+
+.valor {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  font-size: 1.15rem;
+  min-width: 2ch;
+  text-align: right;
+}
+
+/* Un deslizador sin contestar tiene que VERSE sin contestar. Si se pareciera a
+ * uno puesto en 5, el aviso de "falta por contestar" sería lo único que lo
+ * distingue, y eso es demasiado poco para el dato del que cuelga una decisión. */
+.slider.sin-contestar { border-style: dashed; }
+.slider.sin-contestar .valor { color: var(--tenue); font-size: 0.95rem; font-weight: 500; }
+.slider.sin-contestar input[type="range"] { opacity: 0.45; }
+.slider.descartado .valor { font-size: 0.85rem; }
+
+input[type="range"] {
+  width: 100%;
+  margin: 0.15rem 0 0.1rem;
+  height: 2rem;              /* dedo, no ratón */
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 0.4rem; border-radius: 999px; background: var(--borde);
+}
+input[type="range"]::-moz-range-track {
+  height: 0.4rem; border-radius: 999px; background: var(--borde);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 1.6rem; height: 1.6rem; margin-top: -0.6rem;
+  border-radius: 50%; background: var(--acento);
+  border: 3px solid var(--fondo);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 1.6rem; height: 1.6rem;
+  border-radius: 50%; background: var(--acento);
+  border: 3px solid var(--fondo);
+}
+
+.pistas {
+  display: flex; justify-content: space-between;
+  color: var(--tenue); font-size: 0.8rem;
+}
+
+.no-aplica {
+  margin-top: 0.6rem;
+  width: 100%;
+  padding: 0.55rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--borde);
+  background: transparent;
+  color: var(--tenue);
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+/* --- comentarios y envío ------------------------------------------------ */
+
+.comentarios { display: block; margin: 1.1rem 0 0.9rem; }
+.comentarios span { display: block; font-weight: 600; margin-bottom: 0.35rem; }
+textarea {
+  width: 100%;
+  padding: 0.7rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  resize: vertical;
+}
+
+.faltan { color: var(--tenue); font-size: 0.9rem; margin: 0 0 0.7rem; }
+
+#enviar {
+  width: 100%;
+  padding: 1rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: var(--acento);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+#enviar:disabled { background: var(--borde); color: var(--tenue); }
+
+/* --- resultado ---------------------------------------------------------- */
+
+.resultado {
+  margin-top: 1.5rem;
+  padding: 1rem;
+  border-radius: 0.65rem;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+}
+.resultado h2 { margin: 0 0 0.4rem; display: flex; align-items: center; gap: 0.55rem; }
+.resultado .punto { width: 0.85rem; height: 0.85rem; border-radius: 50%; background: var(--tenue); }
+.semaforo-green .punto { background: var(--verde); }
+.semaforo-amber .punto { background: var(--ambar); }
+.semaforo-red   .punto { background: var(--rojo); }
+.semaforo-green { border-color: var(--verde); }
+.semaforo-amber { border-color: var(--ambar); }
+.semaforo-red   { border-color: var(--rojo); }
+
+.resultado.mal { border-color: var(--rojo); }
+.resultado .sesion { margin: 0 0 0.8rem; font-size: 1.05rem; }
+
+.resultado dl {
+  display: grid; grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.9rem; margin: 0; font-size: 0.92rem;
+}
+.resultado dt { color: var(--tenue); }
+.resultado dd { margin: 0; }
+
+.problemas { margin-top: 0.9rem; border-top: 1px solid var(--borde); padding-top: 0.7rem; }
+.problemas h3 { margin: 0 0 0.35rem; font-size: 0.92rem; color: var(--ambar); }
+.problemas ul { margin: 0; padding-left: 1.1rem; font-size: 0.9rem; }
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #000;
+  padding: 0.7rem;
+  border-radius: 0.45rem;
+  font-size: 0.83rem;
+  margin: 0.6rem 0 0;
+}

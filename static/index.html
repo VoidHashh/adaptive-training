@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Check-in</title>
+
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#14161a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Check-in">
+</head>
+<body>
+
+<main id="app">
+  <header class="cab">
+    <h1>Check-in</h1>
+    <p class="fecha" id="fecha">—</p>
+  </header>
+
+  <!--
+    Se rellena desde `/api/checkin/today`, que devuelve los deslizadores tal y
+    como están en el `config.yaml`. Aquí no hay ninguna lista de deslizadores
+    escrita a mano: si la hubiera, añadir uno al YAML lo dejaría fuera del
+    formulario y el sistema decidiría sin ese dato sin que nadie lo notara.
+  -->
+  <form id="formulario" hidden>
+    <div id="deslizadores"></div>
+
+    <label class="comentarios">
+      <span id="etiqueta-comentarios">Comentarios</span>
+      <textarea id="comentarios" rows="3"
+                placeholder="Lo que no cabe en un número"></textarea>
+    </label>
+
+    <p class="faltan" id="faltan" hidden></p>
+
+    <button type="submit" id="enviar" disabled>Enviar</button>
+  </form>
+
+  <!-- Mientras carga y cuando no se puede cargar. Nunca un formulario en
+       blanco haciéndose pasar por uno cargado. -->
+  <p class="cargando" id="cargando">Cargando…</p>
+
+  <section id="resultado" hidden></section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
