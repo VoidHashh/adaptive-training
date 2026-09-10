@@ -421,6 +421,50 @@ def imprimir_hevy(decision, cfg, mostrar_remoto: bool) -> None:
         print()
 
 
+def estado_para_el_ensayo(cfg) -> tuple[EngineState, str]:
+    """El estado REAL de la base de datos, o uno en frío diciendo que lo es.
+
+    El ensayo arrancaba siempre con `EngineState(program_start=...)` y el resto
+    en cero. Lo declaraba en una línea del informe, pero la línea no arreglaba el
+    problema: sin `active_rules` el ensayo enseña una sesión que no es la que
+    saldría. Si una regla tiene el peso muerto retirado catorce días, el ensayo
+    lo pinta igual, y quien lo lee se prepara para un entrenamiento que el
+    sistema no va a mandar.
+
+    Con las rachas pasa lo simétrico: en frío todas valen cero, así que las
+    puertas de progresión salen cerradas y el ensayo predice DE MENOS. Un ensayo
+    que se equivoca siempre en la misma dirección es el que peor se detecta,
+    porque nunca sorprende.
+
+    No escribe nada: se lee y se cierra. Un ensayo en seco que dejara rastro en
+    la base de datos sería peor que no tenerlo, y aquí basta con no llamar a
+    `save_state`.
+    """
+    frio = EngineState(program_start=cfg.program_start)
+    ruta = str(settings.database_url).split("///")[-1]
+    if "///" in str(settings.database_url) and not Path(ruta).is_file():
+        return frio, f"sin base de datos en {ruta} (sin rachas ni reglas previas)"
+
+    try:
+        from app import repository as repo
+        from app.db import SessionLocal
+
+        with SessionLocal() as s:
+            estado = repo.load_state(s, program_start=cfg.program_start)
+    except Exception as exc:  # noqa: BLE001
+        # Que no se pueda leer NO puede pasar por "no hay nada guardado": son
+        # cosas distintas y llevan a informes distintos. Se sigue en frío, pero
+        # diciéndolo.
+        return frio, f"NO SE PUDO LEER la base de datos ({exc}); se sigue en frío"
+
+    reglas = len(getattr(estado, "active_rules", []) or [])
+    rachas = sum(1 for v in (getattr(estado, "clean_sessions", {}) or {}).values() if v)
+    return estado, (
+        f"leído de la base de datos · {reglas} regla(s) activa(s) · "
+        f"{rachas} ejercicio(s) con racha"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="adaptive",
@@ -501,11 +545,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signals = build_signals(cfg, day, metrics=metrics, rides=rides, checkin=checkin)
 
-    # `program_start` sale del YAML y el validador garantiza que existe: sin él
-    # la semana de descarga no se activaría nunca. El resto del estado sigue en
-    # frío mientras no haya base de datos.
-    state = EngineState(program_start=cfg.program_start)
-
+    state, origen_estado = estado_para_el_ensayo(cfg)
     decision = decide(cfg, day, signals, state, source="dry_run")
 
     print("=" * ANCHO)
@@ -520,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  programa     : inicio {cfg.program_start} · descarga "
           f"{'ACTIVA' if decision.deload.active else 'no'} "
           f"({decision.deload.reason})")
-    print("  estado       : sin BD (sin rachas ni reglas previas)")
+    print(f"  estado       : {origen_estado}")
     print("=" * ANCHO)
     for linea in proc.banner():
         print(linea)
