@@ -272,3 +272,80 @@ def test_el_ensayo_no_se_inventa_una_base_de_datos_que_no_existe(tmp_path, cfg, 
     _estado, nota = estado_para_el_ensayo(cfg)
     assert "sin base de datos" in nota
     assert not ruta.exists(), "el ensayo ha creado una base de datos"
+
+
+# ---------------------------------------------------------------------------
+# La orden manual pide la misma ventana de salidas que el trabajo de madrugada
+# ---------------------------------------------------------------------------
+#
+# `RIDE_HISTORY_DAYS = 190` estaba escrito DOS veces, aquí y en el planificador,
+# mientras `cycling.fetch` declaraba en el YAML 10 y 90. Al conectar la opción
+# había que conectar los dos sitios: si el planificador respeta la ventana y la
+# orden manual sigue pidiendo 190, el usuario que compara la decisión a mano se
+# come el 429 y luego el trabajo de las 06:30 se queda sin histórico. El coste
+# de una constante duplicada no lo paga quien la escribe.
+
+
+@pytest.fixture
+def garmin_espiado(monkeypatch):
+    """Sustituye Garmin y devuelve el diccionario con lo que se le pidió."""
+    from app.integrations import garmin as gmod
+
+    visto: dict = {}
+
+    class ClienteFalso:
+        session_resumed = False
+        rate_limit_events: list = []
+        fetch_errors: list = []
+
+        def connect(self):
+            return None
+
+        def window(self, day, days, *, ride_days):
+            visto.update(days=days, ride_days=ride_days)
+            return dias(day, days, hrv=100.0, rhr=50.0), []
+
+    monkeypatch.setattr(gmod, "build_client", lambda *a, **k: ClienteFalso())
+    return visto
+
+
+def cache_falsa(monkeypatch, cache):
+    from app.integrations import activity_cache as ac
+
+    monkeypatch.setattr(ac, "load_cached_rides", lambda *a, **k: cache)
+
+
+def test_la_orden_manual_usa_la_ventana_corta_del_yaml(cfg, monkeypatch, garmin_espiado):
+    from app.cli import fetch_garmin
+    from tests.test_activity_cache import cache_de
+
+    cache_falsa(monkeypatch, cache_de(180, day=LUNES))
+    fetch_garmin(LUNES, 8, True, cfg)
+    assert garmin_espiado["ride_days"] == cfg.raw["cycling"]["fetch"]["lookback_days"]
+
+
+def test_sin_cache_la_orden_manual_se_trae_el_historico_entero(
+    cfg, monkeypatch, garmin_espiado
+):
+    """`--no-cache` no deja el objeto de caché en None y ya está: sin caché no
+    hay nada en disco que fusionar, así que esta petición es la única fuente."""
+    from app.cli import fetch_garmin
+
+    fetch_garmin(LUNES, 8, False, cfg)
+    assert garmin_espiado["ride_days"] == cfg.raw["cycling"]["fetch"]["backfill_days"]
+
+
+def test_el_informe_dice_por_que_se_pidio_esa_ventana(cfg, monkeypatch, garmin_espiado):
+    """Un backfill que se repite cada mañana es un síntoma, no una casualidad.
+
+    Si el motivo no se imprime, la única señal de que la caché no se está
+    escribiendo es la factura de peticiones a Garmin.
+    """
+    from app.cli import fetch_garmin
+    from tests.test_activity_cache import cache_de
+
+    cache_falsa(monkeypatch, cache_de(180, day=LUNES))
+    _m, _r, proc = fetch_garmin(LUNES, 8, True, cfg)
+    linea = [d for d in proc.detalle if "ventana de salidas" in d]
+    assert linea, f"el informe no dice qué ventana se pidió: {proc.detalle}"
+    assert "10" in linea[0]

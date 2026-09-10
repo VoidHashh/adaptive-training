@@ -9,17 +9,19 @@ un dato fresco.
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
 from app.engine.signals import Ride
 from app.integrations.activity_cache import (
     CachedActivities,
+    dias_adaptativos,
     load_cached_rides,
     merge_rides,
     refresh_cache,
     save_cache,
+    ventana_de_salidas,
 )
 
 from tests.conftest import LUNES
@@ -277,3 +279,138 @@ def test_refrescar_sin_novedades_no_borra_la_cache(tmp_path):
     f = tmp_path / "activities.json"
     save_cache(f, [actividad(LUNES - timedelta(days=i), i) for i in range(50)])
     assert refresh_cache(f, LUNES, fetch=lambda desde, hasta: None) == 50
+
+
+# ---------------------------------------------------------------------------
+# Cuánto se le pide a Garmin cada mañana
+# ---------------------------------------------------------------------------
+#
+# Esta sección existe por una opción que llevaba desde el principio declarada
+# en `config.yaml` y que no leía nadie:
+#
+#     cycling:
+#       fetch:
+#         lookback_days: 10
+#         backfill_days: 90
+#
+# El código pedía 190 días a pelo, con la constante repetida en `app/cli.py` y
+# en `app/scheduler.py`. Y como `save_cache` FUSIONA y no poda nunca, a partir
+# del segundo día esos 190 días eran una petición enorme para añadir, como
+# mucho, la salida de ayer. Garmin limita por IP: un 429 en el trabajo de
+# madrugada deja al de las 06:30 sin histórico y la mañana se decide a ciegas.
+#
+# Al conectar la opción aparece la otra mitad del problema, la que la
+# constante tapaba: la ventana corta SOLO vale si la caché puede sostenerla.
+# Las tres situaciones en las que no puede se prueban una a una, porque
+# `load_cached_rides` no se queja de una caché corta —lo dice `save_cache` en
+# su propio docstring— y ese silencio dejaría `load_3d_p90` en None y las dos
+# reglas que lo usan sin evaluar, para siempre y sin un solo error.
+
+
+CFG_FETCH = {
+    "cycling": {"fetch": {"lookback_days": 10, "backfill_days": 90}},
+    "adaptive_thresholds": {
+        "load_3d_p90": {"window_days": 60, "percentile": 90},
+        "load_7d_p90": {"window_days": 60, "percentile": 90},
+    },
+}
+
+
+def cache_de(dias_cubiertos: int, *, escrita_hace: int = 0, day: date = LUNES):
+    primero = day - timedelta(days=dias_cubiertos - 1)
+    return CachedActivities(
+        rides=[Ride(date=primero, duration_s=3600), Ride(date=day, duration_s=3600)],
+        file_mtime=datetime.combine(day - timedelta(days=escrita_hace), datetime.min.time()),
+        total_activities=2,
+        first_day=primero,
+        last_day=day,
+    )
+
+
+def test_con_la_cache_sana_solo_se_relee_la_ventana_corta():
+    dias, motivo = ventana_de_salidas(CFG_FETCH, LUNES, cache_de(180))
+    assert dias == 10
+    assert "10" in motivo
+
+
+def test_sin_cache_se_pide_el_historico_entero():
+    """Primer arranque, y también el día que el fichero se pierda o se corrompa."""
+    dias, motivo = ventana_de_salidas(CFG_FETCH, LUNES, CachedActivities(error="no existe"))
+    assert dias == 90
+    assert "no utilizable" in motivo or "no existe" in motivo
+
+
+def test_sin_objeto_de_cache_tampoco_se_asume_que_hay_historico():
+    dias, _ = ventana_de_salidas(CFG_FETCH, LUNES, None)
+    assert dias == 90
+
+
+def test_una_cache_mas_corta_que_el_percentil_dispara_el_backfill():
+    """El fallo silencioso que la constante tapaba. Una caché de 20 días deja
+    `load_3d_p90` en None: la regla no dispara, no falla, y el mensaje sale
+    igual de bonito con una señal menos."""
+    dias, motivo = ventana_de_salidas(CFG_FETCH, LUNES, cache_de(20))
+    assert dias == 90
+    assert "20" in motivo and "60" in motivo, "hay que decir cuánto falta y para qué"
+
+
+def test_una_cache_justo_en_el_limite_vale():
+    assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(60))[0] == 10
+
+
+def test_una_cache_sin_refrescar_mas_dias_que_la_ventana_deja_un_agujero():
+    """El contenedor ha estado parado tres semanas. La caché es larga y buena,
+    pero entre lo último que tiene y hoy hay días que una ventana de 10 no
+    alcanza, y `save_cache` fusiona: el hueco no se llenaría nunca solo."""
+    dias, motivo = ventana_de_salidas(CFG_FETCH, LUNES, cache_de(180, escrita_hace=21))
+    assert dias == 90
+    assert "21" in motivo
+
+
+def test_un_hueco_que_la_ventana_corta_si_alcanza_no_dispara_el_backfill():
+    """El borde: escrita hace 9 días, y la ventana `[day-9, day]` llega."""
+    assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(180, escrita_hace=9))[0] == 10
+
+
+def test_no_salir_en_bici_no_cuenta_como_cache_desactualizada():
+    """La frescura se mide por cuándo se ESCRIBIÓ la caché, no por la fecha de
+    la última salida. Quien no monta en un mes tiene la caché al día; medirlo
+    por `last_day` le haría descargar 90 días cada mañana sin que falte nada."""
+    c = cache_de(180)
+    c.last_day = LUNES - timedelta(days=30)
+    assert ventana_de_salidas(CFG_FETCH, LUNES, c)[0] == 10
+
+
+def test_las_ventanas_salen_del_config_y_no_de_una_constante():
+    """La prueba de que la opción manda: se cambian las dos y el código las
+    sigue. Con `RIDE_HISTORY_DAYS` esto devolvía 190 en los dos casos."""
+    otro = {**CFG_FETCH, "cycling": {"fetch": {"lookback_days": 3, "backfill_days": 365}}}
+    assert ventana_de_salidas(otro, LUNES, cache_de(180))[0] == 3
+    assert ventana_de_salidas(otro, LUNES, None)[0] == 365
+
+
+def test_los_umbrales_adaptativos_marcan_el_minimo_de_cache():
+    """Subir `window_days` en el YAML tiene que mover esto. Si no, ampliar la
+    ventana del percentil lo apagaría en vez de mejorarlo."""
+    ancho = {**CFG_FETCH,
+             "adaptive_thresholds": {"load_3d_p90": {"window_days": 120}}}
+    assert dias_adaptativos(ancho) == 120
+    assert ventana_de_salidas(ancho, LUNES, cache_de(90))[0] == 90, "90 < 120: backfill"
+    assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(90))[0] == 10, "90 > 60: basta"
+
+
+def test_sin_la_seccion_en_el_yaml_se_usan_los_valores_declarados():
+    """Los defectos del código son los mismos números que el YAML trae escritos.
+    Un defecto distinto sería otra vez código y config diciendo cosas
+    diferentes, con el agravante de que aquí no se vería."""
+    assert ventana_de_salidas({}, LUNES, cache_de(180)) [0] == 10
+    assert ventana_de_salidas({}, LUNES, None)[0] == 90
+
+
+def test_el_borde_del_agujero_esta_en_la_ventana_justa():
+    """Escrita hace exactamente `lookback_days` días. La ventana
+    `[day-9, day]` NO incluye el día 10, así que ahí ya falta algo. Un `>` en
+    vez de un `>=` dejaría ese día fuera para siempre, porque `save_cache`
+    fusiona y nadie vuelve a mirar atrás."""
+    assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(180, escrita_hace=10))[0] == 90
+    assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(180, escrita_hace=9))[0] == 10

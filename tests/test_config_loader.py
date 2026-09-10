@@ -698,3 +698,58 @@ def test_el_config_real_declara_como_suben_las_reps(cfg, modo, esperado):
     `rep_apply_to` a mano en vez de depender del defecto del código, porque son
     defectos distintos y confundirlos no da ningún error."""
     assert cfg.raw["progression"]["modes"][modo].get("rep_apply_to") == esperado
+
+
+# ---------------------------------------------------------------------------
+# cycling.fetch: la ventana que alimenta los percentiles de carga
+# ---------------------------------------------------------------------------
+#
+# Estas comprobaciones nacen de conectar `cycling.fetch`, que llevaba desde el
+# principio declarado y sin leer mientras el código pedía 190 días a pelo. Una
+# opción conectada hay que validarla, y aquí la validación no es cosmética: el
+# backfill es lo ÚNICO que llena la caché sobre la que se calculan
+# `load_3d_p90` y `load_7d_p90`. Si se queda corto, las dos reglas que usan
+# esos umbrales no se evalúan ningún día. No fallan: no se evalúan. Y el
+# mensaje de la mañana sale igual de bonito con una señal menos.
+
+
+def test_un_backfill_mas_corto_que_el_percentil_no_arranca(cfg_copia):
+    cfg_copia.raw["cycling"]["fetch"]["backfill_days"] = 30
+    err = errores(cfg_copia.raw)
+    assert "backfill_days" in err
+    assert "60" in err, "hay que decir contra qué ventana se está comparando"
+    assert "sin dar error" in err, "y por qué importa: el fallo sería mudo"
+
+
+def test_una_ventana_corta_mayor_que_el_backfill_no_arranca(cfg_copia):
+    """Con los nombres al revés el 'backfill' dejaría huecos, que es justo lo
+    contrario de lo que promete."""
+    cfg_copia.raw["cycling"]["fetch"]["lookback_days"] = 200
+    assert "lookback_days" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("clave", ["lookback_days", "backfill_days"])
+@pytest.mark.parametrize("valor", [0, -1, "diez", 10.5])
+def test_una_ventana_que_no_es_un_entero_positivo_no_arranca(cfg_copia, clave, valor):
+    """Un 0 no llama a Garmin ni una vez y la caché se quedaría congelada."""
+    cfg_copia.raw["cycling"]["fetch"][clave] = valor
+    assert f"cycling.fetch.{clave}" in errores(cfg_copia.raw)
+
+
+def test_una_errata_en_cycling_fetch_no_se_ignora(cfg_copia):
+    """`lookback_dias` en castellano es la errata natural, y caería al defecto
+    del código dejando el YAML diciendo otra cosa: exactamente la avería que
+    esta sección acaba de cerrar."""
+    cfg_copia.raw["cycling"]["fetch"]["lookback_dias"] = 10
+    err = errores(cfg_copia.raw)
+    assert "cycling.fetch" in err and "lookback_dias" in err
+
+
+def test_el_config_real_declara_las_dos_ventanas(cfg):
+    """Guarda del `config.yaml` de verdad. Sin estas dos claves el código usa
+    sus defectos y vuelve a haber dos sitios donde mirar el mismo número."""
+    fetch = cfg.raw["cycling"]["fetch"]
+    assert isinstance(fetch.get("lookback_days"), int)
+    assert isinstance(fetch.get("backfill_days"), int)
+    ventanas = [s["window_days"] for s in cfg.raw["adaptive_thresholds"].values()]
+    assert fetch["backfill_days"] >= max(ventanas)

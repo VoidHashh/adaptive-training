@@ -44,11 +44,12 @@ from app.settings import settings
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ANCHO = 78
 
-# Días de histórico de SALIDAS. Es mucho mayor que la ventana de wellness a
-# propósito: las actividades vienen en una sola petición por rango, mientras
-# que el wellness son varias peticiones por día. Y los umbrales adaptativos
-# (`load_3d_p90`) necesitan 60 días de distribución para existir siquiera.
-RIDE_HISTORY_DAYS = 190
+# Los días de histórico de SALIDAS ya no viven aquí. Había un
+# `RIDE_HISTORY_DAYS = 190` con un comentario correcto -las actividades vienen
+# en una sola petición por rango y los umbrales adaptativos necesitan 60 días
+# de distribución- que aun así contradecía a `cycling.fetch` en el YAML. Ahora
+# lo decide `activity_cache.ventana_de_salidas`, que además sabe distinguir
+# entre "hay que rehacer el histórico" y "basta releer la última semana".
 
 # Nombres cortos para el check-in en línea de órdenes, para no escribir
 # `lower_discomfort=3` a las siete de la mañana. La clave de la derecha se
@@ -249,13 +250,19 @@ def synthetic_window(day: date, days: int) -> tuple[list[DayMetrics], list[Ride]
     return metrics, rides
 
 
-def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str]]:
-    """Histórico largo de salidas desde `data/cache/activities.json`."""
+def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str], Any]:
+    """Histórico largo de salidas desde `data/cache/activities.json`.
+
+    Devuelve también el objeto `CachedActivities` (o `None` con `--no-cache`)
+    porque es lo que necesita `ventana_de_salidas` para decidir cuánto pedirle
+    a Garmin: sin caché o con una caché corta hay que traer el histórico
+    entero, y con una sana basta la ventana de `cycling.fetch.lookback_days`.
+    """
     if not usar:
         return [], ["histórico largo desactivado (--no-cache)"], [
             "sin histórico largo, los umbrales adaptativos de carga no tienen "
             "base y `carga_acumulada` no se podrá evaluar"
-        ]
+        ], None
 
     from app.integrations.activity_cache import load_cached_rides
 
@@ -265,27 +272,29 @@ def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str]]:
             f"sin histórico largo de salidas ({cache.describe()}); los umbrales "
             f"adaptativos de carga se quedarán sin base y `carga_acumulada` no "
             f"se podrá evaluar"
-        ]
+        ], cache
     detalle = [f"histórico de carga: {cache.describe()}"]
     if cache.file_mtime:
         detalle.append(f"                    caché escrita el "
                        f"{cache.file_mtime:%Y-%m-%d %H:%M}")
-    return cache.rides, detalle, []
+    return cache.rides, detalle, [], cache
 
 
 def fetch_garmin(
     day: date, days: int, usar_cache: bool, cfg: Any = None
 ) -> tuple[list[DayMetrics], list[Ride], Procedencia]:
     """Datos reales del reloj, con el histórico largo desde la caché."""
-    from app.integrations.activity_cache import merge_rides
+    from app.integrations.activity_cache import merge_rides, ventana_de_salidas
     from app.integrations.garmin import GarminError, GarminRateLimited, build_client
 
-    cached, det_cache, avisos_cache = cargar_cache_salidas(usar_cache)
+    cached, det_cache, avisos_cache, cache = cargar_cache_salidas(usar_cache)
+    ride_days, motivo_ventana = ventana_de_salidas(cfg, day, cache)
+    det_cache = det_cache + [f"ventana de salidas: {motivo_ventana}"]
 
     try:
         client = build_client(settings)
         client.connect()
-        metrics, rides = client.window(day, days, ride_days=RIDE_HISTORY_DAYS)
+        metrics, rides = client.window(day, days, ride_days=ride_days)
     except GarminRateLimited as exc:
         raise SystemExit(
             f"\n{'!' * ANCHO}\n"
@@ -524,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.offline:
         metrics, rides = synthetic_window(day, args.days)
-        cached, det_cache, avisos_cache = cargar_cache_salidas(not args.no_cache)
+        cached, det_cache, avisos_cache, _cache = cargar_cache_salidas(not args.no_cache)
         if cached:
             from app.integrations.activity_cache import merge_rides
 

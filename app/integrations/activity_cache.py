@@ -172,6 +172,93 @@ def save_cache(path: Path | str, frescas: Sequence[dict[str, Any]]) -> int:
     return len(total)
 
 
+def dias_adaptativos(cfg: Any) -> int:
+    """El histórico más largo que le hace falta a algún umbral adaptativo.
+
+    Sale del config y no de una constante porque es lo que la caché existe
+    para alimentar: `load_3d_p90` y `load_7d_p90` son percentiles sobre una
+    ventana de `window_days`. Subir esa ventana en el YAML y dejar la caché
+    corta es la forma silenciosa de apagar las dos reglas que la usan.
+    """
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    ventanas = [
+        int(spec.get("window_days", 0))
+        for spec in (raw.get("adaptive_thresholds") or {}).values()
+        if isinstance(spec, dict)
+    ]
+    return max(ventanas, default=0)
+
+
+def ventana_de_salidas(
+    cfg: Any, day: date, cache: CachedActivities | None = None
+) -> tuple[int, str]:
+    """Cuántos días de salidas hay que pedirle a Garmin hoy, y por qué.
+
+    Esto estaba escrito `190` a pelo en dos sitios -`app/scheduler.py` y
+    `app/cli.py`- mientras `cycling.fetch` declaraba en el YAML otra cosa
+    distinta y nadie la leía:
+
+        fetch:
+          lookback_days: 10       # ventana que se re-lee cada mañana
+          backfill_days: 90       # solo en el primer arranque
+
+    Es la misma avería que `dias_de_wellness`: una opción que describe una
+    política que el código no aplica. Y aquí además costaba dinero todas las
+    noches. `save_cache` FUSIONA y no poda nunca, así que a partir del segundo
+    día esos 190 días eran una petición enorme a Garmin para añadir, como
+    mucho, la salida de ayer. Garmin limita por IP y un 429 en el trabajo de
+    madrugada deja al de las 06:30 sin histórico.
+
+    Se devuelven dos ventanas y el motivo de haber elegido una:
+
+    - `lookback_days` en el caso normal. Es corta a propósito pero no es 1: el
+      Edge sincroniza tarde y una salida se puede editar días después.
+    - `backfill_days` cuando la caché no puede sostener la ventana corta. Son
+      TRES situaciones distintas y las tres se nombran, porque un backfill
+      diario y silencioso es indistinguible de uno de primer arranque.
+
+    La tercera es la que no se veía venir: si el contenedor ha estado parado
+    tres semanas, la caché existe y es larga, pero entre lo último que tiene y
+    hoy hay un agujero que una ventana de 10 días no alcanza. Se mide con
+    `file_mtime` -cuándo se escribió la caché- y no con la fecha de la última
+    salida, que solo dice cuándo se salió en bici por última vez: quien no monta
+    en tres semanas dispararía un backfill cada mañana sin que falte nada.
+    """
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    fetch = ((raw.get("cycling") or {}).get("fetch") or {})
+    corta = int(fetch.get("lookback_days", 10))
+    larga = int(fetch.get("backfill_days", 90))
+
+    if cache is None or not cache.available:
+        motivo = cache.describe() if cache is not None else "sin caché en memoria"
+        return larga, f"{motivo}: se pide el histórico entero ({larga} días)"
+
+    # `load_cached_rides` no se queja de una caché corta -lo dice `save_cache`
+    # en su propio docstring-, así que una caché de 20 días dejaba `load_3d_p90`
+    # en None y las reglas que lo usan sin evaluar, sin un solo error.
+    necesarios = dias_adaptativos(cfg)
+    cubiertos = 0
+    if cache.first_day and cache.last_day:
+        cubiertos = (cache.last_day - cache.first_day).days + 1
+    if cubiertos < necesarios:
+        return larga, (
+            f"la caché cubre {cubiertos} días y los umbrales adaptativos "
+            f"necesitan {necesarios}: se rehace el histórico ({larga} días)"
+        )
+
+    if cache.file_mtime is not None:
+        # La ventana `[day - (corta-1), day]` alcanza `corta - 1` días atrás.
+        sin_refrescar = (day - cache.file_mtime.date()).days
+        if sin_refrescar >= corta:
+            return larga, (
+                f"la caché no se refresca desde hace {sin_refrescar} días y la "
+                f"ventana corta son {corta}: se rehace el histórico para no "
+                f"dejar un agujero"
+            )
+
+    return corta, f"caché de {cubiertos} días al día: solo se relee la ventana de {corta}"
+
+
 def refresh_cache(
     path: Path | str,
     day: date,

@@ -226,24 +226,70 @@ def test_reconciliar_pide_los_entrenamientos_una_sola_vez(en_memoria, cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_el_refresco_de_garmin_va_aparte_de_la_decision(tmp_path, monkeypatch, cfg):
-    """Garmin limita por IP. Si leer y decidir fueran el mismo trabajo, un 429
-    se llevaría por delante las dos cosas."""
-    import app.scheduler as mod
+def cache_sana(day, *, dias_cubiertos: int = 180):
+    """Una caché larga y refrescada hoy: el caso normal a partir del día dos."""
+    from app.engine.signals import Ride
+    from app.integrations.activity_cache import CachedActivities
 
-    visto = {}
+    primero = day - timedelta(days=dias_cubiertos - 1)
+    return CachedActivities(
+        rides=[Ride(date=primero, duration_s=3600), Ride(date=day, duration_s=3600)],
+        file_mtime=datetime.combine(day, datetime.min.time()),
+        total_activities=2,
+        first_day=primero,
+        last_day=day,
+    )
+
+
+def _espia_refresco(monkeypatch, cache=None):
+    """Sustituye `refresh_cache` y, si se pide, también la caché que se lee.
+
+    La caché se sustituye porque si no este test lee el
+    `data/cache/activities.json` REAL del usuario, y entonces la ventana que
+    sale depende de cuándo montó en bici por última vez.
+    """
+    visto: dict = {}
 
     def refresh(path, day, *, days, fetch):
         visto.update(path=path, day=day, days=days)
         return 7
 
-    monkeypatch.setattr(
-        "app.integrations.activity_cache.refresh_cache", refresh
-    )
+    monkeypatch.setattr("app.integrations.activity_cache.refresh_cache", refresh)
+    if cache is not None:
+        monkeypatch.setattr(
+            "app.integrations.activity_cache.load_cached_rides", lambda p: cache
+        )
+    return visto
+
+
+def test_el_refresco_de_garmin_va_aparte_de_la_decision(monkeypatch, cfg):
+    """Garmin limita por IP. Si leer y decidir fueran el mismo trabajo, un 429
+    se llevaría por delante las dos cosas."""
+    visto = _espia_refresco(monkeypatch, cache=cache_sana(LUNES))
     assert job_fetch_garmin(cfg, day=LUNES, fetch=None) == 7
     assert visto["day"] == LUNES
-    assert visto["days"] == mod.RIDE_HISTORY_DAYS
     assert visto["path"].name == "activities.json"
+
+
+def test_el_refresco_diario_usa_la_ventana_corta_del_yaml(monkeypatch, cfg):
+    """Aquí había un `RIDE_HISTORY_DAYS = 190` mientras `cycling.fetch`
+    declaraba 10, y como `save_cache` fusiona y no poda nunca, esos 190 días
+    se re-descargaban cada madrugada para añadir la salida de ayer. Con el
+    cupo de Garmin, eso no es una ineficiencia: es el 429 que deja al trabajo
+    de las 06:30 sin histórico."""
+    visto = _espia_refresco(monkeypatch, cache=cache_sana(LUNES))
+    job_fetch_garmin(cfg, day=LUNES, fetch=None)
+    assert visto["days"] == cfg.raw["cycling"]["fetch"]["lookback_days"]
+
+
+def test_sin_cache_el_refresco_se_trae_el_historico_entero(monkeypatch, cfg):
+    """El primer arranque, y también el día que la caché se pierda: si no,
+    los percentiles de carga se quedan sin base y nadie se entera."""
+    from app.integrations.activity_cache import CachedActivities
+
+    visto = _espia_refresco(monkeypatch, cache=CachedActivities(error="no existe"))
+    job_fetch_garmin(cfg, day=LUNES, fetch=None)
+    assert visto["days"] == cfg.raw["cycling"]["fetch"]["backfill_days"]
 
 
 # ---------------------------------------------------------------------------
@@ -450,3 +496,58 @@ def test_se_pide_un_dia_mas_que_la_ventana(cfg):
     from app.scheduler import dias_de_wellness
 
     assert dias_de_wellness(cfg) == int(cfg.raw["baseline"]["window_days"]) + 1
+
+
+def test_la_decision_lee_la_cache_antes_de_decidir_cuanto_pedir(monkeypatch, cfg):
+    """El orden importa. `_fetch_garmin` cargaba la caché DESPUÉS de llamar a
+    Garmin, así que la petición no podía tenerla en cuenta y siempre pedía el
+    histórico entero. Ahora la caché decide la ventana: con una sana basta la
+    corta, porque el resto ya está en disco y se fusiona después."""
+    import app.scheduler as mod
+
+    visto = {}
+
+    class ClienteFalso:
+        def connect(self):
+            pass
+
+        def window(self, day, days, *, ride_days):
+            visto.update(days=days, ride_days=ride_days)
+            return [], []
+
+    monkeypatch.setattr(
+        "app.integrations.activity_cache.load_cached_rides",
+        lambda p: cache_sana(LUNES),
+    )
+    monkeypatch.setattr(
+        "app.integrations.garmin.build_client", lambda s, c=None: ClienteFalso()
+    )
+    mod._fetch_garmin(cfg, LUNES)
+    assert visto["ride_days"] == cfg.raw["cycling"]["fetch"]["lookback_days"]
+
+
+def test_sin_cache_la_decision_se_trae_el_historico_entero(monkeypatch, cfg):
+    """Aquí la petición es la ÚNICA fuente: si se queda corta, los percentiles
+    de carga no tienen base y las reglas que los usan no se evalúan."""
+    import app.scheduler as mod
+    from app.integrations.activity_cache import CachedActivities
+
+    visto = {}
+
+    class ClienteFalso:
+        def connect(self):
+            pass
+
+        def window(self, day, days, *, ride_days):
+            visto.update(ride_days=ride_days)
+            return [], []
+
+    monkeypatch.setattr(
+        "app.integrations.activity_cache.load_cached_rides",
+        lambda p: CachedActivities(error="no existe"),
+    )
+    monkeypatch.setattr(
+        "app.integrations.garmin.build_client", lambda s, c=None: ClienteFalso()
+    )
+    mod._fetch_garmin(cfg, LUNES)
+    assert visto["ride_days"] == cfg.raw["cycling"]["fetch"]["backfill_days"]

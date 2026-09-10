@@ -51,7 +51,10 @@ log = logging.getLogger(__name__)
 # caiga en el segundo exacto se salta el trabajo del día.
 MARGEN_S = 3600
 
-RIDE_HISTORY_DAYS = 190
+# El histórico de salidas ya NO se pide con una constante: sale de
+# `cycling.fetch` a través de `ventana_de_salidas`, que elige entre la ventana
+# corta de cada mañana y el backfill según lo que la caché pueda sostener.
+# Aquí había un `RIDE_HISTORY_DAYS = 190` que contradecía al YAML.
 
 
 def _hora(cfg: Any, clave: str, defecto: str) -> tuple[int, int]:
@@ -161,17 +164,24 @@ def job_fetch_garmin(
     Se hace de madrugada y aparte de la decisión a propósito: Garmin limita por
     IP, y si la lectura y la decisión fueran el mismo trabajo un 429 se llevaría
     por delante las dos cosas.
+
+    Por eso mismo la ventana la decide `ventana_de_salidas` y no una constante:
+    pedir 190 días cada noche para añadir la salida de ayer es gastar el cupo
+    de peticiones en datos que ya están en disco.
     """
-    from app.integrations.activity_cache import refresh_cache
+    from app.integrations.activity_cache import (
+        load_cached_rides, refresh_cache, ventana_de_salidas,
+    )
     from app.settings import REPO_ROOT
 
     day = day or date.today()
-    return refresh_cache(
-        REPO_ROOT / "data" / "cache" / "activities.json",
-        day,
-        days=RIDE_HISTORY_DAYS,
-        fetch=fetch,
-    )
+    ruta = REPO_ROOT / "data" / "cache" / "activities.json"
+    dias, motivo = ventana_de_salidas(cfg, day, load_cached_rides(ruta))
+    # El motivo se registra siempre. Un backfill que se repite cada madrugada
+    # es un síntoma -la caché no se está escribiendo- y sin esta línea el único
+    # rastro sería la factura de peticiones a Garmin.
+    log.info("caché de salidas: %s", motivo)
+    return refresh_cache(ruta, day, days=dias, fetch=fetch)
 
 
 def dias_de_wellness(cfg: Any) -> int:
@@ -191,9 +201,10 @@ def dias_de_wellness(cfg: Any) -> int:
     entraban solo `window_days - 1`. Con el config actual, 8 en vez de 7.
 
     El histórico largo -el que necesitan `load_3d_p90` y `load_7d_p90`- NO sale
-    de aquí: son salidas, vienen en una sola llamada por rango y se piden con
-    `RIDE_HISTORY_DAYS`. El wellness se consulta día a día y cada día son
-    varias peticiones, así que este número se mantiene pequeño a propósito.
+    de aquí: son salidas, vienen en una sola llamada por rango y las gobierna
+    `ventana_de_salidas` con `cycling.fetch`. El wellness se consulta día a día
+    y cada día son varias peticiones, así que este número se mantiene pequeño a
+    propósito.
     """
     raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
     return int((raw.get("baseline") or {}).get("window_days", 7)) + 1
@@ -201,17 +212,27 @@ def dias_de_wellness(cfg: Any) -> int:
 
 def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
     """Lectura real de Garmin. Aislada para poder inyectar otra en los tests."""
-    from app.integrations.activity_cache import load_cached_rides, merge_rides
+    from app.integrations.activity_cache import (
+        load_cached_rides, merge_rides, ventana_de_salidas,
+    )
     from app.integrations.garmin import build_client
     from app.settings import REPO_ROOT, settings
+
+    # La caché se lee ANTES de llamar a Garmin, no después. Es la que decide
+    # cuánto hay que pedir: con una caché sana basta la ventana corta, porque
+    # el resto del histórico ya está en disco y se fusiona abajo. Si la caché
+    # no está o no llega, esta petición es la única fuente y tiene que traer
+    # el histórico entero o los umbrales adaptativos se quedan sin base.
+    cache = load_cached_rides(REPO_ROOT / "data" / "cache" / "activities.json")
+    ride_days, motivo = ventana_de_salidas(cfg, day, cache)
+    log.info("caché de salidas: %s", motivo)
 
     client = build_client(settings, cfg)
     client.connect()
     metrics, rides = client.window(
-        day, dias_de_wellness(cfg), ride_days=RIDE_HISTORY_DAYS
+        day, dias_de_wellness(cfg), ride_days=ride_days
     )
 
-    cache = load_cached_rides(REPO_ROOT / "data" / "cache" / "activities.json")
     return metrics, merge_rides(cache.rides if cache.available else [], rides)
 
 

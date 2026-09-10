@@ -476,6 +476,48 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"adaptive_thresholds.{name}: min_days_required no puede superar window_days",
         )
 
+    # --- la ventana de salidas que alimenta esos umbrales --------------------
+    #
+    # `cycling.fetch` estuvo declarado sin que lo leyera nadie mientras el
+    # código pedía 190 días a pelo desde dos sitios. Ya está conectado
+    # (`activity_cache.ventana_de_salidas`), y conectarlo obliga a comprobar
+    # esto: el backfill es lo único que llena la caché sobre la que se calculan
+    # los percentiles, así que un backfill más corto que la ventana del
+    # percentil apaga `carga_acumulada` y `carga_semanal` PARA SIEMPRE y sin un
+    # solo error. La regla no dispara, no falla, y el mensaje de la mañana sale
+    # igual de bonito con una señal menos.
+    fetch = ((data.get("cycling") or {}).get("fetch") or {})
+    if fetch:
+        for clave in ("lookback_days", "backfill_days"):
+            v = fetch.get(clave)
+            require(
+                v is None or (isinstance(v, int) and v >= 1),
+                f"cycling.fetch.{clave}: '{v}' debe ser un entero >= 1",
+            )
+        corta = fetch.get("lookback_days")
+        larga = fetch.get("backfill_days")
+        if isinstance(corta, int) and isinstance(larga, int):
+            require(
+                corta <= larga,
+                f"cycling.fetch: lookback_days ({corta}) no puede ser mayor que "
+                f"backfill_days ({larga}). La corta es la relectura de cada "
+                f"mañana y la larga el histórico completo; al revés los nombres "
+                f"mienten y el 'backfill' dejaría huecos",
+            )
+        necesarios = max(
+            (int(s.get("window_days", 0)) for s in adaptive.values() if isinstance(s, dict)),
+            default=0,
+        )
+        if isinstance(larga, int) and necesarios:
+            require(
+                larga >= necesarios,
+                f"cycling.fetch.backfill_days ({larga}) es menor que la ventana "
+                f"más larga de adaptive_thresholds ({necesarios} días). La caché "
+                f"de salidas nunca llegaría a cubrirla, así que los percentiles "
+                f"de carga se quedarían sin base y las reglas que los usan no se "
+                f"evaluarían ningún día, sin dar error",
+            )
+
     # --- operadores: el nombre y, si lo lleva, aquello a lo que apunta -------
     #
     # Un operador mal escrito dentro de una regla del semáforo no daba error de
@@ -1101,6 +1143,11 @@ def _validate(data: dict[str, Any]) -> list[str]:
     )
 
     notif = data.get("notifications") or {}
+    # Una errata aquí -`lookback_dias`- dejaría la ventana en su valor por
+    # defecto y el YAML seguiría diciendo otra cosa, que es exactamente la
+    # avería que acaba de cerrarse en esta sección.
+    check_keys(fetch, {"lookback_days", "backfill_days"}, "cycling.fetch")
+
     check_keys(notif, {"telegram"}, "notifications")
     check_keys(
         notif.get("telegram") or {},
