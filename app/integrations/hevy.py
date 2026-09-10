@@ -350,6 +350,60 @@ def save_backup(root: Path | str, routine_id: str, remote: dict[str, Any]) -> Ba
     return Backup(path=destino, routine_id=routine_id, taken_at=ahora, payload=remote)
 
 
+def prune_backups(root: Path | str, routine_id: str, keep_last: int) -> list[Path]:
+    """Deja solo las `keep_last` copias más recientes. Devuelve las borradas.
+
+    `integrations.hevy.backup.keep_last` llevaba escrito `30` desde el principio
+    y no lo leía nadie. Se escribe una copia por escritura y se escribe una vez
+    al día, así que la carpeta crecía sin techo: en Umbrel eso es un disco que se
+    llena despacio, que es la forma de quedarse sin disco que menos se ve venir.
+    Y cuando se llena, lo primero que falla es `save_backup`... que es justo lo
+    que impide escribir en Hevy sin copia. El límite no es cosmético.
+
+    Se borra POR FECHA DE NOMBRE y nunca la última: los nombres son
+    `AAAAMMDD-HHMMSS.json`, así que ordenar alfabéticamente ya es ordenar por
+    fecha. Y se llama DESPUÉS de haber guardado y verificado la copia nueva,
+    nunca antes: el orden es lo único que garantiza que no hay un instante sin
+    copia buena.
+
+    Un fallo al borrar NO interrumpe nada. Una copia vieja que se queda es un
+    problema de disco; abortar la escritura por eso sería convertir un problema
+    de limpieza en un día sin entrenamiento. Pero se avisa: quedarse sin borrar
+    en silencio es cómo se llega al disco lleno.
+    """
+    if keep_last < 1:
+        # No es un límite: es la orden de quedarse sin ninguna copia. Se ignora
+        # porque el módulo entero existe para que siempre haya una.
+        log.warning(
+            "keep_last=%d no tiene sentido (dejaría cero copias); no se borra nada",
+            keep_last,
+        )
+        return []
+
+    carpeta = backup_dir(root, routine_id)
+    if not carpeta.is_dir():
+        return []
+
+    ficheros = sorted(carpeta.glob("*.json"))
+    sobrantes = ficheros[:-keep_last] if len(ficheros) > keep_last else []
+
+    borradas: list[Path] = []
+    for f in sobrantes:
+        try:
+            f.unlink()
+        except OSError as exc:
+            log.warning("no se pudo borrar la copia vieja %s: %s", f, exc)
+        else:
+            borradas.append(f)
+
+    if borradas:
+        log.info(
+            "copias de %s: %d borradas, se conservan las %d últimas",
+            routine_id, len(borradas), keep_last,
+        )
+    return borradas
+
+
 def latest_backup(root: Path | str, routine_id: str) -> Backup | None:
     """La copia más reciente de una rutina, o None si no hay ninguna."""
     carpeta = backup_dir(root, routine_id)
@@ -361,13 +415,21 @@ def latest_backup(root: Path | str, routine_id: str) -> Backup | None:
     ultimo = ficheros[-1]
     try:
         datos = json.loads(ultimo.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        # `taken_at` se leía sin red. Un JSON válido al que le falte el campo
+        # -uno de una versión anterior, o escrito a medias- no es un fichero
+        # corrupto, así que no lo cazaba el `except` de arriba: reventaba con un
+        # KeyError. Y esto se llama desde `restore`, o sea en el peor momento
+        # posible. Ahora da el mismo resultado que cualquier otra copia
+        # inservible: no la hay, y quien llame se enterará por «no hay ninguna
+        # copia» en vez de por una traza.
+        tomada = datetime.fromisoformat(datos["taken_at"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         log.error("copia ilegible %s: %s", ultimo, exc)
         return None
     return Backup(
         path=ultimo,
         routine_id=routine_id,
-        taken_at=datetime.fromisoformat(datos["taken_at"]),
+        taken_at=tomada,
         payload=datos.get("routine") or {},
     )
 
@@ -415,6 +477,10 @@ class HevyClient:
     base_url: str = "https://api.hevyapp.com"
     data_root: Path = Path("data")
     write_enabled: bool = False  # apagado por defecto, a propósito
+    # None = conservarlas todas, que es lo que se hacía antes de que esto se
+    # leyera. El defecto de un ajuste ausente tiene que ser el comportamiento
+    # anterior; borrar por iniciativa propia sería lo contrario.
+    backup_keep_last: int | None = None
 
     def _headers(self) -> dict[str, str]:
         return {"api-key": self.api_key, "Content-Type": "application/json"}
@@ -533,6 +599,9 @@ class HevyClient:
         # 2. Estado remoto actual + copia verificada. Sin esto no se sigue.
         remoto = self.get_routine(routine_id)
         copia = save_backup(self.data_root, routine_id, remoto)
+        # Después de guardar y verificar la nueva, nunca antes.
+        if self.backup_keep_last is not None:
+            prune_backups(self.data_root, routine_id, self.backup_keep_last)
         diff = payload_diff(remoto, payload)
 
         if dry_run:
@@ -664,4 +733,8 @@ def build_client(settings: Any, config: Any = None) -> HevyClient:
         if "///" in str(settings.database_url)
         else Path("data"),
         write_enabled=bool(hevy_cfg.get("write_enabled", False)),
+        backup_keep_last=(
+            int(guardar) if (guardar := (hevy_cfg.get("backup") or {}).get("keep_last"))
+            is not None else None
+        ),
     )

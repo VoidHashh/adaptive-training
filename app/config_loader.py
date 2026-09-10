@@ -208,17 +208,71 @@ def _validate(data: dict[str, Any]) -> list[str]:
         variant in cal.get("variants", {}),
         f"calendar.active_variant '{variant}' no existe en calendar.variants",
     )
+    # Aquí un descuido no se nota NUNCA, y por eso se mira tan de cerca. El
+    # constructor de sesiones lee `strength` y, si no hay, cae a `rest` por
+    # defecto (`session_builder.build_session`). O sea que un `strenght: dia_1`
+    # mal escrito, o un lunes que se quedó sin escribir, no dan error ni salen en
+    # ningún log: el lunes pasa a ser descanso, el mensaje de las nueve anuncia
+    # descanso con toda la seguridad del mundo, y el día de fuerza desaparece del
+    # programa sin que nadie pueda relacionarlo con el archivo.
+    DIA_CLAVES = {"strength", "rest", "pool", "bike"}
+    BANDERAS = ("rest", "pool", "bike")
     for vname, vdata in cal.get("variants", {}).items():
         for day, plan in vdata.items():
             if day == "description":
                 continue
             require(day in WEEKDAYS, f"calendar.variants.{vname}: '{day}' no es un día válido")
-            key = (plan or {}).get("strength")
+            plan = plan or {}
+            sobran = set(plan) - DIA_CLAVES
+            require(
+                not sobran,
+                f"calendar.variants.{vname}.{day}: {sorted(sobran)} no se lee(n). "
+                f"Solo existen {sorted(DIA_CLAVES)}. Un día con una clave mal "
+                f"escrita se convierte en descanso sin avisar.",
+            )
+
+            key = plan.get("strength")
             if key is not None:
                 require(
                     key in routines,
                     f"calendar.variants.{vname}.{day}: la rutina '{key}' no existe",
                 )
+
+            # `pool: false` y no escribir `pool` acaban en el mismo sitio, así
+            # que la primera forma solo sirve para hacer creer que dice algo.
+            for bandera in BANDERAS:
+                if bandera in plan:
+                    require(
+                        plan[bandera] is True,
+                        f"calendar.variants.{vname}.{day}.{bandera} vale "
+                        f"{plan[bandera]!r}. Solo se entiende `true`: quitar la "
+                        f"clave y ponerla a false son lo mismo para el código.",
+                    )
+
+            # Un día es una cosa y solo una. `{strength: dia_1, pool: true}` es
+            # media verdad: gana la fuerza y la piscina no llega a leerse.
+            puestas = [b for b in BANDERAS if plan.get(b)] + (
+                ["strength"] if key is not None else []
+            )
+            require(
+                len(puestas) == 1,
+                f"calendar.variants.{vname}.{day} declara {sorted(puestas)} y "
+                f"tiene que declarar exactamente una cosa. "
+                + (
+                    "Un día vacío se lee como descanso, pero entonces conviene "
+                    "escribir `rest: true` y que se vea."
+                    if not puestas
+                    else "Solo se aplica una y las demás se descartan en silencio."
+                ),
+            )
+
+        faltan = set(WEEKDAYS) - set(vdata)
+        require(
+            not faltan,
+            f"calendar.variants.{vname} no dice qué toca el/los "
+            f"{sorted(faltan)}. Un día que no está se lee como descanso, que es "
+            f"justo lo que no se distingue de un olvido.",
+        )
 
     # --- reglas del semáforo ------------------------------------------------
     seen_names: set[str] = set()
@@ -864,11 +918,25 @@ def _validate(data: dict[str, Any]) -> list[str]:
         {"write_enabled", "backup"},
         "integrations.hevy",
     )
-    check_keys(
-        (integ.get("hevy") or {}).get("backup") or {},
-        {"enabled", "keep_last"},
-        "integrations.hevy.backup",
-    )
+    # `enabled` NO está en la lista a propósito. Que se hagan copias no es
+    # opcional -sin copia verificada no se escribe, y eso vive en el código-, así
+    # que aceptar un `enabled: false` que nadie mira sería prometer un apagado
+    # que no existe. Se rechaza para que quien lo escriba se entere al arrancar.
+    respaldo = (integ.get("hevy") or {}).get("backup") or {}
+    check_keys(respaldo, {"keep_last"}, "integrations.hevy.backup")
+    # No escribir `keep_last` significa conservarlas todas, que es lo que se
+    # hacía antes de que esto se leyera. Escribirlo VACÍO acaba en el mismo
+    # sitio, así que sirve solo para aparentar que dice un número. O se pone un
+    # número o no se pone la clave.
+    if "keep_last" in respaldo:
+        guardar = respaldo["keep_last"]
+        require(
+            isinstance(guardar, int) and not isinstance(guardar, bool) and guardar >= 1,
+            f"integrations.hevy.backup.keep_last vale {guardar!r} y tiene que ser "
+            f"un entero >= 1 (o no estar, y entonces se guardan todas). Con 0 no "
+            f"quedaría ninguna copia, y la copia es lo único que permite deshacer "
+            f"una escritura en Hevy.",
+        )
     check_keys(
         integ.get("telegram") or {}, {"send_enabled"}, "integrations.telegram"
     )

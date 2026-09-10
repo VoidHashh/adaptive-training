@@ -484,3 +484,119 @@ def test_una_seccion_entera_que_no_lee_nadie_no_arranca(cfg_copia):
 def test_una_integracion_que_no_existe_no_arranca(cfg_copia):
     cfg_copia.raw["integrations"]["strava"] = {"write_enabled": True}
     assert "strava" in errores(cfg_copia.raw)
+
+
+def test_no_se_puede_pedir_quedarse_sin_ninguna_copia(cfg_copia):
+    """La copia es lo único que permite deshacer una escritura en Hevy."""
+    cfg_copia.raw["integrations"]["hevy"]["backup"]["keep_last"] = 0
+    assert "keep_last" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("valor", [-1, "treinta", 30.5, True, None])
+def test_un_keep_last_que_no_es_un_entero_util_no_arranca(cfg_copia, valor):
+    """`True` está en la lista a propósito: en Python es un `int` que vale 1,
+    así que `keep_last: yes` habría pasado por «guarda una copia» sin que nadie
+    lo escribiera con esa intención.
+
+    Y `None` también: es lo que deja YAML al escribir `keep_last:` y no poner
+    nada detrás. Acaba donde acaba no escribir la clave -se guardan todas-, o
+    sea que solo sirve para aparentar que dice un número.
+    """
+    cfg_copia.raw["integrations"]["hevy"]["backup"]["keep_last"] = valor
+    assert "keep_last" in errores(cfg_copia.raw)
+
+
+def test_no_poner_el_limite_es_valido_y_significa_guardarlas_todas(cfg_copia):
+    del cfg_copia.raw["integrations"]["hevy"]["backup"]["keep_last"]
+    assert _validate(cfg_copia.raw) == []
+
+
+def test_las_copias_no_se_pueden_apagar(cfg_copia):
+    """`backup.enabled` no existe y no puede existir: sin copia verificada no se
+    escribe, y eso vive en el código. Aceptar la clave sería prometer un apagado
+    que no hay."""
+    cfg_copia.raw["integrations"]["hevy"]["backup"]["enabled"] = False
+    assert "enabled" in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# El calendario
+#
+# El peor sitio del archivo para un descuido, porque el constructor de sesiones
+# cae a `rest` cuando no encuentra `strength`. Todo lo que sale mal aquí sale mal
+# hacia el mismo lado: el día de fuerza se convierte en descanso, el mensaje de
+# las nueve anuncia descanso, y no hay error, ni log, ni forma de sospecharlo.
+# ---------------------------------------------------------------------------
+
+
+def _lunes(cfg_copia) -> dict:
+    return cfg_copia.raw["calendar"]["variants"]["with_pool"]
+
+
+def test_un_dia_mal_escrito_no_arranca(cfg_copia):
+    """`strenght` en vez de `strength`: el lunes pasaría a ser descanso."""
+    _lunes(cfg_copia)["monday"] = {"strenght": "dia_1"}
+    err = errores(cfg_copia.raw)
+    assert "strenght" in err
+    assert "monday" in err
+
+
+def test_un_dia_que_falta_no_arranca(cfg_copia):
+    """Olvidar un día y declararlo descanso acaban igual, y no son lo mismo."""
+    del _lunes(cfg_copia)["monday"]
+    err = errores(cfg_copia.raw)
+    assert "monday" in err
+
+
+def test_un_dia_de_mas_no_arranca(cfg_copia):
+    """Lo encontró la mutación. Con los siete días en su sitio, un octavo
+    inventado no lo veía nadie: la comprobación de días que FALTAN no dice nada
+    de los que SOBRAN, y el bloque se quedaba ahí escrito sin hacer nada.
+
+    Es el caso de quien añade `holiday:` esperando que signifique algo.
+    """
+    _lunes(cfg_copia)["holiday"] = {"rest": True}
+    assert "holiday" in errores(cfg_copia.raw)
+
+
+def test_un_dia_vacio_no_arranca(cfg_copia):
+    """Que un descanso haya que escribirlo es el precio de poder distinguirlo
+    de un día a medio escribir."""
+    _lunes(cfg_copia)["monday"] = {}
+    assert "monday" in errores(cfg_copia.raw)
+
+
+def test_un_dia_con_dos_cosas_no_arranca(cfg_copia):
+    """Gana la fuerza y la piscina no llega a leerse nunca."""
+    _lunes(cfg_copia)["monday"] = {"strength": "dia_1", "pool": True}
+    err = errores(cfg_copia.raw)
+    assert "monday" in err
+    assert "pool" in err and "strength" in err
+
+
+def test_dos_banderas_a_la_vez_tampoco(cfg_copia):
+    _lunes(cfg_copia)["wednesday"] = {"pool": True, "bike": True}
+    assert "wednesday" in errores(cfg_copia.raw)
+
+
+def test_una_bandera_en_false_no_arranca(cfg_copia):
+    """`pool: false` y no escribir `pool` son indistinguibles para el código,
+    así que escribirlo solo sirve para aparentar que dice algo."""
+    _lunes(cfg_copia)["wednesday"] = {"pool": False, "rest": True}
+    err = errores(cfg_copia.raw)
+    assert "pool" in err
+    assert "false" in err.lower()
+
+
+def test_una_rutina_que_no_existe_sigue_sin_arrancar(cfg_copia):
+    """Ya estaba comprobado; se deja escrito para que las claves nuevas de
+    arriba no puedan cargárselo sin que nadie se entere."""
+    _lunes(cfg_copia)["monday"] = {"strength": "dia_4"}
+    assert "dia_4" in errores(cfg_copia.raw)
+
+
+def test_una_variante_que_no_se_usa_tambien_se_valida(cfg_copia):
+    """`summer` no está activa hoy, y ese es justo el problema: el día que se
+    cambie `active_variant` no hay ninguna otra oportunidad de revisarla."""
+    cfg_copia.raw["calendar"]["variants"]["summer"]["friday"] = {"strength": "dia_9"}
+    assert "dia_9" in errores(cfg_copia.raw)

@@ -13,6 +13,7 @@ camino feliz funcione, sino sobre todo que los frenos muerdan:
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -272,6 +273,30 @@ def test_una_copia_ilegible_no_revienta_la_lectura(tmp_path):
     assert latest_backup(tmp_path, "r1") is None
 
 
+@pytest.mark.parametrize("contenido", [
+    {"routine": {}},                              # sin `taken_at`
+    {"taken_at": None, "routine": {}},            # con `taken_at` vacío
+    {"taken_at": "ayer por la tarde", "routine": {}},
+])
+def test_una_copia_sin_fecha_utilizable_tampoco_revienta(tmp_path, contenido):
+    """Un JSON válido al que le falta un campo no es un fichero corrupto, así
+    que no lo cazaba el `except` de arriba: salía un KeyError pelado. Y esto se
+    lee desde `restore`, o sea el peor momento posible para una traza.
+
+    Ahora acaba donde acaban las demás copias inservibles: no la hay. Quien
+    llame se encontrará con «no hay ninguna copia», que es una frase.
+    """
+    save_backup(tmp_path, "r1", REMOTO)
+    fichero = next((tmp_path / "hevy_backups" / "r1").glob("*.json"))
+    fichero.write_text(json.dumps(contenido), encoding="utf-8")
+
+    assert latest_backup(tmp_path, "r1") is None
+
+    c, _ = cliente(tmp_path, [])
+    with pytest.raises(HevyError, match="no hay ninguna copia"):
+        c.restore("r1")
+
+
 # ---------------------------------------------------------------------------
 # Marca de escritura en curso
 # ---------------------------------------------------------------------------
@@ -431,3 +456,141 @@ def test_build_client_apagado_por_defecto_si_falta_la_seccion():
 def test_build_client_exige_la_clave_en_el_env():
     with pytest.raises(HevyError, match="HEVY_API_KEY"):
         hevy.build_client(SettingsFalsos(hevy_api_key=""), {})
+
+
+def test_build_client_lee_cuantas_copias_se_guardan(cfg):
+    c = hevy.build_client(SettingsFalsos(), cfg)
+    assert c.backup_keep_last == cfg.raw["integrations"]["hevy"]["backup"]["keep_last"]
+
+
+def test_sin_la_seccion_se_guardan_todas_como_siempre():
+    """El defecto de un ajuste ausente tiene que ser lo que se hacía antes.
+    Ponerse a borrar por iniciativa propia es justo lo contrario."""
+    assert hevy.build_client(SettingsFalsos(), {}).backup_keep_last is None
+
+
+# ---------------------------------------------------------------------------
+# Cuántas copias se conservan
+#
+# `keep_last: 30` estaba escrito en el YAML desde el principio y no lo leía
+# nadie. Una copia por escritura y una escritura al día: la carpeta crecía sin
+# techo. Un disco que se llena despacio es la forma de quedarse sin disco que
+# menos se ve venir, y lo primero que falla al llenarse es `save_backup`, que es
+# exactamente lo que impide escribir en Hevy sin copia.
+# ---------------------------------------------------------------------------
+
+
+def _copias(tmp_path, cuantas: int, routine_id: str = "r1") -> list[Path]:
+    """Copias con fecha distinta. `save_backup` las nombra por segundo, así que
+    dos seguidas en el mismo segundo se pisarían y no habría nada que podar."""
+    carpeta = tmp_path / "hevy_backups" / routine_id
+    carpeta.mkdir(parents=True, exist_ok=True)
+    hechas = []
+    for i in range(cuantas):
+        f = carpeta / f"2026090{i}-120000.json"
+        f.write_text(json.dumps({
+            "routine_id": routine_id,
+            "taken_at": f"2026-09-0{i}T12:00:00",
+            "routine": {**REMOTO, "title": f"copia {i}"},
+        }), encoding="utf-8")
+        hechas.append(f)
+    return hechas
+
+
+def test_se_borran_las_mas_viejas_y_se_quedan_las_ultimas(tmp_path):
+    hechas = _copias(tmp_path, 5)
+
+    borradas = hevy.prune_backups(tmp_path, "r1", keep_last=3)
+
+    assert borradas == hechas[:2]
+    quedan = sorted((tmp_path / "hevy_backups" / "r1").glob("*.json"))
+    assert quedan == hechas[2:]
+
+
+def test_se_conserva_siempre_la_mas_reciente(tmp_path):
+    """Lo único innegociable: después de podar tiene que poder revertirse."""
+    _copias(tmp_path, 5)
+
+    hevy.prune_backups(tmp_path, "r1", keep_last=1)
+
+    ultima = latest_backup(tmp_path, "r1")
+    assert ultima is not None
+    assert ultima.path.name == "20260904-120000.json"
+
+
+def test_con_menos_copias_que_el_limite_no_se_borra_nada(tmp_path):
+    hechas = _copias(tmp_path, 3)
+    assert hevy.prune_backups(tmp_path, "r1", keep_last=30) == []
+    assert all(f.is_file() for f in hechas)
+
+
+def test_un_limite_de_cero_no_se_obedece(tmp_path, caplog):
+    """`keep_last: 0` no es un límite, es la orden de quedarse sin ninguna
+    copia. El validador ya lo rechaza; aquí se comprueba que aunque llegara
+    -por código, no por YAML- este módulo no se deja.
+
+    Se exige además el AVISO, y no por gusto: `ficheros[:-0]` es la lista vacía,
+    así que con un cero no se borraría nada aunque no hubiera guardia ninguna. Es
+    decir, que lo correcto pasaría por accidente. Comprobar solo los ficheros
+    daba por buena una versión sin la guardia, que es la que un día se encuentra
+    con un -1 y sí borra.
+    """
+    hechas = _copias(tmp_path, 3)
+
+    with caplog.at_level(logging.WARNING, logger="app.integrations.hevy"):
+        assert hevy.prune_backups(tmp_path, "r1", keep_last=0) == []
+
+    assert all(f.is_file() for f in hechas)
+    assert "keep_last=0" in caplog.text
+
+
+def test_un_limite_negativo_tampoco(tmp_path):
+    hechas = _copias(tmp_path, 3)
+    assert hevy.prune_backups(tmp_path, "r1", keep_last=-1) == []
+    assert all(f.is_file() for f in hechas)
+
+
+def test_sin_carpeta_no_revienta(tmp_path):
+    assert hevy.prune_backups(tmp_path, "nunca_escrita", keep_last=5) == []
+
+
+def test_una_copia_que_no_se_deja_borrar_no_interrumpe_nada(tmp_path, monkeypatch):
+    """Una copia vieja que se queda es un problema de disco. Abortar por eso
+    convertiría un problema de limpieza en un día sin entrenamiento."""
+    _copias(tmp_path, 4)
+
+    def no_se_puede(self):  # noqa: ANN001
+        raise OSError("en uso")
+
+    monkeypatch.setattr(Path, "unlink", no_se_puede)
+    assert hevy.prune_backups(tmp_path, "r1", keep_last=1) == []
+
+
+def test_se_poda_DESPUES_de_guardar_la_copia_nueva(tmp_path):
+    """El orden es lo único que garantiza que no hay un instante sin copia
+    buena. Con `keep_last=1` y una escritura, la que sobrevive tiene que ser la
+    que se acaba de tomar, no una de las viejas."""
+    _copias(tmp_path, 3)
+    c, _ = cliente(tmp_path, [FakeResponse(200, REMOTO), FakeResponse(200, {})],
+                   write_enabled=True)
+    c.backup_keep_last = 1
+
+    r = c.write_routine("r1", {"routine": {"exercises": []}})
+
+    assert r.written
+    quedan = sorted((tmp_path / "hevy_backups" / "r1").glob("*.json"))
+    assert len(quedan) == 1
+    assert json.loads(quedan[0].read_text(encoding="utf-8"))["routine"] == REMOTO
+
+
+def test_sin_limite_las_copias_se_acumulan(tmp_path):
+    """El comportamiento de siempre, escrito para que no se pierda por
+    descuido al tocar la poda."""
+    _copias(tmp_path, 3)
+    c, _ = cliente(tmp_path, [FakeResponse(200, REMOTO), FakeResponse(200, {})],
+                   write_enabled=True)
+    assert c.backup_keep_last is None
+
+    c.write_routine("r1", {"routine": {"exercises": []}})
+
+    assert len(list((tmp_path / "hevy_backups" / "r1").glob("*.json"))) == 4
