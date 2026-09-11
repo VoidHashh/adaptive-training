@@ -104,6 +104,23 @@ class Resultado:
             "descartados": self.descartados,
             "desde": self.desde.isoformat() if self.desde else None,
             "hasta": self.hasta.isoformat() if self.hasta else None,
+            # Las dos claves de la corrección por comparaciones múltiples viajan
+            # SIEMPRE, y a `None` cuando no se ha corregido. `None` aquí no es
+            # "no se pudo": es "sobre esta vista no se pasó ninguna corrección",
+            # que es un hecho de la vista y no del número.
+            #
+            # Van aunque no se usen porque la alternativa es peor. La PWA dibuja
+            # la barra hueca con `c.significativa !== false`, y sin la clave eso
+            # es leer algo que no viene: `undefined !== false` da `true` y la
+            # barra sale sólida. Funciona, pero por accidente -nadie lo decidió-
+            # y el día que alguien invierta la comprobación, la vista entera
+            # cambia de significado sin un solo error. Quien lea esto tiene que
+            # poder distinguir "no aguanta la corrección" de "aquí no hay
+            # corrección que aguantar".
+            #
+            # `impacto._corregir` las sobrescribe con los valores de verdad.
+            "p_corregida": None,
+            "significativa": None,
         }
 
 

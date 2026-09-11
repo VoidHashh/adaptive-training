@@ -1319,16 +1319,33 @@ def _medias_componentes(filas: list[SessionPerformance]) -> dict[str, Any]:
     sostiene el cumplimiento mientras la progresión lleva meses plana, que es
     una lectura distinta y que lleva a hacer cosas distintas.
     """
+    # La etiqueta viaja al lado del número, y no se deja que la escriba la PWA.
+    # Sin ella, el móvil solo tiene la clave -`progresion`, `corazon`- y las
+    # pinta tal cual: en pantalla quedan seis palabras sin tilde con pinta de
+    # nombre de variable, justo en la vista que existe para leerse de un vistazo
+    # una mañana mala. La alternativa sería un diccionario de nombres escrito a
+    # mano en JavaScript, que es otra copia de esta lista y se quedaría vieja el
+    # día que se añada una pieza.
+    #
+    # Y la etiqueta dice qué MIDE cada pieza, no cómo se llama la columna:
+    # "corazón" no significa nada suelto, "el corazón, frente a tus salidas de
+    # siempre" sí.
+    # La corta es para la tira de una sola línea de cada sesión, donde no caben
+    # seis frases. Van las dos y no se recorta la larga en el móvil: cortar
+    # "Corazón, frente a tus salidas de siempre" por el ancho da "Corazón,
+    # frente a tus…", que promete una comparación sin decir contra qué.
     columnas = {
-        "cumplimiento": "comp_compliance",
-        "progresion": "comp_progression",
-        "esfuerzo": "comp_rpe",
-        "corazon": "comp_bike_hr",
-        "velocidad": "comp_bike_speed",
-        "desnivel": "comp_bike_elevation",
+        "cumplimiento": ("comp_compliance", "Cumplimiento de lo prescrito", "cumplimiento"),
+        "progresion": ("comp_progression", "Progresión de la carga", "progresión"),
+        "esfuerzo": ("comp_rpe", "Esfuerzo percibido frente al volumen", "esfuerzo"),
+        "corazon": ("comp_bike_hr", "Corazón, frente a tus salidas de siempre", "corazón"),
+        "velocidad": (
+            "comp_bike_speed", "Velocidad, frente a tus salidas de siempre", "velocidad"
+        ),
+        "desnivel": ("comp_bike_elevation", "Desnivel de la salida", "desnivel"),
     }
     salida: dict[str, Any] = {}
-    for nombre, columna in columnas.items():
+    for nombre, (columna, etiqueta, corta) in columnas.items():
         valores = [
             float(getattr(f, columna))
             for f in filas
@@ -1336,6 +1353,8 @@ def _medias_componentes(filas: list[SessionPerformance]) -> dict[str, Any]:
         ]
         media = _media(valores)
         salida[nombre] = {
+            "etiqueta": etiqueta,
+            "corta": corta,
             "media": round(media, 2) if media is not None else None,
             "n": len(valores),
             "na": None

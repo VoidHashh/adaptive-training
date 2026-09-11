@@ -32,7 +32,13 @@ const API = {
 // de creerse que has contestado cuando no.
 const BORRADOR = "checkin-borrador";
 
-const $ = (id) => document.getElementById(id);
+/* `$`, `escapar` y `fechaLarga` los pone `comun.js`, que `index.html` carga
+ * antes que este archivo. Si faltara, lo que se vería es un formulario a medio
+ * dibujar sin ningún error en pantalla, así que se comprueba y se rompe aquí. */
+if (typeof escapar !== "function") {
+  throw new Error("app.js necesita comun.js cargado antes");
+}
+
 const estado = {
   dia: null,         // el día SEGÚN EL SERVIDOR, nunca el del móvil
   sliders: [],       // los del config.yaml, tal cual llegan
@@ -349,20 +355,11 @@ function aviso(texto, clase) {
   $("formulario").prepend(p);
 }
 
-// Todo lo que llega del servidor o del usuario pasa por aquí antes de tocar
-// `innerHTML`. Los comentarios los escribe el propio usuario, pero el error de
-// una integración puede traer cualquier cosa.
-function fechaLarga(d) {
-  return d.toLocaleDateString("es-ES", {
-    weekday: "long", day: "numeric", month: "long",
-  });
-}
-
-function escapar(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
+// `escapar` y `fechaLarga` estaban aquí duplicadas, letra por letra, con las de
+// `comun.js`. Dos copias de un escape de HTML es de las peores cosas que se
+// pueden duplicar: se arregla una el día que aparezca un carácter que se cuela y
+// la otra se queda rota, sin que nada lo diga. Ahora vienen de `comun.js`, que
+// `index.html` carga antes que esto.
 
 // ---------------------------------------------------------------------------
 // El estado del sistema
@@ -463,6 +460,13 @@ async function comprobarSalud() {
 
 $("formulario").addEventListener("submit", enviar);
 $("comentarios").addEventListener("input", guardarBorrador);
+
+// La barra de abajo, antes de pedir nada. No depende del servidor, así que se
+// pinta ya: si el formulario no carga, desde aquí todavía se puede ir a mirar
+// qué ha estado haciendo el motor, que es justo lo que se quiere saber cuando
+// algo no va.
+pintarNav("/");
+
 arrancar();
 // Aparte de `arrancar()` y sin `await`: son dos preguntas independientes. Un
 // `/api/health` lento no debe retrasar el formulario, y un formulario que no

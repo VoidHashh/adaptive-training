@@ -215,6 +215,26 @@ def test_el_dict_para_el_navegador_lleva_todo_lo_que_hace_falta():
     assert d["p"] is not None and d["descartados"] == 0
 
 
+def test_la_correccion_viaja_siempre_aunque_no_se_haya_corregido():
+    """`significativa` tiene tres valores, y el tercero no es la ausencia.
+
+    `null` significa "sobre esta vista no se pasó ninguna corrección por
+    comparaciones múltiples", que es un hecho de la vista y no del número. No
+    mandar la clave significa lo mismo para un humano y otra cosa muy distinta
+    para JavaScript: la PWA dibuja la barra hueca con `c.significativa !== false`
+    y, sin la clave, `undefined !== false` da `true` y la barra sale sólida.
+
+    Funcionaba. Ese es el problema: funcionaba por accidente, nadie lo decidió, y
+    el día que alguien invierta la comprobación la vista entera cambia de
+    significado sin dar un solo error. Concordancia y desfase se apoyaban en ese
+    accidente hasta que el andamio de render lo cazó.
+    """
+    d = correlacion(pares(list(range(25)), [3 * v for v in range(25)])).como_dict()
+
+    assert "significativa" in d and d["significativa"] is None
+    assert "p_corregida" in d and d["p_corregida"] is None
+
+
 def test_la_ventana_es_la_de_los_pares_que_entraron_y_no_la_pedida():
     """Si los cinco primeros días no tienen HRV, la ventana empieza el sexto.
 

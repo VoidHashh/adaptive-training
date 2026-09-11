@@ -13,7 +13,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Check-in">
 </head>
-<body>
+<body class="con-nav">
 
 <main id="app">
   <header class="cab">
@@ -61,6 +61,14 @@
   <section id="resultado" hidden></section>
 </main>
 
+<!--
+  La barra se pinta desde `PANTALLAS` en `comun.js`, no se escribe aquí. Escrita
+  a mano en los dos HTML, añadir una vista dejaría media aplicación sin enlace a
+  ella, y nadie se enteraría hasta ir a buscarla.
+-->
+<nav id="nav" class="nav" aria-label="Secciones"></nav>
+
+<script src="/comun.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

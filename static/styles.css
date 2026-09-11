@@ -205,3 +205,380 @@ pre {
   font-size: 0.83rem;
   margin: 0.6rem 0 0;
 }
+
+/* ==========================================================================
+   MÉTRICAS
+   ==========================================================================
+
+   Seis pantallas en un móvil que se mira de pie. Tres decisiones mandan aquí:
+
+   1. NADA SE ESCONDE PARA QUE QUEPA. No hay `display: none` en ninguna casilla
+      sin dato, ni media pantalla detrás de un "ver más" por defecto. Lo que no
+      cabe se pliega -sigue existiendo y se abre tocando- o se desliza en
+      horizontal. Recortar es justo lo que dejaría fuera los motivos de lo que
+      no se pudo calcular, que es la mitad del valor de esta sección.
+
+   2. EL `n` Y EL MOTIVO NO SON LETRA PEQUEÑA DECORATIVA. `.ficha` y `.na` van
+      atenuados frente al número, pero legibles: son lo que distingue una
+      correlación de doce días de una de ciento setenta, y las dos se pintan
+      igual de grandes.
+
+   3. NINGÚN COLOR SIGNIFICA "BUENO". Verde, ámbar y rojo aparecen SOLO donde
+      son literalmente el semáforo del motor. En correlaciones el color va por
+      signo -lo pone `graficos.js`- y aquí no se añade ninguno encima.
+   ========================================================================== */
+
+/* --- la barra de abajo --------------------------------------------------- */
+
+/* Fija, porque en una lista de ciento ochenta días una barra que se va arriba
+ * con el scroll obliga a volver al principio para cambiar de vista. */
+.nav {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  display: flex;
+  background: var(--caja);
+  border-top: 1px solid var(--borde);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+
+.nav a {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.6rem 0.15rem calc(0.6rem);
+  text-align: center;
+  color: var(--tenue);
+  text-decoration: none;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  /* Seis etiquetas en el ancho de un móvil. Se recortan con puntos suspensivos
+   * antes que envolver a dos líneas y descuadrar la altura de la barra. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top: 2px solid transparent;
+}
+
+.nav a.activa {
+  color: var(--texto);
+  border-top-color: var(--acento);
+  font-weight: 600;
+}
+
+/* El hueco que deja la barra. Sin esto, la última tarjeta de cada vista queda
+ * debajo de la barra y parece que la lista acaba antes de donde acaba. */
+body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
+
+/* --- el selector de ventana ---------------------------------------------- */
+
+/* Arriba y en todas las vistas: cambia lo que SIGNIFICA todo lo de abajo. */
+.barra-ventana {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 1rem;
+}
+.barra-ventana label { color: var(--tenue); font-size: 0.9rem; }
+.barra-ventana select {
+  flex: 1;
+  padding: 0.55rem 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+/* --- la cobertura -------------------------------------------------------- */
+
+.cobertura {
+  margin: 0 0 1.1rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 0.55rem;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+}
+.ventana { margin: 0; font-size: 0.9rem; }
+.fuentes {
+  display: grid;
+  gap: 0.15rem;
+  margin-top: 0.45rem;
+  color: var(--tenue);
+  font-size: 0.82rem;
+}
+.fuentes b { color: var(--texto); font-weight: 600; }
+
+/* --- lo que falta y por qué ---------------------------------------------- */
+
+/* La pieza más importante de la sección. Tiene borde propio a la izquierda para
+ * que se distinga de un párrafo cualquiera sin parecer un error: no hay ningún
+ * fallo en que un dato no se pueda calcular todavía. */
+.na {
+  margin: 0.5rem 0 0;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--borde);
+  color: var(--tenue);
+  font-size: 0.86rem;
+}
+
+/* `n = 43 · spearman · 12 descartados`. Atenuada, nunca invisible. */
+.ficha {
+  margin: 0.45rem 0 0;
+  color: var(--tenue);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- tarjetas ------------------------------------------------------------ */
+
+.tarjeta {
+  margin: 0 0 0.75rem;
+  padding: 0.85rem 0.9rem;
+  border-radius: 0.6rem;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+}
+.tarjeta h2 { margin: 0 0 0.3rem; font-size: 1.02rem; }
+.tarjeta h3 { margin: 0 0 0.25rem; font-size: 0.95rem; }
+.tarjeta.fina { padding: 0.7rem 0.8rem; margin-bottom: 0.55rem; }
+.tarjeta.mensaje pre { background: #0d0f12; }
+
+/* La sesión en que pasó lo que esta vista cuenta. Se marca con el acento y no
+ * con verde: no es un premio, es el dato que se vino a mirar. */
+.tarjeta.destacada { border-color: var(--acento); }
+
+/* Un encabezado de grupo dentro de la vista. */
+.grupo {
+  margin: 1.5rem 0 0.6rem;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--tenue);
+  font-weight: 700;
+}
+
+/* Los párrafos que explican cómo hay que leer lo de debajo. */
+.explica {
+  margin: 0 0 0.8rem;
+  color: var(--tenue);
+  font-size: 0.85rem;
+}
+
+.sub { color: var(--tenue); font-size: 0.82rem; font-weight: 400; margin: 0.1rem 0 0; }
+
+/* El número de la tarjeta. Es lo único grande. */
+.cifra {
+  margin: 0.5rem 0 0;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+.cifra b { font-size: 1.25rem; }
+
+/* La frase que el SERVIDOR escribió sobre ese número. No se recorta nunca. */
+.lectura { margin: 0.45rem 0 0; font-size: 0.9rem; }
+
+.esperado { margin: 0.3rem 0 0; color: var(--tenue); font-size: 0.8rem; }
+
+/* --- series, retardos y componentes -------------------------------------- */
+
+.serie, .retardo, .componente {
+  padding: 0.65rem 0 0.5rem;
+  border-bottom: 1px solid var(--borde);
+}
+.serie:last-child, .retardo:last-child, .componente:last-child { border-bottom: 0; }
+
+.medias { margin: 0.4rem 0 0; font-size: 0.86rem; }
+.medias b { font-variant-numeric: tabular-nums; }
+
+/* --- el filtro de dentro de una vista ------------------------------------ */
+
+.filtro {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 0.9rem;
+}
+.filtro label { color: var(--tenue); font-size: 0.85rem; white-space: nowrap; }
+.filtro select {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.55rem;
+  border-radius: 0.45rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+/* --- tablas -------------------------------------------------------------- */
+
+.tabla {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  font-size: 0.83rem;
+  font-variant-numeric: tabular-nums;
+}
+.tabla th {
+  text-align: left;
+  color: var(--tenue);
+  font-weight: 600;
+  padding: 0.3rem 0.4rem 0.3rem 0;
+  border-bottom: 1px solid var(--borde);
+}
+.tabla td { padding: 0.3rem 0.4rem 0.3rem 0; border-bottom: 1px solid var(--borde); }
+.tabla tr:last-child td { border-bottom: 0; }
+
+/* El motivo dentro de una fila de tabla. Envuelve: es prosa, no una cifra, y
+ * cortarlo con `ellipsis` dejaría fuera justo la parte que explica. */
+.tabla .motivo {
+  color: var(--tenue);
+  font-size: 0.76rem;
+  white-space: normal;
+  min-width: 8rem;
+}
+
+/* --- plegables ----------------------------------------------------------- */
+
+.pliegue {
+  margin: 0.6rem 0 0.9rem;
+  border: 1px solid var(--borde);
+  border-radius: 0.55rem;
+  background: var(--caja);
+}
+.pliegue > summary {
+  padding: 0.7rem 0.85rem;
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: var(--texto);
+  list-style: none;
+}
+.pliegue > summary::-webkit-details-marker { display: none; }
+.pliegue > summary::before { content: "▸ "; color: var(--tenue); }
+.pliegue[open] > summary::before { content: "▾ "; }
+.pliegue[open] > summary { border-bottom: 1px solid var(--borde); }
+.pliegue > *:not(summary) { margin-left: 0.85rem; margin-right: 0.85rem; }
+.pliegue > .tarjeta { margin-top: 0.6rem; }
+.pliegue > .na { margin: 0.8rem 0.85rem; }
+
+/* --- auditoría: el semáforo ---------------------------------------------- */
+
+/* Aquí sí: verde, ámbar y rojo son literalmente las tres luces del motor. */
+.luces { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.6rem 0 0; }
+.luz {
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--borde);
+}
+.luz.green { border-color: var(--verde); color: #a9e0c0; }
+.luz.amber { border-color: var(--ambar); color: #f3d9a4; }
+.luz.red   { border-color: var(--rojo);  color: #f5c2c0; }
+.luz.nada  { color: var(--tenue); }
+
+.etiqueta-luz {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--borde);
+  color: var(--tenue);
+  vertical-align: middle;
+}
+.etiqueta-luz.green { border-color: var(--verde); color: #a9e0c0; }
+.etiqueta-luz.amber { border-color: var(--ambar); color: #f3d9a4; }
+.etiqueta-luz.red   { border-color: var(--rojo);  color: #f5c2c0; }
+
+/* El estado de una regla, en el borde izquierdo de su tarjeta.
+ *
+ * `dispara` NO se pinta de verde. Una regla que dispara mucho no es una regla
+ * sana: puede estar disparando de más. Lo único que se marca en color es lo que
+ * hay que ir a mirar -una regla que ya no existe y sigue contando, o una que
+ * nunca se pudo evaluar-, y el resto se queda neutro. */
+.tarjeta.estado-dispara        { border-left: 3px solid var(--borde); }
+.tarjeta.estado-nunca_disparo  { border-left: 3px solid var(--ambar); }
+.tarjeta.estado-nunca_evaluada { border-left: 3px solid var(--ambar); }
+.tarjeta.estado-retirada       { border-left: 3px solid var(--rojo); }
+.tarjeta.estado-sin_historico  { border-left: 3px solid var(--borde); }
+
+.retirada {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #f5c2c0;
+  border: 1px solid var(--rojo);
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.35rem;
+}
+
+/* --- gráficos ------------------------------------------------------------ */
+
+svg.g-barra, svg.g-curva, svg.g-regla, svg.g-serie {
+  display: block;
+  margin: 0.5rem 0 0;
+  max-width: 100%;
+}
+
+/* El calendario de ciento ochenta días y las veintiséis semanas no caben en el
+ * ancho de un móvil, y encogerlos hasta que quepan haría los cuadros
+ * indistinguibles. Se deslizan en horizontal: todos los días siguen ahí. */
+.desliza {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0.6rem 0 0;
+  padding-bottom: 0.3rem;
+}
+.desliza svg { display: block; }
+
+/* --- percepción: el contador --------------------------------------------- */
+
+/* Lo primero de la vista y lo más grande de toda la aplicación, a propósito.
+ * Es el número que se viene a mirar la mañana de levantarse creyendo que hoy no
+ * se puede entrenar, y para eso tiene que leerse sin buscarlo. */
+.contador {
+  margin: 0 0 1.1rem;
+  padding: 1.1rem 1rem 0.9rem;
+  border-radius: 0.7rem;
+  background: var(--caja);
+  border: 1px solid var(--acento);
+  text-align: center;
+}
+.enorme {
+  margin: 0;
+  font-size: 3.6rem;
+  line-height: 1;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+/* Sin signos de admiración ni felicitaciones: el texto lo escribe el servidor y
+ * aquí solo se pinta. Se pidió sin condescendencia ni tono de autoayuda, y eso
+ * también es una decisión de tipografía, no solo de redacción. */
+.pie { margin: 0.45rem 0 0; font-size: 0.95rem; }
+.contador .na { text-align: left; }
+.contador .ficha { text-align: left; margin-top: 0.7rem; }
+
+.motivos { margin: 0.6rem 0; padding-left: 1.1rem; font-size: 0.84rem; }
+.motivos li { margin-bottom: 0.25rem; }
+
+code {
+  font-size: 0.9em;
+  background: #0d0f12;
+  padding: 0.05rem 0.25rem;
+  border-radius: 0.2rem;
+}
+
+/* El puesto en el ranking de ejercicios. */
+.puesto {
+  display: inline-block;
+  min-width: 1.5rem;
+  margin-right: 0.4rem;
+  color: var(--tenue);
+  font-variant-numeric: tabular-nums;
+}

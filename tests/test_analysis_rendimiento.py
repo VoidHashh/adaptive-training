@@ -1433,6 +1433,8 @@ def test_los_componentes_salen_promediados_por_separado(db):
     c = vista_percepcion(db, dias=30, hasta=HOY)["componentes"]
 
     assert c["cumplimiento"] == {
+        "etiqueta": "Cumplimiento de lo prescrito",
+        "corta": "cumplimiento",
         "media": 90.0,
         "n": 2,
         "na": None,
@@ -1443,6 +1445,38 @@ def test_los_componentes_salen_promediados_por_separado(db):
     assert c["corazon"]["media"] is None
     assert c["corazon"]["n"] == 0
     assert "ninguna sesión" in c["corazon"]["na"]
+
+
+def test_cada_componente_viaja_con_su_nombre_escrito(db):
+    """El nombre lo pone el backend, no la PWA.
+
+    Sin esto, el móvil solo tiene la clave -`progresion`, `corazon`- y la pinta
+    tal cual: seis palabras sin tilde con pinta de nombre de variable, justo en
+    la vista que existe para leerse de un vistazo una mañana mala. La
+    alternativa era un diccionario de nombres escrito a mano en JavaScript, que
+    es otra copia de esta lista y se queda vieja en silencio el día que se añada
+    una pieza. Este test es lo que sustituye a esa copia.
+
+    Se comprueba también que la etiqueta no sea la clave disfrazada: si alguien
+    añade un componente y lo etiqueta con su propio nombre, el test pasa pero la
+    pantalla vuelve a enseñar la variable.
+    """
+    juicio(db, HOY - timedelta(days=1), clave="a", comp_compliance=100.0)
+
+    c = vista_percepcion(db, dias=30, hasta=HOY)["componentes"]
+    assert c, "la vista no devolvió ningún componente"
+
+    for nombre, pieza in c.items():
+        assert pieza.get("etiqueta"), f"`{nombre}` viaja sin etiqueta larga"
+        assert pieza.get("corta"), f"`{nombre}` viaja sin etiqueta corta"
+        assert pieza["etiqueta"] != nombre, (
+            f"la etiqueta de `{nombre}` es la propia clave: en pantalla se lee "
+            f"como un nombre de variable"
+        )
+        # La larga dice qué MIDE; la corta cabe en la tira de una línea de cada
+        # sesión. Si fueran iguales, una de las dos sobra y la otra no hace su
+        # trabajo.
+        assert len(pieza["etiqueta"]) > len(pieza["corta"])
 
 
 def test_el_desnivel_sigue_marcado_como_fuera_del_indice_en_las_medias(db):

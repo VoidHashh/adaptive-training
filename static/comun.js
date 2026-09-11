@@ -1,0 +1,299 @@
+/*
+ * Lo que comparten el check-in y las métricas.
+ *
+ * LA REGLA QUE MANDA EN TODA LA PARTE DE MÉTRICAS
+ * -----------------------------------------------
+ * Esta pantalla NO calcula nada. Ni una media, ni un porcentaje, ni un
+ * redondeo que cambie un número. Lo que se pinta es exactamente lo que mandó
+ * el servidor, y cuando el servidor manda `null` se pinta el `na` que viene al
+ * lado, nunca un hueco ni un cero.
+ *
+ * No es purismo de arquitectura. El backend tiene tests con datos sintéticos de
+ * resultado conocido para cada estadístico; el JavaScript del móvil no tiene
+ * ninguno, y un cálculo aquí sería un segundo sitio donde el mismo número puede
+ * salir distinto. En una pantalla cuyo trabajo es contrapesar una percepción
+ * distorsionada, dos versiones del mismo dato son peores que ninguna.
+ *
+ * `n_na()` existe para que no haya forma cómoda de saltarse esto: si un valor
+ * puede faltar, se pasa por aquí y el motivo se pinta solo.
+ */
+
+const $ = (id) => document.getElementById(id);
+
+/* Todo lo que llega del servidor pasa por aquí antes de tocar `innerHTML`. Los
+ * motivos de `na` los escribe el backend y son prosa larga con comillas y
+ * guiones; no vienen del exterior, pero el día que uno arrastre un `<` el
+ * navegador se comería media pantalla sin decir nada. */
+function escapar(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+function fechaLarga(d) {
+  return d.toLocaleDateString("es-ES", {
+    weekday: "long", day: "numeric", month: "long",
+  });
+}
+
+/* Un ISO del servidor pintado corto, sin pasar por `new Date(iso)`.
+ *
+ * `new Date("2026-09-11")` se interpreta como medianoche UTC y en España sale
+ * el día 10 por la tarde: la fecha bajaría un día al pintarla. Las fechas de
+ * estas vistas son días de calendario que ya decidió el servidor, no instantes,
+ * así que se parten a mano y no se tocan. */
+const MESES = [
+  "ene", "feb", "mar", "abr", "may", "jun",
+  "jul", "ago", "sep", "oct", "nov", "dic",
+];
+
+function fechaCorta(iso) {
+  if (!iso) return "—";
+  const [a, m, d] = String(iso).split("-").map(Number);
+  if (!a || !m || !d) return String(iso);
+  return `${d} ${MESES[m - 1]} ${a}`;
+}
+
+function fechaMinima(iso) {
+  if (!iso) return "—";
+  const [, m, d] = String(iso).split("-").map(Number);
+  return `${d}/${m}`;
+}
+
+// ---------------------------------------------------------------------------
+// Números que pueden faltar
+// ---------------------------------------------------------------------------
+
+/* Un número del servidor, o una raya. NUNCA un cero de relleno.
+ *
+ * `0` y `null` se parecen mucho en JavaScript -los dos son falsy- y la forma
+ * corta de escribir esto, `valor || "—"`, convierte un cero de verdad en una
+ * raya. En esta pantalla eso es exactamente el fallo que se acaba de barrer del
+ * backend, así que la comprobación es explícita contra `null` y `undefined`. */
+function num(valor, decimales = 2) {
+  if (valor === null || valor === undefined || Number.isNaN(valor)) return "—";
+  return Number(valor).toFixed(decimales).replace(".", ",");
+}
+
+function pct(valor, decimales = 0) {
+  if (valor === null || valor === undefined) return "—";
+  return `${Number(valor).toFixed(decimales).replace(".", ",")} %`;
+}
+
+function entero(valor) {
+  if (valor === null || valor === undefined) return "—";
+  return String(valor);
+}
+
+/* El bloque de "esto no se puede calcular, y este es el motivo".
+ *
+ * Es la pieza más importante de la vista entera. La alternativa cómoda -esconder
+ * la casilla que no se puede calcular- deja una pantalla que solo enseña lo que
+ * salió, y una pantalla que solo enseña lo que salió parece decir más de lo que
+ * sabe. Aquí la casilla sigue en su sitio, con el motivo dentro. */
+function bloqueNa(motivo) {
+  return `<p class="na">${escapar(motivo || SIN_MOTIVO)}</p>`;
+}
+
+/* Cuando falta el dato Y falta el motivo. No es lo mismo que no tener dato: es
+ * que el backend ha devuelto un hueco sin explicarlo, y eso es un fallo suyo que
+ * hay que poder ver desde el móvil en vez de leerlo como "aún no hay datos". */
+const SIN_MOTIVO =
+  "sin dato y sin motivo: el servidor no ha dicho por qué, y eso es un fallo " +
+  "suyo, no una falta de días";
+
+// ---------------------------------------------------------------------------
+// Hablar con el servidor
+// ---------------------------------------------------------------------------
+
+/* Una respuesta de la API, o un error que se puede leer.
+ *
+ * Nunca devuelve un objeto vacío ni `{}` de consolación: quien llama recibe los
+ * datos o una excepción con el motivo dentro. Una vista pintada con `{}` sale
+ * entera en blanco y se lee como "no hay nada que enseñar", que es una respuesta
+ * distinta de "no se ha podido preguntar".
+ */
+async function pedir(ruta, parametros = {}) {
+  const url = new URL(ruta, location.origin);
+  for (const [k, v] of Object.entries(parametros)) {
+    if (v !== null && v !== undefined) url.searchParams.set(k, String(v));
+  }
+
+  let r;
+  try {
+    r = await fetch(url, { cache: "no-store" });
+  } catch (err) {
+    throw new Error(
+      `no se ha podido hablar con el servidor (${err.message}). Estas vistas ` +
+      `se calculan enteras ahí: sin conexión no hay nada que enseñar, y ` +
+      `enseñar lo de la última vez sería peor.`,
+    );
+  }
+
+  if (!r.ok) {
+    let detalle = `el servidor ha contestado ${r.status}`;
+    try {
+      const cuerpo = await r.json();
+      if (typeof cuerpo.detail === "string") detalle = cuerpo.detail;
+      else if (cuerpo.detail) detalle = JSON.stringify(cuerpo.detail);
+    } catch { /* el cuerpo no era JSON: se queda el código de estado */ }
+    throw new Error(detalle);
+  }
+
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// La navegación
+// ---------------------------------------------------------------------------
+
+/* Las seis pantallas, en el orden en que tienen sentido.
+ *
+ * El check-in va primero porque es lo que se abre a las siete de la mañana. Las
+ * cinco de métricas van en el orden en que se pidieron, que además es el orden
+ * en que se leen: primero si lo que noto coincide con el reloj, luego si coincide
+ * con retraso, luego qué le hace cada cosa al cuerpo, luego qué ha hecho el motor
+ * con todo eso, y al final lo que dicen los números frente a lo que parecía.
+ */
+const PANTALLAS = [
+  { href: "/", etiqueta: "Check-in", corta: "Hoy" },
+  { href: "/metricas.html#concordancia", etiqueta: "Concordancia", corta: "Coincide" },
+  { href: "/metricas.html#desfase", etiqueta: "Desfase", corta: "Desfase" },
+  { href: "/metricas.html#impacto", etiqueta: "Impacto", corta: "Impacto" },
+  { href: "/metricas.html#auditoria", etiqueta: "Auditoría", corta: "Motor" },
+  { href: "/metricas.html#percepcion", etiqueta: "Percepción", corta: "Números" },
+];
+
+/* La barra de abajo, pintada desde `PANTALLAS` y no escrita a mano en los dos
+ * HTML. Escrita dos veces, añadir una vista dejaría media aplicación sin enlace
+ * a ella y nadie se enteraría hasta buscarla. */
+function pintarNav(activa) {
+  const nav = $("nav");
+  if (!nav) return;
+  nav.innerHTML = PANTALLAS.map((p) => {
+    const sel = p.href === activa || (activa && p.href.endsWith(activa));
+    return (
+      `<a href="${escapar(p.href)}"${sel ? ' class="activa" aria-current="page"' : ""}>` +
+      `${escapar(p.corta)}</a>`
+    );
+  }).join("");
+}
+
+// ---------------------------------------------------------------------------
+// La cobertura
+// ---------------------------------------------------------------------------
+
+const FUENTES = {
+  checkin: "check-ins",
+  garmin: "datos de Garmin",
+  bici: "salidas de bici",
+  fuerza: "entrenos de fuerza",
+};
+
+/* Desde cuándo hay datos de cada cosa, y de qué NO hay ninguno.
+ *
+ * Va arriba del todo de cada vista y no escondido en un pie, porque es lo que
+ * decide cómo hay que leer todo lo demás. Una correlación calculada sobre doce
+ * días y otra sobre ciento setenta se pintan igual de grandes; lo que las
+ * distingue es esta línea.
+ *
+ * Las fuentes con ventana `null` se nombran una a una. Es la diferencia entre
+ * "de esto no hay nada" y "esto no lo miramos", y sin decirlo la vista parece
+ * completa cuando le falta una pata entera.
+ *
+ * `cob` a `null` NO es lo mismo que un `cob` con las cuatro fuentes vacías, y
+ * por eso se trata aparte en vez de caer en el mismo camino. La vista de
+ * percepción no calcula cobertura -trabaja sobre `session_performance`, que ya
+ * es el resultado de cruzar las fuentes-, así que pintarle "sin ningún dato de
+ * check-ins, Garmin, bici ni fuerza" sería afirmar un vacío que nadie ha
+ * mirado. Se dice lo único que se sabe: la ventana, y que esta vista no reporta
+ * cobertura.
+ */
+function pintarCobertura(cob, ventana) {
+  const cabecera =
+    `<p class="ventana">Ventana pedida: <b>${fechaCorta(ventana.desde)} → ` +
+    `${fechaCorta(ventana.hasta)}</b> (${entero(ventana.dias)} días)</p>`;
+
+  if (cob === null || cob === undefined) {
+    return (
+      `<section class="cobertura">${cabecera}` +
+      `<p class="ficha">Esta vista no mira las fuentes una a una: trabaja sobre ` +
+      `las sesiones ya cruzadas, y cada una lleva dentro de qué pudo juzgarse.</p>` +
+      `</section>`
+    );
+  }
+
+  const trozos = [];
+  const vacias = [];
+
+  /* `{desde, hasta}`, que es lo que manda `Cobertura.como_dict`, y NO un par
+   * `[desde, hasta]`.
+   *
+   * Aquí ponía `v.length === 2`. Un objeto no tiene `length`, así que la
+   * comprobación daba `false` siempre y las cuatro fuentes caían en `vacias`:
+   * la pantalla abría diciendo "Sin ningún dato en esta ventana de: check-ins,
+   * datos de Garmin, salidas de bici, entrenos de fuerza" encima de ciento
+   * setenta y nueve días de Garmin.
+   *
+   * No daba ningún error ni escribía ningún `undefined`: elegía la rama
+   * equivocada y afirmaba, con una frase bien escrita, lo contrario de lo que
+   * pasaba. Y lo afirmaba justo en la línea que existe para decir cómo hay que
+   * leer todo lo demás. Por eso se comprueban las dos claves por su nombre en
+   * vez de mirar la forma: si el backend cambia el contrato, lo que sale es el
+   * aviso de que no hay datos de esa fuente, que es falso pero visible, y no un
+   * `undefined → undefined` que al menos se vería. Que esto pueda volver a
+   * pasar en silencio es la razón de `test_la_cobertura_de_la_pwa_lee_el_mismo
+   * _contrato_que_escribe_el_backend`.
+   */
+  for (const [clave, nombre] of Object.entries(FUENTES)) {
+    const v = cob[clave];
+    if (v && v.desde && v.hasta) {
+      trozos.push(
+        `<span><b>${escapar(nombre)}</b> ${fechaCorta(v.desde)} → ` +
+        `${fechaCorta(v.hasta)}</span>`,
+      );
+    } else {
+      vacias.push(nombre);
+    }
+  }
+
+  const cuerpo = trozos.length
+    ? `<div class="fuentes">${trozos.join("")}</div>`
+    : "";
+
+  const aviso = vacias.length
+    ? `<p class="na">Sin ningún dato en esta ventana de: ${escapar(vacias.join(", "))}. ` +
+      `Todo lo que dependa de esas fuentes sale sin calcular, y con el motivo escrito.</p>`
+    : "";
+
+  return `<section class="cobertura">${cabecera}${cuerpo}${aviso}</section>`;
+}
+
+// ---------------------------------------------------------------------------
+// Piezas de presentación que se repiten
+// ---------------------------------------------------------------------------
+
+/* `n = 43 · spearman · 12 descartados`. La ficha técnica de un número.
+ *
+ * Se pidió que TODA métrica exponga su n y su ventana, y este es el sitio por el
+ * que pasan todas. Los descartados solo se nombran cuando los hay: un "0
+ * descartados" en cada casilla es ruido que enseña a no leer la línea. */
+function ficha(c) {
+  const trozos = [`n = ${entero(c.n)}`];
+  if (c.metodo) trozos.push(escapar(c.metodo));
+  if (c.descartados) trozos.push(`${entero(c.descartados)} descartados`);
+  if (c.desde && c.hasta) {
+    trozos.push(`${fechaMinima(c.desde)}–${fechaMinima(c.hasta)}`);
+  }
+  return `<p class="ficha">${trozos.join(" · ")}</p>`;
+}
+
+/* El detalle que se abre tocando. En un móvil no cabe todo a la vez, y la
+ * alternativa -recortar- es la que deja fuera justo el motivo de lo que no se
+ * pudo calcular. Plegado sigue estando; recortado, no. */
+function plegable(titulo, contenido, abierto = false) {
+  return (
+    `<details class="pliegue"${abierto ? " open" : ""}>` +
+    `<summary>${escapar(titulo)}</summary>${contenido}</details>`
+  );
+}

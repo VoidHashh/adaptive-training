@@ -21,16 +21,41 @@
  * conexión, que es lo que pasa.
  */
 
-const VERSION = "v1";
+/* La versión sube cada vez que cambia el armazón. Si no subiera, `activate` no
+ * borraría nada -el nombre del caché sería el mismo- y un móvil con la versión
+ * vieja abierta se quedaría con el `metricas.js` de antes contra una API nueva. */
+const VERSION = "v2";
 const CACHE = `armazon-${VERSION}`;
 
+/* TODO el armazón, no "lo principal".
+ *
+ * Esta lista se olvidó de crecer cuando se añadieron las métricas, y ese olvido
+ * no da ningún error: online todo funciona porque el `fetch` de abajo cachea al
+ * vuelo lo que se va pidiendo. Lo que se rompe es el primer arranque sin
+ * cobertura de una pantalla que nunca se visitó con red: la métrica sale en
+ * blanco y parece que no hay datos.
+ *
+ * `tests/test_pwa.py` compara esta lista contra el contenido real de `static/`
+ * y falla si aparece un archivo que no está nombrado aquí. Es la única forma de
+ * que el siguiente que se añada no repita exactamente esto.
+ */
 const ARMAZON = [
   "/",
   "/index.html",
+  "/metricas.html",
   "/styles.css",
   "/app.js",
+  "/comun.js",
+  "/graficos.js",
+  "/metricas.js",
   "/manifest.webmanifest",
   "/icons/icon.svg",
+  // El maskable va también, aunque no salga en ningún `<img>` de ningún HTML:
+  // lo pide el manifest, y es el que coge Android para el icono de la pantalla
+  // de inicio. Sin él en el caché, instalar la aplicación sin cobertura deja el
+  // icono recortado dentro de un cuadrado blanco. Faltaba, y lo encontró el
+  // test: es exactamente el olvido que ese test existe para no repetir.
+  "/icons/icon-maskable.svg",
 ];
 
 self.addEventListener("install", (ev) => {
@@ -72,8 +97,15 @@ self.addEventListener("fetch", (ev) => {
         }
         return resp;
       })
-      .catch(() => caches.match(ev.request).then(
-        (hit) => hit || caches.match("/index.html"),
-      )),
+      .catch(() => caches.match(ev.request).then((hit) => {
+        if (hit) return hit;
+        // El último recurso es una PÁGINA, así que solo vale para quien pedía
+        // una página. Dárselo a un `<script src>` que no estaba en el caché
+        // devolvería el HTML del check-in con `Content-Type: text/html`, el
+        // navegador se negaría a ejecutarlo y la pantalla saldría en blanco sin
+        // un solo error legible desde el móvil. Mejor que el `fetch` falle.
+        if (ev.request.mode !== "navigate") return Response.error();
+        return caches.match("/index.html");
+      })),
   );
 });

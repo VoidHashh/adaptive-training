@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Métricas</title>
+
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#14161a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Métricas">
+</head>
+<body class="con-nav">
+
+<main id="app">
+  <header class="cab">
+    <h1 id="titulo">Métricas</h1>
+    <p class="fecha" id="subtitulo">—</p>
+  </header>
+
+  <!--
+    La ventana. Va arriba y en todas las vistas porque cambia lo que significa
+    todo lo que hay debajo: la misma correlación sobre 30 días y sobre 180 no es
+    el mismo hallazgo, y sin el selector a la vista es fácil mirar una y creer
+    que se está mirando la otra.
+
+    Los valores son los que acepta la API (7 a 730). No hay ninguno que el
+    servidor vaya a rechazar: un botón que devuelve un 422 es una opción muerta
+    con aspecto de función.
+  -->
+  <div class="barra-ventana">
+    <label for="dias">Ventana</label>
+    <select id="dias">
+      <option value="30">30 días</option>
+      <option value="60">60 días</option>
+      <option value="90">90 días</option>
+      <option value="180" selected>180 días</option>
+      <option value="365">1 año</option>
+      <option value="730">2 años</option>
+    </select>
+  </div>
+
+  <!-- Mientras carga y cuando no se puede cargar. Nunca una vista en blanco
+       haciéndose pasar por una vista sin datos: son cosas distintas. -->
+  <p class="cargando" id="cargando">Cargando…</p>
+
+  <section id="vista" hidden></section>
+</main>
+
+<nav id="nav" class="nav" aria-label="Secciones"></nav>
+
+<script src="/comun.js"></script>
+<script src="/graficos.js"></script>
+<script src="/metricas.js"></script>
+</body>
+</html>
