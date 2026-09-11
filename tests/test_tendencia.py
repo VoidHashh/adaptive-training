@@ -243,23 +243,79 @@ class TestRacha:
         t = evaluar_tendencia(cfg, LUNES, racha_de(LUNES, 6, "sueno_corto"))
         assert "Manda el sueño" in textos(t)
 
-    def test_un_empate_no_nombra_tema(self, cfg):
-        """Dos temas a tres días cada uno: no hay uno que mande.
-
-        Elegir el primero por orden alfabético sería inventarse el motivo. El
-        aviso de racha sigue siendo válido -han pasado seis días sin verde- pero
-        se calla el porqué.
-        """
+    def _empate_de_dos(self):
+        """Seis días sin verde: tres los manda el sueño y tres el HRV."""
         dec = racha_de(LUNES, 6, "sueno_corto")
-        dec = [
+        return [
             DecisionDia(d.day, d.light, "hrv_baja_1d")
             if d.light == "amber" and d.day <= LUNES - timedelta(days=3)
             else d
             for d in dec
         ]
+
+    def test_un_empate_se_dice_en_vez_de_callarse(self, cfg):
+        """Dos temas a tres días cada uno: no hay UNO que mande, hay DOS.
+
+        Antes esto se callaba, y callarlo tenía el efecto contrario al que
+        parece. La racha se contaba igual pero sin una palabra sobre qué la
+        producía, así que se leía como una racha sin explicación cuando lo que
+        había era una con dos. Elegir uno de los dos sería inventarse el motivo;
+        nombrar los dos es decir exactamente lo que se sabe.
+        """
+        t = evaluar_tendencia(cfg, LUNES, self._empate_de_dos())
+        assert "racha" in tipos(t)
+        assert "Manda el HRV y el sueño a partes iguales" in textos(t)
+
+    def test_el_empate_se_cuenta_siempre_igual(self, cfg):
+        """El orden de los temas empatados no puede depender del de llegada.
+
+        Están empatados, así que no hay frecuencia que los ordene y el criterio
+        tiene que ser explícito. Si saliera del orden de inserción del
+        diccionario, la misma racha se contaría de dos maneras según qué día se
+        mirase, y una frase que cambia sin que cambien los datos no vale nada.
+        """
+        dec = self._empate_de_dos()
+        derecho = textos(evaluar_tendencia(cfg, LUNES, dec))
+        del_reves = textos(evaluar_tendencia(cfg, LUNES, list(reversed(dec))))
+        assert "a partes iguales" in derecho
+        assert derecho == del_reves
+
+    def test_con_el_empate_repartido_no_se_enumera_la_lista_entera(self, cfg):
+        """Cinco temas a un día cada uno: lo que hay que decir no es cuáles son.
+
+        Enumerarlos convierte la pista en un inventario, y un inventario a las
+        siete de la mañana no lo lee nadie. Con el reparto plano la información
+        es justo que NINGUNO manda, y eso cabe en una frase.
+        """
+        reglas = iter([
+            "sueno_corto", "hrv_baja_1d", "rhr_alta", "carga_acumulada",
+            "lumbar_molesta",
+        ])
+        dec = [
+            DecisionDia(d.day, d.light, next(reglas)) if d.light == "amber" else d
+            for d in racha_de(LUNES, 5, "sueno_corto")
+        ]
         t = evaluar_tendencia(cfg, LUNES, dec)
         assert "racha" in tipos(t)
-        assert "Manda" not in textos(t)
+        assert "No manda ninguno" in textos(t)
+        assert "a partes iguales" not in textos(t)
+
+    def test_el_empate_de_la_racha_no_cambia_el_de_motivo(self, cfg):
+        """La misma palabra, dos significados, y solo uno cambia.
+
+        Dentro de una SEMANA un empate es ausencia de señal: no dice que el tema
+        haya cambiado, dice que esa semana no opina, y por eso se atraviesa como
+        neutra en vez de romper la racha de motivo (`NEUTRAS_SEGUIDAS_MAX`). Si
+        al hacer hablar al empate de la racha se hubiera tocado `_dominante`,
+        media racha real se partiría en dos por una semana sin opinión.
+        """
+        from app.engine.tendencia import _dominante, _dominantes
+
+        assert _dominante({"el sueño": 3, "el HRV": 3}) is None
+        assert _dominantes({"el sueño": 3, "el HRV": 3}) == ["el HRV", "el sueño"]
+        assert _dominante({"el sueño": 4, "el HRV": 3}) == "el sueño"
+        assert _dominante({}) is None
+        assert _dominantes({}) == []
 
     def test_avisa_de_que_el_semaforo_no_lo_sabe(self, cfg):
         """La frase que justifica el detector: ninguna regla mira tan atrás."""
@@ -433,6 +489,122 @@ class TestVentana:
         texto = textos(t)
         assert texto.count("RETROSPECTIVO") >= 1
         assert "no avisa de lo que viene" in texto
+
+
+# ---------------------------------------------------------------------------
+# Ventanas disjuntas
+# ---------------------------------------------------------------------------
+# Una ventana corta metida DENTRO de su propia referencia se compara en parte
+# consigo misma. No es un matiz de precisión: amortigua la señal alrededor de un
+# tercio y, bajo una deriva sostenida, la referencia persigue a la ventana y el
+# hueco no se abre nunca. Es el mismo filtro de paso alto que deja a `hrv_ratio`
+# encerrado entre 0,91 y 1,04 en seis meses.
+#
+# Estos tests son los que distinguen las dos implementaciones. Si alguien
+# devuelve el anidamiento, el resto de la suite sigue en verde y estos no.
+
+
+class TestVentanasDisjuntas:
+    def test_la_referencia_no_incluye_los_dias_recientes(self):
+        """La pieza de abajo, medida a mano sobre números que no se prestan.
+
+        Treinta días a 10 y sesenta anteriores a 100. La media de los 60 de
+        antes es 100; si la ventana larga arrastrara los 30 recientes daría
+        70 -la media de los 90-, que es la vieja.
+
+        Este test fija `_media` y NADA MÁS. Que el parámetro exista y calcule
+        bien no dice que nadie lo use: borrando los `desde=corta` de los tres
+        sitios que lo llaman, este test sigue verde. Los que vigilan las
+        llamadas son los tres de abajo, y por eso cada uno lleva escrito el
+        número que sale con el anidamiento.
+        """
+        from app.engine.tendencia import _media
+
+        hoy = LUNES
+        serie_ = {hoy - timedelta(days=i): (10.0 if i < 30 else 100.0) for i in range(90)}
+        assert _media(serie_, hoy, 30) == (10.0, 30)
+        assert _media(serie_, hoy, 90, desde=30) == (100.0, 60)
+        assert _media(serie_, hoy, 90)[0] == 70.0, "la de siempre, para contraste"
+
+    def test_una_deriva_sostenida_abre_hueco_en_vez_de_taparse(self, cfg):
+        """El fallo que no se ve mirando un caso a caso.
+
+        Empeoramiento monótono y lento: 12 días malos hace tres meses, 16 hace
+        dos, 20 el último mes. Con las ventanas separadas el hueco es 66,7%
+        contra 46,7% = 20 puntos, y el detector habla. Con la referencia
+        anidada, el mes reciente entra en su propia referencia y la sube a
+        53,3%: quedan 13,3 puntos y el detector se calla, justo en la deriva
+        que existe para ver.
+
+        Los dos números no son independientes: la ventana corta es un tercio
+        de la larga, así que el hueco disjunto es SIEMPRE exactamente 1,5
+        veces el anidado. Por eso la construcción está elegida para que el
+        anidado caiga en [10, 15) y el umbral de 15 puntos separe los dos.
+        """
+        dec = []
+        for i in range(90):
+            if i < 30:                        # el último mes: 20 de 30 malos
+                malo = i % 3 != 0
+            elif i < 60:                      # el anterior: 16 de 30
+                malo = (i - 30) % 15 < 8
+            else:                             # el de antes: 12 de 30
+                malo = (i - 60) % 5 < 2
+            d = LUNES - timedelta(days=i)
+            dec.append(DecisionDia(d, "amber" if malo else "green",
+                                   "sueno_corto" if malo else None))
+        t = evaluar_tendencia(cfg, LUNES, dec)
+        assert "ventana" in tipos(t), (
+            "con la referencia anidada el hueco se queda en 13 puntos, por "
+            "debajo del umbral de 15, y el detector se calla justo en la "
+            "deriva que existe para ver"
+        )
+        assert "+20 puntos" in textos(t), (
+            f"el hueco de verdad son 20 puntos, no los 13 amortiguados: "
+            f"{textos(t)}"
+        )
+
+    def test_el_texto_dice_contra_que_se_compara(self, cfg):
+        """Si el mensaje dijera «el trimestre» estaría mintiendo sobre la cuenta.
+
+        Y no es cosmética: quien lea «frente al trimestre» y vaya a comprobarlo
+        a mano sacará otro número y pensará que el sistema está roto.
+
+        El caso es el extremo a propósito, porque es donde la mentira se ve de
+        golpe: un mes entero en ámbar detrás de un trimestre entero en verde.
+        Separadas, eso es 100% contra 0%. Anidada, la referencia se come el
+        mes malo y dice "frente a 33%", que es un número que no corresponde a
+        ningún tramo de la serie -ni a los 90 días, ni a los 60 de antes-, y
+        aun así el mensaje lo etiqueta como "los 60 de antes". Por eso el
+        nombre del tramo no basta como prueba: hay que exigir también el
+        número, porque la frase se construye igual de bien mintiendo.
+        """
+        dec = serie(LUNES - timedelta(days=30), 90, "green")
+        dec += serie(LUNES, 30, "amber", "sueno_corto")
+        texto = textos(evaluar_tendencia(cfg, LUNES, dec))
+        assert "60 días anteriores" in texto or "60 de antes" in texto
+        assert "trimestre" not in texto
+        assert "frente a 0%" in texto, (
+            f"los 60 días anteriores están todos en verde; un 33% ahí es la "
+            f"referencia anidada contándose el mes ámbar a sí misma: {texto}"
+        )
+        assert "+100 puntos" in texto, f"anidada imprime +67: {texto}"
+
+    def test_el_cualificador_de_sueno_usa_la_misma_separacion(self, cfg):
+        """Mismo arreglo en el otro sitio donde estaba el mismo fallo.
+
+        Los 30 recientes a 380 min y los 60 anteriores a 420: la caída de
+        verdad son 40 minutos. Anidada, la referencia sale en 406,7 y la caída
+        se queda en 26,7 — una rebaja de un tercio que acerca peligrosamente
+        cualquier umbral a no dispararse.
+        """
+        ssc, smin = series_sueno(LUNES, 120, 380, 420, 80, 80)
+        dec = racha_de(LUNES, 6, "sueno_corto", colchon=120)
+        texto = textos(evaluar_tendencia(cfg, LUNES, dec,
+                                         sleep_score=ssc, sleep_min=smin))
+        assert "40 min menos" in texto, (
+            f"la caída tiene que ser la de verdad, no la amortiguada: {texto}"
+        )
+        assert "60 días anteriores" in texto
 
 
 # ---------------------------------------------------------------------------

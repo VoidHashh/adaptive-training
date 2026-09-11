@@ -1843,15 +1843,38 @@ trend:
   # porque un apagón no es un verde. Se cuenta aparte y el aviso lo nombra.
   racha_min: 5
 
-  # DETECTOR 2 — VENTANA. El último mes contra el trimestre.
+  # DETECTOR 2 — VENTANA. El último mes contra LOS DOS ANTERIORES.
   # LLEGA TARDE Y LO SABE. Se queda porque confirmar "el último mes ha ido peor
-  # que el trimestre" tiene valor aunque no anticipe nada, pero el texto del
+  # que los dos de antes" tiene valor aunque no anticipe nada, pero el texto del
   # mensaje se etiqueta como RETROSPECTIVO con todas las letras: si se lee como
   # una alerta temprana, engaña. Ver `_detecta_ventana`.
   #
-  # 15 puntos porcentuales: en el histórico, la diferencia entre tramos de 30 y
-  # 90 días osciló sola entre 6 y 11 puntos sin que pasara nada reseñable. 15 es
-  # el primer escalón que queda por encima de ese ruido.
+  # LAS DOS VENTANAS NO SE SOLAPAN, Y ESO NO ES UN DETALLE
+  # -----------------------------------------------------
+  # `ventana_larga_dias: 90` NO son los últimos 90 días: son los 60 ANTERIORES a
+  # los 30 recientes (90 - 30). Antes sí eran los 90 completos, con los 30 de la
+  # ventana corta metidos dentro, y ese anidamiento hacía justo lo contrario de
+  # lo que se buscaba: un mes malo se metía él solo en su propia referencia, se
+  # subía el listón y se tapaba. Es el mismo filtro de paso alto que estropea a
+  # `hrv_ratio`, un piso más arriba.
+  #
+  # Medido sobre los 179 días, el anidamiento amortiguaba la señal ~un tercio:
+  #
+  #                        solapadas      disjuntas
+  #     p50                    1,7            2,5
+  #     p75                    8,9           13,3
+  #     p90                   16,7           25,0
+  #     máximo                23,3           35,0
+  #     días que disparan     13 de 90       22 de 90
+  #
+  # OJO AL LEER `delta_pp_min: 15`: se eligió como "el primer escalón por encima
+  # del ruido" cuando el ruido -medido mal- iba de 6 a 11 puntos. Con las
+  # ventanas bien, la banda de ruido sube a p75 = 13,3 y el 15 se queda pegado a
+  # ella: pasa de marcar el 12% de los días peores a marcar el 24%. Sigue
+  # disparando en los tramos que tiene que marcar, así que se DEJA COMO ESTÁ a
+  # propósito, pero ya no significa lo que decía su motivo. Pendiente de decidir
+  # a mano con `--tendencia` cuando haya decisiones de verdad (ver más abajo, la
+  # misma pega es mucho peor en `caida_min_min`).
   ventana_corta_dias: 30
   ventana_larga_dias: 90
   delta_pp_min: 15
@@ -1891,25 +1914,51 @@ trend:
   #
   # LOS DOS NÚMEROS SALEN DE MEDIR, NO DE ESTIMAR. La primera versión de este
   # bloque decía 20 min y 5 puntos "porque son las caídas que separan un mes
-  # normal de uno malo". Era mentira con buena prosa: al pasarle
-  # `--tendencia` resultó que en 179 días la caída de `sleep_score` (media de
-  # 30d contra media de 90d) tiene p50 = 0,0 · p90 = 1,0 · máximo 2,6. Un
-  # umbral de 5 no se alcanza NUNCA, así que dos de los cuatro veredictos del
-  # cualificador -"es calidad" y "son las dos cosas"- eran opciones muertas
-  # recién nacidas. Este es justo el fallo que la herramienta existe para
-  # cazar, y lo cazó antes de la primera ejecución de verdad.
+  # normal de uno malo". Era mentira con buena prosa: al pasarle `--tendencia`
+  # resultó que un umbral de 5 no se alcanzaba NUNCA, así que dos de los cuatro
+  # veredictos del cualificador -"es calidad" y "son las dos cosas"- eran
+  # opciones muertas recién nacidas. Este es justo el fallo que la herramienta
+  # existe para cazar, y lo cazó antes de la primera ejecución de verdad.
   #
-  # caida_score_min: 2 → el doble del p90. Mismo criterio que los 15pp del
-  # detector 2: el primer escalón por encima de la banda de ruido.
-  # caida_min_min: 18 → entre el p75 (16,8) y el p90 (19,0) de la caída de
-  # minutos. Con 20 tampoco disparaba: el máximo en un día con aviso de sueño
-  # fue 19,6, y un umbral que el histórico roza pero no toca no separa nada.
+  # AQUÍ TAMBIÉN SE MIDE CONTRA LOS 60 DÍAS ANTERIORES, NO CONTRA LOS 90.
+  # Mismo arreglo y mismo motivo que en el detector 2: con los 30 recientes
+  # metidos dentro de su propia referencia, un mes durmiendo mal se comparaba en
+  # parte consigo mismo. Y estos dos umbrales se calibraron CON LA MEDIDA VIEJA,
+  # así que el arreglo los ha movido de sitio sin tocarles el número:
   #
-  # Lo que dice el histórico con estos números: cuando el motor señaló al
-  # sueño, SIEMPRE fue cantidad y nunca calidad. En esos días Garmin puntuaba
-  # el sueño igual o mejor que el trimestre; lo que bajaba era el tiempo en la
-  # cama. Por eso el veredicto "no es ninguna de las dos" también es una
-  # respuesta y no un hueco: dice que se movió el umbral, no el descanso.
+  #                              solapadas        disjuntas
+  #     caída de sleep_score
+  #       p50 / p75 / p90       0,3 / 0,7 / 1,4   0,4 / 1,1 / 2,1
+  #       máximo                    2,6               4,0
+  #       días que disparan (>=2)   4 de 90          12 de 90
+  #     caída de sleep_min
+  #       p50 / p75 / p90      12,2 / 16,9 / 19,6  18,4 / 25,4 / 29,4
+  #       máximo                   25,9              38,9
+  #       días que disparan (>=18) 17 de 90          47 de 90
+  #
+  # PENDIENTE DE DECISIÓN A MANO — NO TOCAR SIN MIRAR EL REPLAY:
+  #
+  #   caida_score_min: 2 se eligió como "el doble del p90" cuando el p90 era 1,0.
+  #   Ahora el p90 es 2,1, o sea que el 2 ya no es el doble de nada: está justo
+  #   EN el p90. Sigue siendo un sitio defendible -marca el 13% de días peores-
+  #   pero por accidente, no por el motivo que tiene escrito.
+  #
+  #   caida_min_min: 18 es el que de verdad está roto. Se eligió entre el p75 y
+  #   el p90; ahora el p50 es 18,4, así que el umbral ha quedado POR DEBAJO DE LA
+  #   MEDIANA y dispara 47 de 90 días. Un cualificador que dice "es cantidad" más
+  #   de la mitad de las mañanas ha dejado de distinguir: para volver a donde
+  #   estaba pensado (entre p75 y p90) habría que subirlo a 25-29.
+  #
+  # Se dejan los dos como estaban a propósito. Cambiarlos en el mismo commit que
+  # arregla la medida mezclaría dos cosas -corregir un cálculo y mover una
+  # política- y luego no habría forma de saber cuál de las dos produjo qué. Van
+  # después, a mano y mirando `--tendencia`.
+  #
+  # Lo que dice el histórico: cuando el motor señaló al sueño, SIEMPRE fue
+  # cantidad y nunca calidad. En esos días Garmin puntuaba el sueño igual o
+  # mejor; lo que bajaba era el tiempo en la cama. Por eso el veredicto "no es
+  # ninguna de las dos" también es una respuesta y no un hueco: dice que se
+  # movió el umbral, no el descanso.
   sueno:
     caida_score_min: 2
     caida_min_min: 18

@@ -57,6 +57,39 @@ Un detector que no se puede evaluar se dice en voz alta (`sin_muestra`), igual
 que `skipped` no es `not_fired` en `rules.py`. Callarlo convertiría "no lo he
 mirado" en "no pasa nada", que es la mentira que más cara sale en un sistema que
 decide solo.
+
+ESTO NO ES UN PREDICTOR DE MIGRAÑAS, Y NO SE PUEDE CONVERTIR EN UNO
+-------------------------------------------------------------------
+Esta capa nació leyendo un histórico que incluía dos episodios (26/06 y 01/07 de
+2026), y esa coincidencia es la trampa entera: es muy fácil mirar estos
+detectores y empezar a leerlos como una alarma de "viene una". No lo son, y la
+decisión de que no lo sean es del usuario y es deliberada, así que queda escrita
+aquí y no en el historial de un chat.
+
+Tres razones, y la tercera es la que de verdad cierra la puerta:
+
+  1. Dos episodios no son una muestra. Cualquier umbral que los "acertara" está
+     ajustado a dos puntos, y un umbral ajustado a dos puntos no es un umbral,
+     es una anécdota con decimales.
+
+  2. Los detectores son RETROSPECTIVOS por construcción. `ventana` compara el
+     último mes con los dos anteriores y hacen falta semanas de racha para que
+     `motivo` hable. Lo que sale de aquí describe por dónde se ha venido, no por
+     dónde se va. Esa lentitud no es un defecto a corregir: es lo que lo hace
+     fiable como descripción.
+
+  3. El coste de los dos errores es asimétrico y no hay forma de equilibrarlo.
+     Un falso positivo enseña a desconfiar del sistema entero -no solo de este
+     aviso-; un falso negativo enseña a confiar en un seguro que no existe, y
+     eso es peor que no tener nada, porque quien se fía deja de mirar. Un aviso
+     que describe lo que YA pasó no tiene ninguno de los dos fallos: puede ser
+     inútil, pero no puede mentir sobre el futuro.
+
+En la práctica, esto significa que aquí NO entra: ningún detector orientado a
+anticipar episodios, ninguna señal elegida por su correlación con ellos, ningún
+umbral calibrado contra esas fechas, y ninguna frase en el mensaje con forma de
+pronóstico. Si algún día hace falta esa herramienta, será otra capa, con su
+propio nombre y su propia discusión sobre qué pasa cuando se equivoca. No esta.
 """
 
 from __future__ import annotations
@@ -284,7 +317,7 @@ def _detecta_racha(
     primera: date,
     raw: dict[str, Any],
     minimo: int,
-) -> tuple[Aviso | None, SinMuestra | None, str | None]:
+) -> tuple[Aviso | None, SinMuestra | None, list[str]]:
     """Días seguidos sin un verde, contando hacia atrás desde hoy.
 
     Un hueco de calendario -un día que el sistema no corrió- NO rompe la racha,
@@ -292,15 +325,15 @@ def _detecta_racha(
     nombra en el aviso, que es la diferencia entre "seis días malos seguidos" y
     "seis días malos con dos que no sabemos".
 
-    Devuelve además el tema dominante de la racha, para que el cualificador de
-    sueño sepa si tiene algo que decir.
+    Devuelve además los temas dominantes de la racha -en plural, porque pueden
+    empatar- para que el cualificador de sueño sepa si tiene algo que decir.
     """
     if (day - primera).days + 1 < minimo:
         return None, SinMuestra(
             "racha",
             f"hacen falta {minimo} días de histórico y hay "
             f"{(day - primera).days + 1} desde el {_dm(primera)}",
-        ), None
+        ), []
 
     n = 0
     huecos = 0
@@ -328,11 +361,35 @@ def _detecta_racha(
         d -= timedelta(days=1)
 
     if n < minimo:
-        return None, None, None
+        # Lista vacía y no `None`: hoy el consumidor pregunta `"el sueño" not in
+        # temas` detrás de un `aviso is None`, así que un `None` aquí no
+        # reventaría nunca -y esa es justo la clase de mina que se pisa el día
+        # que alguien reordena la condición-.
+        return None, None, []
 
     cola = f", con {huecos} sin decisión por medio" if huecos else ""
-    manda = _dominante(temas)
-    quien = f" Manda {manda}." if manda else ""
+    mandan = _dominantes(temas)
+
+    # El empate SE DICE. Callarlo -que es lo que hacía- tenía el efecto justo al
+    # revés del que parece: la racha se contaba igual, pero sin una sola palabra
+    # sobre qué la estaba produciendo, y una racha sin motivo se lee como una
+    # racha sin explicación en vez de como una con dos. Que manden dos cosas a la
+    # vez no es menos información que una, es más, y es de las pocas que esta
+    # capa puede dar y el semáforo no.
+    #
+    # El tope de tres es de lectura, no de estadística: a partir de ahí la frase
+    # deja de ser una pista y pasa a ser un inventario, y un inventario a las
+    # siete de la mañana no lo lee nadie. Con cuatro temas repartidos lo que hay
+    # que decir no es cuáles son, es que no manda ninguno.
+    if not mandan:
+        quien = ""
+    elif len(mandan) == 1:
+        quien = f" Manda {mandan[0]}."
+    elif len(mandan) <= 3:
+        quien = f" Manda {_enumera(mandan)} a partes iguales."
+    else:
+        quien = f" No manda ninguno: {len(mandan)} temas repartidos por igual."
+
     texto = (
         f"{n} días seguidos sin un verde ({_dm(inicio)} → {_dm(day)}{cola})."
         f"{quien} Ninguna regla del semáforo mira tan atrás: hoy se ha decidido "
@@ -341,23 +398,49 @@ def _detecta_racha(
     return (
         Aviso("racha", texto, n, f"{inicio.isoformat()}..{day.isoformat()}"),
         None,
-        manda,
+        mandan,
     )
+
+
+def _dominantes(cuenta: dict[str, int]) -> list[str]:
+    """Todas las claves empatadas en lo más alto, en orden estable.
+
+    El orden es alfabético y no por frecuencia -están empatadas, no hay
+    frecuencia que las ordene-. Importa que sea DETERMINISTA: si dependiera del
+    orden de inserción del diccionario, la misma racha podría contarse de dos
+    maneras distintas según qué día se mirara, y una frase que cambia sin que
+    cambien los datos es una frase en la que no se puede confiar.
+    """
+    if not cuenta:
+        return []
+    tope = max(cuenta.values())
+    return sorted(k for k, v in cuenta.items() if v == tope)
 
 
 def _dominante(cuenta: dict[str, int]) -> str | None:
     """La clave con más apariciones, solo si gana en solitario.
 
-    Un empate no es un dominante: si dos reglas mandan lo mismo, no hay un motivo
-    que contar, hay dos. Y decir uno de los dos sería elegirlo por el orden del
-    diccionario, que es como no elegirlo.
+    Un empate devuelve `None` A PROPÓSITO, y eso es carga estructural del
+    detector de motivo: una semana empatada no dice que el tema haya cambiado,
+    dice que esa semana no dice nada, y por eso se atraviesa como neutra en vez
+    de romper la racha (ver `NEUTRAS_SEGUIDAS_MAX`). Si el empate eligiera un
+    tema cualquiera, media racha real se partiría en dos por una semana que no
+    tenía opinión.
+
+    Esto NO es lo mismo que callar el empate en el mensaje. Dentro de una semana
+    el empate es ausencia de señal; dentro de una racha ya contada es una señal
+    que hay que decir, y para eso está `_dominantes`.
     """
-    if not cuenta:
-        return None
-    orden = sorted(cuenta.items(), key=lambda kv: (-kv[1], kv[0]))
-    if len(orden) > 1 and orden[0][1] == orden[1][1]:
-        return None
-    return orden[0][0]
+    solos = _dominantes(cuenta)
+    return solos[0] if len(solos) == 1 else None
+
+
+def _enumera(cosas: list[str]) -> str:
+    """«A», «A y B», «A, B y C». Ninguno de los `TEMAS` empieza por i- ni hi-,
+    así que la `y` nunca tiene que volverse `e`."""
+    if len(cosas) == 1:
+        return cosas[0]
+    return f"{', '.join(cosas[:-1])} y {cosas[-1]}"
 
 
 @dataclass
@@ -499,33 +582,46 @@ def _detecta_ventana(
     larga: int,
     delta_min: float,
 ) -> tuple[Aviso | None, SinMuestra | None]:
-    """El último mes comparado con el trimestre. Llega tarde y lo dice.
+    """El último mes comparado con los meses anteriores. Llega tarde y lo dice.
 
     Es el detector más lento de los tres y se queda a propósito: un indicador que
-    confirma "el último mes ha ido peor que el trimestre" vale aunque no avise
+    confirma "el último mes ha ido peor que lo de antes" vale aunque no avise
     pronto. Lo que no puede es leerse como una alerta temprana, así que el texto
     se etiqueta como retrospectivo y no se deja al lector deducirlo.
 
-    La ventana corta está DENTRO de la larga, y también es a propósito: la
-    alternativa -comparar los 30 últimos contra los 60 anteriores- es más limpia
-    estadísticamente y más frágil aquí, porque el tramo de comparación se queda
-    sin días en cuanto hay un hueco y el aviso desaparece el mes que más falta
-    hace.
+    LAS VENTANAS NO SE SOLAPAN
+    --------------------------
+    La primera versión comparaba los 30 últimos días contra los 90 últimos, con
+    los 30 metidos dentro. El comentario de entonces defendía el solape diciendo
+    que un tramo disjunto se queda sin días en cuanto hay un hueco. Eso se
+    arregla con el mínimo de cobertura, que ya existía; lo que no se arreglaba
+    era el otro lado: el último mes pesaba un tercio de su propia referencia y
+    la arrastraba hacia sí, de modo que la diferencia impresa era siempre menor
+    que la real. El mismo defecto destrozaba al cualificador de sueño, donde se
+    midió: allí una caída real de unos 50 minutos nunca llegó a verse como más
+    de 22.
+
+    Aquí el solape no llegó a callar ningún aviso -el empeoramiento de agosto
+    fue brusco y no una deriva, así que cruzó el umbral igual-, pero los puntos
+    que imprimía eran menores que los verdaderos. Un número que se lee cada
+    mañana tiene que ser el número.
     """
-    def mide(dias: int) -> tuple[int, int]:
+    ref = larga - corta
+
+    def mide(hasta: int, desde: int = 0) -> tuple[int, int]:
         vistos = [por_dia[day - timedelta(days=i)]
-                  for i in range(dias)
+                  for i in range(desde, hasta)
                   if day - timedelta(days=i) in por_dia]
         return len(vistos), sum(1 for d in vistos if not d.verde)
 
     n_corta, malos_corta = mide(corta)
-    n_larga, malos_larga = mide(larga)
+    n_larga, malos_larga = mide(larga, desde=corta)
 
-    if n_corta < COBERTURA_MINIMA * corta or n_larga < COBERTURA_MINIMA * larga:
+    if n_corta < COBERTURA_MINIMA * corta or n_larga < COBERTURA_MINIMA * ref:
         return None, SinMuestra(
             "ventana",
-            f"{n_corta}/{corta} días en la ventana corta y {n_larga}/{larga} en "
-            f"la larga; hace falta la mitad de cada una",
+            f"{n_corta}/{corta} días en el último mes y {n_larga}/{ref} en los "
+            f"{ref} días anteriores; hace falta la mitad de cada tramo",
         )
 
     pct_corta = 100.0 * malos_corta / n_corta
@@ -535,12 +631,13 @@ def _detecta_ventana(
         return None, None
 
     texto = (
-        f"RETROSPECTIVO — el último mes ha ido peor que el trimestre: "
-        f"{_pct(pct_corta)} de días no verdes en {corta} días frente a "
-        f"{_pct(pct_larga)} en {larga} ({delta:+.0f} puntos). Es una lectura "
-        f"hacia atrás: confirma lo que ya ha pasado, no avisa de lo que viene"
+        f"RETROSPECTIVO — el último mes ha ido peor que los {ref} días "
+        f"anteriores: {_pct(pct_corta)} de días no verdes en {corta} días "
+        f"frente a {_pct(pct_larga)} en los {ref} de antes ({delta:+.0f} "
+        f"puntos). Es una lectura hacia atrás: confirma lo que ya ha pasado, no "
+        f"avisa de lo que viene"
     )
-    return Aviso("ventana", texto, round(delta), f"{corta}d vs {larga}d"), None
+    return Aviso("ventana", texto, round(delta), f"{corta}d vs {ref}d previos"), None
 
 
 # ---------------------------------------------------------------------------
@@ -548,11 +645,22 @@ def _detecta_ventana(
 # ---------------------------------------------------------------------------
 
 
-def _media(serie: dict[date, float | None] | None, day: date, dias: int) -> tuple[float | None, int]:
+def _media(
+    serie: dict[date, float | None] | None,
+    day: date,
+    hasta: int,
+    desde: int = 0,
+) -> tuple[float | None, int]:
+    """Media de la serie en el tramo [desde, hasta) días hacia atrás desde `day`.
+
+    `desde` existe para poder pedir un tramo que NO incluya los días recientes.
+    Con `desde=0` es la ventana de siempre; con `desde=30, hasta=90` son los
+    sesenta días ANTERIORES al último mes, sin solaparse con él.
+    """
     if not serie:
         return None, 0
     vals = [
-        v for i in range(dias)
+        v for i in range(desde, hasta)
         if (v := serie.get(day - timedelta(days=i))) is not None
     ]
     return (sum(vals) / len(vals) if vals else None), len(vals)
@@ -574,16 +682,38 @@ def _cualifica_sueno(
     lo que ha bajado es el tiempo en la cama o lo que Garmin puntúa de ese tiempo.
     Son dos problemas distintos con dos arreglos distintos, y sin separarlos el
     aviso solo repite el nombre de la regla que ya se ha leído.
+
+    LAS DOS VENTANAS NO SE SOLAPAN, Y ESO SE PAGÓ CARO POR APRENDERLO
+    ----------------------------------------------------------------
+    La primera versión comparaba los últimos 30 días contra los últimos 90, con
+    los 30 metidos dentro de los 90. Medido sobre el replay, la diferencia de
+    minutos no pasó nunca de 22 mientras el sueño real caía unos 50 minutos de
+    mayo a agosto; y el 01/09, tras dos meses con el peor sueño del registro,
+    reportaba la diferencia MÁS PEQUEÑA de toda la serie -4,6 minutos- y
+    concluía "lo que se mueve es el umbral, no el descanso".
+
+    Era el filtro de paso alto que este módulo entero existe para evitar, dentro
+    de la pieza construida para evitarlo. Dos causas, las dos estructurales y
+    ninguna arreglable moviendo el umbral: el último mes era un tercio de su
+    propia referencia, lo que amortigua la diferencia mecánicamente; y como las
+    dos ventanas se deslizan, una deriva lenta nunca abre hueco entre ellas por
+    lejos que llegue.
+
+    Ahora la referencia es el tramo [corta, larga): los días anteriores al
+    último mes, sin un solo día compartido. Por eso `corta < larga` no es una
+    validación cosmética del cargador -es lo que impide que la referencia se
+    quede vacía-.
     """
+    ref = larga - corta
     sc_corta, n_sc_c = _media(sleep_score, day, corta)
-    sc_larga, n_sc_l = _media(sleep_score, day, larga)
+    sc_larga, n_sc_l = _media(sleep_score, day, larga, desde=corta)
     mn_corta, n_mn_c = _media(sleep_min, day, corta)
-    mn_larga, n_mn_l = _media(sleep_min, day, larga)
+    mn_larga, n_mn_l = _media(sleep_min, day, larga, desde=corta)
 
     falta_score = sc_corta is None or sc_larga is None or \
-        n_sc_c < COBERTURA_MINIMA * corta or n_sc_l < COBERTURA_MINIMA * larga
+        n_sc_c < COBERTURA_MINIMA * corta or n_sc_l < COBERTURA_MINIMA * ref
     falta_min = mn_corta is None or mn_larga is None or \
-        n_mn_c < COBERTURA_MINIMA * corta or n_mn_l < COBERTURA_MINIMA * larga
+        n_mn_c < COBERTURA_MINIMA * corta or n_mn_l < COBERTURA_MINIMA * ref
 
     if falta_score and falta_min:
         return None, SinMuestra(
@@ -609,24 +739,28 @@ def _cualifica_sueno(
     d_min = mn_larga - mn_corta
     d_sc = sc_larga - sc_corta
 
+    # El texto nombra el tramo de comparación por lo que ES -los `ref` días
+    # ANTERIORES al último mes- y no por la ventana larga entera. Decir "que en
+    # 90 días" cuando la referencia excluye los 30 últimos sería describir mal
+    # la cuenta justo en la frase que la justifica.
     if baja_min and baja_score:
         return (
             f"y es las dos cosas: {d_min:.0f} min menos y {d_sc:.0f} puntos "
-            f"menos de calidad que en {larga} días"
+            f"menos de calidad que en los {ref} días anteriores"
         ), None
     if baja_min:
         return (
-            f"y es cantidad: {d_min:.0f} min menos que en {larga} días, con la "
-            f"calidad igual"
+            f"y es cantidad: {d_min:.0f} min menos que en los {ref} días "
+            f"anteriores, con la calidad igual"
         ), None
     if baja_score:
         return (
             f"y es calidad, no cantidad: el mismo tiempo en la cama y "
-            f"{d_sc:.0f} puntos menos de sueño que en {larga} días"
+            f"{d_sc:.0f} puntos menos de sueño que en los {ref} días anteriores"
         ), None
     return (
-        f"pero el sueño no ha empeorado respecto a {larga} días ni en tiempo ni "
-        f"en calidad: lo que se mueve es el umbral, no el descanso"
+        f"pero el sueño no ha empeorado respecto a los {ref} días anteriores ni "
+        f"en tiempo ni en calidad: lo que se mueve es el umbral, no el descanso"
     ), None
 
 
@@ -699,7 +833,7 @@ def evaluar_tendencia(
     a_motivo, sm_motivo, tema_motivo = _detecta_motivo(
         day, por_dia, primera, raw, int(trend["motivo_semanas_min"])
     )
-    a_racha, sm_racha, tema_racha = _detecta_racha(
+    a_racha, sm_racha, temas_racha = _detecta_racha(
         day, por_dia, primera, raw, int(trend["racha_min"])
     )
     a_ventana, sm_ventana = _detecta_ventana(
@@ -709,9 +843,15 @@ def evaluar_tendencia(
     # El cualificador se engancha al primer aviso que señale al sueño, y el orden
     # es el mismo en que se leen: si el motivo ya dice "el sueño manda por quinta
     # semana", el matiz va ahí y no repetido en la racha.
+    #
+    # Los temas van en lista porque la racha puede tener varios empatados. Si el
+    # sueño es uno de ellos, el matiz se engancha igual: el aviso ya lo ha
+    # nombrado en voz alta, así que separar cantidad de calidad sigue cambiando
+    # lo que hay que hacer. Exigir que mandara en solitario dejaría sin explicar
+    # justo la mitad de los casos en que el sueño está metido.
     sueno = trend.get("sueno") or {}
-    for aviso, tema in ((a_motivo, tema_motivo), (a_racha, tema_racha)):
-        if aviso is None or tema != "el sueño":
+    for aviso, temas in ((a_motivo, [tema_motivo] if tema_motivo else []), (a_racha, temas_racha)):
+        if aviso is None or "el sueño" not in temas:
             continue
         matiz, sm = _cualifica_sueno(
             day, sleep_score, sleep_min, corta, larga,
