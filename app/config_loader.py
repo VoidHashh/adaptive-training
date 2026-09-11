@@ -1419,11 +1419,18 @@ def _validate(data: dict[str, Any]) -> list[str]:
             "garmin_fetch_time",
             "fallback_decision_time",
             "evening_summary_time",
+            "perception_notice_time",
             "garmin_retry",
         },
         "schedule",
     )
-    for clave in ("garmin_fetch_time", "fallback_decision_time", "evening_summary_time"):
+    HORAS = (
+        "garmin_fetch_time",
+        "fallback_decision_time",
+        "evening_summary_time",
+        "perception_notice_time",
+    )
+    for clave in HORAS:
         v = sched.get(clave)
         if v is None:
             continue
@@ -1440,6 +1447,34 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"schedule.{clave}: '{v}' no es una hora 'HH:MM' válida. Una hora "
             f"ilegible reventaría al montar el scheduler, y sería a las seis de "
             f"la mañana del día que se despliegue",
+        )
+
+    # El aviso de percepción va DESPUÉS de la decisión, y ponerlo antes no
+    # rompería nada visible: el trabajo se ejecutaría, el mensaje saldría y todo
+    # parecería correcto. Lo que se perdería es el motivo entero por el que el
+    # aviso va aparte -llegar primero lo convierte en el preámbulo del plan de
+    # hoy, o sea en un argumento sobre si entrenar- y además a esa hora puede que
+    # no haya check-in todavía, que es el dato del que sale el esfuerzo percibido
+    # de ayer. Un fallo así solo se nota leyendo los mensajes semanas después.
+    def _min(clave: str, defecto: str) -> int | None:
+        texto = str(sched.get(clave) or defecto).split(":")
+        try:
+            return int(texto[0]) * 60 + int(texto[1])
+        except (IndexError, ValueError):
+            return None  # ya lo ha dicho el validador de formato de arriba
+
+    aviso, decision = _min("perception_notice_time", "09:30"), _min(
+        "fallback_decision_time", "09:00"
+    )
+    if aviso is not None and decision is not None:
+        require(
+            aviso > decision,
+            f"schedule.perception_notice_time ({sched.get('perception_notice_time')}) "
+            f"tiene que ser posterior a schedule.fallback_decision_time "
+            f"({sched.get('fallback_decision_time')}): el aviso habla de AYER y "
+            f"tiene que llegar cuando el plan de hoy ya se ha mandado, o los dos "
+            f"mensajes se leen como uno solo y el contador acaba pareciendo un "
+            f"argumento a favor o en contra de entrenar hoy",
         )
 
     retry = sched.get("garmin_retry") or {}

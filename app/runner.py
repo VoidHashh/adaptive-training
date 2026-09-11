@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -90,6 +90,29 @@ class ReconcileResult:
     adopciones: list[dict[str, Any]] = field(default_factory=list)
     avanzado: bool = False
     motivo: str = ""
+
+
+@dataclass
+class AvisoResult:
+    """Qué se evaluó de ayer y qué se contó de ello esta mañana.
+
+    `pendientes` y `marcadas` van separados a propósito. Que sean distintos es
+    exactamente el caso interesante -había algo que decir y no se pudo decir- y
+    con un solo contador ese caso se leería como que no había nada.
+    """
+
+    day: date
+    evaluadas: int = 0
+    pendientes: int = 0
+    marcadas: int = 0
+    status: str = "skipped"  # sent | error | skipped | dry_run
+    motivo: str = ""
+    texto: str = ""
+    problemas: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problemas
 
 
 # ---------------------------------------------------------------------------
@@ -506,3 +529,123 @@ class _PlanLeido:
 
     def __init__(self, plan: dict[str, Any]):
         self.exercises = plan.get("exercises") or []
+
+
+# ---------------------------------------------------------------------------
+# La mañana siguiente
+# ---------------------------------------------------------------------------
+
+
+def run_aviso_percepcion(
+    session: Session,
+    cfg: Any,
+    day: date,
+    *,
+    telegram_client: Any = None,
+    dry_run: bool = False,
+    motivo_sin_cliente: str | None = None,
+) -> AvisoResult:
+    """Evalúa lo que ya se pueda evaluar y cuenta las disociaciones pendientes.
+
+    VA APARTE DEL MENSAJE DE LA DECISIÓN, Y ESO ES EL PUNTO
+    -------------------------------------------------------
+    Es un envío propio, no un párrafo añadido al plan del día. Mezclarlos
+    convertiría el contador en un argumento a favor o en contra de entrenar hoy,
+    y esta vista no opina sobre hoy: mira a ayer y no propone nada. Además, el
+    mensaje de la decisión se manda por dos caminos distintos -el check-in de la
+    PWA y el fallback de las nueve-, así que colgarse de él significaría o
+    duplicar el aviso o perderlo según a qué hora se rellenara el formulario.
+
+    POR QUÉ EVALÚA AQUÍ Y NO POR LA NOCHE
+    -------------------------------------
+    Porque la sesión de ayer necesita el check-in de HOY para tener su esfuerzo
+    percibido, y ese check-in llega esta mañana. Evaluando por la noche, la
+    sesión del lunes no estaría lista hasta el martes por la noche y el aviso
+    saldría el miércoles: dos mañanas tarde para algo que se pidió para "la
+    mañana siguiente". Evaluar y avisar en el mismo trabajo es lo que hace que
+    el lunes se cuente el martes.
+
+    EL ORDEN IMPORTA Y NO ES NEGOCIABLE
+    -----------------------------------
+    Se marca `reported_at` DESPUÉS de que el envío haya salido bien. Al revés
+    -marcar y luego enviar- un fallo de red borraría el aviso sin haberlo dado,
+    y nadie se enteraría de que faltó: la fila quedaría como contada para
+    siempre y ese día desaparecería del único sitio donde iba a aparecer.
+
+    Por lo mismo, un `dry_run` NO marca nada. Si marcara, un ensayo se comería
+    el aviso de verdad.
+    """
+    from app.analysis.rendimiento import (
+        contador_historico,
+        evaluar_pendientes,
+        marcar_reportadas,
+        mensaje_disociacion,
+        pendientes_de_avisar,
+    )
+
+    res = AvisoResult(day=day)
+
+    # Se evalúa SIEMPRE, haya o no a quién avisar. La tabla es el histórico que
+    # sostiene la vista de métricas; dejar de escribirla porque hoy no hay
+    # Telegram configurado ataría el registro a que funcione el mensajero.
+    res.evaluadas = len(evaluar_pendientes(session, cfg, hasta=day))
+    session.flush()
+
+    pendientes = pendientes_de_avisar(session, hasta=day)
+    res.pendientes = len(pendientes)
+    if not pendientes:
+        res.motivo = "no hay ninguna disociación sin contar"
+        return res
+
+    # Las cifras son las del acumulado, las mismas que enseña la pantalla.
+    acumulado = contador_historico(session, hasta=day)
+    res.texto = "\n\n".join(
+        mensaje_disociacion(f, veces=acumulado["veces"], de=acumulado["de"])
+        for f in pendientes
+    )
+
+    if telegram_client is None:
+        res.status = "skipped"
+        res.motivo = motivo_sin_cliente or "sin cliente de Telegram configurado"
+        res.problemas.append(
+            f"no hay cliente de Telegram ({res.motivo}): las "
+            f"{len(pendientes)} disociaciones sin contar siguen pendientes"
+        )
+    else:
+        try:
+            r = telegram_client.send(res.texto, dry_run=dry_run)
+            res.status = "sent" if r.sent else ("dry_run" if dry_run else "skipped")
+            res.motivo = r.reason
+        except Exception as exc:  # noqa: BLE001
+            res.status = "error"
+            res.motivo = str(exc)
+            res.problemas.append(f"Telegram: {exc}")
+            log.exception("fallo enviando el aviso de percepción")
+
+    # El registro se escribe pase lo que pase, igual que el de la decisión: un
+    # día en el que la disociación existió y no se contó a nadie tiene que poder
+    # encontrarse después, y sin fila sería indistinguible de un día tranquilo.
+    session.add(
+        Notification(
+            date=day,
+            kind="perception",
+            channel="telegram",
+            status=res.status,
+            body=res.texto,
+            error=res.motivo if res.status != "sent" else None,
+        )
+    )
+
+    # `not dry_run` va aparte de `status` a propósito, aunque el cliente de
+    # verdad ya devuelve `sent=False` en un ensayo y el estado sea "dry_run".
+    # Marcar de más es la única equivocación irreversible que hay aquí: borra el
+    # aviso sin haberlo dado y ese día no vuelve a salir nunca. Que la garantía
+    # dependa de lo que conteste un cliente es dejarla en manos de un cliente;
+    # el modo de pruebas se comprueba aquí, donde se sabe con certeza.
+    if res.status == "sent" and not dry_run:
+        marcar_reportadas(
+            session, pendientes, cuando=datetime.now(UTC).replace(tzinfo=None)
+        )
+        res.marcadas = len(pendientes)
+
+    return res

@@ -1047,6 +1047,66 @@ def _juzgable(f: SessionPerformance) -> bool:
     return f.gap_pct is not None and (f.n_sessions_base or 0) >= BASE_MINIMA
 
 
+def _cuenta(
+    filas: list[SessionPerformance],
+) -> tuple[list[SessionPerformance], list[SessionPerformance], list[SessionPerformance]]:
+    """Reparte las filas en juzgables, peores y mejores.
+
+    Existe para que la ventana, el acumulado y el mensaje de Telegram cuenten
+    con el MISMO código. Tres sitios repartiendo a mano es la forma barata de
+    que un día la pantalla diga "9 de 84" y el Telegram de esa misma mañana diga
+    "8 de 83", y de que nadie sepa cuál de los dos miente.
+    """
+    juzgadas = [f for f in filas if _juzgable(f)]
+    return (
+        juzgadas,
+        [f for f in juzgadas if f.dissociation and f.direction == PERCEPCION_PEOR],
+        [f for f in juzgadas if f.dissociation and f.direction == PERCEPCION_MEJOR],
+    )
+
+
+def _pct(veces: int, de: int) -> float | None:
+    return round(100.0 * veces / de, 1) if de else None
+
+
+def contador_historico(
+    session: Session, *, hasta: date | None = None
+) -> dict[str, Any]:
+    """El contador sobre TODAS las sesiones juzgadas, sin ventana.
+
+    Es el que se manda por Telegram y el que no puede bajar. El de la ventana
+    sirve para mirar si la cosa mejora; este sirve para la frase "van nueve de
+    ochenta y cuatro", que solo significa algo si las ochenta y cuatro son todas
+    las que ha habido y no las de los últimos seis meses.
+    """
+    hasta = hasta or date.today()
+    filas = list(
+        session.scalars(
+            select(SessionPerformance)
+            .where(SessionPerformance.date <= hasta)
+            .order_by(SessionPerformance.date, SessionPerformance.id)
+        )
+    )
+    juzgadas, peores, _ = _cuenta(filas)
+    return {
+        "veces": len(peores),
+        "de": len(juzgadas),
+        "pct": _pct(len(peores), len(juzgadas)),
+        "total_sesiones": len(filas),
+        "na": None
+        if juzgadas
+        else (
+            "todavía no hay ninguna sesión que se haya podido juzgar, así que el "
+            "acumulado no tiene denominador: no es un cero, es que aún no se "
+            "puede contar"
+        ),
+        "que_es": (
+            "todas las sesiones registradas hasta la fecha, sin ventana; este "
+            "número no baja"
+        ),
+    }
+
+
 def vista_percepcion(
     session: Session, *, dias: int = 180, hasta: date | None = None
 ) -> dict[str, Any]:
@@ -1063,6 +1123,14 @@ def vista_percepcion(
     Meterlas en el denominador haría bajar el contador cada vez que se olvidara
     un formulario, que sería premiar el olvido. Dejarlas fuera y no decirlo sería
     peor. Así que salen las dos cifras y sale el reparto de motivos.
+
+    Y aparte del contador de la ventana sale `historico`, que es el mismo cálculo
+    sobre TODAS las filas. No es un extra: el contador de la ventana puede BAJAR
+    con el tiempo aunque ninguna fila se reescriba, porque una disociación de
+    hace siete meses sale de la ventana y deja de contarse. Para mirar una
+    tendencia eso está bien; para el número que se mira una mañana mala, no -era
+    justamente lo de "que no pueda reescribir su pasado"-. El acumulado no baja
+    nunca, y es el que se manda por Telegram.
     """
     hasta = hasta or date.today()
     desde = hasta - timedelta(days=dias - 1)
@@ -1074,9 +1142,8 @@ def vista_percepcion(
             .order_by(SessionPerformance.date, SessionPerformance.id)
         )
     )
-    juzgadas = [f for f in filas if _juzgable(f)]
-    peores = [f for f in juzgadas if f.dissociation and f.direction == PERCEPCION_PEOR]
-    mejores = [f for f in juzgadas if f.dissociation and f.direction == PERCEPCION_MEJOR]
+    juzgadas, peores, mejores = _cuenta(filas)
+    acumulado = contador_historico(session, hasta=hasta)
 
     motivos: dict[str, int] = {}
     for f in filas:
@@ -1098,7 +1165,7 @@ def vista_percepcion(
         "contador": {
             "veces": len(peores),
             "de": len(juzgadas),
-            "pct": round(100.0 * len(peores) / len(juzgadas), 1) if juzgadas else None,
+            "pct": _pct(len(peores), len(juzgadas)),
             "total_sesiones": len(filas),
             "sin_juicio": len(filas) - len(juzgadas),
             "motivos": motivos,
@@ -1115,6 +1182,11 @@ def vista_percepcion(
                 "aparte con su motivo"
             ),
         },
+        # El mismo cálculo sin ventana. Es el que se manda por Telegram, así que
+        # tiene que estar aquí para que la pantalla pueda enseñar EXACTAMENTE el
+        # número que llegó al móvil esa mañana. Si el mensaje citara una cuenta
+        # que la vista no sabe hacer, comprobarlo sería imposible.
+        "historico": acumulado,
         # La otra dirección: registrada, contada y sin destacar. Un marcador que
         # apunta los aciertos y no los fallos es un cartel, no un marcador.
         #
@@ -1127,7 +1199,7 @@ def vista_percepcion(
         "contraria": {
             "veces": len(mejores),
             "de": len(juzgadas),
-            "pct": round(100.0 * len(mejores) / len(juzgadas), 1) if juzgadas else None,
+            "pct": _pct(len(mejores), len(juzgadas)),
             "na": None
             if juzgadas
             else (
@@ -1155,8 +1227,14 @@ def vista_percepcion(
         },
         "componentes": _medias_componentes(juzgadas),
         "ultima": _resumen(peores[-1]) if peores else None,
+        # Las cifras de la frase son las del ACUMULADO, no las de la ventana, y
+        # son exactamente las mismas que salieron por Telegram esa mañana. Un
+        # mensaje en pantalla que dijera "van 5 de 40" junto a un histórico de
+        # "9 de 84" obligaría a elegir cuál de los dos creerse.
         "mensaje": (
-            mensaje_disociacion(peores[-1], veces=len(peores), de=len(juzgadas))
+            mensaje_disociacion(
+                peores[-1], veces=acumulado["veces"], de=acumulado["de"]
+            )
             if peores
             else None
         ),
@@ -1217,7 +1295,19 @@ def _frase_fuerza(comp: dict[str, Any]) -> list[str]:
 
     prog = comp.get("progresion") or {}
     if prog.get("valor") is not None:
-        var = prog.get("variacion_media_pct") or 0.0
+        # Indexado directo, y no `.get(..., 0.0)`, por la misma razón que sus dos
+        # hermanos de aquí al lado. `progresion` solo tiene dos formas: o `valor`
+        # es None y trae su `na` -y entonces no llegamos aquí-, o `valor` existe y
+        # `variacion_media_pct` es un float. No hay una tercera.
+        #
+        # Un `or 0.0` ahí sería inalcanzable con datos legítimos, y lo único que
+        # podría hacer es convertir una clave que se ha renombrado en la punta que
+        # ESCRIBE en la frase "la misma carga que la vez anterior": una afirmación
+        # concreta sobre el entreno, dicha con aplomo, sin tener ni idea. Un
+        # mensaje cuyo valor entero es ser verificable no puede inventarse un dato
+        # para no quedarse corto; que reviente y que mañana se vuelva a intentar,
+        # que para eso `reported_at` solo se pone si el envío sale bien.
+        var = prog["variacion_media_pct"]
         if abs(var) < 0.5:
             trozos.append("la misma carga que la vez anterior")
         else:

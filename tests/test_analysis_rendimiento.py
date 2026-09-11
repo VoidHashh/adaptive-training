@@ -1560,6 +1560,179 @@ def test_el_mensaje_sale_aunque_falte_algun_componente():
 
 
 # ---------------------------------------------------------------------------
+# Que lo que escribe el evaluador sea lo que sabe leer el mensaje
+# ---------------------------------------------------------------------------
+#
+# Todos los tests de la frase de aquí arriba le pasan a `mensaje_disociacion` un
+# diccionario escrito a mano en este mismo fichero. Eso prueba el formato, y
+# está bien que lo pruebe, pero no prueba el CONTRATO: nadie comprueba que la
+# forma que `evaluar_sesion` guarda en `components_json` sea la forma que
+# `_frase_fuerza` y `_frase_bici` van a buscar después.
+#
+# Y esa costura tiene renombres de verdad: el coste cardiaco se calcula como
+# `{"valor", "fuente"}` y se guarda como `{"coste_cardiaco", "fuente_fc"}`. El
+# día que alguien toque una de las dos puntas, los diccionarios a mano seguirán
+# teniendo la forma vieja, los tests seguirán en verde, y el mensaje perderá en
+# silencio su línea de números -que es la única razón por la que existe: ser
+# concreto y verificable-. Los dos tests que siguen son los únicos en los que el
+# diccionario lo escribe el evaluador.
+
+
+def _sesion_de_fuerza_evaluada(db, *, kg_antes=60.0, kg_hoy=63.0):
+    """Dos sesiones de la misma rutina, con el RPE de la mañana siguiente."""
+    previo, dia = HOY - timedelta(days=9), HOY - timedelta(days=2)
+    for d in (previo, previo + timedelta(days=1), dia, dia + timedelta(days=1)):
+        checkin(db, d, rpe=7.0)
+    for d, wid, kg in ((previo, "W0", kg_antes), (dia, "W1", kg_hoy)):
+        decision(db, d, [ejercicio("press", [serie(), serie(), serie()])])
+        db.add(
+            WorkoutLog(
+                hevy_workout_id=wid,
+                date=d,
+                routine_key="dia1",
+                raw_json=json.dumps(entreno(hecho("press", [serie(kg=kg)] * 3))),
+            )
+        )
+    db.commit()
+    evaluar_pendientes(db, CFG, hasta=HOY, dias=30)
+    db.commit()
+    return db.scalar(
+        select(SessionPerformance).where(SessionPerformance.source_key == "hevy:W1")
+    )
+
+
+def _numeros(texto, fila):
+    """La línea de números, o un fallo que enseña el diccionario que la rompió."""
+    linea = next(
+        (ln for ln in texto.splitlines() if ln.startswith("Los números:")), None
+    )
+    assert linea is not None, (
+        "el evaluador ha guardado unos componentes que el mensaje ya no sabe "
+        f"leer, así que el aviso sale sin sus cifras: {fila.components_json}"
+    )
+    return linea
+
+
+def test_los_numeros_de_fuerza_los_escribe_el_evaluador_y_los_lee_el_mensaje(db):
+    """Las tres piezas de fuerza, de punta a punta y sin diccionarios a mano.
+
+    Con carga distinta -60 a 63 kg- a propósito. Con la misma carga en los dos
+    días la variación sale 0, y un 0 es indistinguible de la clave que falta:
+    el test pasaría igual con la punta que escribe renombrada, que es justo lo
+    que este test existe para no dejar pasar.
+    """
+    f = _sesion_de_fuerza_evaluada(db)
+
+    linea = _numeros(mensaje_disociacion(f, veces=3, de=40), f)
+
+    assert "3 de 3 series efectivas completadas" in linea
+    assert "+5% de carga sobre la vez anterior" in linea
+    assert "RPE 7 moviendo más volumen que el 100% de tus sesiones" in linea
+
+
+def test_repetir_carga_se_dice_con_palabras_y_no_con_un_cero_por_ciento(db):
+    """"La misma carga que la vez anterior", no "+0% de carga".
+
+    Sostener es el resultado normal y bueno de la mayoría de las sesiones con
+    una hernia L4-L5. Un "+0%" en un mensaje que existe para hacer de contrapeso
+    se lee como un cero pelado, que es exactamente la lectura que sobra.
+    """
+    f = _sesion_de_fuerza_evaluada(db, kg_antes=60.0, kg_hoy=60.0)
+
+    linea = _numeros(mensaje_disociacion(f, veces=3, de=40), f)
+
+    assert "la misma carga que la vez anterior" in linea
+    assert "%" not in linea.split(";")[1], "la variación no se dice en porcentaje"
+
+
+def test_una_progresion_a_medias_revienta_en_vez_de_inventarse_la_frase(db):
+    """Si la clave de la variación no está, no se dice "la misma carga".
+
+    Es el único sitio de la frase donde una clave ausente podría convertirse en
+    una afirmación concreta y falsa sobre el entreno en vez de en un hueco. El
+    mensaje entero vale por ser verificable; preferimos que reviente y que
+    mañana se reintente -`reported_at` solo se pone si el envío sale bien- a que
+    salga diciendo con aplomo algo que no sabe.
+    """
+    f = SessionPerformance(
+        date=date(2026, 9, 10),
+        kind=FUERZA,
+        source_key="a",
+        perception_index=10.0,
+        perception_pct=8.0,
+        performance_index=71.0,
+        performance_pct=68.0,
+        direction=PERCEPCION_PEOR,
+        dissociation=True,
+        components_json=json.dumps(
+            {"rendimiento": {"componentes": {"progresion": {"valor": 75.0}}}}
+        ),
+    )
+
+    with pytest.raises(KeyError):
+        mensaje_disociacion(f, veces=3, de=40)
+
+
+def test_los_numeros_de_bici_los_escribe_el_evaluador_y_los_lee_el_mensaje(db):
+    """Lo mismo para la bici, donde el renombre de las claves es real.
+
+    `coste_cardiaco` y `fuente_fc` no se llaman así en el sitio donde se
+    calculan. Este es el único test que recorre las dos puntas.
+    """
+    previo, dia = HOY - timedelta(days=9), HOY - timedelta(days=2)
+    for d in (previo, previo + timedelta(days=1), dia, dia + timedelta(days=1)):
+        checkin(db, d, rpe=7.0)
+    db.add(actividad(id_garmin=10, dia=previo, zonas=(1800.0, 1800.0, 0.0, 0.0, 0.0)))
+    db.add(
+        actividad(
+            id_garmin=11,
+            dia=dia,
+            metros=42000.0,
+            segundos=6000.0,
+            desnivel=500.0,
+            zonas=(3000.0, 3000.0, 0.0, 0.0, 0.0),
+        )
+    )
+    db.commit()
+    evaluar_pendientes(db, CFG, hasta=HOY, dias=30)
+    db.commit()
+    f = db.scalar(
+        select(SessionPerformance).where(SessionPerformance.source_key == "garmin:11")
+    )
+
+    linea = _numeros(mensaje_disociacion(f, veces=3, de=40), f)
+
+    assert "42 km a 25,2 km/h con 11,9 m/km de desnivel" in linea
+    assert "zona media 1,5 de 5" in linea
+    assert "series" not in linea, "la bici no tiene series que contar"
+
+
+def test_sin_zonas_el_mensaje_dice_pulsaciones_y_no_finge_una_zona(db):
+    """Un 140 y un 1,5 no se pueden leer con la misma frase.
+
+    Sin zonas el coste cardiaco se cae a la media de pulsaciones, que es un
+    número de otra escala. Decir "zona media 140 de 5" sería falso; la frase
+    tiene que cambiar con la fuente, igual que cambia el índice.
+    """
+    previo, dia = HOY - timedelta(days=9), HOY - timedelta(days=2)
+    for d in (previo, previo + timedelta(days=1), dia, dia + timedelta(days=1)):
+        checkin(db, d, rpe=7.0)
+    db.add(actividad(id_garmin=20, dia=previo, fc_media=130.0))
+    db.add(actividad(id_garmin=21, dia=dia, fc_media=142.0))
+    db.commit()
+    evaluar_pendientes(db, CFG, hasta=HOY, dias=30)
+    db.commit()
+    f = db.scalar(
+        select(SessionPerformance).where(SessionPerformance.source_key == "garmin:21")
+    )
+
+    linea = _numeros(mensaje_disociacion(f, veces=3, de=40), f)
+
+    assert "142 ppm de media" in linea
+    assert "zona media" not in linea, "sin zonas no se puede hablar de zonas"
+
+
+# ---------------------------------------------------------------------------
 # Lo que falta por decir
 # ---------------------------------------------------------------------------
 

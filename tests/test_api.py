@@ -236,6 +236,11 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     `backfill_wellness` entra en la misma lista y por lo mismo: es el trabajo
     que tapa los días que el sistema se perdió, y dejarlo escrito sin montar
     sería otra vez un interruptor conectado a nada.
+
+    Y `perception_notice` igual. Es el que evalúa la sesión de ayer y cuenta las
+    disociaciones: sin montar, `session_performance` no se escribiría NUNCA, el
+    contador de la vista 5 se quedaría a cero para siempre y la pantalla diría
+    "todavía no se puede contar" mes tras mes sin que nada diera un error.
     """
     monkeypatch.setattr(settings, "scheduler_enabled", True)
 
@@ -244,7 +249,8 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
 
     assert sched["running"] is True, "la aplicación arrancó sin planificador"
     assert set(sched["jobs"]) == {
-        "garmin_fetch", "decision_fallback", "reconcile", "backfill_wellness",
+        "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
+        "backfill_wellness",
     }
     assert all(sched["jobs"].values()), (
         "un trabajo sin próxima ejecución está montado pero no se va a ejecutar, "

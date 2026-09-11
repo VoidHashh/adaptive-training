@@ -1720,6 +1720,17 @@ schedule:
   fallback_decision_time: "09:00"   # si no hay check-in, decide solo con Garmin
   evening_summary_time: "22:30"     # captura lo entrenado para el histórico
 
+  # El aviso de percepción: evalúa la sesión de AYER y, si esa mañana te
+  # puntuaste mucho peor de lo que luego rendiste, lo cuenta con los números.
+  #
+  # Va DESPUÉS de `fallback_decision_time` y no es un detalle de orden. Es un
+  # mensaje aparte y sobre ayer; si llegara antes del plan de hoy se leerían
+  # como una sola cosa y el contador se convertiría en el preámbulo de la
+  # decisión, que es justo lo que no puede ser. Y hace falta el check-in de esta
+  # mañana -de ahí sale el esfuerzo percibido de ayer-, así que antes de las
+  # nueve tampoco habría nada que evaluar.
+  perception_notice_time: "09:30"
+
   # Reintentos ante un 429. Garmin limita por IP durante MINUTOS, así que las
   # esperas van en esa escala: insistir cada dos segundos solo gasta intentos
   # dentro del mismo bloqueo.

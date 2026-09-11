@@ -43,7 +43,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from app import repository as repo
 from app.db import session_scope
-from app.runner import run_daily, run_reconcile
+from app.runner import run_aviso_percepcion, run_daily, run_reconcile
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +161,47 @@ def job_reconcile(
             d = desde + timedelta(days=i)
             salida.append(run_reconcile(s, cfg, d, workouts=workouts))
     return salida
+
+
+def job_aviso_percepcion(
+    cfg: Any,
+    *,
+    day: date | None = None,
+    telegram_client: Any = None,
+    client_errors: dict[str, str] | None = None,
+    dry_run: bool = False,
+) -> Any:
+    """Evalúa las sesiones que ya se pueden juzgar y cuenta las disociaciones.
+
+    Va DESPUÉS de la decisión del día -es "la mañana siguiente" de la sesión de
+    ayer, no un comentario sobre la de hoy- y en un envío propio. Ver
+    `run_aviso_percepcion` para por qué no se pega al mensaje de la decisión y
+    por qué evalúa aquí en vez de por la noche.
+
+    NO lanza cuando no hay cliente de Telegram, y es la diferencia con
+    `job_reconcile`. Allí la falta de cliente para de verdad el sistema: sin
+    reconciliación no se registra el cumplimiento y la progresión se congela en
+    silencio. Aquí no se para nada -la tabla se escribe igual, la pantalla
+    enseña el contador igual- y lo único que pasa es que el aviso se queda sin
+    mandar, sin marcar y a la espera. Reventar el trabajo por eso mandaría un
+    Telegram de error... por el mismo canal que no funciona.
+    """
+    day = day or date.today()
+    with session_scope() as s:
+        res = run_aviso_percepcion(
+            s, cfg, day,
+            telegram_client=telegram_client,
+            dry_run=dry_run,
+            motivo_sin_cliente=(client_errors or {}).get("telegram"),
+        )
+
+    for p in res.problemas:
+        log.error("aviso de percepción: %s", p)
+    log.info(
+        "aviso de percepción del %s: %d evaluadas, %d pendientes, %d contadas (%s)",
+        day, res.evaluadas, res.pendientes, res.marcadas, res.status,
+    )
+    return res
 
 
 def job_fetch_garmin(
@@ -367,6 +408,21 @@ def build_scheduler(
         job_reconcile, cron("evening_summary_time", "22:30"),
         args=[cfg], kwargs={"hevy_client": hevy_client},
         id="reconcile", name="Reconciliar lo entrenado",
+    )
+    # Después del fallback de las 09:00 a propósito. Para entonces la decisión
+    # del día ya se ha mandado por uno de sus dos caminos, así que este llega
+    # como lo que es -un mensaje aparte sobre AYER- y no se mezcla con el plan
+    # de hoy. Antes de las nueve competiría con el check-in de la mañana, que es
+    # justo el dato que hace falta para poder evaluar la sesión de ayer.
+    sched.add_job(
+        job_aviso_percepcion, cron("perception_notice_time", "09:30"),
+        args=[cfg],
+        kwargs={
+            "telegram_client": telegram_client,
+            "client_errors": client_errors,
+            "dry_run": dry_run,
+        },
+        id="perception_notice", name="Contar las disociaciones de ayer",
     )
     # El cuarto trabajo no tiene hora: tiene un retraso. Ver
     # `job_backfill_wellness` para por qué se dispara al arrancar y no a una

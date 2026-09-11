@@ -376,11 +376,36 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_tres_trabajos_del_dia_y_el_del_arranque(cfg):
+def test_estan_los_cuatro_trabajos_del_dia_y_el_del_arranque(cfg):
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
-        "garmin_fetch", "decision_fallback", "reconcile", "backfill_wellness",
+        "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
+        "backfill_wellness",
     }
+
+
+def test_el_aviso_de_percepcion_va_despues_de_la_decision(cfg):
+    """Es un mensaje sobre AYER, y tiene que llegar cuando el de hoy ya llegó.
+
+    Si saliera antes del fallback de las nueve, el usuario recibiría primero un
+    comentario sobre la sesión de ayer y después el plan de hoy, y los leería
+    como una sola cosa: el contador se convertiría en el preámbulo de la
+    decisión, que es justo lo que se pidió que no fuera.
+
+    Y hay una razón de dato además de la de tono: la sesión de ayer necesita el
+    check-in de ESTA mañana para tener su esfuerzo percibido. Avisar a las siete
+    sería avisar antes de poder evaluar.
+    """
+    sched = build_scheduler(cfg, start=False)
+
+    def minutos(job_id: str) -> int:
+        t = sched.get_job(job_id).trigger
+        campos = {f.name: str(f) for f in t.fields}
+        return int(campos["hour"]) * 60 + int(campos["minute"])
+
+    assert minutos("perception_notice") > minutos("decision_fallback"), (
+        "el aviso de ayer tiene que llegar despues del plan de hoy"
+    )
 
 
 def test_la_recuperacion_no_tiene_hora_sino_retraso(cfg):
