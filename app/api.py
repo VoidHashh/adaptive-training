@@ -575,6 +575,37 @@ def metrics_auditoria(
     return vista_auditoria(s, cfg, dias=dias)
 
 
+@app.get("/api/metrics/percepcion")
+def metrics_percepcion(
+    dias: int = Query(180, ge=7, le=730),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 5: la percepción de la mañana frente a lo que de verdad salió.
+
+    SOLO LEE. No evalúa sesiones, no escribe filas y no marca nada como
+    reportado. Eso lo hace el barrido de la mañana (`evaluar_pendientes`), y
+    tiene que ser así: abrir la pantalla no puede crear el juicio de una sesión
+    a la que todavía le falta el esfuerzo percibido, porque la fila no se
+    reescribe después y ese hueco se quedaría para siempre. Una vista que además
+    escribe convierte "mirar el contador" en "mover el contador".
+
+    Tampoco lleva `metodo`, por lo mismo que la auditoría: aquí no se
+    correlaciona nada, se restan dos percentiles ya guardados.
+
+    `comprobar_sliders` sí se llama, aunque esta vista no lea los deslizadores
+    de la base: los lee de `series.DEFINICIONES` para saber el sentido de cada
+    uno, y un deslizador que exista en el formulario y no en esa tabla se caería
+    del índice de percepción sin dar un solo error. Es la defensa de siempre
+    contra el interruptor conectado a nada.
+    """
+    from app.analysis.rendimiento import vista_percepcion
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    return vista_percepcion(s, dias=dias)
+
+
 @app.post("/api/reconcile")
 def post_reconcile(
     day: date | None = None,

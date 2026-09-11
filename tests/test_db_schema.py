@@ -28,6 +28,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateColumn
 
 import app.db as db
+from app.analysis.rendimiento import PERCEPCION_PEOR
 from app.db import SchemaDesfasado, ensure_schema
 from app.models import Base
 from app.repository import adopciones_sin_contar, guardar_adopciones
@@ -323,13 +324,19 @@ def test_la_tabla_de_rendimiento_llega_a_una_base_que_ya_existia(vieja, monkeypa
             source_key="strength:2026-09-10:dia_1", routine_key="dia_1",
             perceived_fatigue=4, perception_pct=12.0,
             performance_pct=68.0, gap_pct=56.0,
-            direction="worse_than_real", dissociation=True, n_sessions_base=22,
+            direction=PERCEPCION_PEOR, dissociation=True, n_sessions_base=22,
         ))
         s.commit()
 
     with Sesion() as s:
         fila = s.query(SessionPerformance).one()
         assert fila.dissociation is True
+        # El vocabulario de `direction` es el de `app.analysis.rendimiento`, y se
+        # importa de allí en vez de escribirlo a mano. Una cadena inventada aquí
+        # pasaría el test igual -la columna solo guarda texto- y dejaría en el
+        # repositorio un valor que no existe en ningún sitio, listo para que
+        # alguien lo copie el día que escriba la consulta del contador.
+        assert fila.direction == "perception_worse"
         assert fila.gap_pct == 56.0
         # Los defectos tienen que venir del servidor, no solo de Python: una
         # columna NOT NULL sin `server_default` se añade bien en una base nueva

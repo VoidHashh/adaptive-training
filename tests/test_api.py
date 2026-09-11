@@ -1219,6 +1219,189 @@ def test_la_auditoria_no_acepta_metodo_porque_no_correlaciona_nada(cliente, db):
     assert "metodo" not in json.dumps(d.json())
 
 
+def _sembrar_juicios(db):
+    """Un histórico de percepción con las tres situaciones que separan el contador.
+
+    Cuatro sesiones que se pudieron juzgar -dos disociadas en la dirección que
+    se mira, una en la contraria y una alineada- y dos que no: una sin check-in
+    esa mañana y otra con demasiado poco histórico detrás. El contador tiene que
+    decir 2 de 4 y además decir que hay 6 sesiones registradas, porque "dos de
+    cuatro" y "dos de seis" son dos afirmaciones distintas y solo una es la que
+    se quiso hacer.
+    """
+    from app.analysis.rendimiento import (
+        ALINEADO,
+        BASE_MINIMA,
+        FUERZA,
+        PERCEPCION_MEJOR,
+        PERCEPCION_PEOR,
+        SIN_DATO,
+    )
+    from app.models import SessionPerformance
+
+    hoy = date.today()
+
+    def fila(i, **kw):
+        kw.setdefault("perception_index", 50.0)
+        kw.setdefault("performance_index", 50.0)
+        kw.setdefault("n_sessions_base", 30)
+        db.add(
+            SessionPerformance(
+                date=hoy - timedelta(days=i),
+                kind=FUERZA,
+                source_key=f"hevy:W{i}",
+                routine_key="dia1",
+                **kw,
+            )
+        )
+
+    fila(
+        1,
+        perception_index=10.0,
+        perception_pct=8.0,
+        performance_index=71.0,
+        performance_pct=68.0,
+        gap_pct=60.0,
+        direction=PERCEPCION_PEOR,
+        dissociation=True,
+        comp_compliance=100.0,
+        components_json=json.dumps(
+            {
+                "rendimiento": {
+                    "componentes": {
+                        "cumplimiento": {
+                            "valor": 100.0,
+                            "logradas": 12,
+                            "prescritas": 12,
+                        }
+                    }
+                }
+            }
+        ),
+    )
+    fila(
+        3,
+        perception_index=12.0,
+        perception_pct=10.0,
+        performance_index=70.0,
+        performance_pct=66.0,
+        gap_pct=56.0,
+        direction=PERCEPCION_PEOR,
+        dissociation=True,
+        comp_compliance=90.0,
+    )
+    fila(
+        5,
+        perception_index=80.0,
+        perception_pct=90.0,
+        performance_index=20.0,
+        performance_pct=15.0,
+        gap_pct=-75.0,
+        direction=PERCEPCION_MEJOR,
+        dissociation=True,
+    )
+    fila(7, perception_pct=50.0, performance_pct=50.0, gap_pct=0.0, direction=ALINEADO)
+    fila(
+        9,
+        perception_index=None,
+        perception_pct=None,
+        performance_pct=50.0,
+        gap_pct=None,
+        direction=SIN_DATO,
+        na_reason="solo 0 de los 6 deslizadores están contestados",
+    )
+    fila(
+        11,
+        perception_pct=20.0,
+        performance_pct=80.0,
+        gap_pct=60.0,
+        direction=PERCEPCION_PEOR,
+        n_sessions_base=BASE_MINIMA - 1,
+    )
+    db.commit()
+
+
+def test_la_percepcion_cuenta_una_direccion_y_registra_la_otra(cliente, db):
+    """Vista 5: el número que se mira la mañana de levantarse pensando que no.
+
+    Y la dirección contraria, que no se destaca pero se cuenta: un marcador que
+    apunta los aciertos y no los fallos no es un marcador, es un cartel.
+    """
+    _sembrar_juicios(db)
+    r = cliente.get("/api/metrics/percepcion?dias=30")
+    assert r.status_code == 200
+    d = r.json()
+
+    c = d["contador"]
+    assert (c["veces"], c["de"], c["pct"]) == (2, 4, 50.0)
+    assert c["total_sesiones"] == 6
+    assert c["sin_juicio"] == 2
+    assert c["na"] is None
+
+    assert d["contraria"]["veces"] == 1
+    assert d["alineadas"] == 1
+
+    # El listado que se pidió, del más reciente al más viejo y con los números.
+    assert [x["fecha"] for x in d["disociaciones"]] == [
+        (date.today() - timedelta(days=1)).isoformat(),
+        (date.today() - timedelta(days=3)).isoformat(),
+    ]
+    assert d["disociaciones"][0]["percepcion"] == 10.0
+    assert d["disociaciones"][0]["rendimiento"] == 71.0
+
+    # Y la frase, con sus cifras y sin una sola palabra de ánimo.
+    assert "percentil 8" in d["mensaje"]
+    assert "12 de 12 series" in d["mensaje"]
+    assert "Van 2 de 4" in d["mensaje"]
+
+
+def test_la_sesion_sin_juicio_sale_con_su_motivo_y_fuera_del_denominador(cliente, db):
+    """Meterla en el denominador premiaría el olvido del formulario.
+
+    Cada vez que se dejara una mañana sin rellenar, el contador bajaría solo.
+    Dejarla fuera y no decirlo sería peor, así que salen las dos cifras y sale
+    el reparto de motivos.
+    """
+    _sembrar_juicios(db)
+    c = cliente.get("/api/metrics/percepcion?dias=30").json()["contador"]
+
+    assert c["de"] < c["total_sesiones"]
+    assert "solo 0 de los 6 deslizadores están contestados" in c["motivos"]
+    assert sum(c["motivos"].values()) == c["sin_juicio"]
+    assert "no sobre todas las registradas" in c["nota"]
+
+
+def test_la_percepcion_no_acepta_metodo_porque_resta_dos_percentiles(cliente, db):
+    """Aquí no se correlaciona nada: se restan dos números ya guardados."""
+    _sembrar_juicios(db)
+    r = cliente.get("/api/metrics/percepcion?dias=30&metodo=kendall")
+    assert r.status_code == 200
+    assert "metodo" not in json.dumps(r.json())
+
+
+def test_mirar_el_contador_no_puede_moverlo(cliente, db):
+    """La vista SOLO lee. Ni evalúa sesiones ni marca nada como reportado.
+
+    Si abrir la pantalla evaluara, se escribiría el juicio de una sesión a la
+    que todavía le falta el esfuerzo percibido de la mañana siguiente; y como la
+    fila no se reescribe, ese hueco se quedaría para siempre. Abrir la pantalla
+    dos veces tampoco puede cambiar una coma.
+    """
+    from app.models import SessionPerformance
+
+    _sembrar_juicios(db)
+    antes = cliente.get("/api/metrics/percepcion?dias=30").json()
+    reportadas = db.query(SessionPerformance).filter(
+        SessionPerformance.reported_at.is_not(None)
+    ).count()
+
+    despues = cliente.get("/api/metrics/percepcion?dias=30").json()
+
+    assert antes == despues
+    assert db.query(SessionPerformance).count() == 6
+    assert reportadas == 0, "mirar la pantalla no da por avisado ningún día"
+
+
 def test_una_respuesta_desconocida_en_el_ranking_es_un_400_con_la_lista(cliente):
     """Un 500 diría que el servidor está roto; un ranking vacío sería peor.
 
@@ -1244,6 +1427,7 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
         "/api/metrics/impacto",
         "/api/metrics/ranking-ejercicios",
         "/api/metrics/auditoria",
+        "/api/metrics/percepcion",
     ):
         r = cliente.get(ruta)
         assert r.status_code == 200, ruta
@@ -1275,6 +1459,23 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     assert v4["nunca_dispararon"] == []
     assert v4["distribucion"]["global"]["n"] == 0
     assert v4["distribucion"]["global"]["porcentaje"] is None
+
+    # Y la vista 5 el primer día NO dice "nunca te ha pasado". Dice que todavía
+    # no se puede contar, que es una frase distinta: un 0% sobre 0 sesiones se
+    # lee como un veredicto sobre la percepción cuando lo único que hay es una
+    # base vacía. Es exactamente el mismo fallo que el día verde inventado de la
+    # vista 4, en la vista donde más caro saldría.
+    v5 = cliente.get("/api/metrics/percepcion").json()
+    assert v5["contador"]["veces"] == 0
+    assert v5["contador"]["de"] == 0
+    assert v5["contador"]["pct"] is None
+    assert "no es un cero" in v5["contador"]["na"]
+    assert v5["disociaciones"] == []
+    assert v5["mensaje"] is None
+    # Los componentes salen todos, con su n a cero y su motivo. Ninguno se
+    # esconde a la espera de tener datos.
+    assert len(v5["componentes"]) == 6
+    assert all(c["n"] == 0 and c["na"] for c in v5["componentes"].values())
 
 
 def test_un_metodo_inventado_se_rechaza_en_vez_de_caer_en_uno_por_defecto(cliente):
@@ -1310,6 +1511,7 @@ def test_una_ventana_absurda_se_rechaza(cliente):
         "/api/metrics/impacto",
         "/api/metrics/ranking-ejercicios",
         "/api/metrics/auditoria",
+        "/api/metrics/percepcion",
     ):
         assert cliente.get(f"{ruta}?dias=4").status_code == 422, ruta
         assert cliente.get(f"{ruta}?dias=5000").status_code == 422, ruta
