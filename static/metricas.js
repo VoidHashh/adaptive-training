@@ -40,7 +40,7 @@ const RUTAS = {
 const VISTAS = {
   concordancia: {
     titulo: "Concordancia",
-    subtitulo: "Lo que notas frente a lo que mide el reloj, el mismo día",
+    subtitulo: "Lo que notas frente al reloj, y el reloj frente a sí mismo",
     pintar: pintarConcordancia,
   },
   desfase: {
@@ -134,10 +134,14 @@ async function pintarConcordancia(dias) {
   const partes = [pintarCobertura(d.cobertura, d.ventana)];
 
   partes.push(
+    `<h2 class="grupo">Lo que notas frente al reloj</h2>` +
     `<p class="explica">Cada pareja junta algo que contestas por la mañana con ` +
     `algo que el reloj mide solo. La barra va de −1 a 1 con el cero marcado, y ` +
     `<b>el signo que se espera</b> está escrito debajo: lo interesante no es que ` +
-    `la correlación sea alta, es que vaya en la dirección que debería.</p>`,
+    `la correlación sea alta, es que vaya en la dirección que debería. Estas ` +
+    `siete son preguntas hechas de antemano, así que no llevan corrección por ` +
+    `comparaciones múltiples: no hay una rejilla que rastrear, hay siete ` +
+    `hipótesis. El bloque de abajo sí la lleva, y por eso.</p>`,
   );
 
   for (const p of d.pares) {
@@ -158,6 +162,8 @@ async function pintarConcordancia(dias) {
       `</article>`,
     );
   }
+
+  partes.push(seccionInternas(d));
 
   // Las señales sueltas, plegadas. Cada una en su propio percentil histórico,
   // que es lo único que permite dibujar un 1-5 y una HRV en milisegundos en la
@@ -183,6 +189,94 @@ async function pintarConcordancia(dias) {
   ));
 
   $("vista").innerHTML = partes.join("");
+}
+
+/* El reloj cruzado consigo mismo: las diez parejas de las cinco métricas.
+ *
+ * Van partidas en dos grupos y las independientes primero, aunque el payload las
+ * manda en su orden natural. No es capricho de maquetación: es la lectura entera
+ * del bloque. Ocho de las diez parejas cruzan un número con otro del que Garmin
+ * lo calcula -la nota de sueño con los minutos dormidos, el Body Battery con la
+ * variabilidad-, y ahí una correlación alta es la fórmula del reloj asomando, no
+ * un hallazgo. Las dos que quedan son las únicas que miden dos cosas de verdad
+ * distintas.
+ *
+ * Todas juntas y en fila, el bloque diría "ocho de diez significativas" y se
+ * leería como que el reloj es coherentísimo. Partido, se ve DÓNDE está esa
+ * coherencia, que es la diferencia entre una tabla y una respuesta.
+ *
+ * Ninguna se esconde ni se pliega: las ocho están enteras, con su aviso dentro.
+ */
+function seccionInternas(d) {
+  const r = d.resumen_internas;
+  const indep = d.internas.filter((c) => c.mismo_origen === null);
+  const compartidas = d.internas.filter((c) => c.mismo_origen !== null);
+
+  const contador =
+    `<p class="explica"><b>${entero(r.significativas)} de ${entero(r.calculadas)}</b> ` +
+    `parejas calculadas aguantan la corrección. Repartidas: ` +
+    `<b>${entero(r.independientes.significativas)} de ` +
+    `${entero(r.independientes.parejas)}</b> entre las que miden cosas distintas, ` +
+    `<b>${entero(r.comparten_origen.significativas)} de ` +
+    `${entero(r.comparten_origen.parejas)}</b> entre las que el reloj calcula una ` +
+    `a partir de la otra` +
+    (r.en_sentido_contrario
+      ? ` · ${entero(r.en_sentido_contrario)} va en sentido contrario al esperado`
+      : "") +
+    `.</p>`;
+
+  const grupo = (titulo, explica, cartas) => (
+    `<h3 class="grupo dentro">${escapar(titulo)}</h3>` +
+    `<p class="explica">${escapar(explica)}</p>` +
+    (cartas.length
+      ? cartas.map(tarjetaInterna).join("")
+      : bloqueNa("no hay ni una pareja en este grupo"))
+  );
+
+  return (
+    `<h2 class="grupo">El reloj consigo mismo</h2>` +
+    `<p class="explica">${escapar(d.aviso_internas)}</p>` +
+    contador +
+    grupo(
+      "Las que miden dos cosas distintas",
+      "El reloj las obtiene por separado, sin que una entre en el cálculo de la " +
+      "otra. Es el único sitio de este bloque donde lo que salga puede ser del " +
+      "cuerpo y no de la fórmula.",
+      indep,
+    ) +
+    grupo(
+      "Las que el reloj calcula una a partir de la otra",
+      "Que salgan altas era de esperar: parte de la relación la pone Garmin al " +
+      "construir el número. Lo que informa aquí es una que salga baja o al revés.",
+      compartidas,
+    )
+  );
+}
+
+function tarjetaInterna(c) {
+  return (
+    `<article class="tarjeta">` +
+    `<h2>${escapar(c.titulo)}</h2>` +
+    barraR(c) +
+    `<p class="cifra">r = <b>${num(c.r)}</b>${c.p !== null && c.p !== undefined
+      ? ` · p = ${num(c.p, 3)}` : ""}</p>` +
+    (c.lectura ? `<p class="lectura">${escapar(c.lectura)}</p>` : bloqueNa(c.na)) +
+    // El aviso de origen compartido va DENTRO de la tarjeta y no solo en la
+    // cabecera del grupo. Una tarjeta que se lea suelta -buscando, o después de
+    // desplazarse- tiene que llevar encima el motivo por el que su número puede
+    // no significar lo que parece.
+    (c.mismo_origen ? `<p class="na">Ojo: ${escapar(c.mismo_origen)}.</p>` : "") +
+    `<p class="esperado">Se espera que ` +
+    `${c.signo_esperado > 0 ? "suban juntas" : "vaya una al revés de la otra"}.</p>` +
+    ficha(c) +
+    `<p class="ficha">` +
+    `${c.p_corregida !== null && c.p_corregida !== undefined
+      ? `p corregida ${num(c.p_corregida, 3)}` : "sin corregir"}` +
+    `${c.significativa === true ? " · aguanta la corrección" : ""}` +
+    `${c.significativa === false ? " · no aguanta la corrección" : ""}</p>` +
+    (c.aviso && c.lectura ? `<p class="na">${escapar(c.aviso)}</p>` : "") +
+    `</article>`
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -82,11 +82,19 @@ function colorSigno(r) {
  *   `null`  -> sobre esta vista no se pasó ninguna corrección. No hay nada que
  *              aguantar, así que lo único que puede decidir es la n.
  *
- * El tercero es concordancia y desfase: siete parejas declaradas de antemano,
- * cada una con el signo que se espera escrito debajo, que es una pregunta
- * distinta de rastrear una rejilla a ver qué sale. Por eso la línea "aguanta la
- * corrección" solo aparece donde de verdad hubo corrección: escribirla en las
- * cinco vistas la convertiría en decoración.
+ * El tercero son las siete parejas de percepción de la vista 1 y la rejilla de
+ * la vista 2: hipótesis declaradas de antemano, cada una con el signo que se
+ * espera escrito debajo, que es una pregunta distinta de rastrear una rejilla a
+ * ver qué sale. Por eso la línea "aguanta la corrección" solo aparece donde de
+ * verdad hubo corrección: escribirla en las cinco vistas la convertiría en
+ * decoración.
+ *
+ * Y por eso la vista 1 lleva LOS TRES valores a la vez, que es la mejor prueba
+ * de que la distinción no es teórica. Sus siete parejas de percepción llegan con
+ * `null` -nadie las corrigió, eran siete preguntas- y sus diez correlaciones
+ * internas del reloj llegan con `true` o `false`, porque esas sí son la rejilla
+ * completa de lo que se puede cruzar. Dos bloques en la misma pantalla, con la
+ * misma barra, significando cosas distintas y diciéndolo.
  *
  * Aquí ponía lo mismo pero leyendo una clave que concordancia no mandaba.
  * Funcionaba -`undefined !== false` da `true`- y por eso es peligroso: nadie

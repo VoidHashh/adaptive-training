@@ -51,7 +51,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis import series as S
 from app.analysis.stats import (
-    benjamini_hochberg,
+    corregir_tanda,
     correlacion,
     emparejar,
     percentil,
@@ -531,7 +531,7 @@ def vista_impacto(
                 }
             )
 
-    _corregir([fila["por_dia"] for fila in rejilla])
+    corregir_tanda([fila["por_dia"] for fila in rejilla])
 
     return {
         "vista": "impacto",
@@ -542,23 +542,6 @@ def vista_impacto(
         "advertencia": ADVERTENCIA_CONFUSION,
         "rejilla": rejilla,
     }
-
-
-def _corregir(grupos: list[list[dict[str, Any]]]) -> None:
-    """Añade la p corregida a cada casilla, corrigiendo sobre la tanda ENTERA.
-
-    Sobre la tanda entera y no fila por fila: lo que hay que corregir es el
-    número de veces que se ha mirado, y se ha mirado una vez por casilla. Hacerlo
-    por filas daría una corrección más suave y perfectamente inútil, que es peor
-    que no hacerla, porque además tranquiliza.
-
-    Modifica las casillas en el sitio. Reciben una clave más y nadie tiene que
-    acordarse de volver a colocarlas.
-    """
-    plano = [c for grupo in grupos for c in grupo]
-    for c, pc in zip(plano, benjamini_hochberg([c.get("p") for c in plano])):
-        c["p_corregida"] = None if pc is None else round(pc, 5)
-        c["significativa"] = bool(pc is not None and pc < 0.05)
 
 
 ADVERTENCIA_CONFUSION = (
@@ -625,7 +608,7 @@ def ranking_ejercicios(
             }
         )
 
-    _corregir([f["por_dia"] for f in filas])
+    corregir_tanda([f["por_dia"] for f in filas])
 
     primero = retardos[0] if retardos else 1
 

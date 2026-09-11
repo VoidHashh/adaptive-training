@@ -118,7 +118,7 @@ class Resultado:
             # poder distinguir "no aguanta la corrección" de "aquí no hay
             # corrección que aguantar".
             #
-            # `impacto._corregir` las sobrescribe con los valores de verdad.
+            # `corregir_tanda` las sobrescribe con los valores de verdad.
             "p_corregida": None,
             "significativa": None,
         }
@@ -552,3 +552,31 @@ def benjamini_hochberg(ps: Sequence[float | None]) -> list[float | None]:
         minimo = min(minimo, valor)
         corregidos[i] = min(1.0, minimo)
     return corregidos
+
+
+def corregir_tanda(grupos: Sequence[Sequence[dict]]) -> None:
+    """Añade la p corregida a cada casilla, corrigiendo sobre la tanda ENTERA.
+
+    Sobre la tanda entera y no grupo por grupo: lo que hay que corregir es el
+    número de veces que se ha mirado, y se ha mirado una vez por casilla. Hacerlo
+    por grupos daría una corrección más suave y perfectamente inútil, que es peor
+    que no hacerla, porque además tranquiliza.
+
+    Los grupos existen solo porque quien llama tiene sus casillas repartidas en
+    filas -una por exposición, una por pareja- y aplanarlas en el sitio de la
+    llamada sería una comprensión de lista idéntica en cada uno.
+
+    Modifica las casillas donde están. Reciben dos claves más -`p_corregida` y
+    `significativa`- y nadie tiene que acordarse de volver a colocarlas.
+
+    Vive aquí y no en `impacto`, que es donde nació, porque desde que la vista 1
+    corrige sus correlaciones internas de Garmin hay dos módulos que la usan, y
+    la alternativa era que `concordancia` importara un guión bajo de `impacto`.
+    Dos vistas que se corrigen con dos copias de esta función es la forma
+    tranquila de que una de las dos deje de corregirse el día que se toque la
+    otra, y eso no daría ningún error: daría más casillas en negrita.
+    """
+    plano = [c for grupo in grupos for c in grupo]
+    for c, pc in zip(plano, benjamini_hochberg([c.get("p") for c in plano])):
+        c["p_corregida"] = None if pc is None else round(pc, 5)
+        c["significativa"] = bool(pc is not None and pc < 0.05)

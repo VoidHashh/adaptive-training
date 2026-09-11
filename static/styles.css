@@ -358,6 +358,21 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
   font-weight: 700;
 }
 
+/* Un encabezado DENTRO de un grupo.
+ *
+ * El bloque de correlaciones internas del reloj se parte en dos mitades que no
+ * se leen igual -las dos parejas que miden cosas distintas y las ocho donde
+ * Garmin calcula un número a partir del otro-, y con un solo nivel de
+ * encabezado las dos mitades se leerían como una lista de diez. Que es justo la
+ * lectura que el bloque existe para evitar. */
+.grupo.dentro {
+  margin-top: 1.1rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.98rem;
+  color: var(--texto);
+}
+
 /* Los párrafos que explican cómo hay que leer lo de debajo. */
 .explica {
   margin: 0 0 0.8rem;
