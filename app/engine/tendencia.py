@@ -703,6 +703,29 @@ def _cualifica_sueno(
     último mes, sin un solo día compartido. Por eso `corta < larga` no es una
     validación cosmética del cargador -es lo que impide que la referencia se
     quede vacía-.
+
+    LO QUE ESTO ARREGLA Y LO QUE NO, MEDIDO
+    ---------------------------------------
+    Arregla la primera causa y solo esa. Con la corta a un tercio de la larga,
+    la diferencia disjunta es SIEMPRE exactamente 1,5 veces la anidada, y sobre
+    el histórico se comprueba día a día: 19,0 → 28,4 el 03/08, 16,7 → 25,0 el
+    06/08, 13,5 → 20,3 el 10/08. Es una rebaja mecánica de un tercio, y ya no
+    está.
+
+    NO arregla el 01/09, y conviene saberlo antes de leer ese número: pasa de
+    4,6 a 6,8 minutos y sigue siendo pequeño. No es un fallo de la medida, es
+    la medida diciendo la verdad. Para entonces el sueño llevaba MESES malo, o
+    sea que los 30 recientes y los 60 anteriores estaban los dos dentro del
+    tramo malo; comparar uno con otro no puede dar mucho porque no hay
+    escalón entre ellos. Una caída que ya ha terminado de caer es un nivel, no
+    una tendencia, y este detector mide tendencias.
+
+    Esto es un límite de diseño y no un pendiente: ensanchar la ventana para
+    verlo obligaría a arrastrar medio año de referencia, que es la clase de
+    memoria que convierte un aviso en un reproche permanente. Si alguna vez
+    hace falta leer el NIVEL y no el cambio, será otra pieza -una comparación
+    contra la distribución histórica completa-, no esta con los números
+    estirados.
     """
     ref = larga - corta
     sc_corta, n_sc_c = _media(sleep_score, day, corta)
