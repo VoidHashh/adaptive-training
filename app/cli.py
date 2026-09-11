@@ -264,9 +264,9 @@ def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str], 
             "base y `carga_acumulada` no se podrá evaluar"
         ], None
 
-    from app.integrations.activity_cache import load_cached_rides
+    from app.integrations.activity_cache import RUTA_CACHE_SALIDAS, load_cached_rides
 
-    cache = load_cached_rides(REPO_ROOT / "data" / "cache" / "activities.json")
+    cache = load_cached_rides(RUTA_CACHE_SALIDAS)
     if not cache.available:
         return [], [], [
             f"sin histórico largo de salidas ({cache.describe()}); los umbrales "

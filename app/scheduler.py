@@ -218,12 +218,11 @@ def job_fetch_garmin(
     de peticiones en datos que ya están en disco.
     """
     from app.integrations.activity_cache import (
-        load_cached_rides, refresh_cache, ventana_de_salidas,
+        RUTA_CACHE_SALIDAS, load_cached_rides, refresh_cache, ventana_de_salidas,
     )
-    from app.settings import REPO_ROOT
 
     day = day or date.today()
-    ruta = REPO_ROOT / "data" / "cache" / "activities.json"
+    ruta = RUTA_CACHE_SALIDAS
     dias, motivo = ventana_de_salidas(cfg, day, load_cached_rides(ruta))
     # El motivo se registra siempre. Un backfill que se repite cada madrugada
     # es un síntoma -la caché no se está escribiendo- y sin esta línea el único
@@ -334,17 +333,17 @@ def dias_de_wellness(cfg: Any) -> int:
 def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
     """Lectura real de Garmin. Aislada para poder inyectar otra en los tests."""
     from app.integrations.activity_cache import (
-        load_cached_rides, merge_rides, ventana_de_salidas,
+        RUTA_CACHE_SALIDAS, load_cached_rides, merge_rides, ventana_de_salidas,
     )
     from app.integrations.garmin import build_client
-    from app.settings import REPO_ROOT, settings
+    from app.settings import settings
 
     # La caché se lee ANTES de llamar a Garmin, no después. Es la que decide
     # cuánto hay que pedir: con una caché sana basta la ventana corta, porque
     # el resto del histórico ya está en disco y se fusiona abajo. Si la caché
     # no está o no llega, esta petición es la única fuente y tiene que traer
     # el histórico entero o los umbrales adaptativos se quedan sin base.
-    cache = load_cached_rides(REPO_ROOT / "data" / "cache" / "activities.json")
+    cache = load_cached_rides(RUTA_CACHE_SALIDAS)
     ride_days, motivo = ventana_de_salidas(cfg, day, cache)
     log.info("caché de salidas: %s", motivo)
 

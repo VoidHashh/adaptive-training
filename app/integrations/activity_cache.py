@@ -38,6 +38,14 @@ from app.integrations.garmin import rides_from_activities
 
 log = logging.getLogger(__name__)
 
+# Dónde vive el volcado. Estaba escrito a mano en `cli.py` y dos veces en
+# `scheduler.py`, y ahora lo lee también el relleno: cuatro copias de una ruta
+# es una que se queda atrás el día que se mueva, y el síntoma sería una caché
+# "vacía" -que no lanza- en el sitio que no se actualizó.
+RUTA_CACHE_SALIDAS = (
+    Path(__file__).resolve().parents[2] / "data" / "cache" / "activities.json"
+)
+
 
 @dataclass
 class CachedActivities:

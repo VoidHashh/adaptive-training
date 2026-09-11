@@ -17,11 +17,17 @@ si el backfill sirve o hace daño:
   - que un corte por límite pare y deje escrito lo anterior, porque son
     setecientas peticiones contra un servicio que corta por IP;
   - que lo recuperado quede marcado como recuperado.
+
+La segunda mitad del archivo prueba el relleno de SALIDAS, que hasta ahora no
+existía y por eso `activities` estuvo seis meses a cero mientras el bienestar se
+rellenaba entero. Sus reglas son otras y están explicadas donde empieza.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, select
@@ -29,14 +35,17 @@ from sqlalchemy.orm import Session
 
 from app.backfill import (
     PETICIONES_POR_DIA,
+    SinCacheDeSalidas,
     dias_pendientes,
     rellenar,
+    rellenar_salidas,
     recuperar_al_arrancar,
     ventana_de_recuperacion,
 )
 from app.engine.signals import DayMetrics
+from app.integrations.activity_cache import RUTA_CACHE_SALIDAS
 from app.integrations.garmin import GarminRateLimited
-from app.models import Base, DailyMetrics
+from app.models import Activity, Base, DailyMetrics
 from app.repository import upsert_daily_metrics
 
 HOY = date(2026, 9, 11)
@@ -443,3 +452,289 @@ def test_el_repaso_usa_la_pausa_del_config(db):
         hoy=HOY, dormir=dormidas.append,
     )
     assert dormidas == [1.5, 1.5, 1.5], f"cuatro días pedidos, tres pausas: {dormidas}"
+
+
+# ---------------------------------------------------------------------------
+# La otra mitad: las salidas que llevaban meses en disco sin llegar a la tabla
+# ---------------------------------------------------------------------------
+#
+# Esto no se probó nunca porque no existía, y no existía por un olvido que no
+# tenía forma de verse: `upsert_activities` tenía un solo llamador -el trabajo
+# diario, que archiva las salidas del día que está decidiendo-, así que el
+# backfill de seis meses cubrió el bienestar y dejó `activities` a cero. Por
+# fuera las dos cosas se llamaban lo mismo.
+#
+# Lo que se prueba aquí es lo que decide si el relleno sirve o hace daño:
+#
+#   - que NO reescriba la clasificación de una salida ya archivada, porque
+#     `intensa` significa "intensa según los umbrales del día en que se hizo" y
+#     re-estampar el histórico con el config de hoy cambiaría de significado lo
+#     que ya está medido, sin un error y sin manera de volver atrás;
+#   - que una caché que falta sea un error y no un resultado de cero, que es
+#     indistinguible de "ya estaba todo archivado";
+#   - que una salida sin `activity_id` se cuente en vez de desaparecer;
+#   - que `--simular` cuente exactamente lo que luego se escribe.
+
+
+CICLISMO = {"activityType": {"typeKey": "cycling"}}
+
+CFG_BICI = {
+    "cycling": {
+        "activity_types": ["cycling"],
+        "classification": [
+            {"level": "intensa", "zones": [4, 5], "min_time_pct": 30},
+            {"level": "media", "zones": [3], "min_time_pct": 30},
+            {"level": "suave", "always": True},
+        ],
+        "classification_fallback": {
+            "use": "anaerobic_training_effect",
+            "intensa_if_gte": 2.0,
+            "media_if_gte": 1.0,
+            "on_no_data": "desconocida",
+        },
+        "load": {"fallback_estimate": {
+            "enabled": True,
+            "load_per_hour": {"suave": 40, "media": 90, "intensa": 160},
+        }},
+    }
+}
+
+
+def actividad(dia: date, aid: int | None = 1, *, z4z5: float = 0.0, **extra):
+    """Una actividad cruda de Garmin, del tamaño mínimo que el parser acepta.
+
+    El reparto por zonas se da con un solo mando -`z4z5`, el porcentaje de
+    tiempo duro- porque es lo único que decide la etiqueta, y escribir las cinco
+    zonas a mano en cada test escondería cuál de los cinco números importa.
+    """
+    act = {
+        **CICLISMO,
+        "startTimeLocal": f"{dia.isoformat()} 09:00:00",
+        "duration": 3600.0,
+        "distance": 30000.0,
+        "activityTrainingLoad": 120.0,
+        "movingDuration": 3400.0,
+        "elevationGain": 400.0,
+        "averageHR": 140.0,
+        "hrTimeInZone_1": 0.0,
+        "hrTimeInZone_2": 3600.0 * (1 - z4z5 / 100.0),
+        "hrTimeInZone_3": 0.0,
+        "hrTimeInZone_4": 3600.0 * (z4z5 / 100.0),
+        "hrTimeInZone_5": 0.0,
+    }
+    if aid is not None:
+        act["activityId"] = aid
+    act.update(extra)
+    return act
+
+
+def cache_con(tmp_path, actividades) -> Path:
+    ruta = tmp_path / "activities.json"
+    ruta.write_text(json.dumps(actividades), encoding="utf-8")
+    return ruta
+
+
+def test_el_relleno_archiva_las_salidas_que_no_tenian_fila(db, tmp_path):
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 3, 7), 11, z4z5=50),
+        actividad(date(2026, 5, 2), 22, z4z5=0),
+        actividad(date(2026, 9, 6), 33, z4z5=40),
+    ])
+
+    res = rellenar_salidas(db, CFG_BICI, ruta)
+
+    assert res.escritas == 3
+    assert res.ya_estaban == 0
+    assert (res.primera, res.ultima) == (date(2026, 3, 7), date(2026, 9, 6))
+    assert res.niveles == {"intensa": 2, "suave": 1}
+
+    filas = db.scalars(select(Activity).order_by(Activity.date)).all()
+    assert [f.garmin_activity_id for f in filas] == [11, 22, 33]
+    assert [f.intensity_level for f in filas] == ["intensa", "suave", "intensa"]
+
+
+def test_el_relleno_guarda_las_columnas_que_solo_usa_el_analisis(db, tmp_path):
+    """Desnivel, tiempo en movimiento y FC media, que no las usa el motor.
+
+    Van aparte porque son justo las que se quedaron a NULL durante meses: el
+    motor no las lee, así que ninguna decisión salía mal y nadie las echaba de
+    menos. Las lee la vista 5, que escribe frases con ellas.
+    """
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7)])
+    rellenar_salidas(db, CFG_BICI, ruta)
+
+    f = db.scalars(select(Activity)).one()
+    assert f.elevation_gain_m == 400.0
+    assert f.moving_duration_s == 3400.0
+    assert f.avg_hr == 140.0
+    assert f.training_load == 120.0
+    assert f.training_load_estimated is False
+
+
+def test_el_relleno_no_reescribe_la_clasificacion_de_lo_ya_archivado(db, tmp_path):
+    """La etiqueta de abril es la de los umbrales de abril, y así se queda.
+
+    En `activities` se guarda la CLASIFICACIÓN, no solo el crudo, porque depende
+    del `config.yaml` del día en que se hizo. Si el relleno reclasificara, cada
+    ejecución re-estamparía el histórico entero con los umbrales de hoy y "el
+    lumbar sube después de una salida intensa" pasaría a medirse contra unas
+    intensas que en su momento no lo fueron. Sin error y sin vuelta atrás.
+    """
+    db.add(Activity(
+        garmin_activity_id=99, date=date(2026, 4, 1),
+        intensity_level="intensa", classification_source="zones",
+    ))
+    db.commit()
+
+    # La misma salida, pero con un reparto por zonas que hoy daría `suave`.
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 99, z4z5=0)])
+    res = rellenar_salidas(db, CFG_BICI, ruta)
+
+    assert res.escritas == 0
+    assert res.ya_estaban == 1
+    assert db.scalars(select(Activity)).one().intensity_level == "intensa"
+
+
+def test_el_relleno_archiva_lo_nuevo_sin_tocar_lo_viejo(db, tmp_path):
+    db.add(Activity(
+        garmin_activity_id=99, date=date(2026, 4, 1), intensity_level="intensa",
+    ))
+    db.commit()
+
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 4, 1), 99, z4z5=0),
+        actividad(date(2026, 4, 8), 100, z4z5=0),
+    ])
+    res = rellenar_salidas(db, CFG_BICI, ruta)
+
+    assert (res.escritas, res.ya_estaban) == (1, 1)
+    filas = {
+        f.garmin_activity_id: f.intensity_level for f in db.scalars(select(Activity))
+    }
+    assert filas == {99: "intensa", 100: "suave"}
+
+
+def test_repetir_el_relleno_no_escribe_nada_la_segunda_vez(db, tmp_path):
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7)])
+    assert rellenar_salidas(db, CFG_BICI, ruta).escritas == 1
+    segunda = rellenar_salidas(db, CFG_BICI, ruta)
+    assert (segunda.escritas, segunda.ya_estaban) == (0, 1)
+    assert len(db.scalars(select(Activity)).all()) == 1
+
+
+def test_sin_cache_el_relleno_es_un_error_y_no_un_resultado_de_cero(db, tmp_path):
+    """Cero salidas archivadas y "no hay fichero" no son lo mismo.
+
+    Para el MOTOR una caché que falta es un histórico más corto y la mañana
+    sigue; por eso `load_cached_rides` no lanza. Para el RELLENO no hay nada a
+    lo que degradar: se ha invocado para archivar un histórico y no ha hecho
+    nada. Devolver un resultado vacío sería indistinguible de "ya estaba todo",
+    que es exactamente la confusión que dejó la tabla a cero durante seis meses.
+    """
+    with pytest.raises(SinCacheDeSalidas):
+        rellenar_salidas(db, CFG_BICI, tmp_path / "no_esta.json")
+
+
+def test_una_cache_sin_ninguna_salida_en_bici_tambien_es_un_error(db, tmp_path):
+    ruta = cache_con(tmp_path, [
+        {"activityType": {"typeKey": "running"}, "activityId": 1,
+         "startTimeLocal": "2026-04-01 09:00:00"},
+    ])
+    with pytest.raises(SinCacheDeSalidas) as exc:
+        rellenar_salidas(db, CFG_BICI, ruta)
+    assert "1 actividad" in str(exc.value)
+
+
+def test_una_salida_sin_activity_id_se_cuenta_en_vez_de_desaparecer(db, tmp_path):
+    """Sin id no se puede guardar, pero tiene que constar que existía.
+
+    `upsert_activities` se las salta a propósito: dos salidas del mismo día sin
+    id se fundirían en una y la carga del día bajaría. Lo que no puede pasar es
+    que el informe diga "una de una archivada" cuando eran dos.
+    """
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 4, 1), 7),
+        actividad(date(2026, 4, 2), None),
+    ])
+    res = rellenar_salidas(db, CFG_BICI, ruta)
+
+    assert res.salidas == 2
+    assert res.escritas == 1
+    assert res.sin_id == 1
+    assert "sin activity_id" in res.resumen()
+
+
+def test_un_activity_id_repetido_en_el_fichero_se_cuenta(db, tmp_path):
+    """No debería pasar -la caché fusiona por id al escribir-, y por eso se dice.
+
+    Si un día pasa, colapsar en silencio haría que el informe prometiera dos
+    salidas archivadas cuando hay una sola fila.
+    """
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 4, 1), 7),
+        actividad(date(2026, 4, 1), 7, z4z5=90),
+    ])
+    res = rellenar_salidas(db, CFG_BICI, ruta)
+
+    assert res.repetidas == 1
+    assert res.escritas == 1
+    assert len(db.scalars(select(Activity)).all()) == 1
+    assert "repetido" in res.resumen()
+
+
+def test_simular_cuenta_lo_mismo_que_luego_se_escribe_y_no_escribe(db, tmp_path):
+    """El censo tiene que salir de un solo sitio.
+
+    Si la simulación contara por su cuenta, el día que los dos caminos
+    discreparan la previsualización prometería una cosa y la ejecución haría
+    otra, que es la única forma de que un `--simular` haga daño.
+    """
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 3, 7), 11, z4z5=50),
+        actividad(date(2026, 5, 2), 22, z4z5=0),
+    ])
+
+    seco = rellenar_salidas(db, CFG_BICI, ruta, simular=True)
+    assert seco.simulado is True
+    assert db.scalars(select(Activity)).all() == []
+    assert "se archivarían" in seco.resumen()
+
+    mojado = rellenar_salidas(db, CFG_BICI, ruta)
+    assert mojado.simulado is False
+    assert (seco.escritas, seco.niveles) == (mojado.escritas, mojado.niveles)
+    assert (seco.primera, seco.ultima) == (mojado.primera, mojado.ultima)
+    assert len(db.scalars(select(Activity)).all()) == 2
+
+
+def test_la_carga_estimada_se_archiva_marcada(db, tmp_path):
+    """Un número estimado y uno medido no se pueden promediar como si fueran igual.
+
+    La marca tiene que viajar hasta la tabla o el análisis no tiene forma de
+    separarlos.
+    """
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 4, 1), 7, activityTrainingLoad=None),
+    ])
+    rellenar_salidas(db, CFG_BICI, ruta)
+
+    f = db.scalars(select(Activity)).one()
+    assert f.training_load_estimated is True
+    assert f.training_load == 40.0  # una hora suave, a 40 de carga por hora
+
+
+def test_la_ruta_de_la_cache_de_salidas_es_una_sola_y_esta_declarada():
+    """Estaba escrita a mano en tres sitios, y ahora la lee también el relleno.
+
+    Cuatro copias de una ruta son tres que se quedan atrás el día que se mueva,
+    y el síntoma no sería un error: `load_cached_rides` devuelve "no existe" sin
+    lanzar, así que el sitio no actualizado se quedaría con una caché vacía y
+    seguiría funcionando, peor.
+    """
+    assert RUTA_CACHE_SALIDAS.name == "activities.json"
+    assert RUTA_CACHE_SALIDAS.parent.name == "cache"
+    raiz = Path(__file__).resolve().parents[1]
+    for modulo in ("app/cli.py", "app/scheduler.py", "app/backfill.py"):
+        texto = (raiz / modulo).read_text(encoding="utf-8")
+        assert '"activities.json"' not in texto, (
+            f"{modulo} vuelve a construir la ruta de la caché a mano"
+        )

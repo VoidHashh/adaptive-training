@@ -1,4 +1,4 @@
-"""Rellenar los días de bienestar que el sistema se perdió.
+"""Rellenar lo que el sistema se perdió: los días de bienestar y las salidas.
 
 POR QUÉ EXISTE
 --------------
@@ -68,6 +68,49 @@ devuelto 429 durante el sondeo-. La pausa entre días (`wellness.backfill.
 pause_seconds`) es lo que compra que el trabajo termine: a 2 s son unos
 veinticinco minutos, y veinticinco minutos que acaban valen más que cinco que se
 paran a la mitad.
+
+LA MITAD QUE FALTABA: LAS SALIDAS
+---------------------------------
+Todo lo anterior rellenó ciento setenta y nueve días de bienestar sin un hueco.
+Y durante ese mismo tiempo la tabla `activities` se quedó con CERO filas.
+
+No fue un fallo: fue un olvido que no tenía forma de verse. `rellenar()` llama a
+`day_metrics` y a `upsert_daily_metrics`, y a nada más; `upsert_activities` tenía
+exactamente un llamador, el trabajo diario, que solo archiva las salidas del día
+que está decidiendo. Así que el histórico largo cubría una de las dos fuentes y
+la otra empezaba a contar desde el primer arranque. Por fuera las dos cosas se
+llaman "el backfill de seis meses"; por dentro una de ellas no existía.
+
+Lo que lo hace peor es que el material sí estaba: `data/cache/activities.json`
+guarda ochenta y nueve actividades de Garmin -cincuenta y ocho salidas en bici,
+de marzo a septiembre- desde antes de que el proyecto tuviera base de datos. El
+motor las lee cada mañana para los percentiles adaptativos. El análisis, que
+mira la tabla, no las veía: "impacto de las salidas sobre el HRV de los días
+siguientes" y "clasificación histórica de las salidas" salían N/A por falta de
+datos, con seis meses de datos en el disco.
+
+`rellenar_salidas()` conecta las piezas que ya existían -`load_cached_rides`,
+`classify_all`, `upsert_activities`- y no inventa ninguna.
+
+LO QUE EL RELLENO DE SALIDAS NO HACE: REESCRIBIR EL PASADO
+----------------------------------------------------------
+Solo escribe salidas que no tienen fila. Las que ya la tienen se cuentan y se
+dejan intactas, y esto no es prudencia genérica.
+
+`upsert_activities` guarda la CLASIFICACIÓN, no solo los datos crudos, porque
+depende de los umbrales del `config.yaml` del día en que se hizo -lo dice su
+propio docstring-. Una salida que el motor etiquetó de `intensa` en abril con
+los umbrales de abril tiene que seguir siendo `intensa` en la tabla aunque el
+YAML haya cambiado dos veces desde entonces. Si el relleno reclasificara, cada
+ejecución re-estamparía el histórico entero con los umbrales de hoy, y la frase
+"el lumbar sube después de una salida intensa" pasaría a medirse contra unas
+intensas que en su momento no lo fueron. Sin un error, sin una traza y sin
+manera de volver atrás.
+
+Para las que sí rellena no hay alternativa: nadie las clasificó nunca, así que
+se clasifican con el config de hoy y se dice en voz alta. `fetched_at` deja
+constancia -las filas del relleno llevan todas la misma marca de tiempo, las del
+día a día la de su mañana-, que es lo que permite distinguirlas después.
 """
 
 from __future__ import annotations
@@ -297,4 +340,162 @@ def recuperar_al_arrancar(
         pausa=float(bf.get("pause_seconds") or 2.0), dormir=dormir,
     )
     log.warning("backfill de arranque: %s", res.resumen())
+    return res
+
+
+# ---------------------------------------------------------------------------
+# La otra mitad: las salidas que llevaban meses en disco sin llegar a la tabla
+# ---------------------------------------------------------------------------
+
+
+class SinCacheDeSalidas(RuntimeError):
+    """No hay caché de actividades que archivar.
+
+    Es un error y no una degradación, y la diferencia está en quién pregunta.
+    Para el MOTOR, una caché que falta es un histórico más corto: los umbrales
+    adaptativos se quedan sin base, se dice, y la mañana sigue. Por eso
+    `load_cached_rides` devuelve el fallo en un campo en vez de lanzar.
+
+    Para el RELLENO no hay nada a lo que degradar: se ha invocado a propósito
+    para archivar un histórico, y sin fichero el trabajo entero no ha hecho
+    nada. Devolver un resultado con cero salidas sería indistinguible de "ya
+    estaba todo archivado", que es justo la confusión que dejó la tabla vacía
+    seis meses sin que nadie lo notara.
+    """
+
+
+@dataclass
+class ResultadoSalidas:
+    """Lo que ha pasado al archivar el histórico de salidas. Todo contado."""
+
+    # Actividades en el fichero, del deporte que sean.
+    en_cache: int = 0
+    # De esas, las que el motor reconoce como salida en bici.
+    salidas: int = 0
+    # Filas nuevas escritas. Con `simulado`, las que se escribirían: el nombre
+    # no dice "guardadas" a propósito, porque en simulación no lo están.
+    escritas: int = 0
+    simulado: bool = False
+    # Ya tenían fila, así que NO se han tocado: su clasificación es la del día
+    # en que se hizo y el relleno no la reescribe (docstring del módulo).
+    ya_estaban: int = 0
+    # Sin `activity_id`. No se guardan: no hay clave con la que distinguirlas, y
+    # dos salidas del mismo día se fundirían en una rebajando la carga del día.
+    sin_id: int = 0
+    # El mismo `activity_id` dos veces en el fichero. No debería pasar -`save_
+    # cache` fusiona por id al escribir-, y por eso se cuenta: si un día pasa,
+    # que se vea en el informe en vez de colapsar en silencio.
+    repetidas: int = 0
+    # Rango de lo ESCRITO ahora, no de la caché entera: son cosas distintas en
+    # cuanto se ejecuta por segunda vez.
+    primera: date | None = None
+    ultima: date | None = None
+    # nivel -> cuántas, solo de las escritas ahora.
+    niveles: dict[str, int] = field(default_factory=dict)
+
+    def resumen(self) -> str:
+        verbo = "se archivarían" if self.simulado else "archivadas"
+        trozos = [
+            f"{self.escritas} salida(s) {verbo} de {self.salidas} en la caché",
+            f"{self.ya_estaban} ya estaban",
+        ]
+        if self.sin_id:
+            trozos.append(f"{self.sin_id} sin activity_id (NO se guardan)")
+        if self.repetidas:
+            trozos.append(f"{self.repetidas} id(s) repetidos en el fichero")
+        return ", ".join(trozos)
+
+
+def rellenar_salidas(
+    session: Session,
+    cfg: Any,
+    ruta: Any = None,
+    *,
+    simular: bool = False,
+) -> ResultadoSalidas:
+    """Archiva en `activities` las salidas de la caché que no tienen fila.
+
+    Las tres piezas ya existían y ninguna es nueva: `load_cached_rides` lee el
+    volcado, `classify_all` etiqueta con los umbrales del config y
+    `upsert_activities` escribe. Lo único que faltaba era alguien que las
+    llamara en ese orden para algo que no fuera el día de hoy.
+
+    NO REESCRIBE NADA. Solo se tocan las salidas sin fila; el porqué está en el
+    docstring del módulo, y se resume en que la etiqueta `intensa` de una salida
+    de abril significa "intensa según los umbrales de abril", que es lo que hace
+    comparable el histórico.
+
+    Se hace un solo commit al final, al revés que el relleno de bienestar. Ahí
+    cada día costaba cuatro peticiones a un servidor que corta, y perder ciento
+    cincuenta días por un 429 era caro; aquí no se toca la red, se lee un
+    fichero local, y repetirlo entero cuesta un segundo.
+
+    `simular` corta justo antes de escribir, y lo hace DENTRO de esta función en
+    vez de en quien la llama. Lo que se quiere previsualizar es precisamente el
+    recuento -cuántas hay, cuántas ya estaban, de qué nivel salen-, y calcularlo
+    por otro camino sería tener dos censos que el día que discrepen harían que
+    la simulación prometiera una cosa y la ejecución hiciera otra.
+    """
+    from app.engine.signals import classify_all
+    from app.integrations.activity_cache import RUTA_CACHE_SALIDAS, load_cached_rides
+    from app.models import Activity
+    from app.repository import upsert_activities
+
+    cache = load_cached_rides(ruta or RUTA_CACHE_SALIDAS)
+    if cache.error:
+        raise SinCacheDeSalidas(cache.error)
+    if not cache.rides:
+        raise SinCacheDeSalidas(
+            f"{cache.path} tiene {cache.total_activities} actividad(es) y ninguna "
+            f"es una salida en bici: no hay nada que archivar"
+        )
+
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    clasificadas = classify_all(cache.rides, raw.get("cycling") or {})
+
+    res = ResultadoSalidas(
+        en_cache=cache.total_activities,
+        salidas=len(clasificadas),
+        simulado=simular,
+    )
+
+    por_id: dict[int, Any] = {}
+    for c in clasificadas:
+        aid = getattr(c.ride, "activity_id", None)
+        if aid is None:
+            res.sin_id += 1
+            continue
+        if int(aid) in por_id:
+            res.repetidas += 1
+        por_id[int(aid)] = c
+
+    existentes = set(session.scalars(select(Activity.garmin_activity_id)))
+    nuevas = [c for aid, c in por_id.items() if aid not in existentes]
+    res.ya_estaban = len(por_id) - len(nuevas)
+
+    if not nuevas:
+        return res
+
+    # El censo se llena ANTES de escribir, para que salga igual en simulación
+    # que en ejecución. Es lo que hace que `--simular` prometa exactamente lo
+    # que va a pasar y no una aproximación parecida.
+    dias = sorted(c.ride.date for c in nuevas)
+    res.escritas = len(nuevas)
+    res.primera, res.ultima = dias[0], dias[-1]
+    for c in nuevas:
+        res.niveles[c.level] = res.niveles.get(c.level, 0) + 1
+
+    if simular:
+        return res
+
+    tocadas = upsert_activities(session, nuevas)
+    # `upsert_activities` se salta sola las salidas sin id, y aquí ya se han
+    # quitado todas, así que tiene que haber tocado exactamente las que se le
+    # dieron. Si no, algo se ha descartado por un motivo que nadie ha escrito.
+    if tocadas != len(nuevas):
+        raise RuntimeError(
+            f"se le pasaron {len(nuevas)} salidas a upsert_activities y dice haber "
+            f"tocado {tocadas}: alguna se ha descartado sin decir por qué"
+        )
+    session.commit()
     return res
