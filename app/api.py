@@ -550,6 +550,31 @@ def metrics_ranking_ejercicios(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+@app.get("/api/metrics/auditoria")
+def metrics_auditoria(
+    dias: int = Query(180, ge=7, le=730),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 4: el motor auditándose a sí mismo.
+
+    No lleva `metodo` porque aquí no se correlaciona nada: se cuentan disparos,
+    se reparten luces y se sigue la carga de cada ficha. Añadirle el parámetro
+    para que las cuatro rutas de métricas tuvieran la misma firma sería añadir
+    una opción muerta, que es justo lo que no se hace en esta casa.
+
+    Se pasa `cfg` porque la mitad de esta vista es la comparación entre lo que el
+    YAML declara hoy y lo que el histórico guardó: una regla que disparó veinte
+    veces y ya no está escrita sale como retirada, y eso solo se puede saber
+    teniendo las dos cosas delante a la vez.
+    """
+    from app.analysis.auditoria import vista_auditoria
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    return vista_auditoria(s, cfg, dias=dias)
+
+
 @app.post("/api/reconcile")
 def post_reconcile(
     day: date | None = None,

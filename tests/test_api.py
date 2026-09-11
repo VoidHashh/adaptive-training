@@ -1093,6 +1093,132 @@ def test_el_ranking_de_ejercicios_llega_con_los_nombres_del_yaml(cliente, db):
     assert casilla["na"]
 
 
+def _sembrar_decisiones(db, dias_n=30):
+    """Un mes de semáforo con las tres situaciones que separan los contadores.
+
+    Los tres nombres son reglas de verdad del `config.yaml`, que es lo que
+    permite comprobar que el endpoint le pasa la configuración a la auditoría en
+    vez de reconstruir el catálogo a partir del histórico -que sería circular: a
+    una regla que nunca disparó no se la encontraría por ningún lado-.
+
+      - `lumbar_alto` (roja) dispara seis veces y manda las seis: cuando salta,
+        no hay nada por encima;
+      - `lumbar_medio` (ámbar) dispara quince veces y manda doce, porque las
+        otras tres coincide con el rojo y pierde;
+      - `cansancio_alto` (ámbar) dispara esas mismas quince veces y no manda
+        NINGUNA, porque `lumbar_medio` va antes en el YAML y gana el desempate.
+
+    Esa última es la que justifica que haya dos contadores: con uno solo
+    parecería una de las reglas que más gobierna el semáforo cuando no le ha
+    cambiado el color ni un día.
+
+    Un día se deja sin decisión a propósito -el penúltimo- para que el hueco
+    llegue hasta la respuesta del endpoint y no solo hasta la función.
+    """
+    from app.models import Decision
+
+    hoy = date.today()
+    for i in range(dias_n):
+        if i == dias_n - 2:
+            continue  # el hueco
+        rojo = i % 5 == 0
+        disparadas = ["lumbar_medio", "cansancio_alto"] if i % 2 else []
+        if rojo:
+            disparadas.append("lumbar_alto")
+        db.add(
+            Decision(
+                date=hoy - timedelta(days=dias_n - i),
+                light="red" if rojo else ("amber" if disparadas else "green"),
+                trigger_rule=(
+                    "lumbar_alto" if rojo else ("lumbar_medio" if disparadas else None)
+                ),
+                fired_rules_json=json.dumps(disparadas),
+                skipped_rules_json=json.dumps([]),
+                inputs_snapshot_json=json.dumps(
+                    {"values": {"fatigue": 3 + (i % 5), "lower_discomfort": 7 if rojo else 2}}
+                ),
+                config_hash="h1",
+                source="checkin",
+                is_current=True,
+            )
+        )
+    db.commit()
+
+
+def test_auditoria_cuenta_los_disparos_y_separa_al_que_manda(cliente, db):
+    """Vista 4: disparar y decidir son dos contadores, y por eso van separados.
+
+    `cansancio_alto` dispara quince veces y no manda ninguna. Si el panel
+    enseñara un solo número, esa regla parecería la que gobierna el semáforo
+    cuando en realidad no ha cambiado ni un día de color.
+    """
+    _sembrar_decisiones(db)
+    r = cliente.get("/api/metrics/auditoria?dias=90")
+    assert r.status_code == 200
+    d = r.json()
+
+    assert d["vista"] == "auditoria"
+    assert d["ventana"]["dias"] == 90
+
+    reglas = {f["nombre"]: f for f in d["reglas"]}
+
+    # Dispara mucho y no manda nunca: el caso que obliga a los dos contadores.
+    assert reglas["cansancio_alto"]["veces_disparada"] == 15
+    assert reglas["cansancio_alto"]["veces_determinante"] == 0
+
+    # Manda siempre que dispara: no hay nada por encima del rojo.
+    assert reglas["lumbar_alto"]["veces_disparada"] == 6
+    assert reglas["lumbar_alto"]["veces_determinante"] == 6
+
+    # Y el caso intermedio, que es el que hace que los dos números no sean
+    # redundantes ni iguales: dispara quince veces y manda doce.
+    assert reglas["lumbar_medio"]["veces_disparada"] == 15
+    assert reglas["lumbar_medio"]["veces_determinante"] == 12
+
+    # Con histórico de verdad, las que no se cumplieron ni una vez ya SÍ se
+    # pueden señalar: se evaluaron y no saltaron.
+    assert d["nunca_dispararon"]
+    assert all(
+        f["estado"] in ("nunca_disparo", "nunca_evaluada") for f in d["nunca_dispararon"]
+    )
+    assert all(f["lectura"] for f in d["nunca_dispararon"])
+
+
+def test_el_dia_sin_decision_no_se_cuela_como_verde_por_el_endpoint(cliente, db):
+    """El fallo que convertiría un mes con el PC apagado en un mes estupendo.
+
+    El hueco tiene que llegar hasta la respuesta con su motivo escrito y quedarse
+    FUERA del denominador del reparto de luces.
+    """
+    _sembrar_decisiones(db)
+    d = cliente.get("/api/metrics/auditoria?dias=90").json()
+
+    g = d["distribucion"]["global"]
+    assert g["sin_decision"] >= 1
+    assert g["n"] == g["green"] + g["amber"] + g["red"]
+    assert sum(g["porcentaje"].values()) == pytest.approx(100.0)
+
+    huecos = [x for x in d["dias"] if x["luz"] is None]
+    assert huecos, "el día sin decisión tiene que salir, no desaparecer"
+    assert all(x["na"] for x in huecos)
+
+
+def test_la_auditoria_no_acepta_metodo_porque_no_correlaciona_nada(cliente, db):
+    """Una opción muerta es una opción muerta aunque venga de la coherencia.
+
+    Las otras cuatro rutas llevan `metodo` porque calculan correlaciones. Esta
+    cuenta disparos. Darle el parámetro para que las cinco firmas se parecieran
+    dejaría un mando en el panel conectado a nada, que es exactamente el tipo de
+    cosa que este proyecto persigue.
+    """
+    _sembrar_decisiones(db)
+    d = cliente.get("/api/metrics/auditoria?dias=90&metodo=kendall")
+    # FastAPI ignora lo que no declara: sale 200 y en la respuesta no hay rastro
+    # de método por ninguna parte.
+    assert d.status_code == 200
+    assert "metodo" not in json.dumps(d.json())
+
+
 def test_una_respuesta_desconocida_en_el_ranking_es_un_400_con_la_lista(cliente):
     """Un 500 diría que el servidor está roto; un ranking vacío sería peor.
 
@@ -1117,6 +1243,7 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
         "/api/metrics/desfase",
         "/api/metrics/impacto",
         "/api/metrics/ranking-ejercicios",
+        "/api/metrics/auditoria",
     ):
         r = cliente.get(ruta)
         assert r.status_code == 200, ruta
@@ -1137,6 +1264,17 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     assert r3["ranking"] == []
     assert r3["advertencia"]
     assert r3["cobertura"]["fuerza"] is None
+
+    # Y la vista 4 con la base recién estrenada NO acusa a ninguna regla. Las
+    # trece siguen listadas con su estado, pero `nunca_dispararon` -que se lee
+    # bajo "o están mal calibradas o sobran"- sale vacía, porque el motor no ha
+    # llegado a evaluarlas ni una vez y eso no es un defecto de la regla.
+    v4 = cliente.get("/api/metrics/auditoria").json()
+    assert v4["reglas"], "las reglas del YAML tienen que salir aunque no haya histórico"
+    assert all(f["estado"] == "sin_historico" for f in v4["reglas"])
+    assert v4["nunca_dispararon"] == []
+    assert v4["distribucion"]["global"]["n"] == 0
+    assert v4["distribucion"]["global"]["porcentaje"] is None
 
 
 def test_un_metodo_inventado_se_rechaza_en_vez_de_caer_en_uno_por_defecto(cliente):
@@ -1171,6 +1309,7 @@ def test_una_ventana_absurda_se_rechaza(cliente):
         "/api/metrics/desfase",
         "/api/metrics/impacto",
         "/api/metrics/ranking-ejercicios",
+        "/api/metrics/auditoria",
     ):
         assert cliente.get(f"{ruta}?dias=4").status_code == 422, ruta
         assert cliente.get(f"{ruta}?dias=5000").status_code == 422, ruta
