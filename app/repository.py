@@ -816,6 +816,61 @@ def upsert_daily_metrics(
     return tocados
 
 
+# Lo que `upsert_activities` copia tal cual de la salida. Está aquí fuera y no
+# inline en el bucle para que el test que busca huecos lea LA MISMA lista que
+# se recorre, y no una copia suya que puede quedarse atrás sin que se note.
+CAMPOS_ACTIVIDAD = (
+    "duration_s",
+    "distance_m",
+    "training_load",
+    "aerobic_te",
+    "anaerobic_te",
+    # Estos tres no los usa el motor, los usa la vista 5. Estaban en el modelo
+    # y en el análisis pero no en esta lista, así que las tres columnas se
+    # quedaban siempre a NULL: el desnivel se calculaba, se guardaba, se
+    # comparaba contra el histórico y se contaba en el mensaje de Telegram,
+    # todo sobre una columna que no escribía nadie. De ahí el test.
+    "elevation_gain_m",
+    "moving_duration_s",
+    "avg_hr",
+)
+
+# Las demás columnas de `activities`, cada una escrita en su sitio: la clave y
+# la fecha al crear la fila, las zonas en su propio bucle, la clasificación al
+# final. `id` es autoincremental y `fetched_at` tiene defecto del servidor.
+#
+# A mano a propósito, por el mismo motivo que `CAMPOS_PERSISTIDOS`: si se
+# generara del modelo, una columna nueva entraría sola en la lista y el test
+# dejaría de proteger nada. Lo que se quiere es justo lo contrario, que añadir
+# una columna obligue a decir aquí quién la escribe.
+COLUMNAS_ACTIVIDAD_APARTE = frozenset(
+    {
+        "id",
+        "fetched_at",
+        "garmin_activity_id",
+        "date",
+        "name",
+        "is_cycling",
+        "hr_zone_1_s",
+        "hr_zone_2_s",
+        "hr_zone_3_s",
+        "hr_zone_4_s",
+        "hr_zone_5_s",
+        "training_load_estimated",
+        "intensity_level",
+        "classification_source",
+    }
+)
+
+
+def columnas_actividad_sin_escribir() -> set[str]:
+    """Columnas de `activities` que no escribe nadie. Debe estar vacío."""
+    from app.models import Activity
+
+    todas = {c.name for c in Activity.__table__.columns}
+    return todas - set(CAMPOS_ACTIVIDAD) - COLUMNAS_ACTIVIDAD_APARTE
+
+
 def upsert_activities(session: Session, classified: Any) -> int:
     """Guarda las salidas YA CLASIFICADAS. Devuelve cuántas se han tocado.
 
@@ -856,16 +911,10 @@ def upsert_activities(session: Session, classified: Any) -> int:
         fila.date = ride.date
         fila.name = getattr(ride, "name", None) or fila.name
         fila.is_cycling = bool(getattr(ride, "is_cycling", True))
-        for origen, destino in (
-            ("duration_s", "duration_s"),
-            ("distance_m", "distance_m"),
-            ("training_load", "training_load"),
-            ("aerobic_te", "aerobic_te"),
-            ("anaerobic_te", "anaerobic_te"),
-        ):
-            nuevo = getattr(ride, origen, None)
+        for campo in CAMPOS_ACTIVIDAD:
+            nuevo = getattr(ride, campo, None)
             if nuevo is not None:
-                setattr(fila, destino, nuevo)
+                setattr(fila, campo, nuevo)
 
         zonas = getattr(ride, "zones", None) or ()
         for i, segundos in enumerate(zonas[:5], start=1):

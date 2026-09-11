@@ -21,11 +21,12 @@ from dataclasses import fields as dataclass_fields
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, advance_state, decide
 from app.models import (
+    Activity,
     Base,
     Decision as DecisionRow,
     ExerciseTarget,
@@ -34,9 +35,12 @@ from app.models import (
     RuleState,
 )
 from app.repository import (
+    CAMPOS_ACTIVIDAD,
     CAMPOS_PERSISTIDOS,
+    COLUMNAS_ACTIVIDAD_APARTE,
     adopciones_sin_contar,
     campos_sin_persistir,
+    columnas_actividad_sin_escribir,
     checkin_values,
     current_decision,
     get_checkin,
@@ -48,6 +52,7 @@ from app.repository import (
     save_state,
     sliders_del_config,
     state_as_dict,
+    upsert_activities,
     upsert_checkin,
 )
 
@@ -137,6 +142,132 @@ def test_la_lista_de_campos_no_inventa_ninguno():
         f"CAMPOS_PERSISTIDOS nombra campos inexistentes: "
         f"{sorted(set(CAMPOS_PERSISTIDOS) - reales)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# El mismo agujero, en la otra tabla
+# ---------------------------------------------------------------------------
+#
+# `EngineState` tenía desde hace tiempo su red contra los campos que nadie
+# guarda. `activities` no la tenía, y se notó: `elevation_gain_m`,
+# `moving_duration_s` y `avg_hr` estaban declaradas en el modelo, se leían en
+# `app/analysis/rendimiento.py`, se comparaban contra el histórico y salían en
+# el mensaje de Telegram de la vista 5 -"42 km a 25,2 km/h con 0 m/km de
+# desnivel"-, y no las escribía ninguna ruta del código. Las tres columnas
+# estaban a NULL en todas las filas, siempre, y el `or 0.0` del análisis
+# convertía ese hueco en un cero con pinta de medición.
+#
+# Nada falló. Ese es el problema: un feature entero -calculado, guardado,
+# percentilado, probado y mencionado en un commit- colgando de una columna que
+# no escribía nadie. Lo de abajo es para que la próxima vez falle.
+
+
+def test_todas_las_columnas_de_actividades_las_escribe_alguien():
+    """Que ninguna columna de `activities` se quede sin quien la rellene.
+
+    El fallo que evita no da error en ninguna parte: la columna existe, se
+    puede leer, y devuelve NULL. Quien la lee se encuentra un hueco donde
+    esperaba un número, y si ese alguien tiene un valor por defecto a mano, el
+    hueco se convierte en un dato falso sin que nadie se entere.
+    """
+    assert not columnas_actividad_sin_escribir(), (
+        f"columnas de `activities` que no escribe nadie: "
+        f"{sorted(columnas_actividad_sin_escribir())}. O las copia "
+        f"`upsert_activities` -añádelas a CAMPOS_ACTIVIDAD- o se escriben en "
+        f"otro sitio -entonces van a COLUMNAS_ACTIVIDAD_APARTE- o sobran en el "
+        f"modelo. Lo que no puede ser es que se queden a NULL para siempre."
+    )
+
+
+def test_la_lista_de_columnas_de_actividades_no_inventa_ninguna():
+    """Al revés: que las dos listas no nombren columnas que ya no existen.
+
+    Una lista que protege a un fantasma da la misma tranquilidad que una que
+    protege de verdad, y no es lo mismo.
+    """
+    reales = {c.name for c in Activity.__table__.columns}
+    nombradas = set(CAMPOS_ACTIVIDAD) | set(COLUMNAS_ACTIVIDAD_APARTE)
+    assert nombradas <= reales, (
+        f"se nombran columnas inexistentes de `activities`: "
+        f"{sorted(nombradas - reales)}"
+    )
+
+
+def test_una_salida_de_garmin_llega_entera_hasta_la_fila(db):
+    """La cadena completa: diccionario crudo -> `Ride` -> fila en la BD.
+
+    Se parte del crudo de Garmin y no de un `Ride` construido a mano porque el
+    fallo estaba precisamente en las costuras: el dataclass no tenía los
+    campos, el parser no los leía y el bucle de copia no los nombraba. Un
+    `Ride` hecho a mano en el test se salta las dos primeras y solo habría
+    pillado un tercio del problema.
+    """
+    from app.integrations.garmin import ride_from_activity
+
+    ride = ride_from_activity(
+        {
+            "activityId": 4242,
+            "activityName": "Puerto de la mañana",
+            "activityType": {"typeKey": "cycling"},
+            "startTimeLocal": "2026-09-07 08:30:00",
+            "duration": 5400.0,
+            "movingDuration": 5100.0,
+            "distance": 42000.0,
+            "elevationGain": 540.0,
+            "averageHR": 142.0,
+            "activityTrainingLoad": 210.0,
+            "aerobicTrainingEffect": 3.8,
+            "anaerobicTrainingEffect": 0.6,
+        }
+    )
+    assert ride is not None
+
+    assert upsert_activities(db, [ride]) == 1
+    db.commit()
+
+    fila = db.scalars(
+        select(Activity).where(Activity.garmin_activity_id == 4242)
+    ).one()
+    assert fila.elevation_gain_m == 540.0
+    assert fila.moving_duration_s == 5100.0
+    assert fila.avg_hr == 142.0
+    # Y los que ya funcionaban, para que se vea que el test mira la fila entera
+    # y no solo los tres recién conectados.
+    assert fila.distance_m == 42000.0
+    assert fila.training_load == 210.0
+    assert fila.is_cycling is True
+
+
+def test_una_salida_sin_desnivel_deja_la_columna_a_nulo_y_no_a_cero(db):
+    """Un rodillo de interior no da desnivel, y eso no es cero metros.
+
+    La columna tiene que quedarse a NULL para que quien la lea sepa que no lo
+    sabe. Guardar un 0.0 aquí sería mentir una sola vez y que la mentira se
+    quedase en el histórico contra el que se comparan las demás salidas.
+    """
+    from app.integrations.garmin import ride_from_activity
+
+    ride = ride_from_activity(
+        {
+            "activityId": 4343,
+            "activityName": "Rodillo",
+            "activityType": {"typeKey": "indoor_cycling"},
+            "startTimeLocal": "2026-09-08 19:00:00",
+            "duration": 3600.0,
+            "distance": 30000.0,
+        }
+    )
+    assert ride is not None
+
+    upsert_activities(db, [ride])
+    db.commit()
+
+    fila = db.scalars(
+        select(Activity).where(Activity.garmin_activity_id == 4343)
+    ).one()
+    assert fila.elevation_gain_m is None
+    assert fila.avg_hr is None
+    assert fila.moving_duration_s is None
 
 
 def test_el_estado_de_prueba_no_deja_ningun_campo_en_su_defecto(estado_lleno):

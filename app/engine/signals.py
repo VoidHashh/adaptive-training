@@ -119,6 +119,14 @@ class Ride:
     is_cycling: bool = True
     activity_id: int | None = None
     name: str | None = None
+    # Los tres de abajo no los mira el motor: no entran en ninguna regla ni en
+    # `load_3d/7d`. Viajan porque la vista 5 los necesita para juzgar una salida
+    # -desnivel y velocidad son dos de las tres piezas que se pidieron para la
+    # bici, que no tiene potenciómetro- y porque el sitio donde se normaliza una
+    # actividad de Garmin es este, no dos capas más arriba.
+    elevation_gain_m: float | None = None
+    moving_duration_s: float | None = None
+    avg_hr: float | None = None
 
 
 @dataclass(frozen=True)

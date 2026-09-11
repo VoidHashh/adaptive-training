@@ -47,6 +47,7 @@ from app.analysis.rendimiento import (
     _toca_evaluar,
     coste_cardiaco,
     cruzar,
+    _frase_bici,
     cumplimiento,
     esfuerzo,
     evaluar_pendientes,
@@ -676,6 +677,75 @@ def test_el_desnivel_no_entra_en_el_indice_de_la_bici():
 
     assert r["indice"] == 100.0  # la media de los DOS
     assert r["indice"] != round((100.0 + 100.0 + 0.0) / 3, 2)  # no la de los tres
+
+
+# ---------------------------------------------------------------------------
+# Una salida sin desnivel: "llano" y "no lo sé" no son el mismo dato
+# ---------------------------------------------------------------------------
+#
+# Pasa de verdad y no es raro: un rodillo de interior no da desnivel, y un
+# dispositivo sin altímetro tampoco. Antes se leía con `or 0.0` y el hueco se
+# convertía en cero metros, que es una afirmación: la velocidad ajustada se
+# quedaba sin corregir pero seguía llamándose ajustada, la salida entraba en el
+# histórico como la más llana de todas, y el mensaje de Telegram decía "con
+# 0 m/km de desnivel" a alguien que acababa de subir un puerto.
+
+
+def test_una_salida_sin_desnivel_no_se_lo_inventa_y_dice_por_que():
+    """Sin desnivel no hay velocidad ajustada, y la cruda no sirve de sustituta.
+
+    El histórico contra el que se compara está lleno de velocidades corregidas
+    por el terreno: meter ahí una sin corregir es comparar dos cosas distintas
+    y no decirlo. Es el mismo motivo por el que el coste cardiaco lleva
+    `fuente`.
+    """
+    r = rendimiento_bici(actividad(desnivel=None), [])
+
+    m = r["metricas"]
+    assert m["desnivel_m_km"] is None
+    assert m["velocidad_ajustada"] is None
+    # Lo que SÍ se sabe se sigue diciendo: 20 km en una hora son 20 km/h,
+    # y eso es cierto con altímetro y sin él.
+    assert m["km"] == 20.0
+    assert m["velocidad_kmh"] == 20.0
+    assert "no trae desnivel acumulado" in m["na_desnivel"]
+
+
+def test_sin_desnivel_la_salida_se_queda_sin_nota_y_con_el_motivo_escrito():
+    """Una salida de rodillo no puntúa, y eso es lo correcto.
+
+    Los tres componentes dependen del desnivel más de lo que parece: la
+    velocidad porque se corrige con él, el desnivel porque es él, y el corazón
+    porque la eficiencia es velocidad AJUSTADA por unidad de coste cardiaco.
+    Sin altímetro se quedan los tres sin percentil.
+
+    Escrito así a propósito, y no cayendo a la velocidad cruda: el histórico de
+    eficiencias está hecho de ajustadas, y un percentil que unos días compara
+    una cosa y otros otra es peor que no tener percentil. La salida se queda sin
+    nota, con el motivo a la vista, y sus números crudos se siguen diciendo.
+    """
+    act = actividad(desnivel=None, zonas=(1800.0, 1800.0, 0.0, 0.0, 0.0))
+    historico = [
+        {"velocidad_ajustada": 18.0, "eficiencia": 10.0, "desnivel_m_km": 20.0},
+        {"velocidad_ajustada": 19.0, "eficiencia": 11.0, "desnivel_m_km": 30.0},
+    ]
+
+    r = rendimiento_bici(act, historico)
+
+    assert r["indice"] is None
+    assert r["componentes_usados"] == []
+
+    # Cada componente dice que le falta el desnivel, en vez de traer un
+    # percentil calculado sobre un cero inventado.
+    for nombre in ("velocidad", "corazon", "desnivel"):
+        comp = r["componentes"][nombre]
+        assert comp["valor"] is None, nombre
+        assert "no trae desnivel acumulado" in comp["na"], nombre
+
+    # Pero el coste cardiaco crudo sigue ahí: se midió y es cierto. Lo que no
+    # se puede es situarlo dentro del histórico.
+    assert r["componentes"]["corazon"]["coste_cardiaco"] == 1.5
+    assert r["componentes"]["corazon"]["fuente_fc"] == "zonas"
 
 
 def test_sin_distancia_o_duracion_no_hay_velocidad_que_calcular():
@@ -1730,6 +1800,31 @@ def test_sin_zonas_el_mensaje_dice_pulsaciones_y_no_finge_una_zona(db):
 
     assert "142 ppm de media" in linea
     assert "zona media" not in linea, "sin zonas no se puede hablar de zonas"
+
+
+def test_sin_desnivel_la_frase_se_calla_esa_parte_en_vez_de_poner_una_raya():
+    """Un rodillo no da desnivel, y `fmt_num(None)` sale como una raya.
+
+    "con — m/km de desnivel" es ruido con pinta de dato. La frase se queda en
+    los kilómetros y la velocidad, que son ciertos con altímetro y sin él.
+
+    Este es el final del recorrido que empezó siendo `or 0.0`: antes esta misma
+    salida decía "con 0 m/km de desnivel", que no es un hueco, es una
+    afirmación, y encima falsa el día que el altímetro falle subiendo un puerto.
+
+    Va contra `_frase_bici` y no de punta a punta como sus vecinos porque una
+    salida sin desnivel no puntúa, luego nunca llega a ser una disociación y
+    nunca genera mensaje. La costura entre `rendimiento_bici` y la frase la
+    cubren los dos tests de arriba; lo que falta comprobar es solo el formato.
+    """
+    r = rendimiento_bici(actividad(desnivel=None, fc_media=142.0), [])
+
+    linea = "; ".join(_frase_bici(r))
+
+    assert "20 km a 20 km/h" in linea
+    assert "142 ppm de media" in linea
+    assert "desnivel" not in linea, "sin altímetro no se habla de desnivel"
+    assert "—" not in linea, "una raya donde iba un número es ruido con pinta de dato"
 
 
 # ---------------------------------------------------------------------------

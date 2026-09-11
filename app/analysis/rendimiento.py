@@ -507,7 +507,37 @@ def _metricas_bici(act: Activity) -> dict[str, Any]:
         }
     km = metros / 1000.0
     velocidad = km / (segundos / 3600.0)
-    desnivel_km = float(act.elevation_gain_m or 0.0) / km
+
+    # "Llano" y "no lo sé" no son el mismo dato, y un `or 0.0` los convertía en
+    # el mismo número. El desnivel sale por Telegram como una afirmación -"42 km
+    # a 25,2 km/h con 0 m/km de desnivel"- y de ahí a decirle a alguien que rodó
+    # por el llano un día que subió un puerto hay un paso. Además contamina dos
+    # cosas más sin avisar: la velocidad ajustada se queda sin corregir pero
+    # sigue llamándose ajustada, y la salida entra en el histórico del desnivel
+    # como la más llana de todas.
+    #
+    # Falta de verdad cuando la salida es de rodillo o el dispositivo no lleva
+    # altímetro, así que no es un caso raro de laboratorio.
+    # `na` significa "esta salida no se puede juzgar en absoluto" y corta arriba.
+    # Sin desnivel sí se puede juzgar, solo que con menos piezas: quedan los
+    # kilómetros, la velocidad cruda y todo el bloque de pulso. Por eso el motivo
+    # va en `na_desnivel` y no en `na`; meterlo en `na` tiraría la salida entera
+    # -y su componente de corazón, que estaba perfecto- por un dato que solo
+    # afecta a dos de las tres piezas.
+    if act.elevation_gain_m is None:
+        return {
+            "km": round(km, 2),
+            "velocidad_kmh": round(velocidad, 2),
+            "desnivel_m_km": None,
+            "velocidad_ajustada": None,
+            "na": None,
+            "na_desnivel": (
+                "la salida no trae desnivel acumulado, así que no se puede "
+                "corregir la velocidad por el terreno ni decir cuánto se subió"
+            ),
+        }
+
+    desnivel_km = float(act.elevation_gain_m) / km
     return {
         "km": round(km, 2),
         "velocidad_kmh": round(velocidad, 2),
@@ -518,6 +548,7 @@ def _metricas_bici(act: Activity) -> dict[str, Any]:
         # no hay forma de hacerlo fino, y fingir precisión sería peor.
         "velocidad_ajustada": round(velocidad * (1 + desnivel_km / 100.0), 2),
         "na": None,
+        "na_desnivel": None,
     }
 
 
@@ -539,22 +570,45 @@ def rendimiento_bici(act: Activity, historico: list[dict[str, Any]]) -> dict[str
         return {"indice": None, "componentes": {}, "componentes_usados": [], "na": m["na"]}
 
     fc = coste_cardiaco(act)
+    # La eficiencia es velocidad AJUSTADA por unidad de coste cardiaco, así que
+    # sin desnivel tampoco hay eficiencia. No se sustituye por la velocidad
+    # cruda: el histórico de eficiencias está hecho de ajustadas, y mezclar las
+    # dos daría un percentil que no significa lo que dice.
+    #
+    # El precio es que una salida de rodillo se queda sin índice. Es el precio
+    # correcto: sin nota y con el motivo escrito, en vez de con una nota
+    # calculada sobre dos números que no son comparables entre sí.
     eficiencia = (
-        m["velocidad_ajustada"] / fc["valor"] if fc["valor"] else None
+        m["velocidad_ajustada"] / fc["valor"]
+        if m["velocidad_ajustada"] is not None and fc["valor"]
+        else None
     )
 
     previos_vel = [h["velocidad_ajustada"] for h in historico if h.get("velocidad_ajustada")]
     previos_efi = [h["eficiencia"] for h in historico if h.get("eficiencia")]
     previos_des = [h["desnivel_m_km"] for h in historico if h.get("desnivel_m_km") is not None]
 
+    # Sin desnivel no hay velocidad ajustada, y la cruda NO sirve de sustituta:
+    # el histórico contra el que se compara está lleno de velocidades corregidas
+    # por el terreno, así que meter una sin corregir daría un percentil que no
+    # significa lo que dice. Es el mismo motivo por el que el coste cardiaco
+    # lleva `fuente`: un número que unos días mide una cosa y otros otra, y no
+    # avisa de cuál, es peor que no tenerlo.
     velocidad = {
-        "valor": percentil_de(m["velocidad_ajustada"], previos_vel),
+        "valor": (
+            percentil_de(m["velocidad_ajustada"], previos_vel)
+            if m["velocidad_ajustada"] is not None
+            else None
+        ),
         "velocidad_kmh": m["velocidad_kmh"],
         "velocidad_ajustada": m["velocidad_ajustada"],
         "n_previas": len(previos_vel),
-        "na": None
-        if previos_vel
-        else "no hay salidas anteriores con las que comparar la velocidad",
+        "na": m["na_desnivel"]
+        or (
+            None
+            if previos_vel
+            else "no hay salidas anteriores con las que comparar la velocidad"
+        ),
     }
     corazon = {
         "valor": percentil_de(eficiencia, previos_efi) if eficiencia else None,
@@ -563,11 +617,19 @@ def rendimiento_bici(act: Activity, historico: list[dict[str, Any]]) -> dict[str
         "fuente_fc": fc["fuente"],
         "reparto_zonas": fc["reparto"],
         "n_previas": len(previos_efi),
+        # El motivo del desnivel también cuenta aquí: la eficiencia depende de
+        # la velocidad ajustada. Sin él, decir solo "no hay salidas anteriores"
+        # mandaría a buscar el fallo al sitio equivocado.
         "na": fc["na"]
+        or m["na_desnivel"]
         or (None if previos_efi else "no hay salidas anteriores con las que comparar"),
     }
     desnivel = {
-        "valor": percentil_de(m["desnivel_m_km"], previos_des),
+        "valor": (
+            percentil_de(m["desnivel_m_km"], previos_des)
+            if m["desnivel_m_km"] is not None
+            else None
+        ),
         "desnivel_m_km": m["desnivel_m_km"],
         "n_previas": len(previos_des),
         # La bandera que impide que alguien lo promedie por error más adelante.
@@ -576,9 +638,12 @@ def rendimiento_bici(act: Activity, historico: list[dict[str, Any]]) -> dict[str
             "el desnivel mide lo duro que era el terreno, no lo bien que se "
             "rodó; entra corrigiendo la velocidad, no sumando por su cuenta"
         ),
-        "na": None
-        if previos_des
-        else "no hay salidas anteriores con las que comparar el desnivel",
+        "na": m["na_desnivel"]
+        or (
+            None
+            if previos_des
+            else "no hay salidas anteriores con las que comparar el desnivel"
+        ),
     }
 
     componentes = {"velocidad": velocidad, "corazon": corazon, "desnivel": desnivel}
@@ -1329,10 +1394,13 @@ def _frase_bici(rend: dict[str, Any]) -> list[str]:
     trozos: list[str] = []
     m = rend.get("metricas") or {}
     if m.get("velocidad_kmh") is not None:
-        trozos.append(
-            f"{fmt_num(m['km'])} km a {fmt_num(m['velocidad_kmh'])} km/h con "
-            f"{fmt_num(m['desnivel_m_km'])} m/km de desnivel"
-        )
+        # El desnivel se añade solo si se sabe. Sin él la frase se queda en los
+        # kilómetros y la velocidad, que son ciertos; con un `fmt_num(None)`
+        # saldría "con — m/km de desnivel", que es ruido con pinta de dato.
+        trozo = f"{fmt_num(m['km'])} km a {fmt_num(m['velocidad_kmh'])} km/h"
+        if m.get("desnivel_m_km") is not None:
+            trozo += f" con {fmt_num(m['desnivel_m_km'])} m/km de desnivel"
+        trozos.append(trozo)
     corazon = (rend.get("componentes") or {}).get("corazon") or {}
     if corazon.get("fuente_fc") == "zonas" and corazon.get("coste_cardiaco"):
         trozos.append(f"zona media {fmt_num(corazon['coste_cardiaco'])} de 5")

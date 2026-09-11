@@ -107,6 +107,14 @@ def ride_from_activity(act: dict[str, Any]) -> Ride | None:
         is_cycling=True,
         activity_id=act.get("activityId"),
         name=act.get("activityName"),
+        # Se leen aquí porque aquí es donde está el crudo. Que falten es normal
+        # y no es un error: un rodillo de interior no da desnivel, y una salida
+        # sin pulsómetro no da media. Lo que no puede pasar es que un hueco se
+        # convierta luego en un cero, porque "llano" y "no lo sé" son cosas
+        # distintas y la de la vista 5 se lee como un hecho.
+        elevation_gain_m=act.get("elevationGain"),
+        moving_duration_s=act.get("movingDuration"),
+        avg_hr=act.get("averageHR"),
     )
 
 

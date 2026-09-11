@@ -68,6 +68,38 @@ def test_una_salida_en_bici_se_convierte_entera():
     assert r.is_cycling
 
 
+def test_el_desnivel_la_duracion_en_movimiento_y_la_media_de_pulso_se_leen():
+    """Tres campos que estaban en el modelo y no los leía nadie.
+
+    `elevation_gain_m` se calculaba, se guardaba, se comparaba contra el
+    histórico y se contaba en el mensaje de Telegram... sobre una columna que
+    ningún camino escribía. El desnivel es una de las tres piezas que se pidieron
+    para juzgar la bici, que no tiene potenciómetro, así que no era un adorno.
+    """
+    r = ride_from_activity(
+        actividad(elevationGain=540.0, movingDuration=3400.0, averageHR=138.0)
+    )
+
+    assert r is not None
+    assert r.elevation_gain_m == 540.0
+    assert r.moving_duration_s == 3400.0
+    assert r.avg_hr == 138.0
+
+
+def test_una_salida_sin_desnivel_lo_deja_en_none_y_no_en_cero():
+    """Rodillo de interior, o un dispositivo sin altímetro.
+
+    Cero metros y "no lo sé" son cosas distintas, y esta es la punta donde se
+    decide cuál de las dos viaja. Un 0 aquí llegaría hasta el mensaje convertido
+    en la afirmación "0 m/km de desnivel".
+    """
+    r = ride_from_activity(actividad())
+
+    assert r is not None
+    assert r.elevation_gain_m is None
+    assert r.avg_hr is None
+
+
 @pytest.mark.parametrize(
     "tipo",
     ["cycling", "road_biking", "gravel_cycling", "indoor_cycling", "virtual_ride"],

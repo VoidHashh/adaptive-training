@@ -96,6 +96,15 @@ class Activity(Base):
     `get_activities_by_date` como hrTimeInZone_1..5 (segundos), así que no hace
     falta una llamada adicional por actividad — importante para no chocar con
     los límites de peticiones de Garmin.
+
+    Aquí vivieron cuatro columnas más -`start_time_local`, `type_key`,
+    `elevation_loss_m` y `max_hr`- que no escribía ni leía nadie. Se han
+    quitado en vez de conectarlas porque ninguna vista las pide: una columna
+    declarada "por si acaso" no es gratis, es la que hace que el día que algo
+    la lea devuelva NULL con cara de dato. Volver a ponerlas es una línea, y
+    no se pierde nada al quitarlas, porque el crudo de Garmin está entero en
+    `data/cache/activities.json` y se puede reparsear sin bajar nada otra vez
+    -que es justo como se ha rellenado `elevation_gain_m` a posteriori-.
     """
 
     __tablename__ = "activities"
@@ -104,19 +113,15 @@ class Activity(Base):
     garmin_activity_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
 
     date: Mapped[date] = mapped_column(Date, index=True)
-    start_time_local: Mapped[datetime | None] = mapped_column(DateTime)
     name: Mapped[str | None] = mapped_column(String(255))
-    type_key: Mapped[str | None] = mapped_column(String(64), index=True)
     is_cycling: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
     duration_s: Mapped[float | None] = mapped_column(Float)
     moving_duration_s: Mapped[float | None] = mapped_column(Float)
     distance_m: Mapped[float | None] = mapped_column(Float)
     elevation_gain_m: Mapped[float | None] = mapped_column(Float)
-    elevation_loss_m: Mapped[float | None] = mapped_column(Float)
 
     avg_hr: Mapped[float | None] = mapped_column(Float)
-    max_hr: Mapped[float | None] = mapped_column(Float)
 
     # Segundos en cada zona de FC.
     hr_zone_1_s: Mapped[float | None] = mapped_column(Float)
