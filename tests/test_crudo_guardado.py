@@ -13,8 +13,11 @@ no. Guardar el crudo cada día sigue siendo lo correcto por la segunda mitad, y
 porque ni el sueño de -175 días trae ya todos los campos que traía el día uno.
 
 `readiness` fue la tercera columna muerta de esa tanda y la única que no se
-arregló al conectarla: el cable llevaba a una toma sin corriente. Ver
-`app/integrations/garmin.py`.
+arregló al conectarla: el cable llevaba a una toma sin corriente. Se conectó, se
+midió que `get_training_readiness` devolvía lista vacía los ciento setenta y
+nueve días, se apagó con un interruptor y finalmente se ha borrado entera -
+llamada, campo, columna y interruptor-. Ver `app/integrations/garmin.py`, que
+guarda el relato por si algún día hay un reloj que sí la calcule.
 
 LAS TRES COLUMNAS, Y QUÉ SE HA HECHO CON CADA UNA
 -------------------------------------------------
@@ -23,8 +26,7 @@ guarda además en crudo". Las tres columnas `raw_json` que lo implementaban
 estaban declaradas y NINGUNA se escribía.
 
   - `daily_metrics.raw_json` -> CONECTADA. Cuatro llamadas a Garmin por día
-    (cinco si se enciende readiness) para quedarse con cinco números y tirar el
-    resto, sin caché ninguna detrás.
+    para quedarse con cinco números y tirar el resto, sin caché ninguna detrás.
   - `workout_log.raw_json` -> CONECTADA, y con ella `duration_s`, `total_sets`
     y `total_volume_kg`, que estaban igual de vacías. Esta era la peor de las
     tres: `docs/analisis.md` la CERTIFICABA como resuelta, con un "Sí" en la
@@ -128,19 +130,9 @@ class ApiConDetalle:
             }
         ]
 
-    def get_training_readiness(self, *_):
-        return [{"score": 74, "level": "HIGH", "sleepScoreFactorPercent": 35}]
-
 
 def cliente(api=None):
-    # `fetch_readiness=True` aquí a propósito, aunque en producción vaya
-    # apagada: lo que vigila este fichero es que el crudo de CADA llamada que se
-    # hace llegue entero a la fila, y con la quinta apagada la quinta respuesta
-    # no existiría y el caso dejaría de cubrirse. El día que se vuelva a
-    # encender -otro reloj- estas pruebas ya están escritas.
-    c = garmin.GarminClient(
-        email="a@b.c", password="x", token_dir="/tmp", fetch_readiness=True
-    )
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
     c._api = api or ApiConDetalle()
     return c
 
@@ -158,18 +150,18 @@ def guardado(db, m: DayMetrics) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_las_cinco_respuestas_viajan_en_DayMetrics():
+def test_las_cuatro_respuestas_viajan_en_DayMetrics():
     m = cliente().day_metrics(DIA)
-    assert set(m.raw) == {"hrv", "stats", "sleep", "body_battery", "readiness"}
-    # Y los seis números siguen saliendo de donde salían.
+    assert set(m.raw) == {"hrv", "stats", "sleep", "body_battery"}
+    # Y los números siguen saliendo de donde salían.
     assert (m.hrv, m.rhr, m.sleep_min, m.sleep_score) == (60.0, 52.0, 420, 80)
 
 
 def test_sobrevive_lo_que_el_motor_NO_extrae(db):
     """La prueba de que guardar el crudo sirve para algo.
 
-    Si de las cinco respuestas solo sobrevivieran los seis escalares que el
-    motor lee, esta columna sería una copia cara de las otras seis columnas.
+    Si de las cuatro respuestas solo sobrevivieran los cinco escalares que el
+    motor lee, esta columna sería una copia cara de las otras cinco columnas.
     Lo que tiene que estar es justo lo que hoy no se mira.
     """
     datos = guardado(db, cliente().day_metrics(DIA))
@@ -178,7 +170,6 @@ def test_sobrevive_lo_que_el_motor_NO_extrae(db):
     assert dto["avgOvernightHrv"] == 61.5
     assert datos["stats"]["totalSteps"] == 8400
     assert datos["body_battery"][0]["drained"] == 61
-    assert datos["readiness"][0]["sleepScoreFactorPercent"] == 35
 
 
 def test_una_llamada_que_falla_no_deja_clave():
@@ -192,7 +183,7 @@ def test_una_llamada_que_falla_no_deja_clave():
     api.get_sleep_data = lambda *_: (_ for _ in ()).throw(RuntimeError("500"))
     m = cliente(api).day_metrics(DIA)
     assert "sleep" not in m.raw
-    assert set(m.raw) == {"hrv", "stats", "body_battery", "readiness"}
+    assert set(m.raw) == {"hrv", "stats", "body_battery"}
 
 
 def test_una_llamada_que_contesta_vacio_si_deja_clave():

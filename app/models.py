@@ -54,7 +54,30 @@ class Base(DeclarativeBase):
 
 
 class DailyMetrics(Base):
-    """Métricas de bienestar de Garmin, una fila por día."""
+    """Métricas de bienestar de Garmin, una fila por día.
+
+    Aquí vivieron tres columnas más, y las tres se han quitado por el mismo
+    motivo aunque fallaran de formas distintas:
+
+    - `readiness` estuvo NULL los 179 días del backfill y lo habría estado
+      siempre. Training readiness la calcula el RELOJ, y este reloj no la
+      calcula: `get_training_readiness` devuelve lista vacía todos los días,
+      incluido ayer. No era una columna pendiente de llenar, era una columna
+      imposible de llenar con este hardware.
+    - `load_3d` y `load_7d` sí las escribía la pasada diaria, pero no las leía
+      NADIE. La carga acumulada que usan las reglas se recalcula cada mañana
+      sumando `activities.training_load` (`signals.history`), que es la única
+      forma de que incluya lo que de verdad se hizo. Estas dos columnas eran
+      una copia de ese cálculo que nunca se consultaba, y encima el backfill
+      no las rellenaba: seis meses a NULL con la pasada diaria escribiéndolas
+      desde hoy habría producido una serie con un escalón en medio que alguien
+      acabaría leyendo como "antes no entrenaba".
+
+    Ojo a la distinción, que importa: se va la COLUMNA, no la señal.
+    `load_3d` sigue existiendo como señal y `carga_acumulada` sigue
+    disparando con ella. Lo que desaparece es el sitio donde se guardaba
+    dos veces.
+    """
 
     __tablename__ = "daily_metrics"
 
@@ -66,12 +89,6 @@ class DailyMetrics(Base):
     sleep_min: Mapped[int | None] = mapped_column(Integer)
     sleep_score: Mapped[int | None] = mapped_column(Integer)
     body_battery: Mapped[int | None] = mapped_column(Integer)
-    readiness: Mapped[int | None] = mapped_column(Integer)
-
-    # Carga acumulada. Se calcula sumando `activities.training_load`, no se
-    # lee de un endpoint: así incluye siempre lo que de verdad se hizo.
-    load_3d: Mapped[float | None] = mapped_column(Float)
-    load_7d: Mapped[float | None] = mapped_column(Float)
 
     raw_json: Mapped[str | None] = mapped_column(Text)
     fetch_status: Mapped[str] = mapped_column(String(16), default="ok")  # ok|partial|error
@@ -98,13 +115,35 @@ class Activity(Base):
     los límites de peticiones de Garmin.
 
     Aquí vivieron cuatro columnas más -`start_time_local`, `type_key`,
-    `elevation_loss_m` y `max_hr`- que no escribía ni leía nadie. Se han
-    quitado en vez de conectarlas porque ninguna vista las pide: una columna
+    `elevation_loss_m` y `max_hr`- que no escribía ni leía nadie, y se
+    quitaron en vez de conectarlas porque ninguna vista las pedía: una columna
     declarada "por si acaso" no es gratis, es la que hace que el día que algo
-    la lea devuelva NULL con cara de dato. Volver a ponerlas es una línea, y
-    no se pierde nada al quitarlas, porque el crudo de Garmin está entero en
-    `data/cache/activities.json` y se puede reparsear sin bajar nada otra vez
-    -que es justo como se ha rellenado `elevation_gain_m` a posteriori-.
+    la lea devuelva NULL con cara de dato.
+
+    Dos de ellas han vuelto, y la diferencia es justo esa: ahora sí se piden.
+    El inventario del crudo (89 actividades en `data/cache/activities.json`)
+    enseñó que Garmin manda bastante más de lo que se guardaba, y que lo que
+    faltaba no era exótico: `maxHR` viene en las 89 y sin él una salida con
+    veinte minutos de puerto se parece a una llana constante; la velocidad
+    media y la máxima son dos de las tres piezas con las que se juzga la bici
+    -no hay potenciómetro, así que el esfuerzo se lee en FC relativa a zonas,
+    velocidad y desnivel- y `maxSpeed` no se puede reconstruir de ninguna
+    manera desde lo persistido. Lo mismo la respiración, que es una medida de
+    esfuerzo independiente de la FC, y la temperatura, que es la covariable
+    que hoy no permite ni confirmar ni descartar si un mes de salidas suaves
+    fue el calor.
+
+    Lo que NO ha vuelto: la cadencia. Está en 42 de las 58 salidas -hay
+    sensor, pero no siempre-, y un campo que aparece el 72% de las veces es
+    justo el que acaba obligando a inventar un cero donde no hay dato.
+    Primero hay que saber por qué faltan dieciséis.
+
+    Añadir columnas sale gratis en datos porque el crudo de Garmin está entero
+    en `data/cache/activities.json`, se fusiona en cada refresco y no se poda
+    nunca: se reparsea con `scripts/reparse_actividades.py` sin bajar nada
+    otra vez, que es como se rellenó `elevation_gain_m` a posteriori. Lo que
+    no sale gratis es declararlas sin escribirlas, y de eso se encarga
+    `columnas_actividad_sin_escribir()`.
     """
 
     __tablename__ = "activities"
@@ -120,8 +159,31 @@ class Activity(Base):
     moving_duration_s: Mapped[float | None] = mapped_column(Float)
     distance_m: Mapped[float | None] = mapped_column(Float)
     elevation_gain_m: Mapped[float | None] = mapped_column(Float)
+    elevation_loss_m: Mapped[float | None] = mapped_column(Float)
 
     avg_hr: Mapped[float | None] = mapped_column(Float)
+    max_hr: Mapped[float | None] = mapped_column(Float)
+
+    # Metros por segundo, tal cual los manda Garmin. No se convierte a km/h al
+    # guardar: la conversión es de quien pinta, y una columna que ya viene
+    # convertida es la que obliga a adivinar en qué unidad está el número.
+    avg_speed_mps: Mapped[float | None] = mapped_column(Float)
+    max_speed_mps: Mapped[float | None] = mapped_column(Float)
+
+    calories: Mapped[float | None] = mapped_column(Float)
+
+    # Respiraciones por minuto. Mide esfuerzo por una vía distinta de la FC,
+    # que es justo lo que la hace valer: dos señales independientes dicen más
+    # que dos que se copian.
+    avg_respiration: Mapped[float | None] = mapped_column(Float)
+    max_respiration: Mapped[float | None] = mapped_column(Float)
+    min_respiration: Mapped[float | None] = mapped_column(Float)
+
+    # Grados centígrados. Viene solo en las salidas con GPS (58 de 58 en el
+    # histórico) y está aquí para poder preguntarle al verano si tuvo algo que
+    # ver con julio, en vez de suponerlo.
+    max_temp_c: Mapped[float | None] = mapped_column(Float)
+    min_temp_c: Mapped[float | None] = mapped_column(Float)
 
     # Segundos en cada zona de FC.
     hr_zone_1_s: Mapped[float | None] = mapped_column(Float)

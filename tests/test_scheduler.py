@@ -463,7 +463,7 @@ class ClienteWellness:
             raise GarminRateLimited("429")
         return DayMetrics(
             date=dia, hrv=57.0, rhr=46.0, sleep_min=420, sleep_score=74,
-            body_battery=70, not_requested=("readiness",),
+            body_battery=70,
         )
 
 

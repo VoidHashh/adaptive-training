@@ -567,13 +567,11 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # perdió, y un backfill más corto que la ventana que luego se analiza deja
     # huecos que nadie va a ver como huecos -van a parecer días sin reloj-.
     wel = data.get("wellness") or {}
-    check_keys(wel, {"fetch_readiness", "backfill"}, "wellness")
-    if "fetch_readiness" in wel:
-        require(
-            isinstance(wel["fetch_readiness"], bool),
-            f"wellness.fetch_readiness: {wel['fetch_readiness']!r} tiene que ser "
-            f"true o false",
-        )
+    # `fetch_readiness` estuvo aquí y ya no: se fue con la llamada, el campo y la
+    # columna. Que `check_keys` ya no la admita no es un descuido, es la mitad
+    # útil de borrarla: un YAML viejo que la traiga tiene que dar error en el
+    # arranque y no quedarse callado dando a entender que la opción sigue viva.
+    check_keys(wel, {"backfill"}, "wellness")
     bf = wel.get("backfill") or {}
     check_keys(bf, {"recovery_days", "history_days", "pause_seconds"}, "wellness.backfill")
     for clave in ("recovery_days", "history_days"):

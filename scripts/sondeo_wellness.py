@@ -37,7 +37,6 @@ METRICAS = (
     ("sleep_min", "sueño (min)"),
     ("sleep_score", "sueño (nota)"),
     ("body_battery", "body battery"),
-    ("readiness", "readiness"),
 )
 
 

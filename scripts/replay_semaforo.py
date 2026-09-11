@@ -70,7 +70,6 @@ def leer_metricas(session) -> list[DayMetrics]:
             sleep_min=f.sleep_min,
             sleep_score=f.sleep_score,
             body_battery=f.body_battery,
-            readiness=f.readiness,
         )
         for f in filas
     ]

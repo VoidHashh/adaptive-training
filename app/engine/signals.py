@@ -56,10 +56,11 @@ UNKNOWN = "desconocida"
 class DayMetrics:
     """Una fila de wellness de Garmin.
 
-    `raw` son las respuestas completas de las que salen los seis números, una
-    por llamada. Existe porque de esas cinco respuestas este sistema extrae seis
-    escalares y tira TODO lo demás, y el wellness -al revés que las salidas, que
-    quedan enteras en `data/cache/activities.json`- no tiene caché ninguna.
+    `raw` son las respuestas completas de las que salen los cinco números, una
+    por llamada. Existe porque de esas cuatro respuestas este sistema extrae
+    cinco escalares y tira TODO lo demás, y el wellness -al revés que las
+    salidas, que quedan enteras en `data/cache/activities.json`- no tiene caché
+    ninguna.
 
     HASTA DÓNDE SIRVE GARMIN HACIA ATRÁS (medido, no supuesto)
     ----------------------------------------------------------
@@ -69,25 +70,32 @@ class DayMetrics:
 
         HRV, FC en reposo, minutos de sueño, nota de sueño -> a -175 días
         body battery                                       -> a -120 días
-        training readiness                                 -> NUNCA, ver abajo
+        training readiness                                 -> NUNCA, ni ayer
 
     O sea que el wellness sí se puede rellenar hacia atrás, y por eso existe
     `app/backfill.py`. La frase de antes no era inocua: justificaba no tener
     backfill, y sin backfill las vistas de concordancia y desfase arrancan con
     cero días en vez de con seis meses.
 
-    `not_requested` son las métricas que esta lectura NO pidió a propósito, para
-    que su ausencia no se confunda con un hueco. Hoy solo una: training
-    readiness, que devuelve lista vacía todos los días para esta cuenta -incluido
-    ayer- porque el reloj no calcula esa métrica. Sin la distinción, TODAS las
-    filas quedarían marcadas como incompletas para siempre y `partial` dejaría de
-    servir para lo único que sirve: señalar las que de verdad les falta algo.
+    TRAINING READINESS YA NO ESTÁ, Y NO VA A VOLVER
+    -----------------------------------------------
+    Fue campo aquí, columna en `daily_metrics` y clave en `values`, siempre a
+    None. El sondeo explicó por qué: `get_training_readiness` devuelve lista
+    VACÍA los nueve días probados, de -1 a -175. La calcula el reloj, y este
+    reloj no la calcula. No era un hueco del backfill pendiente de rellenar,
+    era una métrica que este hardware no produce, y una columna que solo puede
+    contener None no es un dato pendiente: es ruido con nombre de dato.
 
-    Ni `raw` ni `not_requested` entran en la comparación (`compare=False`): dos
-    filas de wellness son la misma fila si coinciden los números. Meterlos en el
-    `__eq__` -y por tanto en el `__hash__`, que la dataclass congelada genera de
-    los mismos campos- convertiría en no hasheable algo que hoy sí lo es, por
-    campos que ni deciden ni se comparan.
+    Con ella se ha ido `not_requested`, que existía únicamente para que su
+    ausencia no contase como hueco y no dejase TODAS las filas marcadas
+    `partial` para siempre. Sin readiness se piden los cinco campos que hay, y
+    un hueco vuelve a significar lo que decía: que ese día faltó el dato.
+
+    `raw` no entra en la comparación (`compare=False`): dos filas de wellness
+    son la misma fila si coinciden los números. Meterlo en el `__eq__` -y por
+    tanto en el `__hash__`, que la dataclass congelada genera de los mismos
+    campos- convertiría en no hasheable algo que hoy sí lo es, por un campo que
+    ni decide ni se compara.
     """
 
     date: date
@@ -96,9 +104,7 @@ class DayMetrics:
     sleep_min: int | None = None
     sleep_score: int | None = None
     body_battery: int | None = None
-    readiness: int | None = None
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
-    not_requested: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -119,14 +125,28 @@ class Ride:
     is_cycling: bool = True
     activity_id: int | None = None
     name: str | None = None
-    # Los tres de abajo no los mira el motor: no entran en ninguna regla ni en
-    # `load_3d/7d`. Viajan porque la vista 5 los necesita para juzgar una salida
-    # -desnivel y velocidad son dos de las tres piezas que se pidieron para la
-    # bici, que no tiene potenciómetro- y porque el sitio donde se normaliza una
-    # actividad de Garmin es este, no dos capas más arriba.
+    # Nada de lo de abajo lo mira el motor: no entra en ninguna regla ni en
+    # `load_3d/7d`. Viaja porque la vista 5 lo necesita para juzgar una salida
+    # -sin potenciómetro, el esfuerzo se lee en FC relativa a zonas, velocidad y
+    # desnivel- y porque el sitio donde se normaliza una actividad de Garmin es
+    # este, no dos capas más arriba.
+    #
+    # El nombre de cada campo es el de su columna en `activities` a propósito:
+    # `upsert_activities` copia por nombre recorriendo `CAMPOS_ACTIVIDAD`, así
+    # que renombrar uno aquí y no allí deja la columna a NULL sin un solo error.
     elevation_gain_m: float | None = None
+    elevation_loss_m: float | None = None
     moving_duration_s: float | None = None
     avg_hr: float | None = None
+    max_hr: float | None = None
+    avg_speed_mps: float | None = None
+    max_speed_mps: float | None = None
+    calories: float | None = None
+    avg_respiration: float | None = None
+    max_respiration: float | None = None
+    min_respiration: float | None = None
+    max_temp_c: float | None = None
+    min_temp_c: float | None = None
 
 
 @dataclass(frozen=True)
@@ -699,7 +719,7 @@ def build_signals(
 
     # --- wellness de hoy ---------------------------------------------------
     today = by_date.get(day)
-    for attr in ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery", "readiness"):
+    for attr in ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery"):
         sig.values[attr] = getattr(today, attr) if today else None
 
     # --- líneas base y señales derivadas, con histórico --------------------

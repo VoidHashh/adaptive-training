@@ -270,6 +270,54 @@ def test_una_salida_sin_desnivel_deja_la_columna_a_nulo_y_no_a_cero(db):
     assert fila.moving_duration_s is None
 
 
+def test_los_diez_campos_nuevos_llegan_hasta_la_fila(db):
+    """La misma costura de tres piezas, otra vez y con diez campos.
+
+    Se comprueba el camino entero -crudo de Garmin, `Ride`, columna- porque el
+    fallo de los tres anteriores vivía justo entre las piezas y ninguna de las
+    tres fallaba sola. Aquí hay una costura más: el nombre de cada campo del
+    `Ride` tiene que coincidir con el de su columna, porque `upsert_activities`
+    copia por nombre recorriendo `CAMPOS_ACTIVIDAD`. Renombrar uno en el
+    dataclass y no en la lista deja la columna a NULL sin un solo error.
+    """
+    from app.integrations.garmin import ride_from_activity
+
+    ride = ride_from_activity({
+        "activityId": 4444,
+        "activityName": "Puerto en agosto",
+        "activityType": {"typeKey": "cycling"},
+        "startTimeLocal": "2026-08-14 09:00:00",
+        "duration": 7200.0,
+        "distance": 50000.0,
+        "elevationGain": 900.0,
+        "elevationLoss": 880.0,
+        "averageHR": 141.0,
+        "maxHR": 171.0,
+        "averageSpeed": 6.94,
+        "maxSpeed": 15.5,
+        "calories": 980.0,
+        "avgRespirationRate": 22.0,
+        "maxRespirationRate": 35.0,
+        "minRespirationRate": 11.0,
+        "maxTemperature": 36.0,
+        "minTemperature": 22.0,
+    })
+    assert ride is not None
+
+    assert upsert_activities(db, [ride]) == 1
+    db.commit()
+
+    f = db.scalars(
+        select(Activity).where(Activity.garmin_activity_id == 4444)
+    ).one()
+    assert f.max_hr == 171.0
+    assert (f.avg_speed_mps, f.max_speed_mps) == (6.94, 15.5)
+    assert (f.elevation_gain_m, f.elevation_loss_m) == (900.0, 880.0)
+    assert f.calories == 980.0
+    assert (f.avg_respiration, f.max_respiration, f.min_respiration) == (22.0, 35.0, 11.0)
+    assert (f.max_temp_c, f.min_temp_c) == (36.0, 22.0)
+
+
 def test_el_estado_de_prueba_no_deja_ningun_campo_en_su_defecto(estado_lleno):
     """Guarda de `estado_lleno`: si un campo nuevo se quedase con su valor por
     defecto, la vuelta completa lo daría por bueno sin haberlo probado."""

@@ -66,6 +66,17 @@ def _columnas_reales(conn, tabla: str) -> set[str]:
     }
 
 
+def _indices_por_columna(conn, tabla: str) -> dict[str, set[str]]:
+    """columna -> índices que la tocan. SQLite no deja borrar una indexada."""
+    fuera: dict[str, set[str]] = {}
+    for fila in conn.exec_driver_sql(f"PRAGMA index_list('{tabla}')"):
+        indice = fila[1]
+        for col in conn.exec_driver_sql(f"PRAGMA index_info('{indice}')"):
+            if col[2] is not None:
+                fuera.setdefault(col[2], set()).add(indice)
+    return fuera
+
+
 def _sufijo(col) -> str:
     """`NOT NULL DEFAULT x` para el ADD COLUMN, cuando se pueda ponerlo.
 
@@ -131,6 +142,28 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
     cómoda: el motivo del bloqueo es que no hay con qué rellenar las filas
     existentes, y sin filas no hay nada que rellenar. Este es además el caso
     normal en una instalación que todavía no ha entrenado ningún día.
+
+    Y LAS QUE SOBRAN, QUE ERA EL AGUJERO
+    ------------------------------------
+    Esto solo miraba en una dirección: columnas del modelo que faltaban en el
+    fichero. Al revés no miraba nadie, y por eso `activities` tenía cinco
+    columnas -`start_time_local`, `type_key`, `elevation_loss_m`, `max_hr` y
+    `raw_json`- que el modelo había borrado meses antes y seguían ahí. El
+    guardián que existía, `columnas_actividad_sin_escribir()`, no podía verlas:
+    compara contra el MODELO, así que una columna que el modelo ya no declara
+    le resulta invisible por definición. La base de datos y el código llevaban
+    medio año discrepando sin que nada lo dijera.
+
+    Una columna de más no es inocua. Es la que aparece en un `SELECT *`, en un
+    volcado o en un `PRAGMA table_info` y parece un dato que se está guardando.
+    Pasó exactamente eso: `max_hr` figuraba en la lista de columnas muertas a
+    revisar cuando en el código no existía desde hacía meses.
+
+    Sobrante y VACÍA se borra, con sus índices si los tiene. Sobrante y CON
+    DATOS se para, igual que un NOT NULL sin defecto y por el mismo motivo: lo
+    que hay dentro puede ser la única copia. Borrarlo sola sería la clase de
+    fallo silencioso que este sistema no se puede permitir, porque un
+    `ALTER TABLE DROP COLUMN` no se deshace.
     """
     eng = eng or engine
     if eng.dialect.name != "sqlite":  # pragma: no cover
@@ -139,6 +172,7 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
     cambios: list[str] = []
     bloqueos: list[str] = []
     anadir: list[tuple[str, str, str]] = []
+    quitar: list[tuple[str, str, tuple[str, ...]]] = []
     rehacer: list[str] = []
 
     # Se mira TODO antes de tocar NADA. Son dos pasadas a propósito: mezclarlas
@@ -175,6 +209,27 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
                     (nombre, col.name, col.type.compile(eng.dialect) + _sufijo(col))
                 )
 
+            if nombre in rehacer:
+                continue  # se va entera, no hay nada que podar
+            sobrantes = reales - {c.name for c in tabla.columns}
+            indices = _indices_por_columna(conn, nombre) if sobrantes else {}
+            for col_name in sorted(sobrantes):
+                # `count(col)` cuenta los NO nulos: una columna entera a NULL da
+                # 0 y una con un solo valor da 1. La distinción es la que decide
+                # entre borrar y parar, así que se pregunta por el contenido y
+                # no por si la tabla tiene filas.
+                con_dato = conn.exec_driver_sql(
+                    f'SELECT count("{col_name}") FROM "{nombre}"'
+                ).scalar()
+                if con_dato:
+                    bloqueos.append(
+                        f"{nombre}.{col_name} sobra -el modelo ya no la "
+                        f"declara- pero tiene {con_dato} valor(es) no nulos. No "
+                        f"se borra sola: eso puede ser la única copia"
+                    )
+                    continue
+                quitar.append((nombre, col_name, tuple(sorted(indices.get(col_name, ())))))
+
     if bloqueos:
         raise SchemaDesfasado(
             "la base de datos no se puede poner al día sola:\n"
@@ -189,6 +244,14 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
                 f'ALTER TABLE "{nombre}" ADD COLUMN "{columna}" {tipo}'
             )
             cambios.append(f"{nombre}.{columna} ({tipo})")
+        for nombre, columna, indices in quitar:
+            # El índice primero: SQLite rechaza el DROP COLUMN de una columna
+            # indexada, y el índice de una columna que ya no existe tampoco
+            # tendría a quién servir.
+            for indice in indices:
+                conn.exec_driver_sql(f'DROP INDEX IF EXISTS "{indice}"')
+            conn.exec_driver_sql(f'ALTER TABLE "{nombre}" DROP COLUMN "{columna}"')
+            cambios.append(f"{nombre}.{columna} (BORRADA, estaba vacía y sobraba)")
         for nombre in rehacer:
             conn.exec_driver_sql(f'DROP TABLE "{nombre}"')
             Base.metadata.tables[nombre].create(conn)

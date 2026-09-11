@@ -229,18 +229,17 @@ baseline:
 # qué métricas se piden y qué se hace con los días que el sistema se perdió.
 wellness:
 
-  # Training Readiness (el 0-100 propio de Garmin).
+  # Aquí estuvo `fetch_readiness`, el interruptor de Training Readiness (el
+  # 0-100 propio de Garmin). Se ha quitado junto con la llamada, el campo y la
+  # columna: `get_training_readiness` devuelve lista VACÍA para esta cuenta
+  # todos los días, incluido ayer -sondeados -1, -2, -3 y luego -3 a -175, nueve
+  # de nueve sin nada-. La calcula el RELOJ y no el servidor, y el reloj de aquí
+  # no la calcula.
   #
-  # APAGADO, y no es pereza: `get_training_readiness` devuelve lista VACÍA para
-  # esta cuenta todos los días, incluido ayer. Sondeados -1, -2, -3 y luego -3 a
-  # -175: nueve de nueve sin nada. La calcula el reloj y no el servidor, y el
-  # reloj de aquí no la calcula.
-  #
-  # Ponerlo en true cuesta una petición por día de ventana -ocho cada mañana,
-  # 180 en un backfill completo- para traer nada. Merece la pena el día que
-  # cambies de reloj: enciéndelo y, si sigue vacía, cada día lo dirá en el
-  # informe en vez de callárselo como hacía antes.
-  fetch_readiness: false
+  # Un interruptor cuya única posición útil es "apagado" no es una opción, es
+  # una nota a pie de página con cara de ajuste. Si algún día hay un reloj que
+  # sí la calcule, volver a ponerlo es un rato; tenerlo ahí mientras tanto es
+  # una pregunta abierta que alguien tendrá que volver a cerrar.
 
   # Relleno hacia atrás de `daily_metrics`. Dos usos distintos, un solo motor:
   #

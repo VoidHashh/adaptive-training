@@ -108,13 +108,28 @@ def ride_from_activity(act: dict[str, Any]) -> Ride | None:
         activity_id=act.get("activityId"),
         name=act.get("activityName"),
         # Se leen aquí porque aquí es donde está el crudo. Que falten es normal
-        # y no es un error: un rodillo de interior no da desnivel, y una salida
-        # sin pulsómetro no da media. Lo que no puede pasar es que un hueco se
-        # convierta luego en un cero, porque "llano" y "no lo sé" son cosas
-        # distintas y la de la vista 5 se lee como un hecho.
+        # y no es un error: un rodillo de interior no da desnivel ni
+        # temperatura, y una salida sin pulsómetro no da media. Lo que no puede
+        # pasar es que un hueco se convierta luego en un cero, porque "llano" y
+        # "no lo sé" son cosas distintas y la de la vista 5 se lee como un
+        # hecho. Por eso ninguno lleva `or 0.0`, y por eso todos son opcionales.
+        #
+        # Garmin manda la velocidad en METROS POR SEGUNDO y la temperatura en
+        # grados. No se convierte nada aquí: convertir al guardar es lo que
+        # hace que dentro de un año nadie sepa en qué unidad está la columna.
         elevation_gain_m=act.get("elevationGain"),
+        elevation_loss_m=act.get("elevationLoss"),
         moving_duration_s=act.get("movingDuration"),
         avg_hr=act.get("averageHR"),
+        max_hr=act.get("maxHR"),
+        avg_speed_mps=act.get("averageSpeed"),
+        max_speed_mps=act.get("maxSpeed"),
+        calories=act.get("calories"),
+        avg_respiration=act.get("avgRespirationRate"),
+        max_respiration=act.get("maxRespirationRate"),
+        min_respiration=act.get("minRespirationRate"),
+        max_temp_c=act.get("maxTemperature"),
+        min_temp_c=act.get("minTemperature"),
     )
 
 
@@ -222,9 +237,6 @@ class GarminClient:
     # Por defecto, la de siempre: así un cliente construido a mano en un test
     # sigue comportándose igual sin tener que pasarle un config entero.
     retry: RetryPolicy = field(default_factory=RetryPolicy)
-    # Training readiness: apagado por defecto porque para esta cuenta siempre
-    # vuelve vacío. El porqué largo está en `day_metrics`, donde se usa.
-    fetch_readiness: bool = False
     _api: Any = None
     # Cada 429 encontrado, incluidos los superados al reintentar. El informe lo
     # lee para no presentar como lectura limpia algo que costó cinco intentos.
@@ -325,10 +337,9 @@ class GarminClient:
         caché de wellness -las salidas sí la tienen-, así que lo que no se anote
         en la fila hay que volver a pedírselo a Garmin.
 
-        Son CUATRO llamadas, no cinco: la quinta era training readiness, que
-        vuelve vacía siempre para esta cuenta y ahora va apagada
-        (`wellness.fetch_readiness`). Cuando está apagada, "readiness" sale en
-        `not_requested` para que no cuente como hueco.
+        Son CUATRO llamadas. Hubo una quinta, training readiness, que volvía
+        vacía todos los días para esta cuenta; el porqué largo está donde
+        estaba, más abajo.
 
         Una respuesta que falló NO deja clave en `raw`. Es la misma distinción
         de siempre: "no vino" y "vino vacío" no son lo mismo, y el que aparezca
@@ -338,9 +349,8 @@ class GarminClient:
             raise GarminError("cliente no conectado: llama a connect() primero")
         iso = day.isoformat()
 
-        hrv = rhr = sleep_min = sleep_score = battery = readiness = None
+        hrv = rhr = sleep_min = sleep_score = battery = None
         crudo: dict[str, Any] = {}
-        no_pedidas: list[str] = []
 
         try:
             data = _retry(self._api.get_hrv_data, iso, what="hrv", sink=self.rate_limit_events, policy=self.retry) or {}
@@ -406,56 +416,29 @@ class GarminClient:
         except Exception as exc:  # noqa: BLE001
             self._fallo(iso, "body battery", exc)
 
-        # Training Readiness: el propio resumen de Garmin, 0-100.
-        #
-        # ESTA LLAMADA VA APAGADA, Y NO POR GUSTO
-        # ---------------------------------------
+        # AQUÍ HUBO UNA QUINTA LLAMADA: TRAINING READINESS
+        # ------------------------------------------------
         # Primero estuvo declarada y sin conectar: la columna era NULL todos los
         # días y nadie se enteraba. Se conectó, y resultó que el cable llevaba a
         # una toma sin corriente: `get_training_readiness` devuelve `[]` para
         # esta cuenta TODOS los días, incluido ayer (sondeados -1, -2, -3, y -3 a
-        # -175: 9 de 9 vacíos). Training Readiness la calcula el reloj, no el
-        # servidor, y el suyo no la calcula.
+        # -175: 9 de 9 vacíos). Training Readiness la calcula el RELOJ, no el
+        # servidor, y este reloj no la calcula.
         #
-        # El `if tr:` de antes se tragaba esa lista vacía en silencio, así que el
-        # resultado era idéntico al del interruptor sin cable: `readiness=None`
-        # sin un solo aviso. Ahora o no se pide, o si se pide la lista vacía se
-        # cuenta como lo que es.
+        # Entonces se apagó con un interruptor (`wellness.fetch_readiness`) y se
+        # dejó el camino puesto "por si cambia de reloj". Eso era quedarse a
+        # medias: una opción que solo se puede poner en true para volver a
+        # comprobar que no hay nada, un campo que solo puede valer None, una
+        # columna que solo puede estar vacía y toda la maquinaria de
+        # `not_requested` sosteniéndolo. El día que haya un reloj que sí la
+        # calcule, volver a escribir estas veinte líneas es más barato que el
+        # año que pasa mientras tanto explicándole a alguien por qué está ahí.
         #
-        # No se borra la opción porque el día que cambie de reloj vuelve a estar
-        # disponible, y el día que se encienda hay que notar si sigue vacía. Se
-        # apaga en el `config.yaml` (`wellness.fetch_readiness`), donde se lee.
-        #
-        # Lo que costaba tenerla encendida: una petición por día de ventana, ocho
-        # cada mañana y 180 en el backfill largo, contra un límite que ya ha
-        # devuelto 429 alguna vez. Y, peor, dejaba TODAS las filas en
-        # `fetch_status='partial'` para siempre, que es la forma de que una marca
-        # que existe para avisar de huecos reales deje de avisar de nada.
-        if not self.fetch_readiness:
-            no_pedidas.append("readiness")
-        else:
-            try:
-                tr = _retry(self._api.get_training_readiness, iso, what="readiness", sink=self.rate_limit_events, policy=self.retry)
-                crudo["readiness"] = tr
-                if tr:
-                    primero = tr[0] if isinstance(tr, list) else tr
-                    readiness = self._campo(
-                        iso, "readiness", primero, "score", "la respuesta de readiness"
-                    )
-                else:
-                    self.fetch_errors.append(
-                        f"{iso}: Garmin contestó a training readiness con "
-                        f"{tr!r}, o sea con nada. Esta cuenta no tiene esa "
-                        f"métrica -la calcula el reloj, y el suyo no-. Se está "
-                        f"gastando una petición al día para no traer nada: "
-                        f"apágala en wellness.fetch_readiness"
-                    )
-                    log.warning("Garmin: training readiness vacío el %s", iso)
-            except GarminError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                self._fallo(iso, "readiness", exc)
-
+        # Lo que costaba tenerla encendida, para que quede escrito: una petición
+        # por día de ventana -ocho cada mañana, 180 en el backfill largo- contra
+        # un límite que ya ha devuelto 429; y, peor, dejaba TODAS las filas en
+        # `fetch_status='partial'` para siempre, que es la forma de que una
+        # marca que existe para avisar de huecos reales deje de avisar de nada.
         return DayMetrics(
             date=day,
             hrv=float(hrv) if hrv is not None else None,
@@ -463,9 +446,7 @@ class GarminClient:
             sleep_min=sleep_min,
             sleep_score=int(sleep_score) if sleep_score is not None else None,
             body_battery=int(battery) if battery is not None else None,
-            readiness=int(readiness) if readiness is not None else None,
             raw=crudo or None,
-            not_requested=tuple(no_pedidas),
         )
 
     # --- actividades --------------------------------------------------------
@@ -547,5 +528,4 @@ def build_client(settings: Any, config: Any = None) -> GarminClient:
         password=settings.garmin_password,
         token_dir=token_dir,
         retry=retry_policy_from_config(config),
-        fetch_readiness=bool(wellness_config(config).get("fetch_readiness", False)),
     )

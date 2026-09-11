@@ -34,11 +34,13 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.backfill import (
+    METRICAS,
     PETICIONES_POR_DIA,
     SinCacheDeSalidas,
     dias_pendientes,
     rellenar,
     rellenar_salidas,
+    reparsear_actividades,
     recuperar_al_arrancar,
     ventana_de_recuperacion,
 )
@@ -77,7 +79,7 @@ def metrics(dia: date, **campos) -> DayMetrics:
     """Un día de Garmin completo salvo lo que se pise por nombre."""
     base = dict(hrv=58.0, rhr=47.0, sleep_min=430, sleep_score=76, body_battery=72)
     base.update(campos)
-    return DayMetrics(date=dia, not_requested=("readiness",), **base)
+    return DayMetrics(date=dia, **base)
 
 
 class ClienteFalso:
@@ -229,19 +231,32 @@ def test_lo_que_garmin_ya_no_sirve_queda_como_hueco_y_no_como_cero(db):
     assert res.escritos == [dia], "un hueco conocido no es un fallo"
 
 
-def test_lo_que_no_se_pidio_no_cuenta_como_hueco(db):
-    """`readiness` está apagado a propósito: su ausencia no es una incidencia.
+def test_las_metricas_que_se_piden_son_las_cinco_que_hay(db):
+    """Un día completo sale `ok`, y completo son CINCO campos, no seis.
 
-    Sin esta distinción TODAS las filas quedarían `partial` para siempre, y
-    `partial` dejaría de servir para lo único que sirve -señalar las que de
-    verdad les falta algo-. Encima, al no reintentarse las `partial`, el estado
-    sería estable y silencioso: nadie se enteraría nunca.
+    Aquí hubo un test distinto, `test_lo_que_no_se_pidio_no_cuenta_como_hueco`,
+    y merece la pena contar por qué ya no hace falta. Existía una sexta métrica,
+    training readiness, que se pedía y volvía siempre vacía porque este reloj no
+    la calcula. Para que su ausencia no marcara `partial` todas las filas se
+    inventó `not_requested`: una lista de campos que no cuentan como hueco.
+
+    Esa lista era un parche sosteniendo a una columna que nunca tuvo un dato. Al
+    quitar la columna se fue el parche, y el invariante que queda es más simple y
+    más fuerte: las cinco métricas se piden las cinco, y si vuelven las cinco la
+    fila es `ok` sin excepciones que negociar.
+
+    `METRICAS` se comprueba aquí porque es la lista contra la que
+    `rellenar` cuenta huecos. Si alguien añade una sexta sin que haya dato
+    detrás, vuelve el problema entero: filas `partial` permanentes que, al no
+    reintentarse, se quedan estables y calladas para siempre.
     """
+    assert METRICAS == ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery")
+
     dia = HOY - timedelta(days=10)
     rellenar(db, ClienteFalso(), [dia], pausa=0, dormir=sin_dormir)
 
     f = leer(db, dia)
-    assert f.fetch_status == "ok", f"readiness no se pidió: {f.fetch_error}"
+    assert f.fetch_status == "ok", f"un día completo no puede ser {f.fetch_error}"
     assert f.fetch_error is None
 
 
@@ -738,3 +753,177 @@ def test_la_ruta_de_la_cache_de_salidas_es_una_sola_y_esta_declarada():
         assert '"activities.json"' not in texto, (
             f"{modulo} vuelve a construir la ruta de la caché a mano"
         )
+
+
+# ---------------------------------------------------------------------------
+# Reparseo: llenar columnas que no existían cuando se archivó la fila
+# ---------------------------------------------------------------------------
+#
+# Una columna nueva nace vacía para todo el histórico. El dato no se ha perdido
+# -`data/cache/activities.json` guarda el resumen entero de cada actividad y no
+# se poda nunca-, y esa decisión es justo la que hace que añadir una columna
+# cueste un reparseo local en vez de volver a bajar seis meses contra un
+# servidor que corta por 429.
+#
+# Las reglas son otras que las del relleno, y por eso están aparte: el relleno
+# CREA filas y esto solo completa las que ya hay.
+
+
+def test_el_reparseo_llena_las_columnas_que_estaban_a_nulo(db, tmp_path):
+    """El caso para el que existe: diez columnas nuevas sobre filas ya archivadas."""
+    db.add(Activity(
+        garmin_activity_id=7, date=date(2026, 4, 1),
+        intensity_level="suave", classification_source="zones",
+    ))
+    db.commit()
+
+    ruta = cache_con(tmp_path, [actividad(
+        date(2026, 4, 1), 7, maxHR=171.0, maxTemperature=34.0, calories=742.0,
+    )])
+    res = reparsear_actividades(db, ruta)
+
+    assert res.emparejadas == 1
+    f = db.scalars(select(Activity)).one()
+    assert f.max_hr == 171.0
+    assert f.max_temp_c == 34.0
+    assert f.calories == 742.0
+    assert f.elevation_gain_m == 400.0, "también las que ya sabía leer"
+
+
+def test_el_reparseo_no_pisa_una_celda_que_ya_tiene_valor(db, tmp_path):
+    """Solo escribe donde hay un NULL, y esto es lo que lo hace repetible.
+
+    Si pisara, cada ejecución re-estamparía el histórico con lo que diga la
+    caché de hoy. Y la caché se fusiona en cada refresco: un campo que Garmin
+    recalcule más tarde reescribiría hacia atrás una fila que ya se usó para
+    decidir, sin dejar rastro de que el número ha cambiado.
+    """
+    db.add(Activity(
+        garmin_activity_id=7, date=date(2026, 4, 1), avg_hr=138.0,
+    ))
+    db.commit()
+
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7, averageHR=999.0)])
+    res = reparsear_actividades(db, ruta)
+
+    assert db.scalars(select(Activity)).one().avg_hr == 138.0
+    assert res.ya_estaban["avg_hr"] == 1
+    assert "avg_hr" not in res.rellenadas
+
+
+def test_el_reparseo_no_toca_la_clasificacion_ni_la_carga(db, tmp_path):
+    """La etiqueta de abril es la de los umbrales de abril. Igual que el relleno.
+
+    `training_load` se queda fuera aunque VENGA en el crudo, que es el detalle
+    que hace falta escribir: su columna la escribe la clasificación -con el
+    `config.yaml` del día- y no el parseo. Si entrara en la lista de campos, un
+    reparseo rellenaría con carga medida las filas que en su momento se
+    archivaron con carga estimada, y la marca `training_load_estimated` seguiría
+    diciendo que era estimada.
+    """
+    db.add(Activity(
+        garmin_activity_id=7, date=date(2026, 4, 1),
+        intensity_level="intensa", classification_source="zones",
+        training_load=None, training_load_estimated=True,
+    ))
+    db.commit()
+
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7, z4z5=0)])
+    res = reparsear_actividades(db, ruta)
+
+    f = db.scalars(select(Activity)).one()
+    assert f.intensity_level == "intensa", "la salida de abril sigue siendo la de abril"
+    assert f.training_load is None, "la carga la escribe la clasificación, no esto"
+    assert "training_load" not in res.rellenadas
+    assert "training_load" not in res.sin_dato
+
+
+def test_el_reparseo_no_archiva_las_salidas_sin_fila(db, tmp_path):
+    """Crear historia es `rellenar_salidas`. Son dos operaciones distintas.
+
+    Y la diferencia se cuenta en vez de callarse: `sin_fila` es lo que separa
+    "no había columna" de "no había salida", que llevan a dos arreglos
+    distintos.
+    """
+    ruta = cache_con(tmp_path, [
+        actividad(date(2026, 4, 1), 7),
+        actividad(date(2026, 4, 8), 8),
+    ])
+
+    res = reparsear_actividades(db, ruta)
+
+    assert res.sin_fila == 2
+    assert res.emparejadas == 0
+    assert db.scalars(select(Activity)).all() == []
+
+
+def test_el_reparseo_distingue_no_se_guardo_de_garmin_no_lo_mando(db, tmp_path):
+    """Un rodillo de interior no tiene temperatura, y eso no es un fallo.
+
+    Sin esta separación las dos se leerían igual -celda vacía después de
+    reparsear- y no habría forma de saber si hay que arreglar algo o si la
+    salida simplemente no llevaba ese dato.
+    """
+    db.add(Activity(garmin_activity_id=7, date=date(2026, 4, 1)))
+    db.commit()
+
+    # Sin ninguna de las dos temperaturas, que es como viene un rodillo.
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7, maxHR=171.0)])
+    res = reparsear_actividades(db, ruta)
+
+    assert res.rellenadas["max_hr"] == 1
+    assert res.sin_dato["max_temp_c"] == 1
+    assert "max_temp_c" not in res.rellenadas
+
+
+def test_el_reparseo_simulado_promete_exactamente_lo_que_hara(db, tmp_path):
+    """Mismo criterio que el del relleno: el censo sale de un solo sitio."""
+    db.add(Activity(garmin_activity_id=7, date=date(2026, 4, 1)))
+    db.commit()
+
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7, maxHR=171.0)])
+
+    seco = reparsear_actividades(db, ruta, simular=True)
+    assert seco.simulado is True
+    assert "se rellenarían" in seco.resumen()
+    assert db.scalars(select(Activity)).one().max_hr is None, "ha escrito simulando"
+
+    mojado = reparsear_actividades(db, ruta)
+    assert seco.rellenadas == mojado.rellenadas
+    assert db.scalars(select(Activity)).one().max_hr == 171.0
+
+
+def test_repetir_el_reparseo_no_rellena_nada_la_segunda_vez(db, tmp_path):
+    db.add(Activity(garmin_activity_id=7, date=date(2026, 4, 1)))
+    db.commit()
+    ruta = cache_con(tmp_path, [actividad(date(2026, 4, 1), 7, maxHR=171.0)])
+
+    assert reparsear_actividades(db, ruta).rellenadas["max_hr"] == 1
+    segunda = reparsear_actividades(db, ruta)
+    assert "max_hr" not in segunda.rellenadas
+    assert segunda.ya_estaban["max_hr"] == 1
+
+
+def test_el_reparseo_mira_los_campos_que_copia_el_upsert_y_no_una_lista_propia():
+    """Dos listas son una lista desactualizada.
+
+    Si el reparseo tuviera su propio inventario de campos, la columna número
+    once entraría en `CAMPOS_ACTIVIDAD` -y se guardaría desde ese día- pero no
+    aquí, así que el histórico se quedaría sin ella para siempre. Y el síntoma
+    sería el mismo que motivó todo esto: una columna llena hacia delante y vacía
+    hacia atrás, sin nada que lo diga.
+    """
+    from app.repository import CAMPOS_ACTIVIDAD
+
+    raiz = Path(__file__).resolve().parents[1]
+    texto = (raiz / "app" / "backfill.py").read_text(encoding="utf-8")
+    assert "CAMPOS_ACTIVIDAD" in texto, "el reparseo se ha hecho su propia lista"
+    assert "training_load" in CAMPOS_ACTIVIDAD, (
+        "si la carga deja de copiarse aquí, el filtro del reparseo sobra"
+    )
+
+
+def test_sin_cache_el_reparseo_es_un_error_y_no_un_resultado_de_cero(db, tmp_path):
+    """Un cero silencioso aquí se leería como "ya estaba todo relleno"."""
+    with pytest.raises(SinCacheDeSalidas):
+        reparsear_actividades(db, tmp_path / "no_esta.json")

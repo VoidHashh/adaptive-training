@@ -543,6 +543,181 @@ def test_crear_la_tabla_que_falta_no_toca_el_historico(vieja, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Las que SOBRAN, que es la otra dirección y no la miraba nadie
+# ---------------------------------------------------------------------------
+#
+# Todo lo de arriba compara en un solo sentido: columnas del modelo que faltan
+# en el fichero. Al revés no miraba nadie, y por eso `activities` tenía cinco
+# columnas -`start_time_local`, `type_key`, `elevation_loss_m`, `max_hr` y
+# `raw_json`- que el modelo había borrado meses antes y seguían en el disco.
+#
+# El guardián que ya existía, `columnas_actividad_sin_escribir()`, no podía
+# verlas ni en principio: compara contra el MODELO, así que una columna que el
+# modelo ya no declara le resulta invisible por definición. La base y el código
+# llevaban medio año discrepando sin que nada lo dijera.
+#
+# Una columna de más no es inocua: es la que sale en un `SELECT *`, en un
+# volcado o en un `PRAGMA table_info` y parece un dato que se está guardando.
+# Pasó exactamente eso -`max_hr` figuraba en la lista de columnas muertas a
+# revisar cuando en el código no existía desde hacía meses.
+
+
+def _anadir_columna_muerta(eng, tabla: str, columna: str, tipo: str = "FLOAT") -> None:
+    """Una columna que el modelo NO declara, como la dejaría una versión vieja."""
+    with eng.begin() as c:
+        c.exec_driver_sql(f'ALTER TABLE "{tabla}" ADD COLUMN "{columna}" {tipo}')
+
+
+def test_una_columna_que_sobra_y_esta_vacia_se_borra(vieja):
+    """El caso real y el más común: la columna se quitó del modelo y quedó ahí.
+
+    Se usa `readiness` a propósito, que es la que motivó esto. Estuvo NULL los
+    ciento setenta y nueve días del backfill porque la calcula el reloj y este
+    reloj no la calcula, así que borrarla no cuesta un dato: cuesta una columna
+    vacía que parecía una medición.
+    """
+    _anadir_columna_muerta(vieja, "daily_metrics", "readiness")
+    assert "readiness" in _columnas(vieja, "daily_metrics")
+
+    cambios = ensure_schema(vieja)
+
+    assert "readiness" not in _columnas(vieja, "daily_metrics")
+    assert any("readiness" in c and "BORRADA" in c for c in cambios), (
+        f"borrar una columna en silencio es justo lo que no puede pasar: {cambios}"
+    )
+
+
+def test_una_columna_que_sobra_CON_datos_detiene_el_arranque(vieja):
+    """Lo que hay dentro puede ser la única copia, y un DROP COLUMN no se deshace.
+
+    Es el mismo criterio que el de una NOT NULL sin defecto y por el mismo
+    motivo: ante la duda, parar. La diferencia con el test de arriba no es si la
+    TABLA tiene filas sino si la COLUMNA tiene valores, que es lo que decide si
+    se está tirando algo.
+    """
+    _anadir_columna_muerta(vieja, "daily_metrics", "spo2_nocturno")
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO daily_metrics (date, hrv, fetch_status, spo2_nocturno) "
+            "VALUES ('2026-06-01', 58.0, 'ok', 94.0)"
+        ))
+
+    with pytest.raises(SchemaDesfasado) as exc:
+        ensure_schema(vieja)
+
+    msg = str(exc.value)
+    assert "daily_metrics.spo2_nocturno" in msg
+    assert "1 valor" in msg, "hay que decir cuántos datos están en juego"
+    assert "spo2_nocturno" in _columnas(vieja, "daily_metrics"), (
+        "ha borrado la columna a pesar de tener que pararse"
+    )
+
+
+def test_una_columna_vacia_en_una_tabla_CON_filas_si_se_borra(vieja):
+    """`count(col)` cuenta los NO nulos, y esa es exactamente la pregunta.
+
+    Este es el caso de verdad: `activities` tenía cincuenta y ocho filas y las
+    cinco columnas muertas estaban a NULL en las cincuenta y ocho. Preguntar por
+    si la tabla tiene filas -en vez de por si la columna tiene valores- habría
+    bloqueado el arranque para no borrar nada.
+    """
+    _anadir_columna_muerta(vieja, "daily_metrics", "readiness")
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO daily_metrics (date, hrv, fetch_status) "
+            "VALUES ('2026-06-01', 58.0, 'ok')"
+        ))
+
+    ensure_schema(vieja)
+
+    assert "readiness" not in _columnas(vieja, "daily_metrics")
+    with vieja.begin() as c:
+        assert c.execute(text("SELECT hrv FROM daily_metrics")).scalar() == 58.0, (
+            "podar una columna vacía no puede costar la fila"
+        )
+
+
+def test_una_columna_que_sobra_se_lleva_su_indice_por_delante(vieja):
+    """Sin esto el arranque fallaba: SQLite rechaza el DROP de una indexada.
+
+    Y no es un caso rebuscado, es el que había: `activities.type_key` arrastraba
+    `ix_activities_type_key`. Un `ALTER TABLE DROP COLUMN` a secas habría
+    reventado en el arranque -o sea, en Umbrel, al actualizar el contenedor- con
+    un error de SQLite que no explica nada.
+
+    El índice se va con ella porque un índice sobre una columna que ya no existe
+    tampoco tendría a quién servir.
+    """
+    _anadir_columna_muerta(vieja, "activities", "type_key", "VARCHAR")
+    with vieja.begin() as c:
+        c.exec_driver_sql(
+            'CREATE INDEX "ix_activities_type_key" ON "activities" ("type_key")'
+        )
+
+    cambios = ensure_schema(vieja)
+
+    assert "type_key" not in _columnas(vieja, "activities"), cambios
+    with vieja.begin() as c:
+        indices = {
+            f[1] for f in c.exec_driver_sql("PRAGMA index_list('activities')")
+        }
+    assert "ix_activities_type_key" not in indices, (
+        f"el índice ha sobrevivido a su columna: {indices}"
+    )
+
+
+def test_si_una_columna_que_sobra_bloquea_no_se_migra_nada_a_medias(vieja):
+    """El bloqueo por columna sobrante para igual que el otro, y para TODO.
+
+    Las dos direcciones se miran en la misma pasada de lectura y se ejecutan en
+    la misma de escritura, justo para que esto se cumpla: lo que una tabla
+    podría arreglar no se arregla si otra tabla obliga a parar.
+    """
+    vieja.envejecer("decisions", {"progression_json"})   # se arreglaría con ALTER
+    _anadir_columna_muerta(vieja, "daily_metrics", "spo2_nocturno")
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO daily_metrics (date, fetch_status, spo2_nocturno) "
+            "VALUES ('2026-06-01', 'ok', 94.0)"
+        ))
+
+    with pytest.raises(SchemaDesfasado):
+        ensure_schema(vieja)
+
+    assert "progression_json" not in _columnas(vieja, "decisions"), (
+        "se ha añadido una columna aunque había que detenerse"
+    )
+
+
+def test_las_dos_direcciones_se_arreglan_en_la_misma_pasada(vieja):
+    """Una que falta y otra que sobra, a la vez. Es el despliegue de verdad.
+
+    Una versión que quita una columna y añade otra deja la base descuadrada por
+    los dos lados el mismo día. Si cada dirección necesitara su propio arranque,
+    el primero acabaría en una base que sigue sin cuadrar y nadie volvería a
+    mirarla.
+    """
+    vieja.envejecer("daily_metrics", {"recovered_at"})
+    _anadir_columna_muerta(vieja, "daily_metrics", "readiness")
+
+    cambios = ensure_schema(vieja)
+
+    cols = _columnas(vieja, "daily_metrics")
+    assert "recovered_at" in cols and "readiness" not in cols, cambios
+
+
+def test_una_base_al_dia_no_ve_columnas_sobrantes_donde_no_las_hay(vieja):
+    """El riesgo de la comprobación nueva es que borre lo que no debe.
+
+    Una base recién creada por `create_all` coincide con el modelo por los dos
+    lados, así que la pasada tiene que salir sin un solo cambio. Si esto fallara,
+    el fallo no sería un test en rojo: sería `ensure_schema` borrando columnas
+    buenas en cada arranque.
+    """
+    assert ensure_schema(vieja) == []
+
+
+# ---------------------------------------------------------------------------
 # El modelo y el disco, comparados sin excepciones
 # ---------------------------------------------------------------------------
 
@@ -560,3 +735,29 @@ def test_tras_migrar_no_queda_ni_una_columna_por_debajo(vieja):
     for nombre, tabla in Base.metadata.tables.items():
         faltan = {c.name for c in tabla.columns} - _columnas(vieja, nombre)
         assert not faltan, f"{nombre} sigue sin {sorted(faltan)}"
+
+
+def test_tras_migrar_no_sobra_ni_una_columna(vieja):
+    """La misma comprobación de conjunto, en la dirección que faltaba.
+
+    El test de arriba lleva meses pasando y la base real tenía cinco columnas de
+    más: comprobar solo un sentido deja pasar exactamente la mitad de las
+    discrepancias, y encima la mitad que no da error nunca.
+
+    Se ensucian tres tablas a la vez, con una indexada entre ellas, porque el
+    caso que de verdad ocurre es el de una versión que quita varias columnas en
+    el mismo despliegue.
+    """
+    _anadir_columna_muerta(vieja, "daily_metrics", "readiness")
+    _anadir_columna_muerta(vieja, "activities", "type_key", "VARCHAR")
+    _anadir_columna_muerta(vieja, "decisions", "score_interno")
+    with vieja.begin() as c:
+        c.exec_driver_sql(
+            'CREATE INDEX "ix_activities_type_key" ON "activities" ("type_key")'
+        )
+
+    ensure_schema(vieja)
+
+    for nombre, tabla in Base.metadata.tables.items():
+        sobran = _columnas(vieja, nombre) - {c.name for c in tabla.columns}
+        assert not sobran, f"{nombre} arrastra {sorted(sobran)}"

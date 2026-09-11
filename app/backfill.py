@@ -117,7 +117,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -129,8 +129,8 @@ from app.models import DailyMetrics
 
 log = logging.getLogger(__name__)
 
-# Las métricas que se piden, con el nombre que se lee. `readiness` no está: va
-# apagada porque para esta cuenta vuelve siempre vacía.
+# Las métricas que se piden, con el nombre que se lee. Son las cinco que hay:
+# `readiness` estuvo aquí, y se ha borrado porque este reloj no la calcula.
 METRICAS = ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery")
 
 # Peticiones a Garmin por cada día que se pide. Solo sirve para poder decir de
@@ -260,10 +260,7 @@ def rellenar(
         else:
             res.escritos.append(dia)
 
-        no_pedidas = set(getattr(m, "not_requested", ()) or ())
         for nombre in METRICAS:
-            if nombre in no_pedidas:
-                continue
             if getattr(m, nombre, None) is None:
                 res.huecos.setdefault(nombre, []).append(dia)
 
@@ -497,5 +494,124 @@ def rellenar_salidas(
             f"se le pasaron {len(nuevas)} salidas a upsert_activities y dice haber "
             f"tocado {tocadas}: alguna se ha descartado sin decir por qué"
         )
+    session.commit()
+    return res
+
+
+@dataclass
+class ResultadoReparseo:
+    """Qué ha rellenado el reparseo, columna a columna."""
+
+    # Salidas de la caché que tienen fila en `activities`.
+    emparejadas: int = 0
+    # En la caché pero sin fila: se archivan con `rellenar_salidas`, no aquí.
+    sin_fila: int = 0
+    simulado: bool = False
+    # columna -> cuántas filas se han rellenado.
+    rellenadas: dict[str, int] = field(default_factory=dict)
+    # columna -> en cuántas filas seguía sin haber dato en el crudo. No es un
+    # fallo: un rodillo de interior no tiene temperatura ni desnivel. Se cuenta
+    # para poder distinguir "no se guardó" de "Garmin no lo mandó", que es la
+    # diferencia entre un error del sistema y una propiedad de la salida.
+    sin_dato: dict[str, int] = field(default_factory=dict)
+    # columna -> cuántas ya tenían valor y NO se han tocado.
+    ya_estaban: dict[str, int] = field(default_factory=dict)
+
+    def resumen(self) -> str:
+        verbo = "se rellenarían" if self.simulado else "rellenadas"
+        total = sum(self.rellenadas.values())
+        return (
+            f"{total} celda(s) {verbo} en {self.emparejadas} salida(s) "
+            f"emparejadas con la caché"
+        )
+
+
+def reparsear_actividades(
+    session: Session,
+    ruta: Any = None,
+    *,
+    campos: Sequence[str] | None = None,
+    simular: bool = False,
+) -> ResultadoReparseo:
+    """Vuelve a leer la caché para llenar columnas que en su día no existían.
+
+    PARA QUÉ SIRVE Y POR QUÉ ES BARATO
+    ----------------------------------
+    `data/cache/activities.json` guarda el resumen ENTERO de cada actividad tal
+    como lo devuelve Garmin, se fusiona en cada refresco y no se poda nunca. Esa
+    decisión -guardar el crudo y no los `Ride` ya parseados- es justo la que
+    hace que añadir una columna cueste un reparseo local en vez de volver a
+    bajar seis meses contra un servidor que corta por 429.
+
+    Ya se usó una vez para rellenar `elevation_gain_m` a posteriori. Esto es lo
+    mismo, con nombre propio y contando lo que hace.
+
+    LO QUE NO TOCA, QUE ES LA MITAD DEL ASUNTO
+    ------------------------------------------
+    Solo escribe donde hay un NULL. Una celda con valor no se pisa ni aunque el
+    crudo diga otra cosa, y la clasificación -`intensity_level`,
+    `classification_source`, `training_load`, `training_load_estimated`- no se
+    toca en absoluto: depende de los umbrales del `config.yaml` del día en que
+    se hizo, y reescribirla con el YAML de hoy convertiría el histórico en una
+    foto del presente. Por eso `training_load` no está en la lista de campos
+    aunque venga en el crudo: su columna la escribe la clasificación, no el
+    parseo.
+
+    Las salidas de la caché que NO tienen fila no se archivan aquí. Eso es
+    `rellenar_salidas`, y son dos operaciones distintas a propósito: una crea
+    historia y la otra solo completa la que ya hay.
+    """
+    from app.integrations.activity_cache import RUTA_CACHE_SALIDAS, load_cached_rides
+    from app.models import Activity
+    from app.repository import CAMPOS_ACTIVIDAD
+
+    cache = load_cached_rides(ruta or RUTA_CACHE_SALIDAS)
+    if cache.error:
+        raise SinCacheDeSalidas(cache.error)
+    if not cache.rides:
+        raise SinCacheDeSalidas(
+            f"{cache.path} tiene {cache.total_activities} actividad(es) y ninguna "
+            f"es una salida en bici: no hay nada que reparsear"
+        )
+
+    # Por defecto, todo lo que `upsert_activities` copia tal cual del `Ride`
+    # menos la carga, que la escribe la clasificación. Se lee de
+    # `CAMPOS_ACTIVIDAD` y no de una lista propia para que una columna nueva
+    # entre aquí el mismo día que entra allí; tener dos listas es tener una
+    # desactualizada.
+    nombres = tuple(campos) if campos else tuple(
+        c for c in CAMPOS_ACTIVIDAD if c != "training_load"
+    )
+
+    res = ResultadoReparseo(simulado=simular)
+    por_id = {
+        int(r.activity_id): r for r in cache.rides if r.activity_id is not None
+    }
+    filas = {
+        f.garmin_activity_id: f
+        for f in session.scalars(
+            select(Activity).where(Activity.garmin_activity_id.in_(por_id))
+        )
+    }
+    res.sin_fila = len(por_id) - len(filas)
+
+    for aid, fila in filas.items():
+        ride = por_id[aid]
+        res.emparejadas += 1
+        for campo in nombres:
+            nuevo = getattr(ride, campo, None)
+            if getattr(fila, campo, None) is not None:
+                res.ya_estaban[campo] = res.ya_estaban.get(campo, 0) + 1
+            elif nuevo is None:
+                res.sin_dato[campo] = res.sin_dato.get(campo, 0) + 1
+            else:
+                res.rellenadas[campo] = res.rellenadas.get(campo, 0) + 1
+                if not simular:
+                    setattr(fila, campo, nuevo)
+
+    if simular:
+        session.rollback()
+        return res
+
     session.commit()
     return res

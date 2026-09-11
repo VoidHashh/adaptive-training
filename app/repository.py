@@ -714,17 +714,20 @@ def upsert_daily_metrics(
     session: Session,
     metrics: Any,
     *,
-    loads: dict[date, tuple[float | None, float | None]] | None = None,
     errores: dict[date, list[str]] | None = None,
     recuperado: bool = False,
 ) -> int:
     """Guarda la ventana de wellness. Devuelve cuántos días se han tocado.
 
-    `loads` son las cargas acumuladas ya calculadas por el motor
-    (`signals.history["load_3d"]` y `["load_7d"]`). Se pasan en vez de
-    recalcularse aquí para que la carga guardada sea EXACTAMENTE la que se usó
-    para decidir; recalcularla más tarde con otra caché daría otro número y la
-    auditoría del semáforo compararía contra algo que nunca se evaluó.
+    Aquí había un tercer argumento, `loads`, con las cargas acumuladas que
+    acababa de calcular el motor. La idea era buena -guardar EXACTAMENTE la
+    carga con la que se decidió, no una recalculada después- pero la ejecución
+    tenía dos agujeros que juntos la volvían peor que no tenerla: solo lo
+    pasaba la pasada diaria, así que el backfill dejó los 179 días a NULL, y no
+    leía esas columnas NADIE. Una serie con seis meses vacíos y un escalón el
+    día que arranca el sistema es una invitación a leer "antes no entrenaba".
+    Las reglas siguen viendo `load_3d`: se recalcula cada mañana sumando las
+    actividades, que es de donde salía también este número.
 
     `errores` son las lecturas que FALLARON ese día, si se sabe cuáles. Sin
     ellas, un 500 de Garmin y una noche sin reloj acaban los dos en la misma
@@ -750,7 +753,7 @@ def upsert_daily_metrics(
 
     ahora = datetime.now()
 
-    campos = ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery", "readiness")
+    campos = ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery")
     tocados = 0
 
     for m in metrics or []:
@@ -779,29 +782,18 @@ def upsert_daily_metrics(
         if crudo is not None:
             fila.raw_json = crudo
 
-        if loads is not None:
-            l3, l7 = loads.get(dia, (None, None))
-            if l3 is not None:
-                fila.load_3d = l3
-            if l7 is not None:
-                fila.load_7d = l7
-
         # `partial` no es cosmético: es la diferencia entre "esa noche no dormí
         # con el reloj" y "esa mañana Garmin no contestó". Sin la marca, los dos
         # casos son la misma fila con un hueco, y el segundo se podría reintentar
         # mientras que el primero no.
         #
-        # Lo que NO SE PIDIÓ no es un hueco. Training readiness va apagada porque
-        # para esta cuenta vuelve siempre vacía, y contarla como hueco dejaría
-        # TODAS las filas en `partial` para siempre: una marca que sale en el
-        # 100% de los casos ya no distingue nada, y la avería real -tres días sin
-        # HRV- pasaría desapercibida entre el ruido. Es el mismo error de fondo
-        # que guardar un 0 donde no hay dato, en versión bandera.
-        no_pedidas = set(getattr(m, "not_requested", ()) or ())
-        huecos = [
-            c for c in campos
-            if c not in no_pedidas and getattr(fila, c, None) is None
-        ]
+        # Aquí se descontaban además las métricas que no se habían PEDIDO, que
+        # eran una: training readiness. Contarla como hueco dejaba todas las
+        # filas en `partial` para siempre -una marca que sale en el 100% de los
+        # casos ya no distingue nada- y por eso existía la excepción. Ahora
+        # readiness no existe, los cinco campos se piden los cinco, y la
+        # excepción ha desaparecido con lo que la justificaba.
+        huecos = [c for c in campos if getattr(fila, c, None) is None]
         fallos = list((errores or {}).get(dia) or [])
         partes = []
         if fallos:
@@ -825,14 +817,29 @@ CAMPOS_ACTIVIDAD = (
     "training_load",
     "aerobic_te",
     "anaerobic_te",
-    # Estos tres no los usa el motor, los usa la vista 5. Estaban en el modelo
-    # y en el análisis pero no en esta lista, así que las tres columnas se
-    # quedaban siempre a NULL: el desnivel se calculaba, se guardaba, se
-    # comparaba contra el histórico y se contaba en el mensaje de Telegram,
-    # todo sobre una columna que no escribía nadie. De ahí el test.
+    # De aquí abajo no lo usa el motor, lo usa la vista 5. Los tres primeros
+    # estaban en el modelo y en el análisis pero no en esta lista, así que las
+    # tres columnas se quedaban siempre a NULL: el desnivel se calculaba, se
+    # guardaba, se comparaba contra el histórico y se contaba en el mensaje de
+    # Telegram, todo sobre una columna que no escribía nadie. De ahí el test.
     "elevation_gain_m",
     "moving_duration_s",
     "avg_hr",
+    # El resto viene del inventario del crudo: Garmin mandaba estos diez
+    # campos en cada salida y se tiraban todos. No se añaden "por si acaso"
+    # -eso es justo lo que se quitó- sino porque hay preguntas concretas que
+    # hoy no se pueden contestar: cuánto subió el pulso de pico, a qué
+    # velocidad, cuánto se bajó, y si julio fue el calor.
+    "elevation_loss_m",
+    "max_hr",
+    "avg_speed_mps",
+    "max_speed_mps",
+    "calories",
+    "avg_respiration",
+    "max_respiration",
+    "min_respiration",
+    "max_temp_c",
+    "min_temp_c",
 )
 
 # Las demás columnas de `activities`, cada una escrita en su sitio: la clave y

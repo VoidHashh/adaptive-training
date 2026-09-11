@@ -215,14 +215,13 @@ def _guardar_lo_leido(
     nadie lee.
     """
     try:
-        cargas = {
-            d: (
-                signals.history.get("load_3d", {}).get(d),
-                signals.history.get("load_7d", {}).get(d),
-            )
-            for d in {m.date for m in metrics or [] if getattr(m, "date", None)}
-        }
-        dias = repo.upsert_daily_metrics(session, metrics, loads=cargas)
+        # Aquí se pasaban también las cargas acumuladas de `signals.history`
+        # para guardarlas en `daily_metrics.load_3d/7d`. Esas dos columnas ya no
+        # existen: las escribía solo esta línea -el backfill no-, así que el
+        # histórico tenía seis meses a NULL y un escalón el día del arranque, y
+        # además no las leía nadie. La carga que usan las reglas se recalcula
+        # cada mañana sumando las actividades, que es de donde salía este número.
+        dias = repo.upsert_daily_metrics(session, metrics)
         salidas = repo.upsert_activities(session, signals.rides)
         log.debug("archivados %d día(s) de wellness y %d salida(s)", dias, salidas)
     except Exception as exc:  # noqa: BLE001

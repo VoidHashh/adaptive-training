@@ -100,6 +100,68 @@ def test_una_salida_sin_desnivel_lo_deja_en_none_y_no_en_cero():
     assert r.avg_hr is None
 
 
+def test_los_diez_campos_nuevos_se_leen_con_el_nombre_que_manda_garmin():
+    """Lo que ya venía en el crudo y se estaba tirando en cada salida.
+
+    El inventario de las ochenta y nueve actividades de la caché dejó claro que
+    no hay NADA de potencia -ni `avgPower`, ni normalizada, ni TSS-, así que
+    juzgar la bici es pulso contra zonas, velocidad y desnivel y nada más. Estos
+    diez son los que se aprobaron de esa lista:
+
+      - `maxHR`, que estaba en las ochenta y nueve. Sin él, de una salida solo se
+        sabe la media, y una media de 138 esconde tanto un tempo plano como una
+        sucesión de repechos.
+      - las dos velocidades y el desnivel NEGATIVO, que es la otra mitad del
+        perfil: 540 m de subida con 40 de bajada y con 540 son dos salidas
+        distintas y hasta ahora se contaban igual.
+      - `calories`, en las ochenta y nueve.
+      - las tres de respiración, en cincuenta y siete.
+      - las dos de temperatura, para poder preguntarle al verano si tuvo algo
+        que ver con julio -nueve salidas, todas suaves- en vez de suponerlo.
+
+    La cadencia se quedó fuera a propósito: falta en dieciséis de cincuenta y
+    ocho y no se sabe por qué. Un campo que aparece en dos de cada tres salidas
+    sin explicación no es una señal, es una pregunta abierta.
+
+    El nombre de cada uno se comprueba aquí porque un `act.get()` con la clave
+    mal escrita no falla: devuelve None y la columna se queda vacía para
+    siempre, que es la forma exacta en que estos diez llevaban meses perdiéndose.
+    """
+    r = ride_from_activity(actividad(
+        maxHR=171.0,
+        averageSpeed=6.94, maxSpeed=13.2,
+        elevationLoss=505.0,
+        calories=742.0,
+        avgRespirationRate=21.0, maxRespirationRate=34.0, minRespirationRate=12.0,
+        maxTemperature=34.0, minTemperature=21.0,
+    ))
+
+    assert r is not None
+    assert r.max_hr == 171.0
+    assert (r.avg_speed_mps, r.max_speed_mps) == (6.94, 13.2)
+    assert r.elevation_loss_m == 505.0
+    assert r.calories == 742.0
+    assert (r.avg_respiration, r.max_respiration, r.min_respiration) == (21.0, 34.0, 12.0)
+    assert (r.max_temp_c, r.min_temp_c) == (34.0, 21.0)
+
+
+def test_los_diez_campos_nuevos_ausentes_se_quedan_en_none():
+    """Un rodillo de interior no tiene temperatura, ni desnivel, ni velocidad.
+
+    Y una salida sin cinta no tiene pulso. Que falten no es una avería, así que
+    no hay nada que avisar; lo que no puede pasar es que se conviertan en ceros,
+    porque un 0 en `max_temp_c` participaría en la media de julio como si esa
+    salida hubiera sido a cero grados.
+    """
+    r = ride_from_activity(actividad())
+
+    assert r is not None
+    assert (r.max_hr, r.avg_speed_mps, r.max_speed_mps) == (None, None, None)
+    assert (r.elevation_loss_m, r.calories) == (None, None)
+    assert (r.avg_respiration, r.max_respiration, r.min_respiration) == (None,) * 3
+    assert (r.max_temp_c, r.min_temp_c) == (None, None)
+
+
 @pytest.mark.parametrize(
     "tipo",
     ["cycling", "road_biking", "gravel_cycling", "indoor_cycling", "virtual_ride"],
@@ -496,9 +558,6 @@ class ApiQueFalla:
     def get_body_battery(self, *_):
         raise RuntimeError("timeout")
 
-    def get_training_readiness(self, *_):
-        raise RuntimeError("504")
-
 
 class ApiSana:
     """El mismo API cuando todo va bien. Es la base de casi todos los tests."""
@@ -516,28 +575,15 @@ class ApiSana:
     def get_body_battery(self, *_):
         return [{"bodyBatteryValuesArray": [[0, 70]]}]
 
-    def get_training_readiness(self, *_):
-        return [{"score": 74, "level": "HIGH"}]
 
-
-def cliente(api, *, readiness: bool = False) -> "garmin.GarminClient":
-    """El cliente por defecto es el de PRODUCCIÓN, o sea sin readiness.
-
-    Podría haberse dejado encendido aquí para no tocar los tests que contaban
-    cuatro o cinco apuntes, y habría sido la decisión equivocada: el ajuste que
-    de verdad corre todos los días habría quedado sin cubrir, y los que sí
-    corren serían los del camino que no se toma. `readiness=True` lo piden
-    explícitamente los pocos tests que van sobre esa llamada.
-    """
-    c = garmin.GarminClient(
-        email="a@b.c", password="x", token_dir="/tmp", fetch_readiness=readiness
-    )
+def cliente(api) -> "garmin.GarminClient":
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
     c._api = api
     return c
 
 
 def cliente_con_api_rota() -> "garmin.GarminClient":
-    return cliente(ApiQueFalla(), readiness=True)
+    return cliente(ApiQueFalla())
 
 
 def test_un_fallo_de_lectura_no_tumba_el_dia_pero_queda_anotado():
@@ -549,7 +595,7 @@ def test_un_fallo_de_lectura_no_tumba_el_dia_pero_queda_anotado():
     # Lo que no, se queda en None como siempre...
     assert m.hrv is None and m.sleep_min is None and m.body_battery is None
     # ...pero ahora hay constancia de POR QUÉ está en None.
-    assert len(c.fetch_errors) == 4
+    assert len(c.fetch_errors) == 3
 
 
 def test_el_apunte_dice_qué_día_y_qué_métrica():
@@ -566,7 +612,7 @@ def test_los_apuntes_se_acumulan_entre_dias():
     c = cliente_con_api_rota()
     for i in range(1, 8):
         c.day_metrics(date(2026, 9, i))
-    assert len(c.fetch_errors) == 28
+    assert len(c.fetch_errors) == 21
 
 
 def test_un_dia_limpio_no_deja_apuntes():
@@ -591,11 +637,11 @@ def test_un_dia_limpio_no_deja_apuntes():
 # sistema decide con las constantes de reserva durante semanas.
 
 
-def sin_clave(base: type, metodo: str, valor, *, readiness: bool = False):
+def sin_clave(base: type, metodo: str, valor):
     """Un API sano al que se le cambia UNA respuesta."""
     api = base()
     setattr(api, metodo, lambda *_: valor)
-    return cliente(api, readiness=readiness)
+    return cliente(api)
 
 
 def test_un_hrv_sin_lastNightAvg_no_pasa_por_una_noche_sin_medir():
@@ -688,10 +734,12 @@ def test_el_apunte_del_campo_que_falta_explica_que_no_falla_solo_hoy():
 
 
 # ---------------------------------------------------------------------------
-# readiness: el interruptor con cable, y la toma sin corriente
+# readiness: el interruptor con cable, la toma sin corriente, y el final
 # ---------------------------------------------------------------------------
 #
-# Historia en tres actos, porque los tres dejan tests distintos.
+# Historia en cuatro actos. De los tres primeros quedaron tests; del cuarto
+# queda uno solo, el de abajo, y merece la pena contar el camino porque lo que
+# enseña no es sobre readiness: es sobre cuándo dejar de arreglar algo.
 #
 # 1. `DayMetrics.readiness`, `daily_metrics.readiness` y
 #    `sig.values["readiness"]` estaban declarados y no los llenaba nadie.
@@ -702,75 +750,46 @@ def test_el_apunte_del_campo_que_falta_explica_que_no_falla_solo_hoy():
 #    La calcula el reloj, no el servidor, y este reloj no la calcula. O sea que
 #    el cable llevaba a una toma sin corriente, y el `if tr:` se tragaba la
 #    lista vacía exactamente igual de callado que el acto 1.
-# 3. Se apaga la llamada (`wellness.fetch_readiness: false`) y se le pone voz al
-#    vacío. Apagada no se pide y no cuenta como hueco; encendida, una respuesta
-#    vacía lo dice en el informe.
+# 3. Se apagó la llamada con un interruptor (`wellness.fetch_readiness: false`)
+#    y se le puso voz al vacío. Aquí es donde se paró demasiado pronto: quedó un
+#    ajuste cuya única posición útil era "apagado", una columna que no iba a
+#    tener un dato nunca, y `not_requested`, que existía solo para que su
+#    ausencia no marcara `partial` todas las filas.
+# 4. Se borró entero. La llamada, el campo, la columna, el interruptor y
+#    `not_requested`. Cuatro piezas sosteniendo a una quinta que no medía nada.
 #
 # La diferencia entre el acto 1 y el 2 no se ve desde dentro del código: en los
 # dos la columna acaba a NULL. Solo se ve preguntándole a Garmin de verdad. Por
 # eso `scripts/sondeo_wellness.py` se queda en el repositorio.
 
 
-def test_con_readiness_encendido_se_lee_y_llega_a_DayMetrics():
-    m = cliente(ApiSana(), readiness=True).day_metrics(date(2026, 9, 7))
-    assert m.readiness == 74
-    assert m.not_requested == ()
+def test_no_hay_quinta_llamada():
+    """Son cuatro peticiones por día, y que sean cuatro es el test.
 
+    Esto vigila las dos formas de que vuelva la quinta: que alguien la llame
+    otra vez -el `pytest.fail` salta- y que alguien vuelva a inventarse un hueco
+    que no cuenta como hueco. Un día completo son los cinco campos que hay y
+    cero apuntes; en cuanto haya una sexta métrica sin dato detrás, vuelven las
+    filas `partial` permanentes que, al no reintentarse, se quedan calladas.
 
-def test_apagado_no_se_pide_siquiera():
-    """Que no se llame es el punto: es una petición al día contra un límite."""
+    En el backfill importaba el doble: cuatro llamadas por día y ciento setenta
+    y nueve días son setecientas dieciséis peticiones contra un servicio que
+    corta por IP. La quinta habría sido casi doscientas más para traer `[]`.
+    """
     api = ApiSana()
     api.get_training_readiness = lambda *_: pytest.fail(
-        "se ha pedido readiness con el interruptor apagado"
+        "se ha vuelto a pedir training readiness: este reloj no la calcula"
     )
     m = cliente(api).day_metrics(date(2026, 9, 7))
-    assert m.readiness is None
-    assert m.hrv == 60.0, "apagar la quinta llamada no puede tocar las otras"
 
-
-def test_apagado_lo_dice_para_que_no_cuente_como_hueco():
-    """Sin esto, TODAS las filas quedarían `partial` y la marca no diría nada.
-
-    Es la diferencia entre "no se pidió" y "se pidió y no vino". La segunda es
-    una avería que se puede reintentar; la primera es una decisión.
-    """
-    m = cliente(ApiSana()).day_metrics(date(2026, 9, 7))
-    assert m.not_requested == ("readiness",)
-    assert "readiness" not in (m.raw or {}), "no se pidió: no puede haber crudo"
-
-
-def test_encendido_una_respuesta_vacía_ya_no_se_traga_en_silencio():
-    """El fallo del acto 2, y el que costó meses de columna vacía.
-
-    `[]` es una respuesta correcta de Garmin, así que ningún `try` se entera; y
-    con el `if tr:` delante tampoco se enteraba nadie más. Un `readiness=None`
-    por lista vacía era idéntico a un `readiness=None` porque no existía la
-    llamada.
-    """
-    c = sin_clave(ApiSana, "get_training_readiness", [], readiness=True)
-    assert c.day_metrics(date(2026, 9, 7)).readiness is None
-    assert len(c.fetch_errors) == 1
-    assert "wellness.fetch_readiness" in c.fetch_errors[0], (
-        "el apunte tiene que decir qué hacer, no solo que algo vino vacío"
+    assert (m.hrv, m.rhr, m.sleep_min, m.sleep_score, m.body_battery) == (
+        60.0, 52.0, 420, 80, 70
     )
-
-
-def test_un_readiness_sin_score_avisa_como_los_demás():
-    c = sin_clave(ApiSana, "get_training_readiness", [{"level": "HIGH"}], readiness=True)
-    m = c.day_metrics(date(2026, 9, 7))
-    assert m.readiness is None
-    assert any("score" in e for e in c.fetch_errors)
-
-
-def test_que_falle_el_readiness_no_se_lleva_por_delante_el_resto_del_día():
-    """Es la métrica que menos decide, y no puede tumbar la lectura de HRV."""
-    api = ApiSana()
-    api.get_training_readiness = lambda *_: (_ for _ in ()).throw(RuntimeError("404"))
-    c = cliente(api, readiness=True)
-    m = c.day_metrics(date(2026, 9, 7))
-    assert m.hrv == 60.0 and m.rhr == 52.0
-    assert m.readiness is None
-    assert len(c.fetch_errors) == 1 and "readiness" in c.fetch_errors[0]
+    assert set(m.raw) == {"hrv", "stats", "sleep", "body_battery"}
+    assert not hasattr(m, "readiness"), "la columna se fue: el campo también"
+    assert not hasattr(m, "not_requested"), (
+        "`not_requested` era el parche que sostenía a readiness y se fue con ella"
+    )
 
 
 def test_un_429_sigue_propagandose_y_no_se_queda_en_un_apunte():
