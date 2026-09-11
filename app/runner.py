@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -44,6 +44,7 @@ from app import repository as repo
 from app.engine.decision import apply_execution, decide
 from app.engine.message import render_telegram
 from app.engine.signals import Checkin, build_signals
+from app.engine.tendencia import DecisionDia, evaluar_tendencia
 from app.models import HevyWrite, Notification, WorkoutLog
 
 log = logging.getLogger(__name__)
@@ -161,6 +162,20 @@ def run_daily(
     # sale a 62,5 y no a lo de ayer, y dentro de tres meses no habrá otro sitio
     # donde mirarlo. Se sellan como contadas más abajo, y solo si hay mensaje.
     decision.load_adoptions = repo.adopciones_sin_contar(session)
+
+    # La lectura de segundo orden. Se le pasa el histórico hasta AYER más la
+    # decisión de hoy que acaba de salir del motor, todavía en memoria: a estas
+    # alturas no está escrita, y en el recálculo de las 09:40 la que sí está
+    # escrita es la de las 07:00, que es justo la que hoy ya no vale. Leerla de
+    # la base daría una tendencia calculada sobre un semáforo superado.
+    decision.tendencia = evaluar_tendencia(
+        cfg,
+        day,
+        repo.serie_decisiones(session, hasta=day - timedelta(days=1))
+        + [DecisionDia(day, decision.light, decision.trigger_rule)],
+        sleep_score={m.date: m.sleep_score for m in metrics},
+        sleep_min={m.date: m.sleep_min for m in metrics},
+    )
 
     res = DailyResult(day=day, decision=decision)
     fila = repo.save_decision(session, decision)

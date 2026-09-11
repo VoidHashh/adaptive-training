@@ -50,6 +50,7 @@ from app.repository import (
     read_pending,
     save_decision,
     save_state,
+    serie_decisiones,
     sliders_del_config,
     state_as_dict,
     upsert_activities,
@@ -1110,3 +1111,70 @@ def test_ningun_ejercicio_se_queda_sin_progresar_por_perder_siempre_el_cupo(db, 
         f"está rotando: comprueba que `sessions_since_progress` llega de verdad "
         f"a `plan_progression` y que avanza en `apply_execution`."
     )
+
+
+# ---------------------------------------------------------------------------
+# La serie que alimenta la capa de tendencia
+# ---------------------------------------------------------------------------
+
+
+def test_la_serie_devuelve_un_dia_por_fila(db):
+    for i in range(5, 0, -1):
+        db.add(DecisionRow(date=LUNES - timedelta(days=i), light="amber",
+                        trigger_rule="sueno_corto"))
+    db.commit()
+    serie = serie_decisiones(db, hasta=LUNES)
+    assert [d.day for d in serie] == [LUNES - timedelta(days=i) for i in range(5, 0, -1)]
+    assert all(d.light == "amber" and d.trigger_rule == "sueno_corto" for d in serie)
+
+
+def test_la_serie_viene_ordenada(db):
+    """La racha se camina hacia atrás y el motivo agrupa por semana ISO.
+
+    Las dos cosas dan igual con la lista desordenada, pero el replay compara la
+    salida de la capa contra la del día anterior y un orden inestable haría
+    aparecer y desaparecer avisos sin que cambiara ningún dato.
+    """
+    for i in (3, 1, 5, 2, 4):
+        db.add(DecisionRow(date=LUNES - timedelta(days=i), light="green"))
+    db.commit()
+    dias_serie = [d.day for d in serie_decisiones(db, hasta=LUNES)]
+    assert dias_serie == sorted(dias_serie)
+
+
+def test_la_serie_solo_trae_la_decision_vigente(db):
+    """Un recálculo de las 09:40 no puede contar como un segundo día.
+
+    `decisions` es append-only: el mismo día puede tener la decisión de las
+    07:00 y la que la sustituyó al llegar el check-in. Si las dos entraran en la
+    serie, la capa vería un día repetido -que es error duro- y la mañana
+    reventaría por un histórico perfectamente normal.
+    """
+    db.add(DecisionRow(date=LUNES, light="green", is_current=False))
+    db.add(DecisionRow(date=LUNES, light="amber", trigger_rule="sueno_corto",
+                    is_current=True))
+    db.commit()
+    serie = serie_decisiones(db, hasta=LUNES)
+    assert len(serie) == 1
+    assert serie[0].light == "amber"
+
+
+def test_la_serie_no_mira_hacia_adelante(db):
+    """En el recálculo de las 09:40 puede haber filas posteriores al día pedido."""
+    db.add(DecisionRow(date=LUNES, light="green"))
+    db.add(DecisionRow(date=LUNES + timedelta(days=1), light="amber"))
+    db.commit()
+    assert [d.day for d in serie_decisiones(db, hasta=LUNES)] == [LUNES]
+
+
+def test_la_serie_no_recorta_el_historico(db):
+    """A propósito no tiene ventana.
+
+    Cortarla por 90 días cortaría la racha justo cuando empieza a importar: una
+    mala racha de cuatro meses se leería como una de tres. El coste es un SELECT
+    que crece, y crece a razón de una fila al día.
+    """
+    for i in range(400, 0, -1):
+        db.add(DecisionRow(date=LUNES - timedelta(days=i), light="green"))
+    db.commit()
+    assert len(serie_decisiones(db, hasta=LUNES)) == 400

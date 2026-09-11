@@ -644,3 +644,104 @@ def test_las_adopciones_van_antes_de_lo_que_sube_hoy(cfg):
 
     assert "Sube hoy" in txt, "el montaje tenía que producir una subida de verdad"
     assert txt.index("Ajustado a lo que levantaste") < txt.index("Sube hoy")
+
+
+# ---------------------------------------------------------------------------
+# El bloque de tendencia
+# ---------------------------------------------------------------------------
+#
+# Mismo argumento que las degradaciones, por el otro extremo. Las notas dicen
+# "hoy he decidido con menos datos de los que debería"; la tendencia dice "y
+# además llevas seis días así, cosa que no ha entrado en la decisión porque
+# ninguna regla mira tan atrás". Las dos son información que el razonamiento no
+# contiene, y por eso las dos sobreviven a `include_reasoning: false`.
+
+
+def con_tendencia(cfg, dias_seguidos: int = 6, **kw):
+    """Un mensaje con una racha real detrás, calculada por la capa de verdad."""
+    from datetime import timedelta
+
+    from app.engine.tendencia import DecisionDia, evaluar_tendencia
+
+    dec = decision_completa(cfg)
+    historia = [
+        DecisionDia(LUNES - timedelta(days=i), "green")
+        for i in range(dias_seguidos + 40, dias_seguidos - 1, -1)
+    ] + [
+        DecisionDia(LUNES - timedelta(days=i), "amber", "sueno_corto")
+        for i in range(dias_seguidos - 1, -1, -1)
+    ]
+    dec.tendencia = evaluar_tendencia(cfg, LUNES, historia, **kw)
+    return render_telegram(dec, cfg), dec.tendencia
+
+
+def test_la_tendencia_sale_en_el_mensaje(cfg):
+    txt, t = con_tendencia(cfg)
+    assert "Tendencia" in txt
+    assert "6 días seguidos sin un verde" in txt
+
+
+def test_la_tendencia_sobrevive_a_include_reasoning_false(cfg_sin_motivo):
+    """No es razonamiento: es lo que el razonamiento NO podía ver.
+
+    Ninguna regla del semáforo mira más de tres días atrás. "Llevas seis días
+    sin un verde" no explica la decisión de hoy porque no entró en ella: es lo
+    único que lo dice. Ocultarlo al apagar el porqué sería ocultar justo la
+    parte que no se puede deducir de ninguna otra línea del mensaje.
+    """
+    txt, _ = con_tendencia(cfg_sin_motivo)
+    assert "6 días seguidos sin un verde" in txt
+
+
+def test_el_prefijo_no_se_repite_en_cada_linea(cfg):
+    """La cabecera del bloque ya lo dice; repetirlo ocho palabras más abajo no."""
+    txt, _ = con_tendencia(cfg)
+    assert "• Tendencia:" not in txt
+
+
+def test_sin_tendencia_no_hay_bloque(cfg):
+    """Un mensaje anterior a esta capa, o un `--dry-run` que no la calcula."""
+    d = decision_completa(cfg)
+    assert "📉" not in render_telegram(d, cfg)
+
+
+def test_la_capa_apagada_no_deja_bloque_vacio(cfg_copia):
+    """`enabled: false` se calla del todo: ni cabecera huérfana."""
+    cfg_copia.raw["trend"]["enabled"] = False
+    txt, t = con_tendencia(cfg_copia)
+    assert t.activa is False
+    assert "📉" not in txt
+
+
+def test_el_sin_muestra_tambien_se_imprime(cfg):
+    """Que falte muestra no puede leerse como que no pasa nada.
+
+    Es la misma norma que las degradaciones: el mensaje del día que se sabe todo
+    y el del día que no se sabe casi nada no pueden ser idénticos.
+    """
+    txt, _ = con_tendencia(cfg, dias_seguidos=2)
+    assert "sin muestra" in txt
+
+
+def test_va_despues_de_la_bici_y_antes_de_las_degradaciones(cfg):
+    """Orden de lectura: qué hago hoy, hacia dónde voy, con qué fiabilidad.
+
+    La tendencia cierra el plan y abre las advertencias. Si se colara entre las
+    notas de datos incompletos, "llevas seis días sin un verde" se leería como
+    una degradación más y es lo contrario: es un dato que sí se tiene.
+    """
+    from datetime import timedelta
+
+    from app.engine.tendencia import DecisionDia, evaluar_tendencia
+
+    d = decision(cfg, notas=DEGRADACIONES)
+    historia = [
+        DecisionDia(LUNES - timedelta(days=i), "green") for i in range(46, 5, -1)
+    ] + [
+        DecisionDia(LUNES - timedelta(days=i), "amber", "sueno_corto")
+        for i in range(5, -1, -1)
+    ]
+    d.tendencia = evaluar_tendencia(cfg, LUNES, historia)
+    txt = render_telegram(d, cfg)
+
+    assert txt.index("Tendencia") < txt.index(DEGRADACIONES[0])

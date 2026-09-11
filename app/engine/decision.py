@@ -231,6 +231,18 @@ class DayDecision:
     # la mañana: es el que dice "hip thrust: 3x8 a 62,5" y tiene que poder
     # explicar por qué 62,5 y no lo de ayer.
     load_adoptions: list[dict[str, Any]] = field(default_factory=list)
+    # La lectura de segundo orden del día: rachas, motivo dominante y el último
+    # mes contra el trimestre. Un `Tendencia` de `app/engine/tendencia.py`.
+    #
+    # Tampoco la produce `decide`, y por el mismo motivo que `load_adoptions`:
+    # necesita el histórico de decisiones, que está en la base de datos, y
+    # `decide` es una función pura que no la abre. La cuelga `run_daily`.
+    #
+    # Que sea un campo opcional y no un parámetro de `decide` es además lo que
+    # permite que `scripts/replay_semaforo.py` la calcule sobre decisiones que
+    # nunca existieron -las que el motor HABRÍA tomado- sin construir sesiones ni
+    # progresiones que no tendrían sentido en un pasado que no se vivió.
+    tendencia: Any = None
 
     @property
     def weekday(self) -> str:
@@ -263,6 +275,7 @@ class DayDecision:
                 else None
             ),
             "load_adoptions": list(self.load_adoptions),
+            "tendencia": self.tendencia.to_dict() if self.tendencia else None,
         }
 
 

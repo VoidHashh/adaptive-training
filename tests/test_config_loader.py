@@ -1057,3 +1057,71 @@ def test_las_claves_vivas_de_cada_modo_siguen_pasando(cfg, modo, clave):
     `app/engine/progression.py`, así que ninguna puede caer en el rechazo."""
     assert clave in cfg.raw["progression"]["modes"][modo]
     assert "clave desconocida" not in errores(cfg.raw)
+
+
+# ---------------------------------------------------------------------------
+# La sección `trend`
+# ---------------------------------------------------------------------------
+#
+# Los cinco umbrales de la capa de tendencia son ABSOLUTOS, no adaptativos, y
+# eso está razonado largo en el propio YAML. La contrapartida de esa decisión es
+# que nada los corrige solo: si alguien pone `racha_min: 2` el sistema no se
+# rompe, simplemente empieza a avisar todos los días y en un mes el aviso deja
+# de leerse. Por eso el validador es aquí más duro que en otras secciones.
+
+
+def test_trend_es_obligatoria(cfg_copia):
+    """Omitirla no puede equivaler a apagarla.
+
+    `enabled: false` deja constancia de que alguien decidió apagarla; que falte
+    la sección entera es una actualización a medias, y con defectos por dentro
+    nadie se enteraría de que la capa lleva meses callada.
+    """
+    del cfg_copia.raw["trend"]
+    assert "trend" in errores(cfg_copia.raw)
+
+
+def test_una_clave_inventada_en_trend_no_se_ignora(cfg_copia):
+    cfg_copia.raw["trend"]["racha_minima"] = 5
+    err = errores(cfg_copia.raw)
+    assert "trend" in err and "racha_minima" in err
+
+
+def test_una_clave_inventada_en_trend_sueno_tampoco(cfg_copia):
+    cfg_copia.raw["trend"]["sueno"]["caida_puntos_min"] = 5
+    err = errores(cfg_copia.raw)
+    assert "trend.sueno" in err and "caida_puntos_min" in err
+
+
+def test_enabled_tiene_que_ser_booleano(cfg_copia):
+    """`enabled: "false"` es una cadena y las cadenas no vacías son verdaderas.
+
+    Es el fallo silencioso clásico de YAML: se escribe entre comillas por
+    costumbre y la capa queda encendida creyendo el autor que la apagó.
+    """
+    cfg_copia.raw["trend"]["enabled"] = "false"
+    assert "enabled" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize(
+    "clave,valor",
+    [("racha_min", 1), ("ventana_corta_dias", 6), ("ventana_larga_dias", 13),
+     ("delta_pp_min", 0), ("motivo_semanas_min", 1)],
+)
+def test_los_minimos_de_trend_se_respetan(cfg_copia, clave, valor):
+    cfg_copia.raw["trend"][clave] = valor
+    assert clave in errores(cfg_copia.raw)
+
+
+def test_la_ventana_corta_tiene_que_ser_mas_corta(cfg_copia):
+    """Con corta >= larga el detector compararía un tramo consigo mismo."""
+    cfg_copia.raw["trend"]["ventana_corta_dias"] = 90
+    cfg_copia.raw["trend"]["ventana_larga_dias"] = 90
+    assert "ventana" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("clave", ["caida_score_min", "caida_min_min"])
+def test_las_caidas_de_sueno_tienen_que_ser_positivas(cfg_copia, clave):
+    """Una caída de 0 dispararía el veredicto con cualquier ruido de medición."""
+    cfg_copia.raw["trend"]["sueno"][clave] = 0
+    assert clave in errores(cfg_copia.raw)

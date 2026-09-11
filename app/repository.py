@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState
+from app.engine.tendencia import DecisionDia
 from app.models import (
     ExerciseTarget,
     LoadAdoption,
@@ -480,6 +481,29 @@ def current_decision(session: Session, day: date) -> DecisionRow | None:
             DecisionRow.date == day, DecisionRow.is_current.is_(True)
         )
     ).first()
+
+
+def serie_decisiones(session: Session, *, hasta: date) -> list[DecisionDia]:
+    """El histórico de semáforos vigentes hasta `hasta`, para la capa de tendencia.
+
+    Sin ventana. Podría acotarse a los 90 días de `trend.ventana_larga_dias` y
+    sería un error en dos sitios: una racha larga se cortaría justo por donde
+    empieza a importar, y el detector de racha no podría distinguir "no hay
+    histórico suficiente" de "la racha llega hasta el principio de los tiempos",
+    que es la diferencia entre callarse y mentir. La tabla crece un registro al
+    día; leerla entera cuesta lo que cuesta leer unos miles de filas.
+
+    Solo las `is_current`: un día puede tener varias decisiones -a las 07:00 sin
+    check-in y a las 09:40 con él-, y contar las dos daría ese día dos veces en
+    la cuenta de ámbares.
+    """
+    filas = session.scalars(
+        select(DecisionRow)
+        .where(DecisionRow.is_current.is_(True), DecisionRow.date <= hasta)
+        .order_by(DecisionRow.date)
+    ).all()
+    return [DecisionDia(day=f.date, light=f.light, trigger_rule=f.trigger_rule)
+            for f in filas]
 
 
 def planned_session(fila: DecisionRow | None) -> dict[str, Any]:

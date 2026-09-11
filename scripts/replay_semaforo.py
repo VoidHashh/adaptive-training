@@ -48,6 +48,7 @@ from app.config_loader import load_config
 from app.db import session_scope
 from app.engine.rules import FIRED, NOT_APPLICABLE, SKIPPED, evaluate_light
 from app.engine.signals import DayMetrics, Ride, build_signals
+from app.engine.tendencia import DecisionDia, evaluar_tendencia
 from app.models import Activity, DailyMetrics
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,6 +156,103 @@ def pinta_reglas(titulo: str, dias: list[dict]) -> None:
               f"{salt.get(nombre,0):8d}")
 
 
+def pinta_tendencia(cfg, dias: list[dict], metricas: list[DayMetrics]) -> None:
+    """Lo que la capa de tendencia habría dicho cada mañana, día a día.
+
+    Para qué sirve exactamente
+    --------------------------
+    Los cinco umbrales de `trend` son ABSOLUTOS, no adaptativos, y eso está
+    razonado en el YAML. Pero un umbral absoluto que nadie contrasta contra los
+    datos es un número inventado con buena prosa alrededor. Esto es lo que lo
+    contrasta: si `racha_min: 5` dispara ochenta veces en seis meses, sobra; si
+    no dispara ninguna, no mide nada. Las dos cosas se ven aquí y en ningún otro
+    sitio.
+
+    Se alimenta con las decisiones que el motor HABRÍA tomado -no existen en
+    `decisions`, que sigue vacía- y por eso la capa se diseñó pura y recibiendo
+    una lista de `DecisionDia` en vez de abrir la base de datos ella misma.
+
+    Los días consecutivos con la MISMA salida se agrupan en un rango. No es un
+    resumen: no se pierde ni un día, y el rango dice exactamente cuáles. Sin
+    agrupar, 179 líneas de "sin novedad" enterrarían las que cuentan algo.
+
+    Qué cuenta como "la misma salida"
+    ---------------------------------
+    Los avisos se comparan por su TEXTO ENTERO, porque ahí el número es la
+    noticia: "5 días seguidos" y "6 días seguidos" son dos cosas distintas y
+    juntarlas sería mentir. Los N/A, en cambio, se comparan solo por TIPO,
+    porque su texto lleva el contador del calentamiento ("18/30 días...") y
+    cambia cada mañana sin que cambie nada: comparándolos por texto, los
+    primeros cuarenta y pico días imprimían un bloque por día y no se agrupaba
+    nada. El bloque se pinta con las líneas del ÚLTIMO día del rango, que son
+    las que dicen cuánta muestra había al terminar de esperar.
+    """
+    score = {m.date: m.sleep_score for m in metricas}
+    minutos = {m.date: m.sleep_min for m in metricas}
+
+    historico: list[DecisionDia] = []
+    salidas: list[tuple[date, tuple, list[str]]] = []
+    cuenta: Counter = Counter()
+    sin_muestra: Counter = Counter()
+
+    for d in dias:
+        historico.append(DecisionDia(d["dia"], d["luz"], d["trigger"]))
+        t = evaluar_tendencia(
+            cfg, d["dia"], historico, sleep_score=score, sleep_min=minutos
+        )
+        for a in t.avisos:
+            cuenta[a.tipo] += 1
+        for s in t.sin_muestra:
+            sin_muestra[s.tipo] += 1
+        clave = (
+            tuple(a.texto for a in t.avisos),
+            tuple(s.tipo for s in t.sin_muestra),
+        )
+        salidas.append((d["dia"], clave, t.lineas()))
+
+    print("\n" + "=" * ANCHO)
+    print("  CAPA DE TENDENCIA — lo que habría dicho cada mañana")
+    print("=" * ANCHO)
+    tr = (cfg.raw.get("trend") or {})
+    print(f"  umbrales  : racha≥{tr.get('racha_min')}d · "
+          f"{tr.get('ventana_corta_dias')}d vs {tr.get('ventana_larga_dias')}d "
+          f"Δ≥{tr.get('delta_pp_min')}pp · motivo≥{tr.get('motivo_semanas_min')} sem")
+    print(f"  disparos  : " + (", ".join(f"{k}×{v}" for k, v in cuenta.most_common())
+                               or "NINGUNO — estos umbrales no miden nada"))
+    print(f"  sin muestra: " + (", ".join(f"{k}×{v}" for k, v in sin_muestra.most_common())
+                                or "—"))
+    print()
+
+    # Agrupa días consecutivos con salida idéntica.
+    bloque_ini: date | None = None
+    bloque_fin: date | None = None
+    bloque_clave: tuple | None = None
+    bloque_txt: list[str] | None = None
+
+    def vuelca() -> None:
+        if bloque_txt is None:
+            return
+        if bloque_ini == bloque_fin:
+            cab = f"  {bloque_ini}"
+        else:
+            n = (bloque_fin - bloque_ini).days + 1
+            cab = f"  {bloque_ini} → {bloque_fin} ({n}d)"
+        print(f"{cab}")
+        for linea in bloque_txt:
+            print(f"      {linea}")
+
+    for dia, clave, lineas in salidas:
+        if bloque_clave == clave and bloque_fin == dia - timedelta(days=1):
+            bloque_fin = dia
+            bloque_txt = lineas
+            continue
+        vuelca()
+        bloque_ini = bloque_fin = dia
+        bloque_clave = clave
+        bloque_txt = lineas
+    vuelca()
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--desde", type=date.fromisoformat, default=None)
@@ -162,6 +260,8 @@ def main() -> int:
     p.add_argument("--corte", type=date.fromisoformat, default=None,
                    help="compara el tramo anterior al corte con el posterior")
     p.add_argument("--mensual", action="store_true", help="reparto mes a mes")
+    p.add_argument("--tendencia", action="store_true",
+                   help="lo que la capa de tendencia habría dicho cada mañana")
     p.add_argument("--listar", choices=["amber", "red", "todos"], default=None)
     args = p.parse_args()
 
@@ -204,6 +304,9 @@ def main() -> int:
             txt = ", ".join(f"{k}×{v}" for k, v in reglas.most_common()) or "—"
             print(f"    {mes:9s} {len(sub):4d} {c.get('green',0):7d} "
                   f"{c.get('amber',0):7d} {c.get('red',0):6d}   {txt}")
+
+    if args.tendencia:
+        pinta_tendencia(cfg, dias, metricas)
 
     if args.corte:
         antes = [d for d in dias if d["dia"] < args.corte]

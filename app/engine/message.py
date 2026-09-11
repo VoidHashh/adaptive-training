@@ -295,6 +295,27 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append(f"🚴 {decision.bike.text()}")
 
+    # --- lo que no se ve mirando un solo día --------------------------------
+    # FUERA de `include_reasoning`, y es el bloque donde más claro está por qué.
+    # Esto no explica la decisión de hoy: no ha entrado en ella. Ninguna regla
+    # del semáforo mira más de tres días atrás, así que "llevas seis días sin un
+    # verde" es información que el motor NO ha usado para decidir y que solo
+    # existe en esta línea. Apagar el razonamiento es decir "no me cuentes por
+    # qué has decidido esto", no "no me cuentes hacia dónde voy".
+    #
+    # Va después de la bici y antes de los avisos de datos incompletos porque es
+    # lo último del plan y lo primero de las advertencias: cierra el "qué hago
+    # hoy" y abre el "con qué fiabilidad te lo estoy diciendo".
+    tendencia = getattr(decision, "tendencia", None)
+    lineas_tendencia = tendencia.lineas() if tendencia is not None else []
+    if lineas_tendencia:
+        L.append("")
+        L.append("📉 <b>Tendencia</b>")
+        for linea in lineas_tendencia:
+            # El prefijo "Tendencia:" que trae cada línea ya está en la cabecera
+            # del bloque. Repetirlo ocho palabras más abajo solo gasta pantalla.
+            L.append(f"• {linea.removeprefix('Tendencia: ')}")
+
     # --- decidido con datos incompletos -------------------------------------
     # FUERA de `include_reasoning` a propósito. Apagar el razonamiento es
     # decir "no me cuentes por qué", no "ocúltame que hoy has decidido a

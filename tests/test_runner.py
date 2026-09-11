@@ -21,7 +21,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, apply_execution
-from app.models import Base, HevyWrite, Notification, WorkoutLog
+from app.models import Base, Decision, HevyWrite, Notification, WorkoutLog
 from app.repository import load_state, save_decision, save_state
 from app.runner import run_daily, run_reconcile
 from tests.conftest import LUNES, dias, sig_completa
@@ -808,3 +808,58 @@ def test_la_racha_es_por_rutina_y_ejercicio():
     )
     assert st.clean_sessions[("dia_1", "hip_thrust")] == 1
     assert st.clean_sessions[("dia_3", "hip_thrust")] == 4
+
+
+# ---------------------------------------------------------------------------
+# La capa de tendencia
+# ---------------------------------------------------------------------------
+
+
+def test_la_mañana_calcula_la_tendencia(db, cfg):
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.tendencia is not None
+    assert res.decision.tendencia.day == LUNES
+
+
+def test_la_tendencia_incluye_la_decision_de_hoy(db, cfg):
+    """Hoy todavía no está escrita en `decisions` cuando se calcula.
+
+    A las 06:30 la fila del día no existe aún, y en el recálculo de las 09:40 la
+    que existe es la anterior. Si la capa leyera solo de la base, la racha
+    siempre iría un día por detrás y el día que la racha llega a cinco el
+    mensaje diría cuatro.
+    """
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.tendencia.n == 1
+
+
+def test_la_tendencia_lee_el_historico_guardado(db, cfg):
+    """Diez días previos en `decisions` tienen que llegar a la capa."""
+    for i in range(10, 0, -1):
+        db.add(Decision(date=LUNES - timedelta(days=i), light="amber",
+                        trigger_rule="sueno_corto"))
+    db.commit()
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.tendencia.n == 11
+
+
+def test_una_racha_larga_llega_al_mensaje(db, cfg):
+    """La prueba de punta a punta: base de datos → capa → Telegram.
+
+    Hoy tiene que salir no verde también: la racha se cuenta hacia atrás desde
+    hoy, así que un verde hoy la corta por definición. Se fuerza con 5 h 40 de
+    sueño, que es lo que dispara `sueno_corto`.
+    """
+    for i in range(45, 0, -1):
+        luz = "amber" if i <= 8 else "green"
+        db.add(Decision(date=LUNES - timedelta(days=i), light=luz,
+                        trigger_rule="sueno_corto" if luz == "amber" else None))
+    db.commit()
+    tg = TelegramFalso()
+    res = run_daily(
+        db, cfg, LUNES,
+        metrics=dias(LUNES, 10, hrv=60.0, rhr=50.0, sleep_min=340, sleep_score=80),
+        rides=[], hevy_client=HevyFalso(), telegram_client=tg,
+    )
+    assert res.decision.light == "amber", "el montaje tenía que dar un día no verde"
+    assert "9 días seguidos sin un verde" in tg.enviados[0]

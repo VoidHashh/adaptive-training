@@ -1761,3 +1761,134 @@ notifications:
     # El token y el chat ID van en .env, NUNCA aquí.
     # TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
     include_reasoning: true     # incluye qué regla disparó el semáforo
+
+
+# -----------------------------------------------------------------------------
+# 12. CAPA DE TENDENCIA
+# -----------------------------------------------------------------------------
+# Lo que NINGUNA regla del semáforo puede ver, porque ninguna mira más de tres
+# días atrás: `hrv_hundida_2d` llega a 2, `carga_acumulada` a 3, y ahí se acaba.
+# El motor decide bien cada mañana y el conjunto se le escapa entero.
+#
+# El replay de los 179 días de marzo a agosto lo dejó medido: el reparto de
+# colores casi no se movió entre la primera mitad y la segunda, y la composición
+# de lo que los disparaba se dio la vuelta. El color no se movió, la razón sí, y
+# nadie lo habría dicho porque nadie lo estaba mirando.
+#
+# Esta capa NO decide: no toca el semáforo, ni la progresión, ni la sesión. Solo
+# escribe frases en el mensaje de la mañana. Si se pone `enabled: false`, el
+# sistema entrena exactamente igual y lo único que se pierde es saber hacia
+# dónde va. Lo lee `app/engine/tendencia.py`.
+#
+#
+# POR QUÉ ESTOS CINCO NÚMEROS SON ABSOLUTOS Y NO ADAPTATIVOS
+# ----------------------------------------------------------
+# QUE NADIE LOS "ARREGLE" VOLVIÉNDOLOS RELATIVOS. Es la excepción deliberada a
+# la preferencia general del proyecto -comparar contra la propia distribución
+# histórica en vez de contra constantes-, y el motivo es concreto y está medido.
+#
+# `adaptive_thresholds` tiene sentido donde lo tiene: el p90 de la carga de 3
+# días es MI p90, y una constante ahí solo sería el p90 de otra persona. Pero
+# `hrv_ratio` enseña el límite de la idea: divide el HRV de hoy entre la media
+# de los 7 días anteriores, y como el denominador persigue al numerador, el
+# cociente no se sale de 0,91–1,04 en seis meses enteros. Es un filtro de paso
+# alto: solo deja pasar los cambios rápidos y borra las derivas lentas.
+#
+# Una capa de tendencia con umbrales relativos sería ese mismo filtro un piso
+# más arriba, y con un efecto peor: una racha mala LARGA subiría poco a poco el
+# listón de lo que cuenta como "normal", y la capa se quedaría callada justo el
+# mes en que hay algo que contar. Un indicador que se adapta a lo que mide no
+# mide nada.
+#
+# Así que se calibran una vez contra el histórico y se cambian A MANO. La
+# herramienta para hacerlo existe y es obligatorio usarla antes de tocar
+# cualquiera de estos valores:
+#
+#     python scripts/replay_semaforo.py --tendencia
+#
+# Sin falsarlos contra los datos, dentro de un año estos cinco números serían
+# folklore: nadie sabría de dónde salieron ni qué pasa si se mueven.
+trend:
+  enabled: true
+
+  # DETECTOR 1 — RACHA. Días seguidos sin un verde.
+  # Es el único de los tres que avisa PRONTO. Cinco sale del histórico: en los
+  # 179 días replicados hubo rachas de 2, 3 y 4 días con frecuencia -son ruido
+  # normal- y las de 5 o más se contaron con los dedos de una mano. Bajarlo a 4
+  # convierte el aviso en rutina y deja de leerse; subirlo a 7 lo reserva para
+  # cuando ya no hace falta que nadie lo diga.
+  #
+  # Un hueco de calendario (un día que el sistema no corrió) NO rompe la racha,
+  # porque un apagón no es un verde. Se cuenta aparte y el aviso lo nombra.
+  racha_min: 5
+
+  # DETECTOR 2 — VENTANA. El último mes contra el trimestre.
+  # LLEGA TARDE Y LO SABE. Se queda porque confirmar "el último mes ha ido peor
+  # que el trimestre" tiene valor aunque no anticipe nada, pero el texto del
+  # mensaje se etiqueta como RETROSPECTIVO con todas las letras: si se lee como
+  # una alerta temprana, engaña. Ver `_detecta_ventana`.
+  #
+  # 15 puntos porcentuales: en el histórico, la diferencia entre tramos de 30 y
+  # 90 días osciló sola entre 6 y 11 puntos sin que pasara nada reseñable. 15 es
+  # el primer escalón que queda por encima de ese ruido.
+  ventana_corta_dias: 30
+  ventana_larga_dias: 90
+  delta_pp_min: 15
+
+  # DETECTOR 3 — MOTIVO. El mismo TEMA manda semana tras semana.
+  # Es el que dice QUÉ está pasando, y el único que sobrevive a que el reparto
+  # de colores no se mueva. Solo cuenta semanas ISO COMPLETAS: contar la semana
+  # en curso haría que un lunes malo pareciera "una semana mala" y que la frase
+  # del jueves contradijese a la del lunes sin que hubiera pasado nada nuevo.
+  #
+  # Manda un TEMA, no una regla concreta. `sueno_corto` y `sueno_muy_corto` son
+  # el mismo problema a dos intensidades, igual que `hrv_baja_1d` y
+  # `hrv_hundida_2d`: contándolas por separado se fabricaban empates que no
+  # existían y el detector no disparaba NI UNA VEZ en 179 días. La lista de
+  # temas vive en app/engine/tendencia.py.
+  #
+  # Una semana sin dominante -un empate, o una semana tan tranquila que apenas
+  # disparó nada- NO rompe la racha: no dice que el tema haya cambiado, dice que
+  # esa semana no dice nada, que no es lo mismo. Dos seguidas sí la rompen. Lo
+  # que la rompe de verdad es que mande OTRO tema. El ordinal cuenta solo las
+  # semanas que mandaron y el mensaje nombra el tramo abarcado, para que el
+  # hueco no se esconda dentro del número.
+  #
+  # Cuatro semanas es un mes: menos es una mala racha, que ya la cuenta el
+  # detector 1.
+  motivo_semanas_min: 4
+
+  # CUALIFICADOR DE SUEÑO.
+  # `sleep_score` no dispara ninguna regla del semáforo y no va a dispararla: la
+  # regla del cuadrante de disociación (dormí bastante y dormí mal) disparaba 4
+  # veces en seis meses sin añadir un solo día nuevo, que es la definición de
+  # opción muerta. Su sitio es este.
+  #
+  # Cuando un aviso de esta capa ya ha señalado al sueño, esto separa cantidad
+  # de calidad, que son dos problemas con dos arreglos distintos: dormir menos
+  # se arregla acostándose antes; dormir lo mismo y peor, no.
+  #
+  # LOS DOS NÚMEROS SALEN DE MEDIR, NO DE ESTIMAR. La primera versión de este
+  # bloque decía 20 min y 5 puntos "porque son las caídas que separan un mes
+  # normal de uno malo". Era mentira con buena prosa: al pasarle
+  # `--tendencia` resultó que en 179 días la caída de `sleep_score` (media de
+  # 30d contra media de 90d) tiene p50 = 0,0 · p90 = 1,0 · máximo 2,6. Un
+  # umbral de 5 no se alcanza NUNCA, así que dos de los cuatro veredictos del
+  # cualificador -"es calidad" y "son las dos cosas"- eran opciones muertas
+  # recién nacidas. Este es justo el fallo que la herramienta existe para
+  # cazar, y lo cazó antes de la primera ejecución de verdad.
+  #
+  # caida_score_min: 2 → el doble del p90. Mismo criterio que los 15pp del
+  # detector 2: el primer escalón por encima de la banda de ruido.
+  # caida_min_min: 18 → entre el p75 (16,8) y el p90 (19,0) de la caída de
+  # minutos. Con 20 tampoco disparaba: el máximo en un día con aviso de sueño
+  # fue 19,6, y un umbral que el histórico roza pero no toca no separa nada.
+  #
+  # Lo que dice el histórico con estos números: cuando el motor señaló al
+  # sueño, SIEMPRE fue cantidad y nunca calidad. En esos días Garmin puntuaba
+  # el sueño igual o mejor que el trimestre; lo que bajaba era el tiempo en la
+  # cama. Por eso el veredicto "no es ninguna de las dos" también es una
+  # respuesta y no un hueco: dice que se movió el umbral, no el descanso.
+  sueno:
+    caida_score_min: 2
+    caida_min_min: 18

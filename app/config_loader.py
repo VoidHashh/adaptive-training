@@ -192,6 +192,10 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "routines",
         "cycling",
         "hiit",
+        # Obligatoria aunque la capa se pueda apagar. Apagarla se escribe
+        # `enabled: false`, que deja constancia; no escribir la sección dejaría
+        # la decisión sin rastro y sin sitio donde leer los umbrales.
+        "trend",
     ):
         require(section in data, f"falta la sección obligatoria '{section}'")
     if errors:
@@ -240,6 +244,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "hiit",
         "integrations",
         "notifications",
+        "trend",
     }
     for k in data:
         require(
@@ -1508,6 +1513,67 @@ def _validate(data: dict[str, Any]) -> list[str]:
                     f"Completa 'backoff_seconds': si no, la última se repetiría "
                     f"y el margen real no sería el que dice este archivo",
                 )
+
+    # --- capa de tendencia ---------------------------------------------------
+    #
+    # Sin defectos, y a propósito. Estos cinco números deciden durante meses qué
+    # se considera una mala racha, y son ABSOLUTOS -no adaptativos- por el motivo
+    # largo que está escrito junto a ellos en el YAML. Un defecto en el código
+    # sería justo la forma de que dejaran de coincidir con lo que dice el
+    # archivo: alguien borra una clave, el sistema sigue arrancando, y el número
+    # que de verdad gobierna la capa ya no está escrito en ninguna parte.
+    trend = data.get("trend") or {}
+    check_keys(
+        trend,
+        {
+            "enabled",
+            "racha_min",
+            "ventana_corta_dias",
+            "ventana_larga_dias",
+            "delta_pp_min",
+            "motivo_semanas_min",
+            "sueno",
+        },
+        "trend",
+    )
+    require(
+        isinstance(trend.get("enabled"), bool),
+        f"trend.enabled: '{trend.get('enabled')}' tiene que ser true o false. "
+        f"Es el único interruptor de la capa y no puede quedar implícito",
+    )
+    for clave, minimo in (
+        ("racha_min", 2),
+        ("ventana_corta_dias", 7),
+        ("ventana_larga_dias", 14),
+        ("delta_pp_min", 1),
+        ("motivo_semanas_min", 2),
+    ):
+        v = trend.get(clave)
+        require(
+            _es_num(v) and v >= minimo,
+            f"trend.{clave}: '{v}' tiene que ser un número >= {minimo}. Se "
+            f"calibra a mano contra el histórico con "
+            f"`scripts/replay_semaforo.py --tendencia`, no se deduce",
+        )
+    corta, larga = trend.get("ventana_corta_dias"), trend.get("ventana_larga_dias")
+    if _es_num(corta) and _es_num(larga):
+        require(
+            corta < larga,
+            f"trend.ventana_corta_dias ({corta}) tiene que ser menor que "
+            f"ventana_larga_dias ({larga}): el detector compara el último mes "
+            f"CONTRA el trimestre, y al revés -o iguales- daría siempre cero y "
+            f"no fallaría nunca, que es la forma más silenciosa de no medir nada",
+        )
+    sueno = trend.get("sueno") or {}
+    check_keys(sueno, {"caida_score_min", "caida_min_min"}, "trend.sueno")
+    for clave in ("caida_score_min", "caida_min_min"):
+        v = sueno.get(clave)
+        require(
+            _es_num(v) and v > 0,
+            f"trend.sueno.{clave}: '{v}' tiene que ser un número > 0. Con 0 el "
+            f"cualificador diría que el sueño ha empeorado todos los días en que "
+            f"la media se mueva un decimal",
+        )
 
     return errors
 
