@@ -1183,8 +1183,8 @@ routines:
         progression_type: double
         rep_range: [10, 12]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 30}
-          - {reps: 12, weight_kg: 60}
+          - {type: warmup, reps: 10, weight_kg: 40}
+          - {reps: 12, weight_kg: 70}
           - {reps: 12, weight_kg: 80}
           - {reps: 12, weight_kg: 100}
 
@@ -1196,10 +1196,10 @@ routines:
         progression_type: double
         rep_range: [10, 12]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 25}
+          - {type: warmup, reps: 10, weight_kg: 20}
           - {reps: 12, weight_kg: 30}
-          - {reps: 12, weight_kg: 30}
-          - {reps: 12, weight_kg: 30}
+          - {reps: 12, weight_kg: 35}
+          - {reps: 12, weight_kg: 40}
 
       - key: patada_atras
         template_id: "1ADF8723"
@@ -1217,9 +1217,9 @@ routines:
         rep_range: [20, 24]
         sets:
           - {type: warmup, reps: 20, weight_kg: 20}
-          - {reps: 24, weight_kg: 20}
-          - {reps: 24, weight_kg: 20}
-          - {reps: 24, weight_kg: 20}
+          - {reps: 24, weight_kg: 35}
+          - {reps: 24, weight_kg: 35}
+          - {reps: 24, weight_kg: 35}
 
       - key: gemelo_sentado
         template_id: "062AB91A"
@@ -1227,15 +1227,20 @@ routines:
         increment_kg: 5
         apply_to: top_set
         expendable_in_amber: true
-        # Corregido en Hevy el 07-09-2026: antes eran tres series idénticas de
-        # 20 kg y un salto a 50. Ahora la rampa es coherente.
+        # Releído de Hevy el 11-09-2026. OJO: la rampa NO es monótona, va
+        # 70 → 60 → 65. No lo he "arreglado" porque es lo que hay registrado y
+        # el config reproduce Hevy, no al revés; pero si el 70 de la primera
+        # efectiva es un dedazo, corrígelo en Hevy y vuelve a leer. Mientras
+        # tanto la progresión de carga funciona igual: `double` mira el máximo
+        # de las efectivas (70) y sube todas con un delta, así que el desorden
+        # se conserva en vez de aplanarse.
         progression_type: double
         rep_range: [12, 15]
         sets:
-          - {type: warmup, reps: 12, weight_kg: 20}
-          - {reps: 12, weight_kg: 30}
-          - {reps: 12, weight_kg: 40}
-          - {reps: 15, weight_kg: 50}
+          - {type: warmup, reps: 10, weight_kg: 40}
+          - {reps: 12, weight_kg: 70}
+          - {reps: 12, weight_kg: 60}
+          - {reps: 15, weight_kg: 65}
 
       - key: press_triceps_sentado
         template_id: "234BC743"
@@ -1245,19 +1250,20 @@ routines:
         expendable_in_amber: true
         # Se queda en 4 series (1 de calentamiento + 3 efectivas): confirmado
         # como intencionado, no es un resto sin limpiar.
-        # Las cuatro van a 0 kg: sin peso real registrado no hay progresión
-        # posible aquí.
-        # Las cuatro series a 0 kg. En `double` eso significa que subirá reps
-        # hasta 15 y ahí se quedará: el motor NO inventa una carga inicial
-        # partiendo de cero (ver `_can_raise_load`). En cuanto registres el peso
-        # real en Hevy, la progresión de carga se activa sola.
+        # CARGA REGISTRADA el 11-09-2026: 50/55/60 en las efectivas. Antes iban
+        # las cuatro a 0 kg y eso dejaba la progresión de carga muerta, porque
+        # `_can_raise_load` no inventa una carga inicial partiendo de cero. Ya
+        # no aplica: hay dato, y la progresión de carga está viva.
+        # Las reps bajaron de 15 a 12 al registrar el peso, que es lo lógico:
+        # con carga real, 12 es el suelo del rango y hay recorrido hasta 15
+        # antes de que toque subir kilos.
         progression_type: double
         rep_range: [12, 15]
         sets:
-          - {type: warmup, reps: 12, weight_kg: 0}
-          - {reps: 15, weight_kg: 0}
-          - {reps: 15, weight_kg: 0}
-          - {reps: 15, weight_kg: 0}
+          - {type: warmup, reps: 10, weight_kg: 40}
+          - {reps: 12, weight_kg: 50}
+          - {reps: 12, weight_kg: 55}
+          - {reps: 12, weight_kg: 60}
 
       - key: elevacion_cadera_unilateral
         template_id: "487B3755"
@@ -1268,12 +1274,16 @@ routines:
         name: "Elevación de cadera a una pierna"
         notes: "ELEVACIÓN CADERA"
         clean_sessions_required: 2      # cadena posterior
+        # Releído de Hevy el 11-09-2026: 12 reps por serie, no 20. El tope de
+        # `max_reps` se queda en 30 -sigue siendo el techo correcto para una
+        # elevación de cadera a una pierna- pero ahora hay bastante más
+        # recorrido por delante del que había.
         progression_type: volume
         max_reps: 30
         sets:
-          - {reps: 20}
-          - {reps: 20}
-          - {reps: 20}
+          - {reps: 12}
+          - {reps: 12}
+          - {reps: 12}
 
       - key: plancha_lateral
         template_id: "E3EDA509"
@@ -1324,19 +1334,26 @@ routines:
         increment_kg: 5
         apply_to: all_sets
         clean_sessions_required: 2      # cadena posterior
-        # Reps objetivo añadidas en Hevy el 07-09-2026 (antes venían a null, lo
-        # que dejaba la puerta `require_all_sets_at_target_reps` sin nada contra
-        # lo que comparar). Falta la carga: mientras siga a 0 kg el motor
-        # registra el cumplimiento pero no puede proponer una subida.
+        # Reps objetivo añadidas en Hevy el 07-09-2026; CARGA añadida el
+        # 11-09-2026: 10 kg en las tres efectivas. Con esto el ejercicio deja de
+        # estar a ciegas.
+        # El calentamiento sigue a 0 kg y está bien así: `_can_raise_load` solo
+        # mira las series EFECTIVAS, y ningún incremento toca los
+        # calentamientos (`_split` los aparta antes de sumar). Un 0 ahí no
+        # bloquea nada.
+        # OJO a la primera efectiva: va a 10 reps y las otras dos a 12. La
+        # puerta `require_all_sets_at_target_reps` exige que TODAS lleguen al
+        # tope del rango, así que mientras esa serie se quede en 10 no se
+        # añadirá la cuarta. No es un fallo, es la puerta haciendo su trabajo.
         progression_type: sets
         max_sets: 5
         then: double
         rep_range: [10, 12]
         sets:
           - {type: warmup, reps: 10, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
+          - {reps: 10, weight_kg: 10}
+          - {reps: 12, weight_kg: 10}
+          - {reps: 12, weight_kg: 10}
 
       - key: curl_femoral_pie
         template_id: "6120CAAB"
@@ -1344,16 +1361,17 @@ routines:
         increment_kg: 2.5
         apply_to: all_sets
         clean_sessions_required: 2      # cadena posterior
-        # Reps ya definidas; falta la carga. Igual que hip_thrust_barra.
+        # Carga registrada el 11-09-2026: rampa 10 / 12,5 / 15. Ya no falta
+        # nada. El calentamiento a 0 kg no estorba (ver hip_thrust_barra).
         progression_type: sets
         max_sets: 5
         then: double
         rep_range: [10, 12]
         sets:
           - {type: warmup, reps: 10, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 10}
+          - {reps: 12, weight_kg: 12.5}
+          - {reps: 12, weight_kg: 15}
 
       - key: peso_muerto_smith
         template_id: "20870ED5"
@@ -1369,7 +1387,8 @@ routines:
         increment_kg: 5
         apply_to: all_sets
         clean_sessions_required: 2      # cadena posterior
-        # Reps ya definidas; falta la carga. Igual que hip_thrust_barra.
+        # Carga registrada el 11-09-2026: 20 / 22,5 / 22,5. El calentamiento a
+        # 0 kg no estorba (ver hip_thrust_barra).
         # DISCREPANCIA ANOTADA: al añadir las reps dijiste 10 para este
         # ejercicio, pero Hevy devuelve 12 en las tres series efectivas, igual
         # que en los otros tres. Se reproduce lo que hay en Hevy. Si querías 10,
@@ -1383,9 +1402,9 @@ routines:
         rep_range: [10, 12]
         sets:
           - {type: warmup, reps: 10, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
+          - {reps: 12, weight_kg: 20}
+          - {reps: 12, weight_kg: 22.5}
+          - {reps: 12, weight_kg: 22.5}
 
       - key: jalon_al_pecho
         template_id: "6A6C31A5"
@@ -1408,14 +1427,15 @@ routines:
         name: "Remo con apoyo de pecho"
         increment_kg: 2.5
         apply_to: all_sets
-        # Reps ya definidas; falta la carga. Igual que hip_thrust_barra.
+        # Carga registrada el 11-09-2026: rampa 15 / 17,5 / 20, y aquí hasta el
+        # calentamiento lleva peso (5 kg). Ya no falta nada.
         progression_type: double
         rep_range: [10, 12]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
-          - {reps: 12, weight_kg: 0}
+          - {type: warmup, reps: 10, weight_kg: 5}
+          - {reps: 12, weight_kg: 15}
+          - {reps: 12, weight_kg: 17.5}
+          - {reps: 12, weight_kg: 20}
 
       - key: face_pull
         template_id: "BE640BA0"
@@ -1425,7 +1445,7 @@ routines:
         progression_type: double
         rep_range: [12, 15]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 10}
+          - {type: warmup, reps: 10, weight_kg: 7.5}
           - {reps: 15, weight_kg: 12.5}
           - {reps: 15, weight_kg: 12.5}
           - {reps: 15, weight_kg: 12.5}
@@ -1453,12 +1473,13 @@ routines:
       - key: plancha_lateral
         template_id: "E3EDA509"
         name: "Plancha lateral"
+        # Releído de Hevy el 11-09-2026: 20 s, no 30. El tope se queda en 60.
         progression_type: volume
         max_seconds: 60
         sets:
-          - {duration_s: 30}
-          - {duration_s: 30}
-          - {duration_s: 30}
+          - {duration_s: 20}
+          - {duration_s: 20}
+          - {duration_s: 20}
 
   # ---------------------------------------------------------------------------
   dia_3:
@@ -1480,9 +1501,9 @@ routines:
         rep_range: [10, 12]
         sets:
           - {type: warmup, reps: 10, weight_kg: 40}
+          - {reps: 12, weight_kg: 45}
           - {reps: 12, weight_kg: 50}
-          - {reps: 12, weight_kg: 60}
-          - {reps: 12, weight_kg: 65}
+          - {reps: 12, weight_kg: 55}
 
       - key: aduccion_cadera
         template_id: "8BEBFED6"
@@ -1494,8 +1515,8 @@ routines:
         sets:
           - {type: warmup, reps: 10, weight_kg: 15}
           - {reps: 12, weight_kg: 25}
-          - {reps: 12, weight_kg: 35}
           - {reps: 12, weight_kg: 40}
+          - {reps: 12, weight_kg: 50}
 
       - key: press_hombro_maquina
         template_id: "9237BAD1"
@@ -1506,10 +1527,10 @@ routines:
         progression_type: double
         rep_range: [10, 12]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 10}
-          - {reps: 12, weight_kg: 10}
+          - {type: warmup, reps: 10, weight_kg: 12.5}
           - {reps: 12, weight_kg: 12.5}
-          - {reps: 12, weight_kg: 12.5}
+          - {reps: 12, weight_kg: 15}
+          - {reps: 12, weight_kg: 17.5}
 
       - key: contractora_pecho
         template_id: "9DCE2D64"
@@ -1519,10 +1540,10 @@ routines:
         progression_type: double
         rep_range: [10, 12]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 10}
-          - {reps: 12, weight_kg: 20}
+          - {type: warmup, reps: 10, weight_kg: 20}
           - {reps: 12, weight_kg: 25}
           - {reps: 12, weight_kg: 27.5}
+          - {reps: 12, weight_kg: 30}
 
       - key: vuelos_posteriores
         template_id: "B582299E"
@@ -1535,8 +1556,8 @@ routines:
         sets:
           - {type: warmup, reps: 10, weight_kg: 3}
           - {reps: 12, weight_kg: 3}
-          - {reps: 12, weight_kg: 4}
-          - {reps: 12, weight_kg: 4}
+          - {reps: 12, weight_kg: 3}
+          - {reps: 12, weight_kg: 3}
 
       - key: curl_predicador
         template_id: "1E9A6B8E"
@@ -1547,10 +1568,10 @@ routines:
         progression_type: double
         rep_range: [10, 12]
         sets:
-          - {type: warmup, reps: 10, weight_kg: 10}
-          - {reps: 12, weight_kg: 12.5}
-          - {reps: 12, weight_kg: 13.75}
+          - {type: warmup, reps: 12, weight_kg: 10}
           - {reps: 12, weight_kg: 15}
+          - {reps: 12, weight_kg: 17.5}
+          - {reps: 12, weight_kg: 18.75}
 
       - key: extension_triceps_polea
         template_id: "CDC472B1"
@@ -1563,8 +1584,8 @@ routines:
         sets:
           - {type: warmup, reps: 10, weight_kg: 10}
           - {reps: 12, weight_kg: 12.5}
-          - {reps: 12, weight_kg: 12.5}
           - {reps: 12, weight_kg: 15}
+          - {reps: 12, weight_kg: 17.5}
 
       - key: perro_de_caza
         template_id: "BD0AD077"

@@ -199,8 +199,21 @@ def test_y_caduca_al_dia_quince(cfg):
     assert "retirada_peso_muerto" not in [r.name for r in d.active_rules]
 
 
-def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_exacto(cfg_summer):
-    """Y se ACUMULA con el recorte de series del ámbar, no lo sustituye."""
+def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_y_cae_en_disco(cfg_summer):
+    """Y se ACUMULA con el recorte de series del ámbar, no lo sustituye.
+
+    Antes esto comparaba contra `antes[0] * 0.70` pelado, y pasaba de milagro:
+    el config tenía 10 kg en esa serie y 10 × 0,70 = 7,0 cae justo en la
+    rejilla de medio kilo. Al releer las rutinas de Hevy el 11-09-2026 la serie
+    pasó a 12,5 kg; 12,5 × 0,70 = 8,75 y el motor devolvió 9,0 — que es lo
+    CORRECTO, porque `cut_load` redondea a 0,5 kg a propósito: no hay discos de
+    8,75, y un número que no se puede cargar no es un objetivo, es un adorno.
+
+    O sea que el contrato nunca fue "el factor exacto", era "el factor y
+    después la rejilla". Se comprueban las dos cosas por separado en vez de
+    clavar un literal: los pesos del config cambian cada vez que se releen las
+    rutinas, y un test que se rompe por eso no está midiendo el motor.
+    """
     viernes = date(2026, 9, 11)  # dia_3 en la variante summer
     antes = [
         s.get("weight_kg")
@@ -218,7 +231,15 @@ def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_exacto(cfg_summer):
     ]
 
     assert "descarga_press_hombro" in [r.name for r in d.active_rules]
-    assert despues[0] == pytest.approx(antes[0] * 0.70)
+    esperado = antes[0] * 0.70
+    assert abs(despues[0] - esperado) <= 0.25, (
+        f"el recorte debería quedar a menos de medio disco de {esperado} kg, "
+        f"y salió {despues[0]}"
+    )
+    assert despues[0] * 2 == int(despues[0] * 2), (
+        f"{despues[0]} kg no se puede cargar: el recorte tiene que caer en la "
+        "rejilla de 0,5 kg"
+    )
     assert d.light == "amber"
     assert len(despues) < len(antes), "el ámbar recorta series ADEMÁS de la carga"
 
