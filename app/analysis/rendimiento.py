@@ -319,7 +319,13 @@ def progresion(
         k: {"hoy": hoy, "anterior": antes, "variacion_pct": round(100 * (hoy / antes - 1), 2)}
         for k, hoy, antes in comunes
     }
-    medio = _media([hoy / antes - 1 for _, hoy, antes in comunes]) or 0.0
+    # Sin `or 0.0`: `comunes` no está vacío -lo garantiza el `return` de arriba-,
+    # así que `_media` devuelve un float y ese defecto es inalcanzable. Importa
+    # quitarlo porque este es el SITIO QUE ESCRIBE `variacion_media_pct`, y un
+    # cero de relleno aquí sale por el otro extremo como "la misma carga que la
+    # vez anterior": la frase concreta y falsa que ya se arregló en la punta que
+    # lee. Taparlo en un lado y dejarlo en el otro es no haberlo arreglado.
+    medio = _media([hoy / antes - 1 for _, hoy, antes in comunes])
     return {
         "valor": round(_limitar(50.0 + medio * 500.0), 2),
         # El porcentaje crudo, antes de meterlo en la escala y antes de

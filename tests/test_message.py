@@ -24,7 +24,7 @@ import copy
 import pytest
 
 from app.engine.decision import EngineState, decide
-from app.engine.message import render_plain, render_telegram
+from app.engine.message import EMOJI, NOMBRE_LUZ, render_plain, render_telegram
 
 from tests.conftest import LUNES, sig, sig_completa
 
@@ -55,6 +55,41 @@ def decision_completa(cfg, *, estado=None, **valores):
     """Como `decision`, pero sobre un día en el que no falta ningún dato."""
     s = sig_completa(LUNES, **valores)
     return decide(cfg, LUNES, s, estado or EngineState())
+
+
+# ---------------------------------------------------------------------------
+# La cabecera: el semáforo no se degrada en silencio
+# ---------------------------------------------------------------------------
+
+
+def test_la_cabecera_lleva_el_semaforo_del_dia():
+    """Las tres luces reales, con su emoji y su nombre."""
+    for luz, emoji, nombre in (
+        ("green", "🟢", "VERDE"),
+        ("amber", "🟡", "ÁMBAR"),
+        ("red", "🔴", "ROJO"),
+    ):
+        assert EMOJI[luz] == emoji
+        assert NOMBRE_LUZ[luz] == nombre
+
+
+def test_un_semaforo_desconocido_revienta_en_vez_de_salir_en_blanco(cfg):
+    """Antes salía "⚪ ... — PURPLE" y el mensaje seguía adelante tan normal.
+
+    El semáforo es la cabecera y el resumen de la decisión entera del día. Un
+    valor que no está en la tabla solo puede venir de algo roto -un config.yaml
+    con una luz nueva, una regla que devuelve otra cosa, una errata-, y en un
+    sistema que decide solo eso tiene que parar, no pintarse de gris y pedir
+    entrenar igual bajo una luz que no existe.
+    """
+    d = decision_completa(cfg)
+    d.light = "purple"
+
+    with pytest.raises(ValueError) as exc:
+        render_plain(d, cfg)
+
+    assert "purple" in str(exc.value)
+    assert "semáforo desconocido" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +577,34 @@ def test_sin_adopciones_no_aparece_el_bloque(cfg):
     txt = render_plain(decision_completa(cfg), cfg)
     assert "Ajustado a lo que levantaste" not in txt
     assert "No adoptado" not in txt
+
+
+def test_una_adopcion_sin_motivo_lo_dice_en_vez_de_dejar_el_guion_colgando(cfg):
+    """"62,5 kg —" y nada detrás parece un error de formato, no un dato ausente.
+
+    El motivo es la mitad del aviso: sin él la línea dice que la carga se movió
+    sola y no dice por qué, que es exactamente lo que `load_adoptions` existe
+    para impedir. Que falte puede pasar; que no se note, no.
+    """
+    linea = next(
+        l
+        for l in con_adopciones(cfg, adopcion(reason=None)).splitlines()
+        if "Prensa horizontal" in l and "→" in l
+    )
+
+    assert "sin motivo registrado" in linea
+    assert not linea.rstrip().endswith("—"), "el guion no puede quedarse colgando"
+
+
+def test_una_adopcion_rechazada_sin_motivo_tambien_lo_dice(cfg):
+    """El mismo hueco en el otro bloque, donde además duele más: una rechazada
+    ES su motivo. "He visto un número raro y no lo he tocado" sin decir cuál es
+    un aviso que no se puede accionar."""
+    txt = con_adopciones(
+        cfg, adopcion(applied=False, after_kg=None, executed_kg=600.0, reason="")
+    )
+
+    assert "sin motivo registrado" in txt
 
 
 def test_las_adopciones_sobreviven_a_include_reasoning_false(cfg_sin_motivo):

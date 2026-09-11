@@ -313,9 +313,23 @@ def auditoria_reglas(
             que_falta = ", ".join(
                 f"{k} ({v} día(s))" for k, v in faltas.get(nombre, Counter()).most_common(3)
             )
+            # "le falta algún dato" era honesto pero tapaba dos situaciones que
+            # no son la misma. Que se sepa qué falta -y cuántos días- es un
+            # diagnóstico accionable. Que NO se sepa es un fallo del propio
+            # registro de faltas, y esa segunda es la que hay que poder ver:
+            # una regla ciega cuyo motivo tampoco se ha apuntado se arregla en
+            # otro sitio distinto.
             lectura = (
-                f"NO se ha podido evaluar ni un solo día: le falta "
-                f"{que_falta or 'algún dato'}. No es calibración, es que está ciega"
+                (
+                    f"NO se ha podido evaluar ni un solo día: le falta "
+                    f"{que_falta}. No es calibración, es que está ciega"
+                )
+                if que_falta
+                else (
+                    "NO se ha podido evaluar ni un solo día, y además no hay "
+                    "constancia de qué señal le faltó ningún día: está ciega y "
+                    "el motivo tampoco se ha registrado"
+                )
             )
         else:
             estado = "nunca_disparo"

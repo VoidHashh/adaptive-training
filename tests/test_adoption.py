@@ -21,6 +21,7 @@ import pytest
 from app.engine.adoption import (
     ABAJO,
     ARRIBA,
+    Adopcion,
     _desplazar,
     _margen,
     adoptar_cargas,
@@ -493,6 +494,56 @@ def test_el_texto_dice_de_donde_a_donde():
     e2 = estado_en(60)
     (b,) = adoptar(e2, [ejercicio(60)], {"hip_thrust": 600})
     assert "sigue en 60" in b.text()
+
+
+def test_una_aplicada_sin_objetivo_nuevo_revienta_en_vez_de_escribir_cero_kg():
+    """El invariante: aplicada siempre trae objetivo nuevo.
+
+    La única rama que construye una `Adopcion` con `aplicada=True` le pasa
+    `tope_efectivo(...)`, que devuelve un float; las que llevan `None` son
+    todas `aplicada=False`. Así que el `or 0` que había aquí era inalcanzable
+    con datos legítimos, y lo único que podía hacer es convertir una rotura del
+    invariante en "hip thrust: 62,5→0 kg" dentro del mensaje de la mañana, que
+    se lee como que el objetivo se ha ido al suelo.
+
+    Un 0,0 de verdad sí puede llegar -un ejercicio sin peso registrado- y ese
+    sí se escribe: es un dato, no un hueco. Lo que no se escribe es el hueco
+    disfrazado de dato.
+    """
+    a = Adopcion(
+        routine_key="dia_1",
+        exercise_key="hip_thrust",
+        name="Hip thrust",
+        direccion=ARRIBA,
+        prescrito_kg=60.0,
+        hecho_kg=65.0,
+        objetivo_antes_kg=62.5,
+        objetivo_despues_kg=None,
+        aplicada=True,
+        motivo="da igual, no llega a decirlo",
+    )
+
+    with pytest.raises(TypeError):
+        a.text()
+
+
+def test_un_objetivo_nuevo_de_cero_si_se_escribe():
+    """La otra cara: 0 kg es un dato legítimo -un ejercicio sin peso- y se dice
+    tal cual. El arreglo de arriba no puede haberse llevado esto por delante."""
+    a = Adopcion(
+        routine_key="dia_1",
+        exercise_key="plancha",
+        name="Plancha",
+        direccion=ARRIBA,
+        prescrito_kg=None,
+        hecho_kg=0.0,
+        objetivo_antes_kg=0.0,
+        objetivo_despues_kg=0.0,
+        aplicada=True,
+        motivo="primera carga registrada en Hevy",
+    )
+
+    assert "0→0 kg" in a.text()
 
 
 @pytest.mark.parametrize("hecho", [60.0, 60.0000001, 59.9999999])

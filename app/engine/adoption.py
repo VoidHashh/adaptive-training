@@ -95,9 +95,24 @@ class Adopcion:
 
     def text(self) -> str:
         if self.aplicada:
+            # Sin `or 0`, y a propósito. Una adopción aplicada SIEMPRE lleva
+            # objetivo nuevo: la única rama que construye una con `aplicada=True`
+            # le pasa `tope_efectivo(...)`, que devuelve un float. Las que llevan
+            # `None` son todas `aplicada=False` y salen por el `return` de abajo,
+            # que ni lo mira.
+            #
+            # Ese `or 0` era por tanto inalcanzable con datos legítimos, y lo
+            # único que podía hacer es convertir una rotura del invariante en la
+            # frase "hip thrust: 62,5→0 kg", que se lee como que el objetivo se
+            # ha ido al suelo. En el mensaje de la mañana, sobre el ejercicio que
+            # toca hacer hoy. Mejor que reviente aquí -`_fmt_kg(None)` peta- y se
+            # vea el fallo, que no que salga un cero con cara de decisión.
+            #
+            # Un 0,0 de verdad sí puede llegar, y entonces "0 kg" es la lectura
+            # correcta: es un ejercicio sin peso registrado, no un hueco.
             return (
                 f"{self.name}: {_fmt_kg(self.objetivo_antes_kg)}→"
-                f"{_fmt_kg(self.objetivo_despues_kg or 0)} kg ({self.motivo})"
+                f"{_fmt_kg(self.objetivo_despues_kg)} kg ({self.motivo})"
             )
         return f"{self.name}: sigue en {_fmt_kg(self.objetivo_antes_kg)} kg ({self.motivo})"
 

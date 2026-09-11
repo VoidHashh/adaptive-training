@@ -115,6 +115,21 @@ def _nombre_ejercicio(raw: dict[str, Any], routine: str, key: str) -> str:
     return key
 
 
+def _motivo_adopcion(a: dict[str, Any]) -> str:
+    """El porqué de un cambio de carga, o el hueco dicho en voz alta.
+
+    Antes era `a.get('reason', '')`, que dejaba la línea terminada en "62,5 kg —"
+    con el guion colgando. Un cambio de carga sin motivo visible es exactamente
+    lo que la tabla `load_adoptions` existe para impedir -lo dice su propio
+    docstring-, así que cuando falta no se disimula con un guion suelto: se
+    nombra. No revienta, porque el peso de hoy sí es correcto y el mensaje de
+    las 06:30 tiene que salir igual; lo que no puede es salir aparentando que
+    ahí no iba nada.
+    """
+    motivo = str(a.get("reason") or "").strip()
+    return motivo or "sin motivo registrado, que es un fallo: debería haberlo"
+
+
 def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> list[str]:
     """El bloque de "esto lo movió lo que levantaste", o nada si no hay.
 
@@ -137,7 +152,7 @@ def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> l
             flecha = "↑" if a.get("direction") == "up" else "↓"
             L.append(
                 f"• {flecha} {nombre}: {fmt_num(a.get('before_kg'))}→"
-                f"{fmt_num(a.get('after_kg'))} kg — {a.get('reason', '')}"
+                f"{fmt_num(a.get('after_kg'))} kg — {_motivo_adopcion(a)}"
             )
 
     if rechazadas:
@@ -147,7 +162,7 @@ def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> l
             nombre = _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
             L.append(
                 f"• {nombre}: se registraron {fmt_num(a.get('executed_kg'))} kg y "
-                f"sigue en {fmt_num(a.get('before_kg'))} kg — {a.get('reason', '')}"
+                f"sigue en {fmt_num(a.get('before_kg'))} kg — {_motivo_adopcion(a)}"
             )
 
     return L
@@ -162,7 +177,23 @@ def render_telegram(decision: Any, config: Any = None) -> str:
 
     L: list[str] = []
     luz = decision.light
-    L.append(f"{EMOJI.get(luz, '⚪')} <b>{fmt_date(decision.day).capitalize()} — {NOMBRE_LUZ.get(luz, luz.upper())}</b>")
+    # Sin `.get(luz, ...)`, y este es el sitio donde más importa. El semáforo es
+    # la cabecera del mensaje y el resumen de la decisión entera del día. Con el
+    # defecto puesto, una luz desconocida -un `config.yaml` con un valor nuevo,
+    # una regla que devuelve otra cosa, un typo- salía como "⚪ ... — PURPLE" y
+    # el mensaje seguía adelante tan normal, pidiendo entrenar bajo un semáforo
+    # que no existe. Degradar en silencio justo aquí es lo contrario de lo que
+    # tiene que hacer un sistema que decide solo.
+    if luz not in EMOJI or luz not in NOMBRE_LUZ:
+        raise ValueError(
+            f"semáforo desconocido: {luz!r}. Las luces válidas son "
+            f"{sorted(EMOJI)}. No se manda el mensaje con una luz inventada: "
+            f"es la línea que resume la decisión del día."
+        )
+    L.append(
+        f"{EMOJI[luz]} <b>{fmt_date(decision.day).capitalize()} — "
+        f"{NOMBRE_LUZ[luz]}</b>"
+    )
 
     if decision.deload.active:
         # El motivo va aquí, pegado al aviso, y no suelto entre los apuntes:

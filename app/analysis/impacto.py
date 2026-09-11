@@ -177,6 +177,7 @@ def _binaria(
     desde: date,
     hasta: date,
     ventana: tuple[date, date] | None,
+    sin_dato: set[date] | None = None,
 ) -> dict[date, float | None]:
     """1 los días que pasó, 0 los que no, y nada fuera de lo observado.
 
@@ -184,11 +185,18 @@ def _binaria(
     ejercicio no hay con qué comparar los días en que sí. Pero solo dentro de la
     ventana observada -antes de que Hevy estuviera conectado, un cero diría "ese
     día no lo hizo" cuando lo que pasa es que no hay registro-.
+
+    `sin_dato` es ese mismo argumento a nivel de día suelto en vez de a nivel de
+    ventana entera. Un día con salida pero sin duración conocida no es un 0 en
+    `bici_larga`: el 0 diría "ese día no rodó largo" cuando lo que pasa es que no
+    consta cuánto rodó. Se queda fuera del contraste, igual que los días de antes
+    de la ventana, y por la misma razón exacta.
     """
+    fuera = sin_dato or frozenset()
     salida: dict[date, float | None] = {}
     d = desde
     while d <= hasta:
-        if ventana is None or d < ventana[0] or d > ventana[1]:
+        if ventana is None or d < ventana[0] or d > ventana[1] or d in fuera:
             salida[d] = None
         else:
             salida[d] = 1.0 if clave in presentes.get(d, ()) else 0.0
@@ -212,6 +220,29 @@ def _salidas_por_dia(
     return salida
 
 
+def _minutos(acts: list[Activity]) -> float | None:
+    """Los minutos que pedaleó ese día, o `None` si no se sabe.
+
+    Basta que UNA de las salidas del día no traiga duración para que el total del
+    día sea desconocido. Sumar solo las que sí la traen no es una aproximación
+    prudente: es afirmar "ese día rodó 60 minutos" cuando rodó 60 y algo más.
+
+    Era `sum((a.duration_s or 0.0) for a in acts) / 60.0`, y ese `or 0.0` hacía
+    las dos cosas que más daño hacen en esta vista a la vez. Bajaba el umbral del
+    cuartil superior metiendo ceros en la distribución de la que sale, y además
+    marcaba el día como `bici_corta` -una salida sin duración caía siempre en el
+    cuarto inferior-. El resultado era una frase concreta y falsa sobre su propio
+    histórico: "los días de salida corta duermes peor", construida con días en los
+    que la salida pudo ser la más larga del mes.
+    """
+    total = 0.0
+    for a in acts:
+        if a.duration_s is None:
+            return None
+        total += a.duration_s
+    return total / 60.0
+
+
 def exposiciones_de_bici(
     session: Session, desde: date, hasta: date, cob: S.Cobertura
 ) -> tuple[list[Exposicion], dict[str, dict[date, float | None]]]:
@@ -226,24 +257,32 @@ def exposiciones_de_bici(
     ventana = cob.bici
 
     # El umbral de "larga" sale de SUS salidas de la ventana, no de una constante.
+    # Los días sin duración conocida no entran en la distribución: un cero ahí
+    # tiraría del cuartil superior hacia abajo y convertiría en "larga" una salida
+    # que no lo es, para todos los demás días.
     minutos = [
-        sum((a.duration_s or 0.0) for a in acts) / 60.0
-        for acts in por_dia.values()
-        if acts
+        m for m in (_minutos(acts) for acts in por_dia.values()) if m is not None
     ]
     p_alto = percentil(minutos, CUARTIL_ALTO) if minutos else None
     p_bajo = percentil(minutos, CUARTIL_BAJO) if minutos else None
 
     niveles = {"suave", "media", "intensa"}
     presentes: dict[date, set[str]] = {}
+    # Los días con salida pero sin duración conocida. No van a `presentes` -no
+    # son largos ni cortos- pero tampoco pueden quedarse en el 0 por omisión, así
+    # que se apuntan aparte y salen del contraste de duración. Solo de ese: la
+    # intensidad de Garmin sí se sabe, y esos contrastes siguen contando el día.
+    sin_duracion: set[date] = set()
     for d, acts in por_dia.items():
         marcas = presentes.setdefault(d, set())
         marcas.add("bici_cualquiera")
         for a in acts:
             if a.intensity_level in niveles:
                 marcas.add(f"bici_{a.intensity_level}")
-        if p_alto is not None:
-            mins = sum((a.duration_s or 0.0) for a in acts) / 60.0
+        mins = _minutos(acts)
+        if mins is None:
+            sin_duracion.add(d)
+        elif p_alto is not None:
             if mins >= p_alto:
                 marcas.add("bici_larga")
             # `p_bajo < p_alto` porque si todas sus salidas duran lo mismo los
@@ -277,8 +316,17 @@ def exposiciones_de_bici(
             )
         )
 
+    por_duracion = {"bici_larga", "bici_corta"}
     sers = {
-        e.clave: _binaria(presentes, e.clave, desde, hasta, ventana) for e in defs
+        e.clave: _binaria(
+            presentes,
+            e.clave,
+            desde,
+            hasta,
+            ventana,
+            sin_duracion if e.clave in por_duracion else None,
+        )
+        for e in defs
     }
     return defs, sers
 

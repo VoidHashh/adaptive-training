@@ -92,7 +92,7 @@ def salida(db, i, *, nivel="media", minutos=60.0, carga=None, desnivel=None):
             date=dia(i),
             is_cycling=True,
             intensity_level=nivel,
-            duration_s=minutos * 60.0,
+            duration_s=None if minutos is None else minutos * 60.0,
             training_load=carga,
             elevation_gain_m=desnivel,
         )
@@ -456,6 +456,79 @@ def test_si_todas_las_salidas_duran_lo_mismo_ninguna_es_larga_y_corta_a_la_vez(d
     # ...pero ningún día la cumple, así que no hay contradicción en pantalla.
     assert all(v == 0.0 for v in sers["bici_corta"].values() if v is not None)
     assert any(v == 1.0 for v in sers["bici_larga"].values())
+
+
+def test_una_salida_sin_duracion_no_se_marca_como_corta(db):
+    """Sin duración no se sabe si fue larga o corta, y eso no es "fue corta".
+
+    Era `sum((a.duration_s or 0.0) for a in acts) / 60.0`: cero minutos cae
+    siempre en el cuarto inferior, así que TODA salida sin duración se marcaba
+    corta. La frase que salía de ahí -"los días de salida corta duermes peor"-
+    es concreta, se lee como un hecho sobre su propio histórico, y estaría
+    construida con días en los que la salida pudo ser la más larga del mes.
+
+    Tampoco vale el cero por omisión en la otra dirección: ese día no es un "no
+    rodó largo", es un "no consta cuánto rodó". Sale del contraste de duración
+    igual que los días de antes de la ventana, por la misma razón.
+    """
+    for i in range(0, 48, 6):
+        salida(db, i, minutos=30.0 + i)
+    salida(db, 50, minutos=None)
+    db.commit()
+
+    cob = cobertura(db)
+    _, sers = exposiciones_de_bici(db, dia(0), dia(N - 1), cob)
+
+    assert sers["bici_corta"][dia(50)] is None
+    assert sers["bici_larga"][dia(50)] is None
+    # Y los días de al lado, que sí tienen dato, siguen siendo ceros legítimos.
+    assert sers["bici_corta"][dia(49)] == 0.0
+    assert sers["bici_larga"][dia(49)] == 0.0
+
+
+def test_una_salida_sin_duracion_no_tira_del_umbral_de_los_demas_dias(db):
+    """El cero de relleno no solo mentía sobre su día: contaminaba el corte.
+
+    El umbral de "larga" es el cuartil superior de SUS salidas. Metiendo ceros en
+    esa distribución el corte baja, y entonces salidas normales de los demás días
+    pasan a llamarse largas. Un dato que falta en un día no puede cambiar la
+    etiqueta de los otros cincuenta y nueve.
+    """
+    for i in range(0, 48, 6):
+        salida(db, i, minutos=30.0 + i)
+    db.commit()
+    cob = cobertura(db)
+    defs_limpio, _ = exposiciones_de_bici(db, dia(0), dia(N - 1), cob)
+
+    salida(db, 50, minutos=None)
+    db.commit()
+    cob = cobertura(db)
+    defs_con_hueco, _ = exposiciones_de_bici(db, dia(0), dia(N - 1), cob)
+
+    etiqueta = {d.clave: d.etiqueta for d in defs_limpio}
+    con_hueco = {d.clave: d.etiqueta for d in defs_con_hueco}
+    assert etiqueta["bici_larga"] == con_hueco["bici_larga"]
+    assert etiqueta["bici_corta"] == con_hueco["bici_corta"]
+
+
+def test_una_salida_sin_duracion_sigue_contando_donde_si_hay_dato(db):
+    """Lo que falta es la duración, no la salida entera.
+
+    La intensidad la clasificó Garmin por zonas y está ahí. Tirar el día de todos
+    los contrastes por un campo que solo le hace falta a dos sería el error
+    contrario: perder evidencia buena por prudencia mal puesta.
+    """
+    for i in range(0, 48, 6):
+        salida(db, i, minutos=30.0 + i)
+    salida(db, 50, nivel="intensa", minutos=None)
+    db.commit()
+
+    cob = cobertura(db)
+    _, sers = exposiciones_de_bici(db, dia(0), dia(N - 1), cob)
+
+    assert sers["bici_cualquiera"][dia(50)] == 1.0
+    assert sers["bici_intensa"][dia(50)] == 1.0
+    assert sers["bici_intensa"][dia(49)] == 0.0
 
 
 # ---------------------------------------------------------------------------

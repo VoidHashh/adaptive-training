@@ -297,6 +297,41 @@ def test_nunca_disparo_y_nunca_se_pudo_evaluar_no_son_lo_mismo(db):
     assert {f["nombre"] for f in nunca} == {"cansancio_alto", "hrv_baja_1d"}
 
 
+def test_una_regla_ciega_sin_motivo_apuntado_lo_dice_en_vez_de_decir_algun_dato(db):
+    """"Le falta algún dato" tapaba un fallo del propio registro de faltas.
+
+    Aquí la regla se saltó diez días y ni uno apuntó QUÉ le faltó. Las dos
+    situaciones -se sabe qué falta, no se sabe- se arreglan en sitios distintos:
+    la primera mirando el reloj o el check-in, la segunda mirando el motor, que
+    se está saltando reglas sin dejar constancia de por qué.
+
+    El texto anterior las dejaba con la misma cara, y encima sonaba a la primera,
+    que es la que manda a buscar al sitio equivocado.
+    """
+    for i in range(10):
+        decision(
+            db,
+            i,
+            luz="red",
+            determinante="lumbar_alto",
+            disparadas=["lumbar_alto"],
+            saltadas=[{"name": "hrv_baja_1d"}],  # sin `missing`: no consta qué faltó
+        )
+    db.commit()
+
+    filas, _ = auditoria_reglas(Cfg(), dias_de_luz(db, dia(0), dia(9)))
+    hrv = regla_de(filas, "hrv_baja_1d")
+
+    assert hrv["estado"] == "nunca_evaluada"
+    assert hrv["veces_saltada"] == 10
+    assert hrv["le_falto"] == {}
+    assert "el motivo tampoco se ha registrado" in hrv["lectura"]
+    assert "algún dato" not in hrv["lectura"]
+    # Y sigue diciendo lo que sí se sabe: que está ciega, no descalibrada.
+    assert "está ciega" in hrv["lectura"]
+    assert "mal calibrada" not in hrv["lectura"]
+
+
 def test_una_regla_retirada_del_config_no_se_cuenta_como_viva(db):
     """Disparó de verdad, pero ya no existe. Las dos cosas a la vez.
 
