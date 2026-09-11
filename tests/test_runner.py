@@ -211,6 +211,85 @@ def test_sin_cliente_de_telegram_se_avisa_de_que_nadie_se_ha_enterado(db, cfg):
     assert any("no se ha contado a nadie" in p for p in res.problemas)
 
 
+# --- el modo de solo lectura no puede ser mudo -----------------------------
+#
+# El tercer caso de la misma familia, y el único que quedaba sin tapar. Los dos
+# de arriba -Hevy revienta, no hay cliente- ya avisaban. Este no, porque
+# `write_enabled: false` es deliberado y se clasificaba como salto legítimo.
+#
+# Lo deliberado es no escribir. Lo que no puede ser deliberado es mandar un
+# mensaje que describe la rutina como si estuviera puesta. El usuario abre Hevy,
+# ve la de la semana pasada y entrena esa.
+#
+# Estos dos tests usan el HevyClient DE VERDAD y no el doble, porque lo que se
+# está fijando es la costura entre los dos ficheros: `write_routine` devuelve
+# `written=False` con `error=None` -no es una avería- y el runner tiene que
+# distinguir eso de un dry_run. Con `write_enabled` en false se devuelve antes de
+# tocar la red, así que el fixture `sin_red` no estorba.
+
+
+def cliente_real(tmp_path, *, write_enabled: bool):
+    from app.integrations.hevy import HevyClient
+
+    return HevyClient(
+        api_key="no-se-usa",
+        data_root=tmp_path,
+        write_enabled=write_enabled,
+    )
+
+
+def test_el_modo_solo_lectura_no_puede_ser_mudo(db, cfg, tmp_path):
+    tg = TelegramFalso()
+    res = corre(db, cfg, hevy=cliente_real(tmp_path, write_enabled=False), tg=tg)
+
+    assert res.hevy_status == "read_only", (
+        f"con el interruptor cerrado y DRY_RUN apagado la rutina no está en "
+        f"Hevy, y el estado tiene que decirlo: {res.hevy_status}"
+    )
+    assert tg.enviados
+    assert "NO se ha escrito en Hevy" in tg.enviados[0]
+    assert "write_enabled" in tg.enviados[0], (
+        "el aviso tiene que nombrar el interruptor, que es lo que hay que tocar"
+    )
+    assert any("write_enabled" in p for p in res.problemas)
+
+
+def test_el_ensayo_no_dispara_el_aviso(db, cfg, tmp_path):
+    """El otro lado del par: en dry_run tampoco se escribe, y ahí está bien.
+
+    Sin este test, "avisa siempre que no se escriba" pasaría igual, y el ensayo
+    -que es el modo en el que se está probando el sistema ahora mismo- llenaría
+    todos los mensajes de una alarma que no significa nada. Un aviso que sale
+    siempre deja de leerse, y el día que salga de verdad tampoco se leerá.
+
+    Aquí sí va el doble: el cliente de verdad, en dry_run con el interruptor
+    abierto, se baja la rutina remota para poder hacer la copia antes de no
+    enviar el PUT, y eso es red. El doble devuelve el mismo WriteResult que
+    importa -`written=False`, `error=None`- que es justo el del caso de arriba:
+    lo único que cambia entre los dos tests es el `dry_run`.
+    """
+    tg = TelegramFalso()
+    res = corre(db, cfg, hevy=HevyFalso(escribe=False), tg=tg, dry_run=True)
+
+    assert res.hevy_status == "dry_run"
+    assert "NO se ha escrito en Hevy" not in tg.enviados[0]
+    assert not any("Hevy" in p for p in res.problemas)
+
+
+def test_el_modo_solo_lectura_queda_registrado(db, cfg, tmp_path):
+    """Y con su propio estado, no confundido con un salto.
+
+    En el histórico, "hoy no tocaba Hevy" y "hoy tocaba pero el interruptor
+    estaba cerrado" son dos cosas distintas: la primera es el calendario, la
+    segunda es una rutina desactualizada durante los días que durase.
+    """
+    corre(db, cfg, hevy=cliente_real(tmp_path, write_enabled=False),
+          tg=TelegramFalso())
+    fila = db.scalars(select(HevyWrite)).first()
+    assert fila is not None and fila.status == "read_only"
+    assert fila.error is None, "no es una avería y no se inventa una"
+
+
 # --- el aviso nombra su causa en vez de adivinarla -------------------------
 #
 # Que no haya cliente ya se avisa. Lo que se perdía era POR QUÉ: `api._clientes`

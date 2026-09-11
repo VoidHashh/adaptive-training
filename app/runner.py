@@ -61,7 +61,7 @@ class DailyResult:
 
     day: date
     decision: Any
-    hevy_status: str = "skipped"  # ok | error | skipped | dry_run
+    hevy_status: str = "skipped"  # ok | error | skipped | dry_run | read_only
     hevy_reason: str = ""
     telegram_status: str = "skipped"  # sent | error | skipped | dry_run
     telegram_reason: str = ""
@@ -275,10 +275,11 @@ def _escribir_hevy(
         # una sesión que en Hevy no estaba. Se abre la app, se ve la rutina de
         # la semana pasada y se entrena esa.
         #
-        # Un salto legítimo sí existe y sigue siendo salto: que hoy la sesión no
-        # toque Hevy (arriba) o que `integrations.hevy.write_enabled` esté en
-        # false, que es el interruptor de verdad y se resuelve dentro de
-        # `write_routine`. Llegar hasta aquí sin cliente es otra cosa: significa
+        # Un salto legítimo sí existe: que hoy la sesión no toque Hevy (arriba).
+        # Ese es el único que se calla, porque no hay nada que escribir. El
+        # interruptor `integrations.hevy.write_enabled` se resuelve dentro de
+        # `write_routine` y NO es un salto silencioso: ver abajo, "read_only".
+        # Llegar hasta aquí sin cliente es otra cosa: significa
         # que la sesión SÍ quería escribirse y el cliente no se pudo construir
         # -normalmente HEVY_API_KEY ausente o mal escrita en el .env-. Eso es
         # una avería de configuración, no una decisión.
@@ -299,11 +300,28 @@ def _escribir_hevy(
 
     try:
         r = client.write_routine(s.hevy_routine_id, payload, dry_run=dry_run)
-        res.hevy_status = "ok" if r.written else ("dry_run" if dry_run else "skipped")
         res.hevy_reason = r.reason
-        if not r.written and not dry_run and r.error:
+        if r.written:
+            res.hevy_status = "ok"
+        elif dry_run:
+            res.hevy_status = "dry_run"
+        elif r.error:
             res.hevy_status = "error"
             res.problemas.append(f"Hevy: {r.error}")
+        else:
+            # Ni escrita, ni ensayo, ni avería. Solo queda una forma de llegar
+            # aquí: `integrations.hevy.write_enabled` en false, el modo de solo
+            # lectura. Es deliberado -lo pone el usuario a mano- así que NO es un
+            # error y no se inventa uno.
+            #
+            # Pero tampoco es un salto que se pueda callar. Antes se marcaba
+            # "skipped" a secas, y como el aviso de cabecera del mensaje solo
+            # miraba "error", salía un Telegram impecable describiendo paso a
+            # paso una rutina que en Hevy no estaba: se abre la app, se ve la de
+            # la semana pasada y se entrena esa, creyendo que es la de hoy. El
+            # sistema decide solo; el modo seguro no puede además ser mudo.
+            res.hevy_status = "read_only"
+            res.problemas.append(f"Hevy: {r.reason}")
     except Exception as exc:  # noqa: BLE001
         # Que Hevy falle no puede tumbar la mañana entera: el mensaje todavía
         # tiene que salir, y tiene que decir esto.
@@ -344,7 +362,12 @@ def _mandar_telegram(
 
     # Si la rutina no llegó a Hevy, el mensaje NO puede describirla como si
     # estuviera. Se avisa arriba del todo, donde se lee antes que el plan.
-    if res.hevy_status == "error":
+    #
+    # Dos estados llegan aquí y el aviso es el mismo porque el hecho es el
+    # mismo: en Hevy hay otra cosa. Que la causa sea una avería ("error") o el
+    # interruptor de solo lectura ("read_only") cambia qué hacer después, y eso
+    # lo cuenta `hevy_reason`, que va en la segunda línea.
+    if res.hevy_status in ("error", "read_only"):
         texto = (
             "⚠️ <b>La rutina NO se ha escrito en Hevy</b>\n"
             f"{res.hevy_reason}\n"
