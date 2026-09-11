@@ -435,3 +435,149 @@ def test_un_dia_de_descanso_no_lleva_foco(cfg):
     assert "💪" not in txt
     for r in cfg.raw["routines"].values():
         assert r.get("focus", "\0") not in txt
+
+
+# ---------------------------------------------------------------------------
+# Las adopciones de carga: por qué el peso de hoy no es el que se anunció ayer
+# ---------------------------------------------------------------------------
+#
+# Este bloque es la mitad visible del punto 13. El motor puede ajustar la carga
+# a lo que de verdad se levantó, pero si no lo cuenta, el usuario ve un número
+# distinto del que el mensaje de ayer prometía y no tiene forma de saber si eso
+# es el sistema funcionando o el sistema roto. Y las RECHAZADAS importan
+# igual: un tope que actúa en silencio deja un ejercicio quieto sin motivo
+# visible.
+
+
+def adopcion(**kw) -> dict:
+    base = {
+        "routine": "dia_1",
+        "key": "prensa_horizontal",
+        "direction": "up",
+        "prescribed_kg": 60.0,
+        "executed_kg": 65.0,
+        "before_kg": 60.0,
+        "after_kg": 65.0,
+        "applied": True,
+        "reason": "se levantó eso de verdad",
+    }
+    base.update(kw)
+    return base
+
+
+def con_adopciones(cfg, *adopciones):
+    d = decision_completa(cfg)
+    d.load_adoptions = list(adopciones)
+    return render_plain(d, cfg)
+
+
+def test_una_adopcion_aplicada_se_cuenta_con_los_dos_pesos(cfg):
+    txt = con_adopciones(cfg, adopcion())
+    assert "Ajustado a lo que levantaste" in txt
+    linea = next(l for l in txt.splitlines() if "Prensa horizontal" in l and "→" in l)
+    assert "60" in linea and "65" in linea
+    assert "se levantó eso de verdad" in linea, "el motivo es la mitad del aviso"
+
+
+def test_la_flecha_distingue_subir_de_bajar(cfg):
+    """Bajar la carga es la noticia importante del mensaje: tiene que verse de
+    un vistazo y no confundirse con una subida."""
+    assert "↑" in con_adopciones(cfg, adopcion(direction="up"))
+    txt = con_adopciones(
+        cfg, adopcion(direction="down", before_kg=60.0, after_kg=50.0, executed_kg=50.0)
+    )
+    assert "↓" in txt
+    assert "50" in txt
+
+
+def test_una_adopcion_rechazada_sale_en_su_propio_bloque(cfg):
+    """"He movido esto" y "he visto un número raro y NO lo he tocado" son dos
+    cosas distintas de leer, y mezclarlas haría que la segunda se perdiera."""
+    txt = con_adopciones(
+        cfg,
+        adopcion(applied=False, after_kg=None, executed_kg=600.0,
+                 reason="salto de 540 kg: pasa del máximo"),
+    )
+    assert "No adoptado" in txt
+    assert "600" in txt
+    assert "sigue en 60" in txt
+    assert "pasa del máximo" in txt
+    assert "Ajustado a lo que levantaste" not in txt, (
+        "una rechazada no puede aparecer bajo el título de las aplicadas"
+    )
+
+
+def test_aplicadas_y_rechazadas_conviven_separadas(cfg):
+    txt = con_adopciones(
+        cfg,
+        adopcion(),
+        adopcion(key="extension_cuadriceps", applied=False, after_kg=None,
+                 executed_kg=600.0, reason="pasa del máximo"),
+    )
+    assert txt.index("Ajustado a lo que levantaste") < txt.index("No adoptado")
+    assert "Prensa horizontal" in txt
+    assert "Extensión de cuádriceps" in txt
+
+
+def test_el_nombre_sale_del_config_de_hoy_y_no_de_la_fila_guardada(cfg):
+    """La fila guarda la clave, no el nombre, a propósito: un nombre copiado en
+    la base de datos es una copia del YAML que envejece sola y acaba
+    contradiciendo al resto del mensaje."""
+    c = copy.deepcopy(cfg)
+    c.raw["routines"]["dia_1"]["exercises"][0]["name"] = "Prensa nueva"
+    d = decision_completa(c)
+    d.load_adoptions = [adopcion()]
+    assert "Prensa nueva" in render_plain(d, c)
+
+
+def test_un_ejercicio_que_ya_no_existe_sale_por_su_clave(cfg):
+    """Feo pero cierto. Callar la adopción porque el ejercicio se quitó de la
+    rutina dejaría el cambio de carga sin explicar, que es lo único que este
+    bloque existe para impedir."""
+    txt = con_adopciones(cfg, adopcion(key="ejercicio_borrado"))
+    assert "ejercicio_borrado" in txt
+
+
+def test_sin_adopciones_no_aparece_el_bloque(cfg):
+    txt = render_plain(decision_completa(cfg), cfg)
+    assert "Ajustado a lo que levantaste" not in txt
+    assert "No adoptado" not in txt
+
+
+def test_las_adopciones_sobreviven_a_include_reasoning_false(cfg_sin_motivo):
+    """No es razonamiento: es "el peso de hoy no es el que te dije ayer".
+
+    Apagar el porqué de la decisión no puede ocultar que la carga se movió sola.
+    """
+    txt = con_adopciones(cfg_sin_motivo, adopcion())
+    assert "Ajustado a lo que levantaste" in txt
+
+
+def test_las_adopciones_van_antes_de_lo_que_sube_hoy(cfg):
+    """Orden de lectura: primero "esto ya no es lo que creías", después "y
+    encima hoy sube".
+
+    Ocurrió en ese orden -la adopción se decide al reconciliar por la noche y
+    fija el punto de partida desde el que la mañana progresa-, así que leerlo al
+    revés haría que un "62,5→65" pareciera contradecir un objetivo que dos
+    líneas más arriba era 60.
+    """
+    c = copy.deepcopy(cfg)
+    c.raw["routines"]["dia_1"]["exercises"] = [
+        {
+            "key": "prensa_horizontal",
+            "name": "Prensa horizontal",
+            "progression_type": "load",
+            "sets": [{"reps": 10, "weight_kg": 60}, {"reps": 10, "weight_kg": 60}],
+        }
+    ]
+    st = EngineState(
+        compliance={("dia_1", "prensa_horizontal"): True},
+        clean_sessions={("dia_1", "prensa_horizontal"): 5},
+    )
+    d = decide(c, LUNES, sig_completa(LUNES), st)
+    d.load_adoptions = [adopcion()]
+    txt = render_plain(d, c)
+
+    assert "Sube hoy" in txt, "el montaje tenía que producir una subida de verdad"
+    assert txt.index("Ajustado a lo que levantaste") < txt.index("Sube hoy")

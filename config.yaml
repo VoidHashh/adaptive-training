@@ -660,6 +660,58 @@ progression:
     # agotan el cupo cada sesión. Turnándose, todos acaban pasando.
     queue_policy: waiting_longest
 
+  # ---------------------------------------------------------------------------
+  # ADOPTAR LA CARGA QUE DE VERDAD SE LEVANTÓ
+  # ---------------------------------------------------------------------------
+  # El motor manda la carga: la calcula, la escribe en Hevy y la guarda. Pero
+  # quien levanta el peso es uno, y a veces no coincide:
+  #
+  #   - La máquina no tiene el disco de 2,5 y se hace con 5 más.
+  #   - 60 salió fácil y se subió a 65 a mano.
+  #   - El banco estaba ocupado y se hizo la serie con lo que había.
+  #
+  # Hasta este bloque, el sistema no leía nunca el peso ejecutado, y eso rompía
+  # por los dos lados. Hacia arriba, el mensaje anunciaba "60→62,5" a alguien que
+  # ya estaba en 65: un mensaje que no describe la realidad se deja de leer.
+  # Hacia abajo era peor, porque además era silencioso: el cumplimiento solo
+  # miraba REPS, así que una sesión hecha a 50 con el plan en 60 salía LIMPIA y
+  # pagaba la siguiente subida. El plan se iba a 62,5 mientras la realidad se
+  # quedaba en 50, separándose un poco más cada semana. Ahora el peso cuenta para
+  # el cumplimiento, y lo que se levanta se adopta.
+  #
+  # LA ASIMETRÍA ES EL MECANISMO, no un ajuste fino:
+  #
+  #   Subir se mide contra el OBJETIVO VIGENTE y se adopta a la PRIMERA. La
+  #   prueba es directa -se levantó, y con las reps completas-.
+  #
+  #   Bajar se mide contra LO QUE SE PIDIÓ HOY (el plan ya recortado por la
+  #   descarga, las reglas y el ámbar) y necesita varias sesiones seguidas. Una
+  #   sesión más floja casi siempre es el gimnasio lleno o una serie mal
+  #   apuntada, y bajar el objetivo por eso es la forma silenciosa de que un
+  #   programa se desinfle. Medir la bajada contra el objetivo vigente, y no
+  #   contra el plan del día, convertiría cada semana de descarga bien hecha en
+  #   tres sesiones "por debajo".
+  adopt_executed_load:
+    enabled: true
+
+    # Sesiones SEGUIDAS por debajo de lo pedido antes de bajar el objetivo.
+    # Cuando por fin se baja, se baja a la MEJOR de ellas: un día malo no fija
+    # el suelo. Tres es una semana y media de esa rutina; con 1 cualquier día
+    # torcido movería el programa, y con 5 el desfase duraría más de un mes.
+    down_after_sessions: 3
+
+    # Tope del salto que se adopta de una vez, para que un 600 en vez de un 60 al
+    # teclear en Hevy no se convierta en la rutina de mañana. Se usa el MAYOR de
+    # los dos: el porcentaje porque 10 kg en un curl de 12 es otra cosa que 10 kg
+    # en una prensa de 150, y el mínimo en kg para que un ejercicio ligero no
+    # quede con un margen por debajo del propio incremento de la progresión.
+    #
+    # Pasarse del tope NO adopta y NO calla: sale en el mensaje de la mañana
+    # siguiente con el motivo. Un tope que actúa sin decirlo es un tope que nadie
+    # puede corregir.
+    max_jump_kg: 5
+    max_jump_pct: 0.20
+
   # En semana de descarga el volumen también baja. `special_rules` recorta la
   # carga al 60%; sin esto el volumen se quedaba intacto y la descarga era
   # media descarga.

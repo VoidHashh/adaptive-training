@@ -183,26 +183,22 @@ def _duracion(w: dict[str, Any]) -> int | None:
     return int(segundos)
 
 
-def workout_compliance(
-    workout: dict[str, Any],
-    planned: Any,
-    config: Any = None,
-) -> dict[str, bool]:
-    """¿Se completó cada ejercicio a las reps objetivo? Una entrada por ejercicio.
+def _emparejar(
+    workout: dict[str, Any], planned: Any, config: Any = None
+) -> dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]] | None]]:
+    """Cada ejercicio del plan, con sus series efectivas pedidas y hechas.
 
-    Es la señal que alimenta la racha de sesiones limpias, y por tanto lo único
-    que abre la puerta de la subida de carga. Se compara contra lo PLANIFICADO,
-    no contra lo que Hevy diga que era la rutina: la rutina en Hevy la reescribe
-    este mismo sistema cada mañana, así que compararla consigo misma no diría
-    nada.
+    Devuelve `{key: (objetivo, reales)}`, donde `reales` es `None` cuando el
+    ejercicio NO APARECE en el entrenamiento y una lista -posiblemente vacía-
+    cuando aparece. La diferencia importa: "no está" y "está pero solo con
+    calentamiento" son dos cosas, y una de ellas ni siquiera es una sesión.
 
-    Criterio: todas las series efectivas (el calentamiento no cuenta) tienen que
-    alcanzar las reps del plan. Una serie de menos, o una serie a menos reps, y
-    el ejercicio no es limpio.
-
-    Un ejercicio del plan que no aparece en el entrenamiento cuenta como NO
-    cumplido. Es lo prudente: si no está, o no se hizo o no se registró, y en
-    ninguno de los dos casos hay pruebas de que se completara.
+    El emparejamiento se escribe UNA vez, aquí, porque de él cuelgan dos
+    lecturas que tienen que ver exactamente lo mismo: si se cumplió
+    (`workout_compliance`) y con cuánto peso (`pesos_ejecutados`). Dos
+    emparejamientos distintos podrían decir "el ejercicio no aparece, no
+    cumple" y a la vez "el ejercicio se hizo a 70 kg", y de esa contradicción
+    sale una adopción de carga sobre una sesión que el motor considera fallida.
     """
     raw = (config.raw if hasattr(config, "raw") else config) or {}
     set_cfg = raw.get("set_types", {}) or {}
@@ -213,7 +209,7 @@ def workout_compliance(
         if clave:
             hechos.setdefault(str(clave), []).extend(ex.get("sets") or [])
 
-    salida: dict[str, bool] = {}
+    salida: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]] | None]] = {}
     for ex in getattr(planned, "exercises", []) or []:
         key = ex.get("key")
         if not key:
@@ -222,25 +218,98 @@ def workout_compliance(
         flags = warmup_flags(plan_sets, set_cfg, key)
         objetivo = [s for s, warm in zip(plan_sets, flags, strict=True) if not warm]
 
+        # Un ejercicio con series en el plan pero NINGUNA efectiva no se puede
+        # comprobar: `all([])` es `True`, así que saldría limpio sin haber
+        # mirado nada, la racha avanzaría y con ella la carga. Es la misma
+        # comprobación-que-no-puede-fallar que ya se cierra dentro de
+        # `_alcanza`, un nivel más arriba.
+        #
+        # El validador lo hace inalcanzable desde el YAML -exige `sets` no vacía
+        # y `heuristic.count < sets_gte`-, y por eso mismo está aquí: si alguna
+        # vez deja de serlo, que se entere alguien.
+        if plan_sets and not objetivo:
+            raise HevyError(
+                f"'{key}': las {len(plan_sets)} series del plan son todas de "
+                f"calentamiento, así que no hay nada efectivo que comprobar y el "
+                f"ejercicio saldría 'completado' sin una sola prueba. Revisa "
+                f"'set_types' o el marcado de las series."
+            )
+
         candidatos = hechos.get(str(ex.get("template_id") or "")) or hechos.get(
             str(ex.get("name") or "")
         )
-        if not candidatos:
+        reales = (
+            None
+            if not candidatos
+            else [
+                s
+                for s in candidatos
+                if str(s.get("type", "normal")).lower() not in {"warmup", "warm_up"}
+            ]
+        )
+        salida[str(key)] = (objetivo, reales)
+    return salida
+
+
+def workout_compliance(
+    workout: dict[str, Any],
+    planned: Any,
+    config: Any = None,
+) -> dict[str, bool]:
+    """¿Se completó cada ejercicio a lo que se le pedía? Una entrada por ejercicio.
+
+    Es la señal que alimenta la racha de sesiones limpias, y por tanto lo único
+    que abre la puerta de la subida de carga. Se compara contra lo PLANIFICADO,
+    no contra lo que Hevy diga que era la rutina: la rutina en Hevy la reescribe
+    este mismo sistema cada mañana, así que compararla consigo misma no diría
+    nada.
+
+    Criterio: todas las series efectivas (el calentamiento no cuenta) tienen que
+    alcanzar las reps -y el PESO- del plan. Una serie de menos, una serie a
+    menos reps o una serie más ligera, y el ejercicio no es limpio.
+
+    Un ejercicio del plan que no aparece en el entrenamiento cuenta como NO
+    cumplido. Es lo prudente: si no está, o no se hizo o no se registró, y en
+    ninguno de los dos casos hay pruebas de que se completara.
+    """
+    salida: dict[str, bool] = {}
+    for key, (objetivo, reales) in _emparejar(workout, planned, config).items():
+        if reales is None or len(reales) < len(objetivo):
             salida[key] = False
             continue
-
-        reales = [
-            s
-            for s in candidatos
-            if str(s.get("type", "normal")).lower() not in {"warmup", "warm_up"}
-        ]
-        if len(reales) < len(objetivo):
-            salida[key] = False
-            continue
-
         salida[key] = all(
             _alcanza(real, plan) for real, plan in zip(reales, objetivo)
         )
+    return salida
+
+
+def pesos_ejecutados(
+    workout: dict[str, Any],
+    planned: Any,
+    config: Any = None,
+) -> dict[str, float | None]:
+    """El peso de la serie efectiva MÁS PESADA de cada ejercicio del plan.
+
+    `None` cuando el ejercicio no aparece en el entrenamiento o cuando ninguna
+    de sus series lleva peso apuntado. Ese `None` es deliberadamente distinto de
+    `0.0`: "no hay dato" y "se hizo sin carga" llevan a decisiones opuestas en
+    `adoptar_cargas` -la primera no toca nada, la segunda sería una bajada- y
+    fundirlos en un solo valor haría que un ejercicio sin registrar arrastrase
+    el objetivo a cero en tres sesiones.
+
+    El máximo, y no la media ni la última, por lo mismo que en el objetivo: un
+    esquema en rampa 50/60/65 se resume por su serie top, que es la que define
+    la carga de trabajo. Comparar medias mezclaría el calentamiento efectivo con
+    la serie que de verdad manda.
+    """
+    salida: dict[str, float | None] = {}
+    for key, (_objetivo, reales) in _emparejar(workout, planned, config).items():
+        pesos = [
+            float(s["weight_kg"])
+            for s in (reales or [])
+            if s.get("weight_kg") is not None
+        ]
+        salida[key] = max(pesos) if pesos else None
     return salida
 
 
@@ -260,11 +329,30 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
     Hacer MÁS de lo pedido cumple. El criterio es "no se quedó corto", no "clavó
     el número": doce repeticiones cuando se pedían diez es una sesión limpia.
 
+    EL PESO CUENTA, y esto es un arreglo, no un añadido. Antes se comparaban
+    reps y segundos y nada más, así que una sesión hecha a 50 kg cuando el plan
+    pedía 60 salía LIMPIA -las reps sí se habían hecho- y esa sesión limpia
+    pagaba la siguiente subida de carga. El plan se iba a 62,5 mientras la
+    realidad se quedaba en 50, separándose un poco más cada semana, sin un solo
+    error por ninguna parte y en una espalda con hernia L4-L5.
+
+    Solo se exige peso cuando el plan pide peso MAYOR QUE CERO. Un ejercicio a
+    peso corporal -plancha, dominadas- lleva `weight_kg` a 0 o sin poner, y
+    exigirle un peso registrado lo dejaría eternamente en "no cumplido".
+
+    Un peso que el plan pide y que en Hevy no está apuntado NO cumple. Es la
+    misma prudencia que con las reps: la ausencia de dato no es prueba de nada,
+    y tratarla como "cumple" convertiría "no apuntar el peso" en la forma de
+    saltarse la comprobación entera.
+
     Una serie del plan que no pide NINGUNA magnitud es un error duro y no un
     "cumple". El bucle no tendría nada que comprobar y devolvería `True` sin
     haber mirado nada: el ejercicio saldría limpio sin una sola prueba de que se
     hizo, la racha avanzaría y con ella subiría la carga. Es justo el fallo que
     no puede pasar callando en una espalda con hernia.
+
+    El peso no vale como magnitud medible a estos efectos: "60 kg" sin reps ni
+    segundos no dice si la serie se terminó. Por eso no marca `comprobado`.
     """
     comprobado = False
     for campo_plan, campo_real in CAMPOS_SERIE:
@@ -282,6 +370,18 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
             f"decidir si se cumplió. Toda serie efectiva tiene que pedir al menos "
             f"una de {[p for p, _ in CAMPOS_SERIE]}."
         )
+
+    objetivo_kg = plan.get("weight_kg")
+    if objetivo_kg is not None and float(objetivo_kg) > 0:
+        hecho_kg = real.get("weight_kg")
+        if hecho_kg is None:
+            return False
+        # El epsilon es para el ruido de coma flotante -62,5 escrito y leído por
+        # dos caminos distintos-, no una tolerancia de carga. Medio kilo de menos
+        # sigue siendo medio kilo de menos.
+        if float(hecho_kg) < float(objetivo_kg) - 1e-6:
+            return False
+
     return True
 
 

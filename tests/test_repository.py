@@ -25,14 +25,24 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, advance_state, decide
-from app.models import Base, Decision as DecisionRow, ExerciseTarget, PendingStrength, RuleState
+from app.models import (
+    Base,
+    Decision as DecisionRow,
+    ExerciseTarget,
+    LoadAdoption,
+    PendingStrength,
+    RuleState,
+)
 from app.repository import (
     CAMPOS_PERSISTIDOS,
+    adopciones_sin_contar,
     campos_sin_persistir,
     checkin_values,
     current_decision,
     get_checkin,
+    guardar_adopciones,
     load_state,
+    marcar_adopciones_contadas,
     read_pending,
     save_decision,
     save_state,
@@ -76,6 +86,13 @@ def estado_lleno():
             ("dia_1", "hip_thrust_barra"): 3,
             ("dia_2", "remo_t_apoyado"): 7,
         },
+        # Solo `dia_1` se ha quedado corto. Que `dia_2` no aparezca en estos dos
+        # diccionarios no es pereza: la ausencia es el valor normal -la inmensa
+        # mayoría de ejercicios nunca se quedan por debajo- y la vuelta completa
+        # tiene que devolverla como ausencia, no como un cero que luego se
+        # confundiría con "lleva dos sesiones cortas y a la próxima baja".
+        below_plan_streak={("dia_1", "hip_thrust_barra"): 2},
+        below_plan_best_kg={("dia_1", "hip_thrust_barra"): 52.5},
         last_routine_light={"dia_1": "green", "dia_2": "amber"},
         active_rules=[
             ActiveRule(
@@ -157,6 +174,15 @@ def test_el_estado_sobrevive_a_la_ida_y_la_vuelta(db, estado_lleno):
         "ejercicios volverían a empatar a cero y el cupo lo ganaría siempre el "
         "primero de la rutina"
     )
+    assert vuelto.below_plan_streak == estado_lleno.below_plan_streak, (
+        "la racha por debajo no ha sobrevivido: dos sesiones flojas seguidas se "
+        "olvidarían al reiniciar y la carga no bajaría nunca aunque no se esté "
+        "levantando"
+    )
+    assert vuelto.below_plan_best_kg == estado_lleno.below_plan_best_kg, (
+        "el mejor peso de la racha no ha sobrevivido: al bajar se adoptaría el "
+        "último en vez del mejor de la racha, que es más bajo"
+    )
     assert vuelto.last_routine_light == estado_lleno.last_routine_light
     assert vuelto.pending_strength == estado_lleno.pending_strength
     assert vuelto.program_start == estado_lleno.program_start
@@ -200,6 +226,178 @@ def test_una_racha_que_cambia_se_actualiza_en_vez_de_anadir_otra_fila(db, estado
 
     assert load_state(db).clean_sessions[("dia_1", "hip_thrust_barra")] == 3
     assert len(db.query(ExerciseTarget).all()) == 2
+
+
+# ---------------------------------------------------------------------------
+# La racha por debajo: el caso en el que la AUSENCIA es el valor
+# ---------------------------------------------------------------------------
+
+
+def test_la_racha_por_debajo_que_se_anula_se_anula_tambien_en_la_tabla(db, estado_lleno):
+    """El fallo que este patrón evita, y que no se parece a un fallo.
+
+    Los demás campos se guardan "solo si están", porque escribir un cero por un
+    ejercicio que no aparece sería inventar dato. Con la racha por debajo pasa lo
+    contrario: anularla es BORRAR la clave del diccionario, así que con el patrón
+    de "solo si está" la anulación no llegaría nunca a la tabla. El contador se
+    quedaría clavado en 2 para siempre y la siguiente sesión floja, meses después,
+    bajaría la carga como si fuera la tercera seguida.
+    """
+    save_state(db, estado_lleno, day=LUNES)
+    assert load_state(db).below_plan_streak == {("dia_1", "hip_thrust_barra"): 2}
+
+    # Una sesión buena rompe la racha: `adoptar_cargas` hace exactamente esto.
+    estado_lleno.below_plan_streak.pop(("dia_1", "hip_thrust_barra"))
+    estado_lleno.below_plan_best_kg.pop(("dia_1", "hip_thrust_barra"))
+    save_state(db, estado_lleno, day=LUNES + timedelta(days=1))
+
+    vuelto = load_state(db)
+    assert vuelto.below_plan_streak == {}, (
+        "la racha anulada ha sobrevivido en la tabla: la próxima sesión floja "
+        "bajaría la carga creyendo que es la tercera seguida"
+    )
+    assert vuelto.below_plan_best_kg == {}
+
+
+def test_un_cero_en_la_tabla_no_vuelve_como_racha_de_cero(db, estado_lleno):
+    """"Sin racha" y "racha de cero" valen lo mismo para el motor, pero solo uno
+    de los dos es lo que dice la tabla. Copiar la ausencia tal cual evita que un
+    `save_state` posterior escriba filas de ceros para ejercicios que nunca se
+    han quedado cortos."""
+    save_state(db, estado_lleno, day=LUNES)
+    vuelto = load_state(db)
+
+    assert ("dia_2", "remo_t_apoyado") not in vuelto.below_plan_streak
+    assert ("dia_2", "remo_t_apoyado") not in vuelto.below_plan_best_kg
+
+
+def test_un_mejor_peso_de_cero_kilos_sobrevive(db, estado_lleno):
+    """0 kg no es "no hay". Es un ejercicio hecho sin carga, y la columna es
+    nullable justamente para poder distinguirlos: si `0.0` se guardara como NULL,
+    la mejor sesión de la racha se perdería y al bajar se adoptaría otra cosa."""
+    estado_lleno.below_plan_best_kg[("dia_1", "hip_thrust_barra")] = 0.0
+    save_state(db, estado_lleno, day=LUNES)
+
+    assert load_state(db).below_plan_best_kg == {("dia_1", "hip_thrust_barra"): 0.0}
+
+
+# ---------------------------------------------------------------------------
+# El libro de adopciones de carga
+# ---------------------------------------------------------------------------
+
+
+def adopcion(key: str = "hip_thrust_barra", *, aplicada: bool = True, **kw) -> dict:
+    base = {
+        "routine": "dia_1",
+        "key": key,
+        "direction": "up",
+        "prescribed_kg": 60.0,
+        "executed_kg": 65.0,
+        "before_kg": 60.0,
+        "after_kg": 65.0 if aplicada else None,
+        "applied": aplicada,
+        "reason": "se levantó eso de verdad",
+    }
+    base.update(kw)
+    return base
+
+
+def test_las_adopciones_se_guardan_con_los_cuatro_numeros(db):
+    """La pregunta de dentro de tres meses -"¿por qué esto está en 65?"- se
+    contesta con la fila entera o no se contesta."""
+    assert guardar_adopciones(db, LUNES, [adopcion()]) == 1
+
+    (f,) = db.query(LoadAdoption).all()
+    assert (f.prescribed_kg, f.executed_kg, f.before_kg, f.after_kg) == (60, 65, 60, 65)
+    assert f.direction == "up"
+    assert f.applied is True
+    assert f.date == LUNES
+    assert f.reported_at is None, "recién guardada no la ha contado ningún mensaje"
+
+
+def test_una_adopcion_rechazada_tambien_se_guarda(db):
+    """Un tope que actúa sin dejar rastro es un tope que nadie puede corregir."""
+    guardar_adopciones(db, LUNES, [adopcion(aplicada=False, executed_kg=600.0)])
+
+    (f,) = db.query(LoadAdoption).all()
+    assert f.applied is False
+    assert f.after_kg is None
+    assert f.executed_kg == 600
+
+
+def test_las_adopciones_se_acumulan_en_vez_de_sustituirse(db):
+    """Es un libro, no un estado. Dos noches distintas son dos filas: si la
+    segunda pisara a la primera, el histórico de por qué la carga es la que es se
+    perdería entero."""
+    guardar_adopciones(db, LUNES, [adopcion()])
+    guardar_adopciones(db, LUNES + timedelta(days=2), [adopcion()])
+
+    assert len(db.query(LoadAdoption).all()) == 2
+
+
+def test_solo_salen_las_que_no_ha_contado_nadie(db):
+    guardar_adopciones(db, LUNES, [adopcion("a"), adopcion("b")])
+    pendientes = adopciones_sin_contar(db)
+    assert {p["key"] for p in pendientes} == {"a", "b"}
+
+    marcar_adopciones_contadas(db, [p["id"] for p in pendientes])
+    assert adopciones_sin_contar(db) == []
+
+
+def test_las_viejas_no_caducan(db):
+    """Si el PC estuvo tres días apagado, esas subidas siguen sin explicarse.
+
+    Un límite de antigüedad dejaría un cambio de carga sin motivo visible, que es
+    justo lo que esta tabla existe para impedir.
+    """
+    guardar_adopciones(db, LUNES - timedelta(days=40), [adopcion()])
+    assert len(adopciones_sin_contar(db)) == 1
+
+
+def test_si_telegram_falla_la_adopcion_se_cuenta_al_dia_siguiente(db):
+    """Por esto leer y marcar están separados.
+
+    `_mandar_telegram` se traga los fallos de envío para que un Telegram caído no
+    tumbe la mañana, así que la transacción se confirma igual. Si marcar fuera
+    parte de leer, la adopción quedaría sellada como contada por un mensaje que
+    nunca llegó al móvil y el cambio de carga se quedaría sin explicar para
+    siempre.
+    """
+    guardar_adopciones(db, LUNES, [adopcion()])
+
+    # Mañana 1: se lee para el mensaje... y el envío falla, así que no se marca.
+    assert len(adopciones_sin_contar(db)) == 1
+
+    # Mañana 2: sigue pendiente y esta vez sí se cuenta.
+    pendientes = adopciones_sin_contar(db)
+    assert len(pendientes) == 1
+    assert marcar_adopciones_contadas(db, [p["id"] for p in pendientes]) == 1
+    assert adopciones_sin_contar(db) == []
+
+
+def test_marcar_sin_ids_no_marca_nada(db):
+    """Una lista vacía o llena de `None` no puede acabar sellando la tabla
+    entera con un `IN ()` mal construido."""
+    guardar_adopciones(db, LUNES, [adopcion()])
+
+    assert marcar_adopciones_contadas(db, []) == 0
+    assert marcar_adopciones_contadas(db, [None, None]) == 0
+    assert len(adopciones_sin_contar(db)) == 1
+
+
+def test_las_pendientes_salen_en_orden_cronologico(db):
+    """El mensaje que explica tres días de golpe tiene que leerse en el orden en
+    que pasaron las cosas."""
+    guardar_adopciones(db, LUNES + timedelta(days=1), [adopcion("martes")])
+    guardar_adopciones(db, LUNES, [adopcion("lunes")])
+
+    assert [p["key"] for p in adopciones_sin_contar(db)] == ["lunes", "martes"]
+
+
+def test_guardar_una_lista_vacia_no_toca_nada(db):
+    assert guardar_adopciones(db, LUNES, []) == 0
+    assert guardar_adopciones(db, LUNES, None) == 0
+    assert db.query(LoadAdoption).all() == []
 
 
 # ---------------------------------------------------------------------------

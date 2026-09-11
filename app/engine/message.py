@@ -102,6 +102,57 @@ def _describe_sets(ex: dict[str, Any], set_cfg: dict[str, Any]) -> str:
     return "  |  ".join(partes)
 
 
+def _nombre_ejercicio(raw: dict[str, Any], routine: str, key: str) -> str:
+    """El nombre legible de un ejercicio, buscado en el config de HOY.
+
+    No se guarda junto a la adopción a propósito: sería una copia del YAML que
+    envejece sola. Si el ejercicio ya no existe -se quitó de la rutina- se
+    devuelve la clave, que es fea pero cierta.
+    """
+    for ex in ((raw.get("routines") or {}).get(routine) or {}).get("exercises") or []:
+        if ex.get("key") == key:
+            return str(ex.get("name") or key)
+    return key
+
+
+def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> list[str]:
+    """El bloque de "esto lo movió lo que levantaste", o nada si no hay.
+
+    Separa aplicadas de rechazadas porque son dos cosas distintas de leer: una
+    dice "el peso de hoy ya no es el que yo había calculado" y la otra "he visto
+    un número raro y NO lo he tocado, míralo tú".
+    """
+    if not adopciones:
+        return []
+
+    L: list[str] = []
+    aplicadas = [a for a in adopciones if a.get("applied")]
+    rechazadas = [a for a in adopciones if not a.get("applied")]
+
+    if aplicadas:
+        L.append("")
+        L.append("🔁 <b>Ajustado a lo que levantaste</b>")
+        for a in aplicadas:
+            nombre = _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            flecha = "↑" if a.get("direction") == "up" else "↓"
+            L.append(
+                f"• {flecha} {nombre}: {fmt_num(a.get('before_kg'))}→"
+                f"{fmt_num(a.get('after_kg'))} kg — {a.get('reason', '')}"
+            )
+
+    if rechazadas:
+        L.append("")
+        L.append("🛑 <b>No adoptado</b>")
+        for a in rechazadas:
+            nombre = _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            L.append(
+                f"• {nombre}: se registraron {fmt_num(a.get('executed_kg'))} kg y "
+                f"sigue en {fmt_num(a.get('before_kg'))} kg — {a.get('reason', '')}"
+            )
+
+    return L
+
+
 def render_telegram(decision: Any, config: Any = None) -> str:
     """El mensaje completo del día."""
     raw = (config.raw if hasattr(config, "raw") else config) or {}
@@ -152,6 +203,19 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             L.append(f"• {ex.get('name', ex.get('key'))} — {_describe_sets(ex, set_cfg)}")
         if s.hiit_block:
             L.append(f"🔥 <b>HIIT:</b> {s.hiit_block}")
+
+    # --- lo que movió la carga que se levantó de verdad ---------------------
+    # Va ANTES de "Sube hoy" porque ocurrió antes: la adopción se decide al
+    # reconciliar por la noche y fija el punto de partida desde el que la mañana
+    # ha progresado. Leerlo al revés haría que un "62,5→65" pareciera contradecir
+    # un objetivo que dos líneas más arriba era 60.
+    #
+    # FUERA de `include_reasoning`, como los avisos: esto no es "por qué he
+    # decidido esto", es un cambio en el peso que está escrito en Hevy ahora
+    # mismo. Y las RECHAZADAS salen igual que las aplicadas, que es la mitad que
+    # importa: un tope que actúa en silencio deja un ejercicio quieto sin que
+    # nadie pueda saber por qué.
+    L.extend(_lineas_adopcion(getattr(decision, "load_adoptions", None) or [], raw))
 
     # --- lo que ha cambiado hoy --------------------------------------------
     cambios = decision.progression.changes if decision.progression else []

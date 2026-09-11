@@ -290,6 +290,27 @@ class ExerciseTarget(Base):
     sessions_since_progress: Mapped[int] = mapped_column(
         Integer, default=0, server_default=text("0")
     )
+    # Sesiones SEGUIDAS levantando menos peso del que pedía el plan del día, y la
+    # más pesada de ellas. Es la memoria de la adopción hacia abajo
+    # (`app/engine/adoption.py`), que no baja el objetivo a la primera: una
+    # sesión más floja casi siempre es la máquina ocupada, y bajar por eso es la
+    # forma silenciosa de que un programa se desinfle.
+    #
+    # Tienen que persistir, y no es un detalle. El contador se reinicia con cada
+    # despliegue si vive en memoria, y como hacen falta varias sesiones seguidas
+    # para bajar, un reinicio semanal dejaría la bajada INALCANZABLE: el objetivo
+    # se quedaría para siempre por encima de lo que se levanta, que es
+    # exactamente el desfase que este mecanismo existe para cerrar.
+    #
+    # `server_default` en el contador por lo mismo que arriba: `ensure_schema`
+    # añade columnas con `ALTER TABLE`, y una NOT NULL sin defecto EN LA BASE no
+    # se puede añadir a una tabla que ya tiene filas.
+    below_plan_streak: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0")
+    )
+    # Nullable a propósito: "no hay ninguna sesión por debajo" no es "la mejor
+    # sesión por debajo fue de 0 kg". Un 0 aquí se adoptaría como objetivo.
+    below_plan_best_kg: Mapped[float | None] = mapped_column(Float)
     last_progressed_date: Mapped[date | None] = mapped_column(Date)
     last_session_date: Mapped[date | None] = mapped_column(Date)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
@@ -463,3 +484,51 @@ class Notification(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (Index("ix_notifications_date_kind", "date", "kind"),)
+
+
+class LoadAdoption(Base):
+    """Cada vez que la carga ejecutada en Hevy movió -o intentó mover- el objetivo.
+
+    Append-only, y con las adopciones RECHAZADAS dentro. Un tope de salto que
+    actúa sin dejar rastro es un tope que nadie puede corregir: el ejercicio se
+    queda quieto, el motivo se pierde con el proceso y la única pista es un
+    número que no cambia.
+
+    La otra razón de que sea una tabla y no una línea de log: el desfase entre
+    la noche y la mañana. La adopción ocurre al reconciliar, a las 22:30, cuando
+    no hay nadie leyendo el móvil; hay que contarla en el mensaje de las 06:30,
+    que es el que dice "hip thrust 3x8 a 62,5" y tiene que poder explicar el
+    62,5. `reported_at` es lo que impide contarla dos veces -o ninguna- si el
+    trabajo de la mañana se reintenta.
+
+    Y a los tres meses es lo único que contesta a "¿por qué esto está en 62,5 y
+    no en 70?", porque `exercise_targets` solo guarda el valor de hoy.
+    """
+
+    __tablename__ = "load_adoptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    routine_key: Mapped[str] = mapped_column(String(64), index=True)
+    exercise_key: Mapped[str] = mapped_column(String(64), index=True)
+
+    direction: Mapped[str] = mapped_column(String(8))  # up | down
+    # Los cuatro pesos: lo que pedía el plan del día ya recortado, lo que se
+    # levantó, y el objetivo antes y después. Menos de cuatro no reconstruye la
+    # decisión: sin `prescribed_kg` no se distingue una bajada real de una
+    # semana de descarga, y sin `before_kg` no se ve el tamaño del salto.
+    prescribed_kg: Mapped[float | None] = mapped_column(Float)
+    executed_kg: Mapped[float | None] = mapped_column(Float)
+    before_kg: Mapped[float | None] = mapped_column(Float)
+    after_kg: Mapped[float | None] = mapped_column(Float)
+
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # NULL = todavía no se ha contado en ningún mensaje.
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_load_adoptions_pendientes", "reported_at", "date"),
+    )

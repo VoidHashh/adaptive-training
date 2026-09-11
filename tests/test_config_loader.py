@@ -332,6 +332,62 @@ def test_las_claves_muertas_de_volume_safety_se_rechazan(cfg):
 
 
 # ---------------------------------------------------------------------------
+# adopt_executed_load: tres frenos, y un freno mal puesto no da error
+# ---------------------------------------------------------------------------
+# Un `down_after_sessions: 0` bajaría el objetivo con la primera serie mal
+# apuntada; un `max_jump_pct: 5` dejaría pasar un 600 por un 60; un
+# `max_jump_kg: 0` desconectaría el mecanismo entero. En los tres casos el
+# sistema seguiría arrancando y escribiendo la rutina cada mañana.
+
+
+def _ael(cfg, **cambios) -> dict:
+    data = copy.deepcopy(cfg.raw)
+    data["progression"]["adopt_executed_load"].update(cambios)
+    return data
+
+
+@pytest.mark.parametrize("valor", [0, -1, "tres", None, True])
+def test_bajar_a_la_primera_sesion_floja_se_rechaza(cfg, valor):
+    """`True` está en la lista a propósito: `isinstance(True, int)` es `True` en
+    Python, así que un `down_after_sessions: yes` mal escrito pasaría por entero
+    y valdría 1 -bajar a la primera- si nadie mira el tipo."""
+    assert "down_after_sessions" in errores(_ael(cfg, down_after_sessions=valor))
+
+
+def test_un_salto_maximo_de_cero_kilos_se_rechaza(cfg):
+    """Con 0 no se adoptaría ningún cambio: la opción seguiría diciendo
+    `enabled: true` y no haría absolutamente nada."""
+    assert "max_jump_kg" in errores(_ael(cfg, max_jump_kg=0))
+
+
+@pytest.mark.parametrize("valor", [0, 1.5, -0.2, "20%"])
+def test_un_porcentaje_de_salto_fuera_de_rango_se_rechaza(cfg, valor):
+    """Por encima de 1 el tope dejaría pasar más del doble del peso actual, que
+    es justo lo que este límite existe para frenar."""
+    assert "max_jump_pct" in errores(_ael(cfg, max_jump_pct=valor))
+
+
+def test_los_valores_del_config_real_pasan(cfg):
+    assert "adopt_executed_load" not in errores(cfg.raw)
+
+
+def test_una_clave_inventada_en_la_adopcion_no_se_ignora(cfg):
+    """El error recurrente de esta casa: `max_jump_percent` en vez de
+    `max_jump_pct` arrancaría limpio y con el defecto del 20% decidiendo en su
+    lugar. El usuario habría escrito un tope que nadie lee."""
+    data = _ael(cfg, max_jump_percent=0.5)
+    assert "max_jump_percent" in errores(data)
+
+
+def test_apagar_la_adopcion_no_exige_el_resto_de_numeros(cfg):
+    """Un bloque a `enabled: false` sigue teniendo que validar lo que ponga,
+    pero no puede exigir claves que no están: el defecto ya las cubre."""
+    data = copy.deepcopy(cfg.raw)
+    data["progression"]["adopt_executed_load"] = {"enabled": False}
+    assert "adopt_executed_load" not in errores(data)
+
+
+# ---------------------------------------------------------------------------
 # Seguridad: hernia L4-L5
 # ---------------------------------------------------------------------------
 # Esto no es un umbral ajustable, es una restricción médica permanente. Se

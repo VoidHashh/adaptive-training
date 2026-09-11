@@ -119,6 +119,14 @@ class EngineState:
     # comentario largo de `ExerciseTarget.sessions_since_progress`: sin esto,
     # los últimos ejercicios de una rutina larga no suben nunca.
     sessions_since_progress: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Sesiones SEGUIDAS levantando menos peso del que pedía el plan del día, y
+    # la mejor de esas sesiones. Las dos son la memoria de la adopción hacia
+    # abajo (`app/engine/adoption.py`): abajo no se adopta a la primera, porque
+    # una sesión más floja casi siempre es la máquina ocupada, y hace falta
+    # recordar cuántas van y cuál fue la mejor para no fijar el suelo en un día
+    # malo. Se vacían en cuanto una sesión alcanza lo pedido.
+    below_plan_streak: dict[tuple[str, str], int] = field(default_factory=dict)
+    below_plan_best_kg: dict[tuple[str, str], float] = field(default_factory=dict)
     # Semáforo del día en que se hizo por última vez CADA rutina. Es el reloj
     # de los frenos de volumen: un rojo en lunes no cancela el viernes.
     last_routine_light: dict[str, str | None] = field(default_factory=dict)
@@ -214,6 +222,15 @@ class DayDecision:
     # histórico: dentro de tres semanas, "esa semana entrené una vez menos" se
     # explica aquí o no se explica.
     expired_deferral: tuple[str, date] | None = None
+    # Adopciones de carga de la reconciliación de ANOCHE, ya en formato de
+    # diccionario (`Adopcion.to_dict`). No las produce `decide`: las cuelga
+    # `run_daily` justo antes de redactar el mensaje, leyéndolas de la base.
+    #
+    # Van aquí y no se cuentan la noche que pasan porque a las 22:30 no hay
+    # nadie leyendo el móvil, y porque el sitio donde importan es el mensaje de
+    # la mañana: es el que dice "hip thrust: 3x8 a 62,5" y tiene que poder
+    # explicar por qué 62,5 y no lo de ayer.
+    load_adoptions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def weekday(self) -> str:
@@ -245,6 +262,7 @@ class DayDecision:
                 if self.expired_deferral
                 else None
             ),
+            "load_adoptions": list(self.load_adoptions),
         }
 
 
@@ -660,6 +678,8 @@ def advance_state(
         compliance=dict(state.compliance),
         current_sets={k: copy.deepcopy(v) for k, v in state.current_sets.items()},
         sessions_since_progress=dict(state.sessions_since_progress),
+        below_plan_streak=dict(state.below_plan_streak),
+        below_plan_best_kg=dict(state.below_plan_best_kg),
         last_routine_light=dict(state.last_routine_light),
         active_rules=[copy.deepcopy(r) for r in decision.active_rules],
         pending_strength=state.pending_strength,

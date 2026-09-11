@@ -82,6 +82,12 @@ class ReconcileResult:
     workouts_nuevos: int = 0
     workouts_ya_contados: int = 0
     executed: dict[str, bool] = field(default_factory=dict)
+    # El peso de la serie efectiva más pesada de cada ejercicio, y lo que ese
+    # peso movió del objetivo. Salen aquí para que `cli.py` los pueda enseñar:
+    # una adopción que solo se ve en el mensaje de mañana es una adopción que no
+    # se puede comprobar hoy, cuando se está ensayando el sistema a mano.
+    pesos: dict[str, float | None] = field(default_factory=dict)
+    adopciones: list[dict[str, Any]] = field(default_factory=list)
     avanzado: bool = False
     motivo: str = ""
 
@@ -126,6 +132,13 @@ def run_daily(
     state = repo.load_state(session, program_start=cfg.program_start)
     decision = decide(cfg, day, signals, state, source=source)
 
+    # Lo que la reconciliación de anoche movió de la carga, para contarlo AHORA.
+    # Se cuelga antes de guardar la decisión para que quede también en el
+    # histórico: el JSON de hoy tiene que poder explicar por qué el hip thrust
+    # sale a 62,5 y no a lo de ayer, y dentro de tres meses no habrá otro sitio
+    # donde mirarlo. Se sellan como contadas más abajo, y solo si hay mensaje.
+    decision.load_adoptions = repo.adopciones_sin_contar(session)
+
     res = DailyResult(day=day, decision=decision)
     fila = repo.save_decision(session, decision)
     _guardar_lo_leido(session, signals, metrics, res)
@@ -139,6 +152,20 @@ def run_daily(
         session, cfg, decision, res, telegram_client, dry_run,
         motivo_sin_cliente=motivos.get("telegram"),
     )
+
+    # Solo se dan por contadas si el mensaje SALIÓ. En un ensayo en seco también:
+    # ahí el texto se imprime y queda en `notifications`, que es todo el "salir"
+    # que hay, y no marcarlas haría que cada mañana de la fase de pruebas
+    # repitiera la lista entera desde el primer día.
+    #
+    # Con "error" o "skipped" NO se marcan, y esa es la parte que importa: un
+    # Telegram caído no tumba la mañana -se traga la excepción a propósito-, así
+    # que sellarlas aquí las daría por explicadas por un mensaje que nadie leyó.
+    # Sin marcar, vuelven a salir mañana.
+    if res.telegram_status in {"sent", "dry_run"}:
+        repo.marcar_adopciones_contadas(
+            session, [a.get("id") for a in decision.load_adoptions]
+        )
 
     # El estado se guarda al final y SIN `executed`: a estas horas la sesión no
     # se ha hecho todavía. Lo que avanza aquí son las reglas activas, el
@@ -345,8 +372,10 @@ def run_reconcile(
     seguro es `workout_log.hevy_workout_id`, que es único: un entrenamiento ya
     registrado no vuelve a contar.
     """
+    from app.engine.adoption import adoptar_cargas
     from app.integrations.hevy import (
         _fecha_workout,
+        pesos_ejecutados,
         workout_compliance,
         workout_totals,
     )
@@ -391,10 +420,20 @@ def run_reconcile(
     # la racha.
     plan_obj = _PlanLeido(plan)
     executed: dict[str, bool] = {}
+    pesos: dict[str, float | None] = {}
     for w in nuevos:
         for key, ok in workout_compliance(w, plan_obj, cfg).items():
             executed[key] = executed.get(key, False) or ok
+        # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
+        # une con un OR: partir la sesión en dos ratos es normal, y la serie
+        # más pesada del día es la más pesada de los dos ratos.
+        for key, kg in pesos_ejecutados(w, plan_obj, cfg).items():
+            if kg is None:
+                continue
+            previo = pesos.get(key)
+            pesos[key] = kg if previo is None else max(previo, kg)
     res.executed = executed
+    res.pesos = pesos
 
     state = repo.load_state(session, program_start=cfg.program_start)
     apply_execution(
@@ -405,7 +444,32 @@ def run_reconcile(
         light=fila.light,
         progressed=repo.progressed_keys(fila),
     )
+
+    # La carga que de verdad se levantó pasa a ser la carga vigente, con el
+    # freno asimétrico de `app/engine/adoption.py`. Va DESPUÉS de
+    # `apply_execution` porque necesita el cumplimiento ya calculado -no se
+    # adopta hacia arriba un peso levantado con las series cortas- y ANTES de
+    # `save_state`, que es quien lo baja a la tabla.
+    #
+    # Se le pasa `plan["exercises"]`: el plan del día YA RECORTADO, exactamente
+    # lo que se escribió en Hevy. Es contra eso, y no contra el objetivo
+    # vigente, contra lo que se mide haberse quedado corto; si no, una semana de
+    # descarga bien hecha contaría como tres sesiones flojas y acabaría bajando
+    # la carga de verdad.
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    adopciones = adoptar_cargas(
+        state,
+        routine_key=str(rkey),
+        exercises=plan.get("exercises") or [],
+        pesos_hechos=pesos,
+        limpio=executed,
+        set_cfg=(raw.get("set_types") or {}),
+        prog_cfg=(raw.get("progression") or {}),
+    )
+    res.adopciones = [a.to_dict() for a in adopciones]
+
     repo.save_state(session, state, day=day)
+    repo.guardar_adopciones(session, day, adopciones)
 
     for w in nuevos:
         totales = workout_totals(w)

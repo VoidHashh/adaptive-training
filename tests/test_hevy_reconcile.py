@@ -20,6 +20,7 @@ from app.integrations.hevy import (
     HevyError,
     _alcanza,
     _fecha_workout,
+    pesos_ejecutados,
     workout_compliance,
 )
 from tests.conftest import FakeHTTP, FakeResponse
@@ -108,6 +109,76 @@ def test_una_serie_del_plan_sin_magnitud_es_error_y_no_un_cumple():
 
 
 # ---------------------------------------------------------------------------
+# _alcanza: el peso, que es la mitad que faltaba
+# ---------------------------------------------------------------------------
+
+
+def test_las_reps_completas_con_menos_peso_no_cumplen():
+    """EL test del punto 13, y el que antes no existía.
+
+    Diez repeticiones a 50 kg cuando el plan pedía diez a 60 no es una sesión
+    limpia: es la misma sesión con menos carga. Mientras el peso quedó fuera de
+    la comparación esto salía `True`, alimentaba la racha y pagaba la subida
+    siguiente. El plan subía mientras la realidad bajaba.
+    """
+    assert _alcanza({"reps": 10, "weight_kg": 50}, {"reps": 10, "weight_kg": 60}) is False
+
+
+def test_mas_peso_del_pedido_cumple():
+    """El criterio sigue siendo "no se quedó corto", igual que con las reps."""
+    assert _alcanza({"reps": 10, "weight_kg": 65}, {"reps": 10, "weight_kg": 60}) is True
+
+
+def test_el_peso_exacto_cumple_aunque_venga_por_otro_camino():
+    """62,5 escrito por el motor y leído desde JSON tienen que empatar.
+
+    El epsilon existe para esto y solo para esto: es ruido de coma flotante, no
+    una tolerancia de carga.
+    """
+    assert _alcanza({"reps": 10, "weight_kg": 62.5}, {"reps": 10, "weight_kg": 62.5}) is True
+    assert _alcanza(
+        {"reps": 10, "weight_kg": 62.5 - 1e-9}, {"reps": 10, "weight_kg": 62.5}
+    ) is True
+
+
+def test_medio_kilo_de_menos_sigue_siendo_de_menos():
+    """El epsilon no puede convertirse en un margen de tolerancia por la puerta
+    de atrás: si dejara pasar medio kilo, dejaría pasar la deriva entera."""
+    assert _alcanza({"reps": 10, "weight_kg": 62.0}, {"reps": 10, "weight_kg": 62.5}) is False
+
+
+def test_el_peso_sin_apuntar_no_cumple():
+    """La ausencia de dato no es prueba de nada.
+
+    Si valiera como cumplimiento, no apuntar el peso sería la manera de saltarse
+    la comprobación entera.
+    """
+    assert _alcanza({"reps": 10}, {"reps": 10, "weight_kg": 60}) is False
+    assert _alcanza({"reps": 10, "weight_kg": None}, {"reps": 10, "weight_kg": 60}) is False
+
+
+def test_el_peso_corporal_sigue_cumpliendo():
+    """Plancha y dominadas van a 0 kg o sin poner.
+
+    Exigirles un peso registrado las dejaría en "no cumplido" para siempre, y un
+    ejercicio que nunca cumple bloquea la racha de la sesión entera.
+    """
+    assert _alcanza({"reps": 12}, {"reps": 10, "weight_kg": 0}) is True
+    assert _alcanza({"reps": 12}, {"reps": 10}) is True
+
+
+def test_el_peso_por_si_solo_no_es_magnitud_medible():
+    """Un peso sin reps ni segundos no dice si la serie se terminó.
+
+    Por eso el peso no marca `comprobado` y el plan sigue teniendo que pedir
+    reps o tiempo. Es el mismo error duro de antes, y comprobarlo aquí evita que
+    añadir el peso lo haya desactivado sin querer.
+    """
+    with pytest.raises(HevyError, match="sin magnitud medible"):
+        _alcanza({"reps": 10, "weight_kg": 60}, {"weight_kg": 60})
+
+
+# ---------------------------------------------------------------------------
 # workout_compliance
 # ---------------------------------------------------------------------------
 
@@ -183,6 +254,102 @@ def test_un_ejercicio_partido_en_dos_entradas_se_junta():
         hecho("T-hip_thrust", {"reps": 10}, {"reps": 10}),
     )
     assert workout_compliance(w, plan, CFG_SETS) == {"hip_thrust": True}
+
+
+def test_un_plan_todo_calentamiento_es_error_y_no_un_cumple():
+    """`all([])` es `True`, y ahí no se ha mirado nada.
+
+    Un ejercicio cuyas series del plan sean todas de calentamiento no tiene nada
+    efectivo contra lo que comparar, así que saldría "completado" sin una sola
+    prueba. Hoy el validador de `config.yaml` lo hace inalcanzable; el error está
+    puesto para que el día que deje de serlo se entere alguien.
+    """
+    plan = Plan(
+        ejercicio(
+            "movilidad",
+            sets=[serie(reps=10, type="warmup"), serie(reps=10, type="warmup")],
+        )
+    )
+    w = workout(hecho("T-movilidad", {"reps": 10}, {"reps": 10}))
+    with pytest.raises(HevyError, match="todas .*de calentamiento|calentamiento"):
+        workout_compliance(w, plan, CFG_SETS)
+
+
+# ---------------------------------------------------------------------------
+# pesos_ejecutados
+# ---------------------------------------------------------------------------
+
+
+def test_el_peso_ejecutado_es_el_de_la_serie_mas_pesada():
+    """Una rampa 50/60/65 se resume por su serie top, que es la que manda.
+
+    La media mezclaría el calentamiento efectivo con la serie de trabajo y
+    daría un número que no se levantó nunca.
+    """
+    plan = Plan(ejercicio("hip_thrust", sets=[serie(reps=10, weight_kg=60)] * 3))
+    w = workout(
+        hecho(
+            "T-hip_thrust",
+            {"reps": 10, "weight_kg": 50},
+            {"reps": 10, "weight_kg": 60},
+            {"reps": 10, "weight_kg": 65},
+        )
+    )
+    assert pesos_ejecutados(w, plan, CFG_SETS) == {"hip_thrust": 65.0}
+
+
+def test_el_calentamiento_no_entra_en_el_peso_ejecutado():
+    """Aquí da igual porque calentar es más ligero, pero no siempre: una serie
+    de aproximación marcada como calentamiento puede ir por encima de la de
+    trabajo en un esquema descendente."""
+    plan = Plan(ejercicio("hip_thrust", sets=[serie(reps=10, weight_kg=60)]))
+    w = workout(
+        hecho(
+            "T-hip_thrust",
+            {"reps": 5, "weight_kg": 90, "type": "warmup"},
+            {"reps": 10, "weight_kg": 60},
+        )
+    )
+    assert pesos_ejecutados(w, plan, CFG_SETS) == {"hip_thrust": 60.0}
+
+
+def test_sin_peso_apuntado_devuelve_none_y_no_cero():
+    """`None` y `0.0` llevan a decisiones opuestas y no se pueden fundir.
+
+    `None` es "no hay dato" y no toca nada; `0.0` sería "se hizo sin carga", que
+    en tres sesiones arrastraría el objetivo al suelo. Un ejercicio sin registrar
+    no puede acabar bajando la carga.
+    """
+    plan = Plan(
+        ejercicio("hip_thrust", sets=[serie(reps=10, weight_kg=60)]),
+        ejercicio("plancha", sets=[serie(duration_s=45)]),
+    )
+    w = workout(hecho("T-hip_thrust", {"reps": 10}))
+    assert pesos_ejecutados(w, plan, CFG_SETS) == {
+        "hip_thrust": None,
+        "plancha": None,
+    }
+
+
+def test_el_peso_y_el_cumplimiento_ven_exactamente_lo_mismo():
+    """La contradicción que el emparejamiento compartido hace imposible.
+
+    Si las dos lecturas emparejaran por su cuenta, una podría decir "no aparece,
+    no cumple" y la otra "se hizo a 70 kg", y de ahí saldría una adopción de
+    carga apoyada en una sesión que el motor considera fallida.
+    """
+    plan = Plan(
+        ejercicio("hip_thrust", template_id="T-1", sets=[serie(reps=10, weight_kg=60)]),
+        ejercicio("remo", template_id="T-2", sets=[serie(reps=12, weight_kg=40)]),
+    )
+    w = workout(hecho("T-1", {"reps": 10, "weight_kg": 70}))
+
+    cumple = workout_compliance(w, plan, CFG_SETS)
+    pesos = pesos_ejecutados(w, plan, CFG_SETS)
+
+    assert set(cumple) == set(pesos), "las dos lecturas no ven los mismos ejercicios"
+    assert cumple == {"hip_thrust": True, "remo": False}
+    assert pesos == {"hip_thrust": 70.0, "remo": None}
 
 
 # ---------------------------------------------------------------------------

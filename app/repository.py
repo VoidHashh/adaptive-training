@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import fields as dataclass_fields
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from app.engine.decision import ActiveRule, EngineState
 from app.models import (
     ExerciseTarget,
+    LoadAdoption,
     PendingStrength,
     ProgramState,
     RoutineState,
@@ -56,6 +57,8 @@ CAMPOS_PERSISTIDOS = frozenset(
         "compliance",
         "current_sets",
         "sessions_since_progress",
+        "below_plan_streak",
+        "below_plan_best_kg",
         "last_routine_light",
         "active_rules",
         "pending_strength",
@@ -113,6 +116,15 @@ def load_state(session: Session, *, program_start: date | None = None) -> Engine
             if isinstance(series, list) and series:
                 state.current_sets[clave] = series
         state.sessions_since_progress[clave] = int(row.sessions_since_progress or 0)
+        # Solo se rehidrata la racha por debajo cuando de verdad la hay. Una
+        # entrada a 0 en el diccionario y la ausencia de entrada valen lo mismo
+        # para `adoptar_cargas`, pero la ausencia es lo que dice la tabla y
+        # copiarla tal cual evita que un `save_state` posterior escriba filas de
+        # ceros para ejercicios que nunca se han quedado cortos.
+        if row.below_plan_streak:
+            state.below_plan_streak[clave] = int(row.below_plan_streak)
+        if row.below_plan_best_kg is not None:
+            state.below_plan_best_kg[clave] = float(row.below_plan_best_kg)
 
     for row in session.scalars(select(RoutineState)).all():
         state.last_routine_light[row.routine_key] = row.last_light
@@ -177,6 +189,8 @@ def _guardar_ejercicios(session: Session, state: EngineState) -> None:
         | set(state.compliance)
         | set(state.current_sets)
         | set(state.sessions_since_progress)
+        | set(state.below_plan_streak)
+        | set(state.below_plan_best_kg)
     )
     if not claves:
         return
@@ -206,6 +220,16 @@ def _guardar_ejercicios(session: Session, state: EngineState) -> None:
             fila.sessions_since_progress = int(
                 state.sessions_since_progress[(rutina, ejercicio)]
             )
+
+        # Estas DOS se escriben siempre, presentes o no, y ahí está el detalle.
+        # La racha por debajo se anula BORRANDO la clave del diccionario, así que
+        # con el patrón de arriba -"solo si está"- la anulación no llegaría nunca
+        # a la tabla: el contador se quedaría clavado en 2 para siempre y la
+        # siguiente sesión floja, meses después, bajaría la carga como si fuera
+        # la tercera seguida. La ausencia es un valor, y hay que guardarlo.
+        fila.below_plan_streak = int(state.below_plan_streak.get((rutina, ejercicio), 0))
+        mejor = state.below_plan_best_kg.get((rutina, ejercicio))
+        fila.below_plan_best_kg = None if mejor is None else float(mejor)
 
 
 def _guardar_rutinas(session: Session, state: EngineState, day: date | None) -> None:
@@ -485,6 +509,94 @@ def progressed_keys(fila: DecisionRow | None) -> list[str]:
 
 def _json(valor: Any) -> str | None:
     return json.dumps(valor, ensure_ascii=False, default=str) if valor is not None else None
+
+
+# ---------------------------------------------------------------------------
+# Adopciones de carga: se deciden de noche, se cuentan por la mañana
+# ---------------------------------------------------------------------------
+
+
+def guardar_adopciones(session: Session, day: date, adopciones: Any) -> int:
+    """Apunta lo que la carga ejecutada movió -o no- esa noche. Devuelve cuántas.
+
+    Se guardan también las RECHAZADAS. Un tope que actúa sin dejar rastro es un
+    tope que nadie puede corregir.
+    """
+    n = 0
+    for a in adopciones or []:
+        d = a.to_dict() if hasattr(a, "to_dict") else dict(a)
+        session.add(
+            LoadAdoption(
+                date=day,
+                routine_key=str(d.get("routine") or ""),
+                exercise_key=str(d.get("key") or ""),
+                direction=str(d.get("direction") or ""),
+                prescribed_kg=d.get("prescribed_kg"),
+                executed_kg=d.get("executed_kg"),
+                before_kg=d.get("before_kg"),
+                after_kg=d.get("after_kg"),
+                applied=bool(d.get("applied")),
+                reason=d.get("reason"),
+            )
+        )
+        n += 1
+    if n:
+        session.flush()
+    return n
+
+
+def adopciones_sin_contar(session: Session) -> list[dict[str, Any]]:
+    """Las adopciones que todavía no ha contado ningún mensaje. NO las marca.
+
+    Sin límite de antigüedad: si el sistema pasó tres días sin mandar nada
+    -porque el PC estuvo apagado, o Telegram falló-, esas subidas y bajadas
+    siguen sin explicarse y el primer mensaje que salga tiene que explicarlas
+    todas. Descartar las viejas dejaría un cambio de carga sin motivo visible,
+    que es justo lo que esta tabla existe para impedir.
+
+    Leer y marcar están separados A PROPÓSITO. Marcarlas al leerlas parece más
+    simple y es peor: `_mandar_telegram` se traga los fallos de envío para que
+    un Telegram caído no tumbe la mañana, así que la transacción se confirma
+    igual. Las adopciones habrían quedado selladas como contadas por un mensaje
+    que nunca llegó al móvil, y el cambio de carga se quedaría sin explicar para
+    siempre. Marca `marcar_adopciones_contadas`, y solo cuando hay mensaje.
+    """
+    return [
+        {
+            "id": f.id,
+            "day": f.date.isoformat(),
+            "routine": f.routine_key,
+            "key": f.exercise_key,
+            "direction": f.direction,
+            "prescribed_kg": f.prescribed_kg,
+            "executed_kg": f.executed_kg,
+            "before_kg": f.before_kg,
+            "after_kg": f.after_kg,
+            "applied": bool(f.applied),
+            "reason": f.reason or "",
+        }
+        for f in session.scalars(
+            select(LoadAdoption)
+            .where(LoadAdoption.reported_at.is_(None))
+            .order_by(LoadAdoption.date, LoadAdoption.id)
+        ).all()
+    ]
+
+
+def marcar_adopciones_contadas(session: Session, ids: Any) -> int:
+    """Sella como contadas las adopciones cuyo id se pasa. Devuelve cuántas."""
+    quedan = [int(i) for i in ids if i is not None]
+    if not quedan:
+        return 0
+    ahora = datetime.now(UTC).replace(tzinfo=None)
+    n = 0
+    for fila in session.scalars(
+        select(LoadAdoption).where(LoadAdoption.id.in_(quedan))
+    ).all():
+        fila.reported_at = ahora
+        n += 1
+    session.flush()
+    return n
 
 
 # ---------------------------------------------------------------------------

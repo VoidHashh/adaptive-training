@@ -20,12 +20,17 @@ tablas y quitando columnas después- porque una base recién creada por
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateColumn
 
+import app.db as db
 from app.db import SchemaDesfasado, ensure_schema
 from app.models import Base
+from app.repository import adopciones_sin_contar, guardar_adopciones
 
 
 def _columnas(eng, tabla: str) -> set[str]:
@@ -152,6 +157,16 @@ def _ddl(eng, tabla: str) -> dict[str, tuple]:
         }
 
 
+def _dif_ddl(eng_migrada, eng_nueva, tabla: str) -> dict:
+    """Columnas en las que la base migrada y una recién creada no coinciden."""
+    actualizada, recien_creada = _ddl(eng_migrada, tabla), _ddl(eng_nueva, tabla)
+    return {
+        k: (recien_creada.get(k), actualizada.get(k))
+        for k in set(recien_creada) | set(actualizada)
+        if recien_creada.get(k) != actualizada.get(k)
+    }
+
+
 def test_una_instalacion_actualizada_queda_igual_que_una_nueva(vieja, tmp_path):
     """Migrar tiene que dejar la MISMA tabla que crearla de cero.
 
@@ -177,12 +192,7 @@ def test_una_instalacion_actualizada_queda_igual_que_una_nueva(vieja, tmp_path):
     nueva = create_engine(f"sqlite:///{tmp_path / 'nueva.db'}", future=True)
     Base.metadata.create_all(nueva)
 
-    actualizada, recien_creada = _ddl(vieja, "exercise_targets"), _ddl(nueva, "exercise_targets")
-    dif = {
-        k: (recien_creada.get(k), actualizada.get(k))
-        for k in set(recien_creada) | set(actualizada)
-        if recien_creada.get(k) != actualizada.get(k)
-    }
+    dif = _dif_ddl(vieja, nueva, "exercise_targets")
     assert not dif, f"nueva vs actualizada difieren en {dif}"
 
     # Y la fila que ya estaba tiene el defecto, no NULL: es una cola en la que
@@ -192,6 +202,51 @@ def test_una_instalacion_actualizada_queda_igual_que_una_nueva(vieja, tmp_path):
             "SELECT clean_streak, sessions_since_progress FROM exercise_targets"
         )))
     assert fila == [(2, 0)], f"la fila vieja no se ha rellenado con el defecto: {fila}"
+
+
+def test_una_base_anterior_a_la_adopcion_de_cargas_se_pone_al_dia(vieja, tmp_path):
+    """Las dos columnas de la carga ejecutada, contra una base CON histórico.
+
+    Es el caso de despliegue de verdad: la base lleva meses decidiendo, llega la
+    versión que adopta lo que se levantó en Hevy y `exercise_targets` no tiene
+    dónde guardar la racha por debajo. Sin la columna, el error no sale al
+    arrancar -sale en el SELECT de la reconciliación, a las 22:30.
+
+    Los dos defectos de las filas viejas NO son intercambiables, y por eso se
+    miran por separado:
+
+      - la racha entra a 0, que es "este ejercicio no lleva ninguna sesión por
+        debajo del plan". A NULL la comparación contra `down_after_sessions`
+        reventaría, y ahí no hay nadie mirando.
+      - el mejor peso entra a NULL, que es "no hay ninguna sesión por debajo".
+        Un 0 aquí no sería la ausencia del dato: sería un dato, y del peor tipo,
+        porque es el peso que se adoptaría el día que tocara bajar.
+    """
+    vieja.envejecer("exercise_targets", {"below_plan_streak", "below_plan_best_kg"})
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO exercise_targets (routine_key, exercise_key, clean_streak) "
+            "VALUES ('dia_1', 'hip_thrust_barra', 2)"
+        ))
+
+    cambios = ensure_schema(vieja)
+
+    assert any("below_plan_streak" in x for x in cambios), cambios
+    assert any("below_plan_best_kg" in x for x in cambios), cambios
+
+    nueva = create_engine(f"sqlite:///{tmp_path / 'nueva.db'}", future=True)
+    Base.metadata.create_all(nueva)
+    dif = _dif_ddl(vieja, nueva, "exercise_targets")
+    assert not dif, f"nueva vs actualizada difieren en {dif}"
+
+    with vieja.begin() as c:
+        fila = list(c.execute(text(
+            "SELECT clean_streak, below_plan_streak, below_plan_best_kg "
+            "FROM exercise_targets"
+        )))
+    assert fila == [(2, 0, None)], (
+        f"la racha tiene que entrar a cero y el mejor peso a NULL, y hay: {fila}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +327,73 @@ def test_rehacer_una_tabla_vacia_no_arrastra_a_las_demas(vieja):
         ))
 
     ensure_schema(vieja)
+
+    with vieja.begin() as c:
+        assert c.execute(text("SELECT light FROM decisions")).scalar() == "amber"
+
+
+# ---------------------------------------------------------------------------
+# Una tabla entera nueva
+# ---------------------------------------------------------------------------
+
+
+def test_una_tabla_nueva_llega_a_una_base_que_ya_existia(vieja, monkeypatch):
+    """`load_adoptions` no la añade `ensure_schema`, y aun así tiene que llegar.
+
+    Aquí se reparten el trabajo dos funciones y ninguna de las dos lo hace
+    entero: `create_all` crea las tablas que faltan y no toca las que están,
+    `ensure_schema` pone al día las que están y no crea ninguna. El reparto solo
+    cierra si alguien llama a las dos, y ese alguien es `init_db`. Por eso este
+    test llama a `init_db` y no a las piezas: una versión futura que se dejase
+    el `create_all` pasaría todos los demás tests de este fichero.
+
+    Y el fallo sería el de siempre, pero con una tabla entera: el contenedor se
+    actualiza, arranca sin quejarse, manda su mensaje de las nueve, y a las
+    22:30 `guardar_adopciones` escribe contra una tabla que no existe. Se pierde
+    la adopción y, con ella, la única explicación de por qué mañana el hip
+    thrust pide 62,5 en vez de 60.
+
+    Por eso no basta con mirar `sqlite_master`: se escribe y se lee una adopción
+    de verdad por el mismo camino que usa la reconciliación.
+    """
+    with vieja.begin() as c:
+        c.exec_driver_sql('DROP TABLE "load_adoptions"')
+
+    assert ensure_schema(vieja) == [], (
+        "de las tablas AUSENTES no se encarga esta función, y si empezara a "
+        "hacerlo estaría rehaciendo a ciegas lo que create_all ya sabe crear"
+    )
+
+    monkeypatch.setattr(db, "engine", vieja)
+    db.init_db()
+
+    Sesion = sessionmaker(bind=vieja, future=True)
+    with Sesion() as s:
+        guardar_adopciones(s, date(2026, 9, 10), [{
+            "routine": "dia_1", "key": "hip_thrust_barra", "direction": "up",
+            "prescribed_kg": 60.0, "executed_kg": 62.5,
+            "before_kg": 60.0, "after_kg": 62.5,
+            "applied": True, "reason": "se levantó eso de verdad",
+        }])
+        s.commit()
+        pendientes = adopciones_sin_contar(s)
+
+    assert [(p["key"], p["after_kg"]) for p in pendientes] == [
+        ("hip_thrust_barra", 62.5)
+    ], f"la tabla existe pero no sirve para lo que existe: {pendientes}"
+
+
+def test_crear_la_tabla_que_falta_no_toca_el_historico(vieja, monkeypatch):
+    """Rellenar un hueco no puede costar lo que ya había en las demás tablas."""
+    with vieja.begin() as c:
+        c.exec_driver_sql('DROP TABLE "load_adoptions"')
+        c.execute(text(
+            "INSERT INTO decisions (date, light, source, is_current) "
+            "VALUES ('2026-09-07', 'amber', 'checkin', 1)"
+        ))
+
+    monkeypatch.setattr(db, "engine", vieja)
+    db.init_db()
 
     with vieja.begin() as c:
         assert c.execute(text("SELECT light FROM decisions")).scalar() == "amber"

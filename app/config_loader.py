@@ -167,6 +167,15 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 f"real se estaría ignorando en silencio",
             )
 
+    def _es_num(v: Any) -> bool:
+        """¿Es un número de verdad? `True` NO lo es.
+
+        `isinstance(True, int)` vale `True` en Python, así que un `max_jump_kg:
+        yes` mal puesto en el YAML pasaría por un 1 y dejaría el tope de salto en
+        un kilo sin que nadie lo notase.
+        """
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+
     # --- secciones obligatorias --------------------------------------------
     for section in (
         "timezone",
@@ -900,6 +909,42 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "al agotar el techo de series solo se puede pasar a 'load' o 'double'",
     )
 
+    # --- adopción de la carga ejecutada --------------------------------------
+    # Los tres números de aquí son frenos, y un freno mal puesto no da error: se
+    # queda quieto. Un `down_after_sessions: 0` bajaría el objetivo con la
+    # primera serie mal apuntada; un `max_jump_pct: 5` dejaría pasar un 600 por
+    # un 60. En los dos casos el sistema seguiría funcionando y escribiendo la
+    # rutina cada mañana.
+    ael = prog.get("adopt_executed_load") or {}
+    require(
+        isinstance(ael, dict),
+        "progression.adopt_executed_load debe ser un mapa",
+    )
+    if isinstance(ael, dict) and ael:
+        n_bajada = ael.get("down_after_sessions", 3)
+        require(
+            _es_num(n_bajada) and int(n_bajada) >= 1,
+            f"progression.adopt_executed_load.down_after_sessions "
+            f"({n_bajada!r}) debe ser un entero >= 1. Con 0 el objetivo bajaría a "
+            "la primera sesión floja, que casi siempre es la máquina ocupada o "
+            "una serie mal apuntada; para desactivar la adopción está 'enabled'",
+        )
+        salto_kg = ael.get("max_jump_kg", 5)
+        require(
+            _es_num(salto_kg) and float(salto_kg) > 0,
+            f"progression.adopt_executed_load.max_jump_kg ({salto_kg!r}) debe ser "
+            "mayor que 0: con 0 no se adoptaría ningún cambio y el mecanismo "
+            "entero quedaría desconectado sin decirlo",
+        )
+        salto_pct = ael.get("max_jump_pct", 0.20)
+        require(
+            _es_num(salto_pct) and 0 < float(salto_pct) <= 1,
+            f"progression.adopt_executed_load.max_jump_pct ({salto_pct!r}) debe "
+            "estar entre 0 y 1 (0.20 = 20%). Por encima de 1 el tope dejaría "
+            "pasar más del doble del peso actual, que es lo que este límite "
+            "existe para frenar",
+        )
+
     vs = prog.get("volume_safety") or {}
     scope = str(vs.get("conflict_scope", "session"))
     require(
@@ -1102,6 +1147,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
     check_keys(
         prog,
         {
+            "adopt_executed_load",
             "brakes",
             "deload",
             "gate",
@@ -1113,6 +1159,11 @@ def _validate(data: dict[str, Any]) -> list[str]:
             "default_progression_type",
         },
         "progression",
+    )
+    check_keys(
+        prog.get("adopt_executed_load") or {},
+        {"enabled", "down_after_sessions", "max_jump_kg", "max_jump_pct"},
+        "progression.adopt_executed_load",
     )
     check_keys(modes, {"double", "volume", "sets"}, "progression.modes")
     for nombre, permitidas in (

@@ -397,8 +397,19 @@ def test_si_archivar_falla_la_mañana_termina_y_se_dice(db, cfg, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _entrenamiento_completo(plan: dict, wid: str = "w1", day: date = LUNES) -> dict:
-    """Un entrenamiento que cumple el plan entero, construido DESDE el plan."""
+def _entrenamiento_completo(
+    plan: dict, wid: str = "w1", day: date = LUNES, factor_peso: float = 1.0
+) -> dict:
+    """Un entrenamiento que cumple el plan entero, construido DESDE el plan.
+
+    `weight_kg` viaja, y no es un detalle de fidelidad: el cumplimiento compara
+    el peso, así que un entrenamiento de mentira sin pesos no es "el plan hecho
+    entero", es el plan hecho a cero kilos. Cuando esto no lo copiaba, seis
+    semanas de sesiones perfectas no subían ni un kilo y el test lo cantaba.
+
+    `factor_peso` sirve para el caso contrario: 0.8 son las mismas reps con menos
+    peso, que es exactamente la sesión que antes se colaba como limpia.
+    """
     ejercicios = []
     for ex in plan.get("exercises") or []:
         ejercicios.append(
@@ -409,6 +420,11 @@ def _entrenamiento_completo(plan: dict, wid: str = "w1", day: date = LUNES) -> d
                         "type": s.get("type", "normal"),
                         "reps": s.get("reps"),
                         "duration_seconds": s.get("duration_s"),
+                        "weight_kg": (
+                            None
+                            if s.get("weight_kg") is None
+                            else round(float(s["weight_kg"]) * factor_peso, 2)
+                        ),
                     }
                     for s in ex.get("sets") or []
                 ],
@@ -513,6 +529,171 @@ def test_los_entrenamientos_contados_quedan_registrados(db, cfg):
     run_reconcile(db, cfg, LUNES, workouts=[_entrenamiento_completo(_plan_guardado(db))])
     filas = db.scalars(select(WorkoutLog)).all()
     assert [f.hevy_workout_id for f in filas] == ["w1"]
+
+
+# ---------------------------------------------------------------------------
+# La carga ejecutada, de punta a punta
+# ---------------------------------------------------------------------------
+#
+# Aquí no se prueba la lógica de adopción -eso es `test_adoption.py`- sino el
+# CABLEADO: que el peso leído de Hevy llega al motor, que el motor mueve el
+# objetivo, que el objetivo sobrevive a la base de datos y que el mensaje de la
+# mañana siguiente lo cuenta. Cualquiera de los cuatro tramos puede estar
+# desconectado sin que nada dé error, y ese es justo el fallo de esta casa.
+
+
+def _primer_ejercicio_con_peso(plan: dict) -> dict:
+    for ex in plan.get("exercises") or []:
+        if any((s.get("weight_kg") or 0) > 0 for s in ex.get("sets") or []):
+            return ex
+    raise AssertionError("el plan del lunes no tiene ningún ejercicio con peso")
+
+
+def test_las_mismas_reps_con_menos_peso_no_avanzan_la_racha(db, cfg):
+    """LA regresión del punto 13, de punta a punta.
+
+    Mientras el peso quedó fuera del cumplimiento, una sesión al 80% de la carga
+    contaba como limpia y pagaba la subida siguiente: el plan se iba subiendo
+    mientras la realidad bajaba, sin un solo error y en una espalda con hernia.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    flojo = _entrenamiento_completo(plan, factor_peso=0.8)
+
+    run_reconcile(db, cfg, LUNES, workouts=[flojo])
+
+    estado = load_state(db, program_start=cfg.program_start)
+    key = _primer_ejercicio_con_peso(plan)["key"]
+    assert estado.clean_sessions.get(("dia_1", key), 0) == 0, (
+        "una sesión al 80% de la carga ha contado como limpia"
+    )
+
+
+def test_el_peso_ejecutado_llega_al_resultado_de_la_reconciliacion(db, cfg):
+    """`cli.py` los enseña: una adopción que solo se ve en el mensaje de mañana
+    no se puede comprobar hoy, que es cuando se está ensayando a mano."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+    esperado = max(float(s.get("weight_kg") or 0) for s in ex["sets"])
+
+    res = run_reconcile(db, cfg, LUNES, workouts=[_entrenamiento_completo(plan)])
+    assert res.pesos.get(ex["key"]) == esperado
+
+
+def test_subir_el_peso_a_mano_en_hevy_mueve_el_objetivo_guardado(db, cfg):
+    """El caso del usuario: la máquina no tiene ese disco, o 60 salió fácil.
+
+    Sin esto, al día siguiente el motor volvería a planificar desde SU número y
+    anunciaría "60→62,5" a alguien que ya está en 65.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+    antes = max(float(s.get("weight_kg") or 0) for s in ex["sets"])
+
+    w = _entrenamiento_completo(plan)
+    # Solo ese ejercicio, y con +2,5 kg en todas sus series: dentro del tope.
+    for e in w["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            for s in e["sets"]:
+                if s.get("weight_kg"):
+                    s["weight_kg"] = round(s["weight_kg"] + 2.5, 2)
+
+    res = run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    assert any(a["applied"] and a["key"] == ex["key"] for a in res.adopciones), (
+        f"no se ha adoptado nada para {ex['key']}: {res.adopciones}"
+    )
+    estado = load_state(db, program_start=cfg.program_start)
+    despues = max(
+        float(s.get("weight_kg") or 0) for s in estado.current_sets[("dia_1", ex["key"])]
+    )
+    assert despues == antes + 2.5, "el objetivo guardado no se ha movido"
+
+
+def test_la_adopcion_de_anoche_se_cuenta_en_el_mensaje_de_la_manana(db, cfg):
+    """El último tramo del cable. Sin él, el usuario ve un peso distinto del que
+    el mensaje de ayer prometía y no puede saber si es el sistema funcionando o
+    el sistema roto."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+
+    w = _entrenamiento_completo(plan)
+    for e in w["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            for s in e["sets"]:
+                if s.get("weight_kg"):
+                    s["weight_kg"] = round(s["weight_kg"] + 2.5, 2)
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    tg = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=1), hevy=HevyFalso(), tg=tg)
+
+    assert tg.enviados, "no se ha mandado mensaje"
+    texto = tg.enviados[-1]
+    assert "Ajustado a lo que levantaste" in texto, texto
+    assert ex["name"] in texto
+
+
+def test_si_telegram_falla_la_adopcion_se_cuenta_al_dia_siguiente(db, cfg):
+    """Por esto leer las adopciones y sellarlas son dos pasos.
+
+    `_mandar_telegram` se traga los fallos de envío a propósito, para que un
+    Telegram caído no tumbe la mañana entera. La transacción se confirma igual.
+    Si el sellado no mirase el resultado del envío, la adopción quedaría dada por
+    explicada por un mensaje que nunca llegó al móvil, y el usuario se
+    encontraría el peso cambiado sin un solo aviso, para siempre.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+
+    w = _entrenamiento_completo(plan)
+    for e in w["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            for s in e["sets"]:
+                if s.get("weight_kg"):
+                    s["weight_kg"] = round(s["weight_kg"] + 2.5, 2)
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    # Martes: el mensaje se compone, lleva la adopción... y el envío revienta.
+    roto = TelegramFalso(revienta=True)
+    r1 = corre(db, cfg, day=LUNES + timedelta(days=1), hevy=HevyFalso(), tg=roto)
+    assert r1.telegram_status not in {"sent", "dry_run"}, r1.telegram_status
+
+    # Miércoles: sigue sin explicarse, así que vuelve a salir.
+    tg = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=2), hevy=HevyFalso(), tg=tg)
+    assert "Ajustado a lo que levantaste" in tg.enviados[-1], (
+        "la adopción se selló con un mensaje que nunca llegó: el cambio de carga "
+        "se queda sin explicar para siempre"
+    )
+
+
+def test_una_adopcion_contada_no_se_repite_al_dia_siguiente(db, cfg):
+    """Repetir "ajustado a 65 kg" tres mañanas seguidas es la forma de que se
+    deje de leer el bloque el día que diga algo nuevo."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+
+    w = _entrenamiento_completo(plan)
+    for e in w["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            for s in e["sets"]:
+                if s.get("weight_kg"):
+                    s["weight_kg"] = round(s["weight_kg"] + 2.5, 2)
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    tg1 = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=1), hevy=HevyFalso(), tg=tg1)
+    assert "Ajustado a lo que levantaste" in tg1.enviados[-1]
+
+    tg2 = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=2), hevy=HevyFalso(), tg=tg2)
+    assert "Ajustado a lo que levantaste" not in tg2.enviados[-1]
 
 
 # ---------------------------------------------------------------------------
