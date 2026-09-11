@@ -29,6 +29,15 @@ from app.analysis.concordancia import (
     vista_concordancia,
     vista_desfase,
 )
+from app.analysis.impacto import (
+    ADVERTENCIA_CONFUSION,
+    DIAS_DESPUES,
+    N_MINIMO_EXPUESTOS,
+    Exposicion,
+    contraste,
+    ranking_ejercicios,
+    vista_impacto,
+)
 from app.analysis.series import (
     DEFINICIONES,
     GARMIN,
@@ -55,12 +64,16 @@ from app.analysis.stats import (
 )
 
 __all__ = [
+    "ADVERTENCIA_CONFUSION",
     "Cobertura",
     "DEFINICIONES",
+    "DIAS_DESPUES",
     "Definicion",
     "Desfase",
+    "Exposicion",
     "GARMIN",
     "N_MINIMO_CALCULABLE",
+    "N_MINIMO_EXPUESTOS",
     "N_MINIMO_FIABLE",
     "PARES",
     "Par",
@@ -70,14 +83,17 @@ __all__ = [
     "SLIDERS",
     "cobertura",
     "comprobar_sliders",
+    "contraste",
     "correlacion",
     "emparejar",
     "mejor_desfase",
     "normalizar",
     "percentil",
     "percentil_de",
+    "ranking_ejercicios",
     "rangos",
     "serie",
     "vista_concordancia",
     "vista_desfase",
+    "vista_impacto",
 ]

@@ -504,6 +504,52 @@ def metrics_desfase(
     return vista_desfase(s, dias=dias, metodo=_metodo(metodo))
 
 
+@app.get("/api/metrics/impacto")
+def metrics_impacto(
+    dias: int = Query(180, ge=7, le=730),
+    metodo: str = Query("spearman"),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 3: qué le hace al cuerpo cada cosa, uno, dos y tres días después."""
+    from app.analysis.impacto import vista_impacto
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    return vista_impacto(s, dias=dias, metodo=_metodo(metodo))
+
+
+@app.get("/api/metrics/ranking-ejercicios")
+def metrics_ranking_ejercicios(
+    respuesta: str = Query("lower_discomfort"),
+    dias: int = Query(180, ge=7, le=730),
+    metodo: str = Query("spearman"),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 3, el ranking: los ejercicios ordenados por la molestia del día siguiente.
+
+    `respuesta` se puede cambiar -la misma lista sirve para el cansancio o para la
+    HRV-, pero por defecto es la lumbar, que es lo que se pidió y lo que más pesa
+    con una hernia L4-L5 de por medio.
+
+    El `ValueError` de una respuesta desconocida se traduce a un 400 con la lista
+    entera dentro. Un 500 diría que el servidor está roto, y lo que pasa es que se
+    ha pedido algo que no existe; y devolver un ranking vacío sería peor que las
+    dos cosas, porque parecería la respuesta.
+    """
+    from app.analysis.impacto import ranking_ejercicios
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    try:
+        return ranking_ejercicios(
+            s, cfg, respuesta=respuesta, dias=dias, metodo=_metodo(metodo)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
 @app.post("/api/reconcile")
 def post_reconcile(
     day: date | None = None,

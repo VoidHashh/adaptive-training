@@ -478,3 +478,60 @@ def percentil(muestra: Sequence[float], q: float) -> float | None:
     if bajo == alto:
         return float(orden[bajo])
     return float(orden[bajo] + (orden[alto] - orden[bajo]) * (pos - bajo))
+
+
+# ---------------------------------------------------------------------------
+# Comparaciones múltiples
+# ---------------------------------------------------------------------------
+
+
+def benjamini_hochberg(ps: Sequence[float | None]) -> list[float | None]:
+    """Corrige una tanda de p-valores por el número de veces que se ha mirado.
+
+    POR QUÉ HACE FALTA
+    ------------------
+    El ranking de ejercicios de la vista 3 compara treinta ejercicios contra la
+    molestia lumbar del día siguiente. Con treinta intentos y un umbral del 5%,
+    lo esperable es que un ejercicio y medio salga "significativo" AUNQUE NINGUNO
+    tenga nada que ver con la lumbar. Y no saldría en el puesto quince: saldría
+    el primero, porque el ranking está ordenado precisamente por eso.
+
+    Es la forma más fácil de que este sistema haga daño. No calcula mal: calcula
+    bien treinta veces y la presentación hace el resto. Un ranking sin corregir
+    diría "el peso muerto te destroza la lumbar" con la misma cara con la que
+    diría algo cierto, y la consecuencia sería dejar de hacer un ejercicio por
+    ruido.
+
+    POR QUÉ BENJAMINI-HOCHBERG Y NO BONFERRONI
+    ------------------------------------------
+    Bonferroni divide por treinta y se lleva por delante también lo que sí
+    existe. Aquí interesa lo contrario: es un panel para mirar, no un ensayo
+    clínico, y perder un efecto real es peor que tolerar que uno de cada veinte
+    de los que sobreviven sea casualidad. Benjamini-Hochberg controla justo esa
+    proporción -la de falsos entre los que se declaran-, que es la pregunta que
+    de verdad se hace al mirar un ranking.
+
+    Los `None` -las casillas que no se pudieron calcular- se quedan como `None` y
+    NO cuentan para el tamaño de la tanda. Contarlas haría la corrección más
+    dura cuantos menos datos hubiera, que es exactamente al revés de como tiene
+    que comportarse.
+    """
+    indices = [i for i, p in enumerate(ps) if p is not None]
+    m = len(indices)
+    if m == 0:
+        return [None] * len(ps)
+
+    # Orden creciente de p, y el ajuste se propaga hacia atrás para que la
+    # secuencia corregida no pueda bajar: si el p-valor 7 corregido sale menor
+    # que el 6, el 6 se queda con el del 7. Sin ese paso la lista corregida
+    # podría desordenar el ranking respecto a la original, que sería peor que no
+    # corregir.
+    orden = sorted(indices, key=lambda i: ps[i])  # type: ignore[index]
+    corregidos: list[float | None] = [None] * len(ps)
+    minimo = 1.0
+    for rango in range(m, 0, -1):
+        i = orden[rango - 1]
+        valor = ps[i] * m / rango  # type: ignore[operator]
+        minimo = min(minimo, valor)
+        corregidos[i] = min(1.0, minimo)
+    return corregidos

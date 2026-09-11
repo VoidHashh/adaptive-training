@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import re
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
@@ -1002,6 +1003,108 @@ def test_desfase_contesta_la_rejilla_entera(cliente, db):
     assert sorted(int(k) for k in casilla["por_desfase"]) == [-3, -2, -1, 0, 1, 2, 3]
 
 
+def _sembrar_entrenos(db, dias_n=40):
+    """Un Día 2 cada cuatro, y la lumbar subiendo justo al día siguiente.
+
+    Sin ruido a propósito: si el montaje pierde o desplaza un día, con una
+    relación perfecta se ve, y con datos realistas se confundiría con el ruido.
+    El `0EB695C9` es un `template_id` de verdad del `config.yaml`, que es lo que
+    permite comprobar que el endpoint le pasa la configuración al ranking.
+    """
+    from app.models import Checkin, WorkoutLog
+
+    hoy = date.today()
+    for i in range(dias_n):
+        d = hoy - timedelta(days=dias_n - i)
+        db.add(Checkin(date=d, lower_discomfort=5 if i % 4 == 1 else 2))
+        ejercicios = [{"exercise_template_id": "comun", "title": "Plancha"}]
+        if i % 4 == 0:
+            ejercicios.append(
+                {"exercise_template_id": "0EB695C9", "title": "Leg Press (Machine)"}
+            )
+        db.add(
+            WorkoutLog(
+                hevy_workout_id=f"e{i}",
+                date=d,
+                routine_key="dia_2" if i % 4 == 0 else "dia_1",
+                raw_json=json.dumps({"exercises": ejercicios}),
+            )
+        )
+    db.commit()
+
+
+def test_impacto_contesta_la_rejilla_con_la_advertencia_dentro(cliente, db):
+    """Vista 3: la resaca de cada cosa a +1, +2 y +3, y el aviso de confusión.
+
+    La advertencia va en la respuesta y no en un comentario del código porque
+    quien lee un ranking de ejercicios tiene que leer, en la misma pantalla, que
+    los ejercicios no se hacen sueltos.
+    """
+    _sembrar_entrenos(db)
+    r = cliente.get("/api/metrics/impacto?dias=90")
+    assert r.status_code == 200
+    d = r.json()
+
+    assert d["vista"] == "impacto"
+    assert d["retardos"] == [1, 2, 3]
+    assert d["ventana"]["dias"] == 90
+    assert "no puede separar" in d["advertencia"].lower()
+
+    fila = next(
+        f
+        for f in d["rejilla"]
+        if f["exposicion"]["clave"] == "rutina_dia_2"
+        and f["respuesta"]["clave"] == "lower_discomfort"
+    )
+    uno = next(c for c in fila["por_dia"] if c["dias_despues"] == 1)
+    assert uno["media_expuesto"] == 5.0
+    assert uno["media_no_expuesto"] == 2.0
+    assert uno["r"] == 1.0
+    assert "p_corregida" in uno
+    assert "sube" in fila["lectura"] and "(peor)" in fila["lectura"]
+
+
+def test_el_ranking_de_ejercicios_llega_con_los_nombres_del_yaml(cliente, db):
+    """El endpoint le pasa el `config.yaml`, así que el nombre es el suyo.
+
+    "Leg Press (Machine)" es como lo llama Hevy; "Prensa horizontal" es como lo
+    llama él. Un ranking con los nombres de Hevy le obliga a traducir cada fila
+    mentalmente para saber de qué le están hablando.
+    """
+    _sembrar_entrenos(db)
+    r = cliente.get("/api/metrics/ranking-ejercicios?dias=90")
+    assert r.status_code == 200
+    d = r.json()
+
+    assert d["vista"] == "ranking_ejercicios"
+    assert d["respuesta"]["clave"] == "lower_discomfort"
+    assert d["respuesta"]["etiqueta"] == "Molestias lumbares"
+    assert d["ordenado_por"] == "correlación a +1 día(s)"
+
+    primero = d["ranking"][0]
+    assert primero["clave"] == "0EB695C9"
+    assert primero["etiqueta"] == "Prensa horizontal"
+    assert next(c for c in primero["por_dia"] if c["dias_despues"] == 1)["r"] == 1.0
+
+    # Y el que se hace todos los días sigue en la lista, sin r y con su porqué.
+    comun = next(f for f in d["ranking"] if f["clave"] == "comun")
+    casilla = next(c for c in comun["por_dia"] if c["dias_despues"] == 1)
+    assert casilla["r"] is None
+    assert casilla["na"]
+
+
+def test_una_respuesta_desconocida_en_el_ranking_es_un_400_con_la_lista(cliente):
+    """Un 500 diría que el servidor está roto; un ranking vacío sería peor.
+
+    Vacío se leería como "ningún ejercicio se relaciona con nada", que es una
+    conclusión, y sería mentira.
+    """
+    r = cliente.get("/api/metrics/ranking-ejercicios?respuesta=lumbago")
+    assert r.status_code == 400
+    assert "lumbago" in r.json()["detail"]
+    assert "lower_discomfort" in r.json()["detail"]
+
+
 def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     """Una sección de métricas vacía NO es un error: es el primer día.
 
@@ -1009,13 +1112,31 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     justo cuando lo útil es ver qué falta y cuánto. Sale un 200 con las siete
     parejas y su motivo, que es lo que se pidió: nada oculto, nada aplazado.
     """
-    for ruta in ("/api/metrics/concordancia", "/api/metrics/desfase"):
+    for ruta in (
+        "/api/metrics/concordancia",
+        "/api/metrics/desfase",
+        "/api/metrics/impacto",
+        "/api/metrics/ranking-ejercicios",
+    ):
         r = cliente.get(ruta)
         assert r.status_code == 200, ruta
     d = cliente.get("/api/metrics/concordancia").json()
     assert len(d["pares"]) == 7
     assert all(p["na"] for p in d["pares"])
     assert all(p["r"] is None for p in d["pares"])
+
+    # La vista 3 tampoco se esconde: las exposiciones que no dependen de lo que
+    # se haya entrenado siguen ahí, con el motivo escrito en cada casilla.
+    v3 = cliente.get("/api/metrics/impacto").json()
+    assert len(v3["rejilla"]) == 9 * 12
+    assert all(c["na"] for f in v3["rejilla"] for c in f["por_dia"])
+    # Y el ranking sin entrenos es una lista vacía CON su advertencia y su
+    # cobertura, no un 404 que dejaría la pantalla en blanco el primer día.
+    r3 = cliente.get("/api/metrics/ranking-ejercicios").json()
+    assert r3["n_ejercicios"] == 0
+    assert r3["ranking"] == []
+    assert r3["advertencia"]
+    assert r3["cobertura"]["fuerza"] is None
 
 
 def test_un_metodo_inventado_se_rechaza_en_vez_de_caer_en_uno_por_defecto(cliente):
@@ -1025,9 +1146,15 @@ def test_un_metodo_inventado_se_rechaza_en_vez_de_caer_en_uno_por_defecto(client
     cosa y calcular otra distinta pondría "kendall" encima de un número que no
     lo es.
     """
-    r = cliente.get("/api/metrics/concordancia?metodo=kendall")
-    assert r.status_code == 400
-    assert "kendall" in r.json()["detail"]
+    for ruta in (
+        "/api/metrics/concordancia",
+        "/api/metrics/desfase",
+        "/api/metrics/impacto",
+        "/api/metrics/ranking-ejercicios",
+    ):
+        r = cliente.get(f"{ruta}?metodo=kendall")
+        assert r.status_code == 400, ruta
+        assert "kendall" in r.json()["detail"]
 
 
 def test_pearson_se_puede_pedir_y_se_nota(cliente, db):
@@ -1039,8 +1166,14 @@ def test_pearson_se_puede_pedir_y_se_nota(cliente, db):
 
 def test_una_ventana_absurda_se_rechaza(cliente):
     """Cuatro días no dan para nada y cinco años no existen."""
-    assert cliente.get("/api/metrics/concordancia?dias=4").status_code == 422
-    assert cliente.get("/api/metrics/concordancia?dias=5000").status_code == 422
+    for ruta in (
+        "/api/metrics/concordancia",
+        "/api/metrics/desfase",
+        "/api/metrics/impacto",
+        "/api/metrics/ranking-ejercicios",
+    ):
+        assert cliente.get(f"{ruta}?dias=4").status_code == 422, ruta
+        assert cliente.get(f"{ruta}?dias=5000").status_code == 422, ruta
 
 
 def test_la_pwa_no_calcula_nada_de_estadistica(cliente):

@@ -242,7 +242,7 @@ def cobertura(session: Session) -> Cobertura:
         ).first()
         if fila is None or fila[0] is None or fila[1] is None:
             return None
-        return (_a_fecha(fila[0]), _a_fecha(fila[1]))
+        return (a_fecha(fila[0]), a_fecha(fila[1]))
 
     return Cobertura(
         checkin=extremos(Checkin.date),
@@ -252,7 +252,7 @@ def cobertura(session: Session) -> Cobertura:
     )
 
 
-def _a_fecha(v: Any) -> date:
+def a_fecha(v: Any) -> date:
     """SQLite devuelve a veces la fecha como texto según por dónde se lea."""
     if isinstance(v, date):
         return v
@@ -297,7 +297,7 @@ def _serie_checkin(
     ).all()
     salida: dict[date, float | None] = {}
     for f, v in filas:
-        salida[_a_fecha(f) - timedelta(days=d.desplazamiento)] = (
+        salida[a_fecha(f) - timedelta(days=d.desplazamiento)] = (
             None if v is None else float(v)
         )
     return salida
@@ -312,7 +312,7 @@ def _serie_garmin(
             DailyMetrics.date >= desde, DailyMetrics.date <= hasta
         )
     ).all()
-    return {_a_fecha(f): (None if v is None else float(v)) for f, v in filas}
+    return {a_fecha(f): (None if v is None else float(v)) for f, v in filas}
 
 
 def _serie_entreno(
@@ -332,7 +332,7 @@ def _serie_entreno(
     filas = session.execute(
         select(modelo.date, func.sum(columna)).where(*filtros).group_by(modelo.date)
     ).all()
-    crudo = {_a_fecha(f): v for f, v in filas}
+    crudo = {a_fecha(f): v for f, v in filas}
 
     ventana = cob.bici if modelo is Activity else cob.fuerza
     salida: dict[date, float | None] = {}
