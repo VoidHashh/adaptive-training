@@ -1,0 +1,110 @@
+# ###########################################################################
+#  TEMPORAL. Solo para la fase de pruebas en el PC. Borrar al pasar a Umbrel.
+# ###########################################################################
+#
+# Existe para una sola cosa: poder abrir el formulario desde el móvil por la
+# mañana mientras se compara lo que decide el sistema con lo que uno habría
+# hecho. En cuanto eso esté estable, el destino es Umbrel (ver `umbrel/`), y
+# entonces ESTE FICHERO SOBRA: allí el `app_proxy` hace lo mismo y mejor.
+#
+# POR QUÉ UN PROXY Y NO ABRIR EL PUERTO A SECAS
+# ---------------------------------------------
+# La aplicación no tiene autenticación propia. `/api/export` devuelve el CSV
+# con el histórico entero -sueño, HRV, RPE, y el registro de la lumbar- y
+# `POST /api/checkin` no solo se lee: crea un check-in y dispara una decisión.
+# Publicar eso en la red de casa lo deja a la vista, y al alcance, de cualquier
+# cacharro conectado al wifi.
+#
+# Y hay un detalle de calendario: hoy `DRY_RUN=true` desactiva la escritura, así
+# que un check-in falso no llega a Hevy ni a Telegram. Pero el propósito de esta
+# fase es precisamente llegar a quitar `DRY_RUN`. La exposición empeora justo el
+# día en que uno ha dejado de pensar en ella.
+#
+# POR QUÉ NO AUTENTICACIÓN DENTRO DE LA APLICACIÓN
+# ------------------------------------------------
+# Porque en Umbrel no hará falta -el `app_proxy` la pone- y sería un segundo
+# login delante del primero. Un proxy aquí es la MISMA forma que tendrá el
+# despliegue de verdad: esta fase ensaya aquella.
+#
+# CÓMO SE USA
+# -----------
+#   cp .env.pruebas-lan.example .env.pruebas-lan
+#   docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'la-que-sea'
+#   # pegar el hash en .env.pruebas-lan
+#   docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d
+#
+# Desde el móvil: http://<ip-del-pc>:8317
+#
+# QUÉ QUEDA PUBLICADO Y QUÉ NO
+# ----------------------------
+# El 8000 de la aplicación NO se toca: sigue atado a 127.0.0.1 por el compose
+# de la raíz, para los `curl` desde el propio PC. Lo único que sale a la red es
+# el 8317 de este proxy, y ese pide contraseña.
+
+services:
+  # El compose de la raíz monta `./data` como bind mount, y en Windows ESO NO
+  # ARRANCA: SQLite abre la base en modo WAL y el bind mount de Docker Desktop
+  # no soporta el bloqueo que WAL necesita. El contenedor muere en el arranque
+  # con `sqlite3.OperationalError: disk I/O error` y se queda en bucle de
+  # reinicio. Comprobado con las dos formas, en la misma imagen: con volumen
+  # nombrado arranca sano; con el bind mount de Windows, no.
+  #
+  # Es un problema DE WINDOWS y solo de Windows. En Umbrel -Linux- el bind
+  # mount de `${APP_DATA_DIR}/data` funciona sin más, así que este apaño no
+  # viaja al destino: se queda aquí, con este fichero.
+  #
+  # El precio: `data/` deja de verse desde el explorador de Windows. Lo que
+  # importa de ahí dentro son las copias previas a cada escritura en Hevy, que
+  # son lo único que permite deshacerla. Se sacan así:
+  #
+  #   docker cp adaptive-training:/app/data/hevy_backups ./hevy_backups
+  #   docker cp adaptive-training:/app/data/app.db ./app.db
+  app:
+    volumes:
+      - datos-pruebas:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+
+  proxy:
+    # Versión fijada a propósito. `basic_auth` se llamaba `basicauth` antes de
+    # Caddy 2.8; con una etiqueta flotante, el día que cambie la sintaxis esto
+    # deja de arrancar una mañana cualquiera, sin avisar antes.
+    image: caddy:2.10-alpine
+    container_name: adaptive-training-proxy
+    restart: unless-stopped
+
+    depends_on:
+      - app
+
+    # Las credenciales por fichero APARTE, y no en el `.env` de siempre. No es
+    # manía de orden: `app/settings.py` valida el `.env` con `extra="forbid"`,
+    # así que una clave que la aplicación no conoce -como el hash de este
+    # proxy- haría que se negara a arrancar.
+    #
+    # Además, un `env_file` no lo interpola compose, y eso hace falta aquí: un
+    # hash de bcrypt empieza por `$2a$...` y en un bloque `environment:` cada
+    # `$` habría que escribirlo doble.
+    env_file:
+      - .env.pruebas-lan
+
+    ports:
+      # A toda la red de casa, que es el objetivo. Detrás va la contraseña.
+      #
+      # 8317 y no 8080 por dos motivos. El bueno: es el mismo puerto que reserva
+      # `umbrel/umbrel-app.yml`, así que la dirección que uno se aprende ahora
+      # es la que seguirá valiendo después. El práctico: en este PC el 8080 ya
+      # lo tiene cogido `hydroxide` en 127.0.0.1, y publicar encima falla.
+      - "8317:8317"
+
+    volumes:
+      - ./Caddyfile.pruebas:/etc/caddy/Caddyfile:ro
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  # Sobrevive a `down` y a `up`. Se borra a conciencia con
+  # `docker volume rm hevy2garmin-test_datos-pruebas`, no por accidente.
+  datos-pruebas:

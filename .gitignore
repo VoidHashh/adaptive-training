@@ -1,6 +1,11 @@
 # Secrets — NEVER commit
 .env
 
+# Credenciales del proxy de la fase de pruebas (el `.example` sí se sube).
+# Va suelto y no como `.env.*` para que el día que alguien añada otro fichero
+# de entorno tenga que decidir a conciencia si se sube o no.
+.env.pruebas-lan
+
 # Runtime data (SQLite, tokens de Garmin, caché de actividades reales)
 # La caché contiene el histórico de entrenamientos del usuario: NUNCA se sube.
 data/*

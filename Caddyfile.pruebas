@@ -1,0 +1,26 @@
+# TEMPORAL: la contraseña delante del formulario durante las pruebas en el PC.
+# Se borra junto con `docker-compose.pruebas-lan.yml` al pasar a Umbrel.
+
+{
+	# La API de administración de Caddy no pinta nada aquí. Escucha solo en
+	# localhost del contenedor, así que no está expuesta, pero apagarla quita
+	# una superficie que nadie va a usar.
+	admin off
+	auto_https off
+}
+
+:8317 {
+	# Fail-closed A PROPÓSITO: si `LOCAL_PASSWORD_HASH` está vacío -porque falta
+	# el `.env.pruebas-lan`, o porque nadie generó el hash-, Caddy no arranca.
+	#
+	# Es la parte que importa de este fichero. Lo contrario -arrancar sin
+	# contraseña y servirlo todo- sería el peor fallo posible: la red de casa
+	# entera con acceso al histórico y a `POST /api/checkin`, y nada en
+	# pantalla que lo delatara. Un proxy que se cae se nota en el primer
+	# intento; uno que abre la puerta no se nota nunca.
+	basic_auth {
+		{$LOCAL_USER} {$LOCAL_PASSWORD_HASH}
+	}
+
+	reverse_proxy app:8000
+}

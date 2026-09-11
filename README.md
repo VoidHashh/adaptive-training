@@ -39,7 +39,8 @@ wifi. Los tres ficheros y el procedimiento entero están en
 publica el 8000 **solo en el bucle local**, a propósito: se llega desde la
 propia máquina o por un túnel SSH, **no desde el móvil**. Si se cambia ese
 enlace a `0.0.0.0` para alcanzarlo desde el teléfono, se está publicando el
-histórico entero sin contraseña; para eso está el camino de arriba.
+histórico entero sin contraseña; para eso está el camino de arriba —o, mientras
+se prueba en el PC, [el proxy temporal](#temporal-el-móvil-mientras-se-prueba-en-el-pc).
 
 ```bash
 git clone <este-repo> adaptive-training
@@ -139,6 +140,69 @@ Para el modo aplicación completo hace falta HTTPS por delante (un túnel, o un
 proxy con certificado). No lo hay hoy, y el uso normal —abrirlo por la mañana
 con wifi— no lo necesita.
 
+### TEMPORAL: el móvil mientras se prueba en el PC
+
+> **Esto sobra en cuanto el sistema viva en Umbrel.** Son tres ficheros
+> —`docker-compose.pruebas-lan.yml`, `Caddyfile.pruebas`,
+> `.env.pruebas-lan.example`— y se borran los tres juntos: allí el `app_proxy`
+> hace lo mismo y mejor. Existe por una sola razón: poder abrir el formulario
+> desde el móvil por la mañana durante los días de comparar lo que decide el
+> sistema con lo que uno habría hecho.
+
+**No se publica el 8000; se pone un proxy con contraseña delante.** La
+aplicación no tiene autenticación —`/api/export` sirve el histórico entero y
+`POST /api/checkin` crea un check-in y dispara una decisión—, así que abrir el
+puerto a secas deja eso al alcance de cualquier cacharro del wifi. Y `DRY_RUN`
+no cubre: hoy desactiva la escritura, pero el propósito de esta fase es
+precisamente llegar a quitarlo. La exposición empeoraría justo el día en que uno
+ha dejado de pensar en ella. El proxy es además la **misma forma** que tendrá el
+despliegue de verdad, así que esta fase ensaya aquella.
+
+```bash
+cp .env.pruebas-lan.example .env.pruebas-lan
+
+# El hash, no la contraseña. Se pega tal cual en LOCAL_PASSWORD_HASH.
+docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'la-que-sea'
+
+docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --build
+```
+
+**El `--build` no es opcional.** El compose de la raíz trae `build:` *y*
+`image: adaptive-training:0.1.0`; con `up -d` a secas, si esa etiqueta ya existe,
+Docker levanta la imagen vieja **sin decir nada**. Se ve como un formulario que
+no tiene los avisos de salud, o un `/api/health` sin `clock`. Pasó aquí.
+
+Desde el móvil: `http://<ip-del-pc>:8317` (la IP, con `ipconfig`). Pedirá usuario
+y contraseña. Si el navegador del móvil se queda colgando sin llegar a pedirlas
+—y desde el PC sí responde—, es el cortafuegos de Windows: hay que dejar pasar el
+puerto **para la red privada**, no para la pública.
+
+Lo que sale a la red es solo el 8317 del proxy. El 8000 de la aplicación sigue
+atado a `127.0.0.1`, para los `curl` desde el propio PC.
+
+**Si el hash está vacío, Caddy no arranca.** Es deliberado, y es la parte que
+importa: un proxy que se cae se nota en el primer intento desde el móvil; uno que
+levantara sin contraseña no se notaría nunca.
+
+**En Windows, `data/` deja de verse desde el explorador.** El bind mount de la
+raíz no vale aquí: SQLite abre la base en modo WAL y el bind mount de Docker
+Desktop no soporta ese bloqueo —el contenedor muere al arrancar con
+`sqlite3.OperationalError: disk I/O error` y entra en bucle de reinicio—. El
+override usa un volumen nombrado. Es un problema **de Windows y solo de
+Windows**: en Umbrel el bind mount funciona, así que el apaño no viaja. Lo que
+hay que poder sacar de ahí son las copias previas a cada escritura en Hevy, que
+son lo único que permite deshacerla:
+
+```bash
+docker cp adaptive-training:/app/data/hevy_backups ./hevy_backups
+docker cp adaptive-training:/app/data/app.db ./app.db
+```
+
+**El PC tiene que estar despierto a las 06:30, 09:00 y 22:30.** Si duerme, esos
+trabajos no se ejecutan y no hay aviso posible: un portátil suspendido se lee
+desde el móvil exactamente igual que un día de descanso. Es la razón principal
+por la que esta fase es temporal y el destino es una máquina encendida.
+
 ## Dónde vive cada cosa
 
 ```
@@ -163,6 +227,20 @@ A mano:
 git pull
 docker compose up -d --build
 ```
+
+Con el proxy temporal de las pruebas hay que repetir los dos `-f` **siempre**:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --build
+```
+
+Un `docker compose up -d` a secas, por costumbre, recrea la aplicación con el
+bind mount de la raíz y en Windows la deja en bucle de reinicio
+(`sqlite3.OperationalError: disk I/O error`). El proxy sigue en pie —compose
+solo avisa de que lo ve huérfano—, así que desde el móvil no se ve un error de
+conexión sino un **502 del proxy**. Los datos no se pierden: siguen en el volumen
+nombrado, sin montar. Se arregla repitiendo el comando de arriba, con los dos
+`-f`. Comprobado.
 
 En Umbrel se publica una imagen nueva y se actualiza desde su interfaz;
 el procedimiento está en [`umbrel/README.md`](umbrel/README.md).
