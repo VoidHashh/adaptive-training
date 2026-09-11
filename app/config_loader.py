@@ -104,6 +104,10 @@ class Config:
         return self._data.get("cycling", {})
 
     @property
+    def wellness(self) -> dict[str, Any]:
+        return self._data.get("wellness", {})
+
+    @property
     def set_types(self) -> dict[str, Any]:
         """Sección `set_types`. Si falta, valores por defecto conservadores:
         sin heurística, así nunca se descarta una serie por sorpresa."""
@@ -218,6 +222,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "timezone",
         "program",
         "baseline",
+        "wellness",
         "adaptive_thresholds",
         "checkin_sliders",
         "checkin_comment",
@@ -554,6 +559,47 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 f"de carga se quedarían sin base y las reglas que los usan no se "
                 f"evaluarían ningún día, sin dar error",
             )
+
+    # --- el relleno hacia atrás del bienestar --------------------------------
+    #
+    # Se valida con la misma dureza que `cycling.fetch` y por el mismo motivo:
+    # `wellness.backfill` es lo único que llena los días que el sistema se
+    # perdió, y un backfill más corto que la ventana que luego se analiza deja
+    # huecos que nadie va a ver como huecos -van a parecer días sin reloj-.
+    wel = data.get("wellness") or {}
+    check_keys(wel, {"fetch_readiness", "backfill"}, "wellness")
+    if "fetch_readiness" in wel:
+        require(
+            isinstance(wel["fetch_readiness"], bool),
+            f"wellness.fetch_readiness: {wel['fetch_readiness']!r} tiene que ser "
+            f"true o false",
+        )
+    bf = wel.get("backfill") or {}
+    check_keys(bf, {"recovery_days", "history_days", "pause_seconds"}, "wellness.backfill")
+    for clave in ("recovery_days", "history_days"):
+        v = bf.get(clave)
+        require(
+            v is None or (isinstance(v, int) and not isinstance(v, bool) and v >= 1),
+            f"wellness.backfill.{clave}: '{v}' debe ser un entero >= 1",
+        )
+    corta_w, larga_w = bf.get("recovery_days"), bf.get("history_days")
+    if isinstance(corta_w, int) and isinstance(larga_w, int):
+        require(
+            corta_w <= larga_w,
+            f"wellness.backfill: recovery_days ({corta_w}) no puede ser mayor que "
+            f"history_days ({larga_w}). La corta es el repaso de cada arranque y "
+            f"la larga el histórico completo; al revés, el arranque pediría días "
+            f"que el backfill largo nunca ha cubierto y tardaría minutos cada vez",
+        )
+    if "pause_seconds" in bf:
+        # Un 0 es legal: es lo que ponen los tests, que no tocan la red. Lo que
+        # no puede ser es negativo, que sería un `time.sleep` reventando a mitad
+        # del backfill largo después de veinte minutos de trabajo bueno.
+        pausa = bf["pause_seconds"]
+        require(
+            isinstance(pausa, (int, float)) and not isinstance(pausa, bool) and pausa >= 0,
+            f"wellness.backfill.pause_seconds: '{pausa}' debe ser un número >= 0",
+        )
 
     # --- operadores: el nombre y, si lo lleva, aquello a lo que apunta -------
     #

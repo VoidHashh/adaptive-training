@@ -218,8 +218,53 @@ baseline:
   min_days_required: 4      # días mínimos con dato para fiarse de la media.
                             # Por debajo de esto, las reglas objetivas (HRV/FC)
                             # NO disparan: arranque en frío -> se decide solo
-                            # con el formulario. Ver `cold_start` abajo.
+                            # con el formulario.
   exclude_outliers: true    # descarta el máximo y el mínimo de la ventana
+
+
+# -----------------------------------------------------------------------------
+# 1-ter. BIENESTAR: QUÉ SE LE PIDE A GARMIN Y HASTA DÓNDE SE RELLENA
+# -----------------------------------------------------------------------------
+# La ventana de cada mañana la manda `baseline.window_days`. Aquí va lo otro:
+# qué métricas se piden y qué se hace con los días que el sistema se perdió.
+wellness:
+
+  # Training Readiness (el 0-100 propio de Garmin).
+  #
+  # APAGADO, y no es pereza: `get_training_readiness` devuelve lista VACÍA para
+  # esta cuenta todos los días, incluido ayer. Sondeados -1, -2, -3 y luego -3 a
+  # -175: nueve de nueve sin nada. La calcula el reloj y no el servidor, y el
+  # reloj de aquí no la calcula.
+  #
+  # Ponerlo en true cuesta una petición por día de ventana -ocho cada mañana,
+  # 180 en un backfill completo- para traer nada. Merece la pena el día que
+  # cambies de reloj: enciéndelo y, si sigue vacía, cada día lo dirá en el
+  # informe en vez de callárselo como hacía antes.
+  fetch_readiness: false
+
+  # Relleno hacia atrás de `daily_metrics`. Dos usos distintos, un solo motor:
+  #
+  #   recovery_days  Cada arranque, se miran los últimos N días y se piden los
+  #                  que no tienen fila. Es el caso de las pruebas en el PC, que
+  #                  no está encendido siempre: un día apagado es hoy un hueco
+  #                  permanente, y un hueco permanente es indistinguible de un
+  #                  día sin reloj.
+  #   history_days   El backfill largo, a mano (`scripts/backfill_wellness.py`).
+  #                  Cuanto más histórico tengan las vistas de concordancia y
+  #                  desfase, antes dicen algo.
+  #
+  # Medido: HRV, FC en reposo, minutos de sueño y nota de sueño vuelven hasta
+  # -175 días; body battery se acaba sobre -120. Lo que Garmin ya no sirve queda
+  # como hueco explícito en la fila, nunca como cero.
+  #
+  # `pause_seconds` es el freno. Cuatro peticiones por día sondeado, y Garmin
+  # limita por IP durante minutos cuando se pasa uno: 180 días a 2 s son unos
+  # veinticinco minutos, que es exactamente el precio de no comerse un 429 a
+  # mitad y tener que empezar otra vez.
+  backfill:
+    recovery_days: 45
+    history_days: 180
+    pause_seconds: 2.0
 
 # -----------------------------------------------------------------------------
 # 1-bis. UMBRALES ADAPTATIVOS

@@ -1,12 +1,20 @@
 """Lo que las APIs contestan y este sistema tiraba.
 
-Tercera tanda del mismo fallo, y la más cara de las tres porque esta no se
-arregla hacia atrás. Las otras columnas muertas -`readiness`, la sección de
+Tercera tanda del mismo fallo. Las otras columnas muertas -la sección de
 umbrales del fin de semana- se conectaron y el sistema empezó a decidir mejor
-desde ese día. Aquí lo que se perdía era HISTÓRICO: Garmin no sirve el sueño ni
-el body battery de hace tres meses, y Hevy no guarda el detalle de una sesión
-más allá de lo que uno se descargue. Cada mañana sin guardarlo era un día que ya
-no se iba a poder analizar nunca.
+desde ese día. Aquí lo que se perdía era HISTÓRICO.
+
+Se escribió que "Garmin no sirve el sueño ni el body battery de hace tres
+meses". Medido después (`scripts/sondeo_wellness.py`), es falso a medias: el
+sueño vuelve hasta -175 días y el body battery hasta unos -120. Lo que Hevy no
+da es el detalle de una sesión más allá de lo que uno se descargue, y eso sí es
+definitivo. La parte de Garmin se recupera con `app/backfill.py`; la de Hevy,
+no. Guardar el crudo cada día sigue siendo lo correcto por la segunda mitad, y
+porque ni el sueño de -175 días trae ya todos los campos que traía el día uno.
+
+`readiness` fue la tercera columna muerta de esa tanda y la única que no se
+arregló al conectarla: el cable llevaba a una toma sin corriente. Ver
+`app/integrations/garmin.py`.
 
 LAS TRES COLUMNAS, Y QUÉ SE HA HECHO CON CADA UNA
 -------------------------------------------------
@@ -14,8 +22,9 @@ LAS TRES COLUMNAS, Y QUÉ SE HA HECHO CON CADA UNA
 guarda además en crudo". Las tres columnas `raw_json` que lo implementaban
 estaban declaradas y NINGUNA se escribía.
 
-  - `daily_metrics.raw_json` -> CONECTADA. Cinco llamadas a Garmin por día para
-    quedarse con seis números y tirar el resto, sin caché ninguna detrás.
+  - `daily_metrics.raw_json` -> CONECTADA. Cuatro llamadas a Garmin por día
+    (cinco si se enciende readiness) para quedarse con cinco números y tirar el
+    resto, sin caché ninguna detrás.
   - `workout_log.raw_json` -> CONECTADA, y con ella `duration_s`, `total_sets`
     y `total_volume_kg`, que estaban igual de vacías. Esta era la peor de las
     tres: `docs/analisis.md` la CERTIFICABA como resuelta, con un "Sí" en la
@@ -124,7 +133,14 @@ class ApiConDetalle:
 
 
 def cliente(api=None):
-    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    # `fetch_readiness=True` aquí a propósito, aunque en producción vaya
+    # apagada: lo que vigila este fichero es que el crudo de CADA llamada que se
+    # hace llegue entero a la fila, y con la quinta apagada la quinta respuesta
+    # no existiría y el caso dejaría de cubrirse. El día que se vuelva a
+    # encender -otro reloj- estas pruebas ya están escritas.
+    c = garmin.GarminClient(
+        email="a@b.c", password="x", token_dir="/tmp", fetch_readiness=True
+    )
     c._api = api or ApiConDetalle()
     return c
 

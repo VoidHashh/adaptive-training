@@ -715,6 +715,8 @@ def upsert_daily_metrics(
     metrics: Any,
     *,
     loads: dict[date, tuple[float | None, float | None]] | None = None,
+    errores: dict[date, list[str]] | None = None,
+    recuperado: bool = False,
 ) -> int:
     """Guarda la ventana de wellness. Devuelve cuántos días se han tocado.
 
@@ -723,8 +725,30 @@ def upsert_daily_metrics(
     recalcularse aquí para que la carga guardada sea EXACTAMENTE la que se usó
     para decidir; recalcularla más tarde con otra caché daría otro número y la
     auditoría del semáforo compararía contra algo que nunca se evaluó.
+
+    `errores` son las lecturas que FALLARON ese día, si se sabe cuáles. Sin
+    ellas, un 500 de Garmin y una noche sin reloj acaban los dos en la misma
+    fila con un hueco y `fetch_status='partial'`, y eso importa más de lo que
+    parece: la primera se arregla volviendo a pedirla y la segunda no. La
+    ventana diaria disimulaba la diferencia porque relee siete días cada mañana
+    y acaba rellenando sola; el backfill visita cada día UNA vez, así que ahí no
+    hay segunda oportunidad si nadie apunta cuál fue cuál.
+
+    Los tres estados, y qué hacer con cada uno:
+
+        ok       está todo lo que se pidió. No se vuelve.
+        partial  se pidió, contestó, y no había dato. Tampoco se vuelve: Garmin
+                 no va a inventarlo mañana.
+        error    no se pudo leer. Es el único que hay que reintentar, y por eso
+                 `app.backfill.dias_pendientes` lo trata como si no hubiera fila.
+
+    `recuperado` marca la fila como rellenada a posteriori (`recovered_at`). Se
+    pone solo cuando la fila se CREA en un backfill: si el día ya tenía fila
+    escrita en su momento, era una lectura del día y sigue siéndolo.
     """
     from app.models import DailyMetrics
+
+    ahora = datetime.now()
 
     campos = ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery", "readiness")
     tocados = 0
@@ -739,6 +763,8 @@ def upsert_daily_metrics(
         ).first()
         if fila is None:
             fila = DailyMetrics(date=dia)
+            if recuperado:
+                fila.recovered_at = ahora
             session.add(fila)
 
         for campo in campos:
@@ -764,11 +790,26 @@ def upsert_daily_metrics(
         # con el reloj" y "esa mañana Garmin no contestó". Sin la marca, los dos
         # casos son la misma fila con un hueco, y el segundo se podría reintentar
         # mientras que el primero no.
-        huecos = [c for c in campos if getattr(fila, c, None) is None]
-        fila.fetch_status = "partial" if huecos else "ok"
-        fila.fetch_error = (
-            "sin dato de: " + ", ".join(huecos) if huecos else None
-        )
+        #
+        # Lo que NO SE PIDIÓ no es un hueco. Training readiness va apagada porque
+        # para esta cuenta vuelve siempre vacía, y contarla como hueco dejaría
+        # TODAS las filas en `partial` para siempre: una marca que sale en el
+        # 100% de los casos ya no distingue nada, y la avería real -tres días sin
+        # HRV- pasaría desapercibida entre el ruido. Es el mismo error de fondo
+        # que guardar un 0 donde no hay dato, en versión bandera.
+        no_pedidas = set(getattr(m, "not_requested", ()) or ())
+        huecos = [
+            c for c in campos
+            if c not in no_pedidas and getattr(fila, c, None) is None
+        ]
+        fallos = list((errores or {}).get(dia) or [])
+        partes = []
+        if fallos:
+            partes.append("no se pudo leer: " + " | ".join(fallos))
+        if huecos:
+            partes.append("sin dato de: " + ", ".join(huecos))
+        fila.fetch_status = "error" if fallos else ("partial" if huecos else "ok")
+        fila.fetch_error = "; ".join(partes) or None
         tocados += 1
 
     session.flush()

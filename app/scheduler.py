@@ -32,13 +32,14 @@ explicar por qué el semáforo de un martes salió sin la mitad de las señales.
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from app import repository as repo
 from app.db import session_scope
@@ -50,6 +51,12 @@ log = logging.getLogger(__name__)
 # reiniciarse y volver". Con el defecto de 1 segundo, cualquier arranque que no
 # caiga en el segundo exacto se salta el trabajo del día.
 MARGEN_S = 3600
+
+# Lo que espera la recuperación de bienestar antes de mirar si falta algo. No es
+# un número delicado: es "el tiempo de que el servidor acabe de levantarse". Si
+# fuera 0 competiría con el arranque; si fueran diez minutos, un contenedor que
+# se reinicia a menudo no llegaría nunca a ejecutarla.
+RETRASO_BACKFILL_S = 90
 
 # El histórico de salidas ya NO se pide con una constante: sale de
 # `cycling.fetch` a través de `ventana_de_salidas`, que elige entre la ventana
@@ -184,6 +191,79 @@ def job_fetch_garmin(
     return refresh_cache(ruta, day, days=dias, fetch=fetch)
 
 
+def job_backfill_wellness(
+    cfg: Any, *, day: date | None = None, cliente: Any = None
+) -> Any:
+    """Al arrancar, rellena los días de bienestar que falten.
+
+    POR QUÉ AL ARRANCAR Y NO A UNA HORA
+    -----------------------------------
+    Los agujeros de `daily_metrics` no los abre una hora del día: los abre que
+    el proceso no estuviera corriendo. Un trabajo a las 06:40 no arregla nada si
+    el PC estuvo apagado la semana entera, porque a las 06:40 de esos días
+    tampoco había nadie. El único momento en que se sabe con seguridad que el
+    sistema está vivo es justo después de arrancar, y es entonces cuando hay que
+    preguntarse qué se perdió mientras no lo estaba.
+
+    POR QUÉ NO SE HACE EN EL `lifespan`
+    -----------------------------------
+    Porque tarda. Un login contra Garmin más cuarenta y cinco días a dos
+    segundos son minutos, y el `lifespan` de FastAPI bloquea el arranque del
+    servidor: la PWA no respondería hasta que esto acabara. Como trabajo del
+    scheduler se lleva gratis las tres cosas que hacen falta -`max_instances=1`
+    para que dos arranques seguidos no se pisen, `misfire_grace_time` de una
+    hora, y el escuchador que manda los fallos por Telegram-.
+
+    EL LOGIN SE HACE SOLO SI HAY ALGO QUE PEDIR
+    -------------------------------------------
+    Se mira la base ANTES de conectarse. En el caso normal -el PC encendido de
+    ayer a hoy- no falta ningún día, y entonces esto no gasta ni una petición ni
+    una sesión de Garmin. Conectarse primero y preguntar después convertiría el
+    arranque de cada despliegue en un login, que es de las cosas que Garmin
+    cuenta para cortar por IP.
+    """
+    from app.backfill import (
+        ResultadoBackfill, dias_pendientes, recuperar_al_arrancar,
+        ventana_de_recuperacion,
+    )
+
+    day = day or date.today()
+    ventana = ventana_de_recuperacion(cfg, day)
+    if ventana is None:
+        log.info("backfill de arranque: apagado (wellness.backfill.recovery_days)")
+        return ResultadoBackfill()
+
+    with session_scope() as s:
+        if not dias_pendientes(s, *ventana):
+            log.info(
+                "backfill de arranque: nada que recuperar entre %s y %s",
+                ventana[0], ventana[1],
+            )
+            return ResultadoBackfill()
+
+        if cliente is None:
+            from app.integrations.garmin import build_client
+            from app.settings import settings
+
+            cliente = build_client(settings, cfg)
+            cliente.connect()
+
+        res = recuperar_al_arrancar(s, cliente, cfg, hoy=day)
+
+    # Fuera del `with` a propósito: `rellenar` va haciendo commit día a día, así
+    # que aquí no queda nada por escribir y lanzar no tira nada a la basura.
+    #
+    # Y se lanza, en vez de devolver el resultado y ya está, porque un corte por
+    # límite deja el trabajo A MEDIAS y nadie lo va a repetir: la recuperación
+    # solo se dispara al arrancar, y un PC que se queda encendido no vuelve a
+    # arrancar en semanas. Sin este aviso, el agujero que este trabajo existe
+    # para tapar se quedaría tapado a medias y en silencio, que es justo la
+    # forma en que se abrió.
+    if res.interrumpido:
+        raise RuntimeError(f"backfill de arranque: {res.interrumpido}")
+    return res
+
+
 def dias_de_wellness(cfg: Any) -> int:
     """Cuántos días de wellness hay que pedirle a Garmin, según el config.
 
@@ -250,7 +330,7 @@ def build_scheduler(
     dry_run: bool = False,
     start: bool = True,
 ) -> BackgroundScheduler:
-    """Monta los tres trabajos del día con sus horas del `config.yaml`."""
+    """Monta los trabajos: tres con hora del `config.yaml` y uno al arrancar."""
     tz = ZoneInfo(cfg.timezone)
     sched = BackgroundScheduler(
         timezone=tz,
@@ -287,6 +367,17 @@ def build_scheduler(
         job_reconcile, cron("evening_summary_time", "22:30"),
         args=[cfg], kwargs={"hevy_client": hevy_client},
         id="reconcile", name="Reconciliar lo entrenado",
+    )
+    # El cuarto trabajo no tiene hora: tiene un retraso. Ver
+    # `job_backfill_wellness` para por qué se dispara al arrancar y no a una
+    # hora fija. El minuto y medio es para no competir con el arranque: deja que
+    # el servidor termine de levantarse y que la PWA responda antes de ponerse a
+    # hablar con Garmin.
+    sched.add_job(
+        job_backfill_wellness,
+        DateTrigger(run_date=datetime.now(tz) + timedelta(seconds=RETRASO_BACKFILL_S)),
+        args=[cfg], id="backfill_wellness",
+        name="Recuperar días de bienestar perdidos",
     )
 
     sched.add_listener(

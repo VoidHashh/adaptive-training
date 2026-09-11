@@ -15,7 +15,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from datetime import timedelta
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -225,19 +225,26 @@ def arrancada(cfg, monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_al_arrancar_se_montan_los_tres_trabajos_del_dia(arrancada, monkeypatch):
+def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     """El fallo que este test existe para impedir: `build_scheduler` estaba
     escrito, probado y no lo llamaba NADIE en producción. El contenedor arrancaba,
     servía la PWA, contestaba `status: ok` y no ejecutaba ni el refresco de
     Garmin, ni la decisión de las 09:00, ni la reconciliación. Desde fuera es
-    idéntico a un día de descanso: no llega mensaje."""
+    idéntico a un día de descanso: no llega mensaje.
+
+    `backfill_wellness` entra en la misma lista y por lo mismo: es el trabajo
+    que tapa los días que el sistema se perdió, y dejarlo escrito sin montar
+    sería otra vez un interruptor conectado a nada.
+    """
     monkeypatch.setattr(settings, "scheduler_enabled", True)
 
     with TestClient(app) as c:
         sched = c.get("/api/health").json()["scheduler"]
 
     assert sched["running"] is True, "la aplicación arrancó sin planificador"
-    assert set(sched["jobs"]) == {"garmin_fetch", "decision_fallback", "reconcile"}
+    assert set(sched["jobs"]) == {
+        "garmin_fetch", "decision_fallback", "reconcile", "backfill_wellness",
+    }
     assert all(sched["jobs"].values()), (
         "un trabajo sin próxima ejecución está montado pero no se va a ejecutar, "
         "que es el mismo silencio con otra forma"
@@ -925,3 +932,129 @@ def test_un_health_que_falla_no_se_lleva_por_delante_el_formulario(cliente):
         "encadenar el panel al arranque hace que un /api/health lento retrase "
         "el formulario, que es lo único que hay que rellenar por la mañana"
     )
+
+
+# ---------------------------------------------------------------------------
+# Métricas y análisis
+#
+# Lo que se vigila aquí no son las cuentas -están probadas en
+# `test_analysis_vistas` con datos de resultado conocido- sino el contrato de la
+# frontera: que lo que sale por HTTP sea JSON, que traiga siempre `n` y la
+# ventana, y que la PWA no tenga que calcular nada para pintarlo.
+# ---------------------------------------------------------------------------
+
+
+def _sembrar_metricas(db, dias_n=40):
+    """Cansancio y HRV moviéndose al revés, más una salida de bici con su RPE."""
+    from app.models import Activity, Checkin, DailyMetrics
+
+    hoy = date.today()
+    for i in range(dias_n):
+        d = hoy - timedelta(days=dias_n - i)
+        db.add(Checkin(date=d, fatigue=1 + (i % 5), yesterday_rpe=1 + (i % 5)))
+        db.add(DailyMetrics(date=d, fetch_status="ok", hrv=70.0 - (i % 5) * 6))
+        db.add(
+            Activity(
+                garmin_activity_id=5000 + i,
+                date=d,
+                is_cycling=True,
+                training_load=50.0 + (i % 5) * 30,
+            )
+        )
+    db.commit()
+
+
+def test_concordancia_contesta_con_todo_lo_que_hace_falta_para_pintar(cliente, db):
+    """Un JSON del que la PWA saca el gráfico y las frases sin hacer una cuenta."""
+    _sembrar_metricas(db)
+    r = cliente.get("/api/metrics/concordancia?dias=90")
+    assert r.status_code == 200
+    d = r.json()
+
+    assert d["vista"] == "concordancia"
+    assert d["metodo"] == "spearman"
+    assert d["ventana"]["dias"] == 90
+    assert d["cobertura"]["garmin"] is not None
+
+    par = next(p for p in d["pares"] if p["x"] == "fatigue" and p["y"] == "hrv")
+    assert par["r"] == -1.0
+    assert par["n"] == 40
+    assert par["lectura"] and "coincide" in par["lectura"]
+    # Y las etiquetas, que si no la PWA tendría que llevar su propia tabla de
+    # nombres y se desincronizaría con el `config.yaml` a la primera.
+    assert par["etiqueta_x"] == "Cansancio general"
+    assert par["etiqueta_y"] == "Variabilidad (HRV)"
+
+    serie_hrv = next(s for s in d["series"] if s["clave"] == "hrv")
+    assert serie_hrv["puntos"][0]["valor"] is not None
+    assert serie_hrv["puntos"][0]["escala"] is not None
+
+
+def test_desfase_contesta_la_rejilla_entera(cliente, db):
+    _sembrar_metricas(db)
+    d = cliente.get("/api/metrics/desfase?dias=90").json()
+
+    assert d["vista"] == "desfase"
+    assert d["rango_desfase"] == [-3, 3]
+    assert len(d["rejilla"]) == 35
+    casilla = next(c for c in d["rejilla"] if c["x"] == "fatigue" and c["y"] == "hrv")
+    assert casilla["mejor_desfase"] == 0
+    assert sorted(int(k) for k in casilla["por_desfase"]) == [-3, -2, -1, 0, 1, 2, 3]
+
+
+def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
+    """Una sección de métricas vacía NO es un error: es el primer día.
+
+    Contestar 404 o 500 con la base recién creada dejaría la pantalla en blanco
+    justo cuando lo útil es ver qué falta y cuánto. Sale un 200 con las siete
+    parejas y su motivo, que es lo que se pidió: nada oculto, nada aplazado.
+    """
+    for ruta in ("/api/metrics/concordancia", "/api/metrics/desfase"):
+        r = cliente.get(ruta)
+        assert r.status_code == 200, ruta
+    d = cliente.get("/api/metrics/concordancia").json()
+    assert len(d["pares"]) == 7
+    assert all(p["na"] for p in d["pares"])
+    assert all(p["r"] is None for p in d["pares"])
+
+
+def test_un_metodo_inventado_se_rechaza_en_vez_de_caer_en_uno_por_defecto(cliente):
+    """Un `metodo=kendall` que silenciosamente diera Spearman sería mentir.
+
+    El método viaja en la respuesta y se pinta en pantalla. Aceptar cualquier
+    cosa y calcular otra distinta pondría "kendall" encima de un número que no
+    lo es.
+    """
+    r = cliente.get("/api/metrics/concordancia?metodo=kendall")
+    assert r.status_code == 400
+    assert "kendall" in r.json()["detail"]
+
+
+def test_pearson_se_puede_pedir_y_se_nota(cliente, db):
+    _sembrar_metricas(db)
+    d = cliente.get("/api/metrics/concordancia?dias=90&metodo=pearson").json()
+    assert d["metodo"] == "pearson"
+    assert all(p["metodo"] == "pearson" for p in d["pares"])
+
+
+def test_una_ventana_absurda_se_rechaza(cliente):
+    """Cuatro días no dan para nada y cinco años no existen."""
+    assert cliente.get("/api/metrics/concordancia?dias=4").status_code == 422
+    assert cliente.get("/api/metrics/concordancia?dias=5000").status_code == 422
+
+
+def test_la_pwa_no_calcula_nada_de_estadistica(cliente):
+    """El requisito escrito, convertido en test.
+
+    No se puede comprobar "no hay estadística" en general, pero sí se puede
+    cerrar la puerta a que vuelva a entrar por donde entraría: alguien que
+    quisiera pintar una correlación y no encontrara el endpoint la escribiría a
+    mano en el cliente. Si algún día aparece aquí una raíz cuadrada o un
+    sumatorio de productos, este test lo para.
+    """
+    codigo = _codigo_pwa(cliente)
+    for sospecha in ("Math.sqrt", "pearson", "spearman", "percentil("):
+        assert sospecha not in codigo, (
+            f"la PWA contiene {sospecha!r}: la estadística se calcula en el "
+            f"servidor, que es el único sitio donde se puede probar"
+        )

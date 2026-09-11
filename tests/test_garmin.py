@@ -488,14 +488,24 @@ class ApiSana:
         return [{"score": 74, "level": "HIGH"}]
 
 
-def cliente(api) -> "garmin.GarminClient":
-    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+def cliente(api, *, readiness: bool = False) -> "garmin.GarminClient":
+    """El cliente por defecto es el de PRODUCCIÓN, o sea sin readiness.
+
+    Podría haberse dejado encendido aquí para no tocar los tests que contaban
+    cuatro o cinco apuntes, y habría sido la decisión equivocada: el ajuste que
+    de verdad corre todos los días habría quedado sin cubrir, y los que sí
+    corren serían los del camino que no se toma. `readiness=True` lo piden
+    explícitamente los pocos tests que van sobre esa llamada.
+    """
+    c = garmin.GarminClient(
+        email="a@b.c", password="x", token_dir="/tmp", fetch_readiness=readiness
+    )
     c._api = api
     return c
 
 
 def cliente_con_api_rota() -> "garmin.GarminClient":
-    return cliente(ApiQueFalla())
+    return cliente(ApiQueFalla(), readiness=True)
 
 
 def test_un_fallo_de_lectura_no_tumba_el_dia_pero_queda_anotado():
@@ -549,11 +559,11 @@ def test_un_dia_limpio_no_deja_apuntes():
 # sistema decide con las constantes de reserva durante semanas.
 
 
-def sin_clave(base: type, metodo: str, valor):
+def sin_clave(base: type, metodo: str, valor, *, readiness: bool = False):
     """Un API sano al que se le cambia UNA respuesta."""
     api = base()
     setattr(api, metodo, lambda *_: valor)
-    return cliente(api)
+    return cliente(api, readiness=readiness)
 
 
 def test_un_hrv_sin_lastNightAvg_no_pasa_por_una_noche_sin_medir():
@@ -646,41 +656,85 @@ def test_el_apunte_del_campo_que_falta_explica_que_no_falla_solo_hoy():
 
 
 # ---------------------------------------------------------------------------
-# readiness: la columna que llevaba desde el principio a NULL
+# readiness: el interruptor con cable, y la toma sin corriente
 # ---------------------------------------------------------------------------
 #
-# `DayMetrics.readiness`, `daily_metrics.readiness` y `sig.values["readiness"]`
-# estaban declarados los tres y no los llenaba nadie. Se conecta en vez de
-# borrarse porque el histórico no se recupera: Garmin no deja bajar readiness
-# de hace meses, y cada día sin guardarlo es un día que ya no se podrá analizar.
+# Historia en tres actos, porque los tres dejan tests distintos.
+#
+# 1. `DayMetrics.readiness`, `daily_metrics.readiness` y
+#    `sig.values["readiness"]` estaban declarados y no los llenaba nadie.
+#    Interruptor sin cable: la columna a NULL todos los días y nadie enterándose.
+# 2. Se conectó el cable. Y entonces se midió, que es lo que no se había hecho
+#    nunca: `get_training_readiness` devuelve `[]` para esta cuenta TODOS los
+#    días, incluido ayer. Sondeados -1, -2, -3 y de -3 a -175: nueve de nueve.
+#    La calcula el reloj, no el servidor, y este reloj no la calcula. O sea que
+#    el cable llevaba a una toma sin corriente, y el `if tr:` se tragaba la
+#    lista vacía exactamente igual de callado que el acto 1.
+# 3. Se apaga la llamada (`wellness.fetch_readiness: false`) y se le pone voz al
+#    vacío. Apagada no se pide y no cuenta como hueco; encendida, una respuesta
+#    vacía lo dice en el informe.
+#
+# La diferencia entre el acto 1 y el 2 no se ve desde dentro del código: en los
+# dos la columna acaba a NULL. Solo se ve preguntándole a Garmin de verdad. Por
+# eso `scripts/sondeo_wellness.py` se queda en el repositorio.
 
 
-def test_el_readiness_se_lee_y_llega_a_DayMetrics():
-    m = cliente(ApiSana()).day_metrics(date(2026, 9, 7))
+def test_con_readiness_encendido_se_lee_y_llega_a_DayMetrics():
+    m = cliente(ApiSana(), readiness=True).day_metrics(date(2026, 9, 7))
     assert m.readiness == 74
+    assert m.not_requested == ()
 
 
-def test_un_día_sin_readiness_se_queda_en_None_sin_avisar():
-    c = sin_clave(ApiSana, "get_training_readiness", [])
+def test_apagado_no_se_pide_siquiera():
+    """Que no se llame es el punto: es una petición al día contra un límite."""
+    api = ApiSana()
+    api.get_training_readiness = lambda *_: pytest.fail(
+        "se ha pedido readiness con el interruptor apagado"
+    )
+    m = cliente(api).day_metrics(date(2026, 9, 7))
+    assert m.readiness is None
+    assert m.hrv == 60.0, "apagar la quinta llamada no puede tocar las otras"
+
+
+def test_apagado_lo_dice_para_que_no_cuente_como_hueco():
+    """Sin esto, TODAS las filas quedarían `partial` y la marca no diría nada.
+
+    Es la diferencia entre "no se pidió" y "se pidió y no vino". La segunda es
+    una avería que se puede reintentar; la primera es una decisión.
+    """
+    m = cliente(ApiSana()).day_metrics(date(2026, 9, 7))
+    assert m.not_requested == ("readiness",)
+    assert "readiness" not in (m.raw or {}), "no se pidió: no puede haber crudo"
+
+
+def test_encendido_una_respuesta_vacía_ya_no_se_traga_en_silencio():
+    """El fallo del acto 2, y el que costó meses de columna vacía.
+
+    `[]` es una respuesta correcta de Garmin, así que ningún `try` se entera; y
+    con el `if tr:` delante tampoco se enteraba nadie más. Un `readiness=None`
+    por lista vacía era idéntico a un `readiness=None` porque no existía la
+    llamada.
+    """
+    c = sin_clave(ApiSana, "get_training_readiness", [], readiness=True)
     assert c.day_metrics(date(2026, 9, 7)).readiness is None
-    assert c.fetch_errors == []
+    assert len(c.fetch_errors) == 1
+    assert "wellness.fetch_readiness" in c.fetch_errors[0], (
+        "el apunte tiene que decir qué hacer, no solo que algo vino vacío"
+    )
 
 
 def test_un_readiness_sin_score_avisa_como_los_demás():
-    c = sin_clave(ApiSana, "get_training_readiness", [{"level": "HIGH"}])
+    c = sin_clave(ApiSana, "get_training_readiness", [{"level": "HIGH"}], readiness=True)
     m = c.day_metrics(date(2026, 9, 7))
     assert m.readiness is None
     assert any("score" in e for e in c.fetch_errors)
 
 
 def test_que_falle_el_readiness_no_se_lleva_por_delante_el_resto_del_día():
-    """Es la métrica más nueva y la única que no decide nada todavía.
-
-    No puede ser la que tumbe la lectura de HRV, que sí decide.
-    """
+    """Es la métrica que menos decide, y no puede tumbar la lectura de HRV."""
     api = ApiSana()
     api.get_training_readiness = lambda *_: (_ for _ in ()).throw(RuntimeError("404"))
-    c = cliente(api)
+    c = cliente(api, readiness=True)
     m = c.day_metrics(date(2026, 9, 7))
     assert m.hrv == 60.0 and m.rhr == 52.0
     assert m.readiness is None

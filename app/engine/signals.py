@@ -59,15 +59,35 @@ class DayMetrics:
     `raw` son las respuestas completas de las que salen los seis números, una
     por llamada. Existe porque de esas cinco respuestas este sistema extrae seis
     escalares y tira TODO lo demás, y el wellness -al revés que las salidas, que
-    quedan enteras en `data/cache/activities.json`- no tiene caché ninguna. Lo
-    que no se guarde hoy no se puede pedir dentro de cuatro semanas: Garmin no
-    sirve histórico antiguo de sueño ni de body battery.
+    quedan enteras en `data/cache/activities.json`- no tiene caché ninguna.
 
-    No entra en la comparación (`compare=False`): dos filas de wellness son la
-    misma fila si coinciden los números. Meterlo en el `__eq__` -y por tanto en
-    el `__hash__`, que la dataclass congelada genera de los mismos campos-
-    convertiría en no hasheable algo que hoy sí lo es, por un campo que ni
-    decide ni se compara.
+    HASTA DÓNDE SIRVE GARMIN HACIA ATRÁS (medido, no supuesto)
+    ----------------------------------------------------------
+    Aquí ponía que "Garmin no sirve histórico antiguo de sueño ni de body
+    battery", y era falso. Nadie lo había comprobado nunca. Sondeando días
+    sueltos de antigüedad creciente (`scripts/sondeo_wellness.py`, 2026-09-11):
+
+        HRV, FC en reposo, minutos de sueño, nota de sueño -> a -175 días
+        body battery                                       -> a -120 días
+        training readiness                                 -> NUNCA, ver abajo
+
+    O sea que el wellness sí se puede rellenar hacia atrás, y por eso existe
+    `app/backfill.py`. La frase de antes no era inocua: justificaba no tener
+    backfill, y sin backfill las vistas de concordancia y desfase arrancan con
+    cero días en vez de con seis meses.
+
+    `not_requested` son las métricas que esta lectura NO pidió a propósito, para
+    que su ausencia no se confunda con un hueco. Hoy solo una: training
+    readiness, que devuelve lista vacía todos los días para esta cuenta -incluido
+    ayer- porque el reloj no calcula esa métrica. Sin la distinción, TODAS las
+    filas quedarían marcadas como incompletas para siempre y `partial` dejaría de
+    servir para lo único que sirve: señalar las que de verdad les falta algo.
+
+    Ni `raw` ni `not_requested` entran en la comparación (`compare=False`): dos
+    filas de wellness son la misma fila si coinciden los números. Meterlos en el
+    `__eq__` -y por tanto en el `__hash__`, que la dataclass congelada genera de
+    los mismos campos- convertiría en no hasheable algo que hoy sí lo es, por
+    campos que ni deciden ni se comparan.
     """
 
     date: date
@@ -78,6 +98,7 @@ class DayMetrics:
     body_battery: int | None = None
     readiness: int | None = None
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
+    not_requested: tuple[str, ...] = field(default=(), compare=False)
 
 
 @dataclass(frozen=True)

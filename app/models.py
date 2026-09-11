@@ -78,6 +78,16 @@ class DailyMetrics(Base):
     fetch_error: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
+    # NULL = la fila se escribió el día que le toca, con el sistema en marcha.
+    # Con fecha = se rellenó DESPUÉS, pidiéndole a Garmin un día ya pasado.
+    #
+    # Distinguirlas no es contabilidad: una fila recuperada puede tener huecos
+    # que la del día no habría tenido -body battery deja de servirse a partir de
+    # unos cuatro meses, comprobado- y al analizar hay que poder saber si un
+    # hueco significa "esa noche no hubo reloj" o "se pidió demasiado tarde".
+    # Sin la marca, las dos cosas son la misma celda vacía.
+    recovered_at: Mapped[datetime | None] = mapped_column(DateTime)
+
 
 class Activity(Base):
     """Actividades de Garmin (principalmente ciclismo desde el Edge 1040).
@@ -531,4 +541,117 @@ class LoadAdoption(Base):
 
     __table_args__ = (
         Index("ix_load_adoptions_pendientes", "reported_at", "date"),
+    )
+
+
+class SessionPerformance(Base):
+    """Cómo se sintió la mañana frente a cómo salió de verdad la sesión.
+
+    Una fila por sesión evaluada, y APPEND-ONLY en el sentido fuerte: la fila
+    guarda el juicio que se pudo hacer ESE día, con el histórico que había ese
+    día, y no se vuelve a tocar. Los percentiles no son verdades absolutas -son
+    la posición dentro de una distribución que sigue creciendo-, así que una fila
+    escrita con `n_sessions_base=18` dice algo distinto de la misma fila escrita
+    con 200 sesiones detrás. Recalcularlas todas cada noche daría un contador que
+    cambia de valor sin que haya pasado nada nuevo, y un contador que reescribe
+    su pasado no sirve para lo único que tiene que hacer: estar ahí, con el mismo
+    número de ayer, la mañana en que uno se levanta convencido de que no puede.
+
+    `source_key` es la llave natural -`hevy:<workout_id>` o `garmin:<activity_id>`-
+    y va con UNIQUE porque es lo que impide que reevaluar la misma sesión la
+    cuente dos veces. Aquí sí puede llevarlo, al revés que en `notifications`:
+    el fallo de aquella era que el UNIQUE saltaba DESPUÉS de mandar el mensaje y
+    tiraba abajo la transacción que guardaba la decisión. Esta fila se escribe
+    antes de avisar de nada, y el aviso va aparte, por `reported_at`.
+
+    LOS COMPONENTES VAN SUELTOS A PROPÓSITO
+    ---------------------------------------
+    `performance_index` es una mezcla, y toda mezcla oculta de dónde viene. Un
+    75 puede ser cumplimiento perfecto con RPE altísimo o lo contrario, y son dos
+    sesiones que no se parecen en nada. Las columnas `comp_*` guardan cada pieza
+    antes de promediarla, y `components_json` guarda los números crudos de los
+    que sale cada pieza, para poder rehacer la cuenta dentro de seis meses sin
+    depender de que el código de hoy siga existiendo.
+
+    En bici NO hay potencia -comprobado sobre las 89 actividades cacheadas: no
+    hay un solo registro con vatios-, así que el esfuerzo se mide por frecuencia
+    cardiaca relativa a las zonas, velocidad y desnivel. Es peor que un
+    potenciómetro y hay que decirlo, no disimularlo: por eso son tres columnas y
+    no una.
+
+    ESTO NO DECIDE NADA
+    -------------------
+    Ninguna columna de esta tabla entra en el motor. No calibra el semáforo, no
+    mueve cargas, no cambia la sesión del día. Es un espejo, y un espejo que
+    empujara sería otra cosa.
+    """
+
+    __tablename__ = "session_performance"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # strength | bike
+    source_key: Mapped[str] = mapped_column(String(96), unique=True, index=True)
+
+    routine_key: Mapped[str | None] = mapped_column(String(64))
+    garmin_activity_id: Mapped[int | None] = mapped_column(Integer)
+
+    # --- La percepción: el formulario de esa mañana, tal cual se rellenó ------
+    perceived_fatigue: Mapped[int | None] = mapped_column(Integer)
+    perceived_mood: Mapped[int | None] = mapped_column(Integer)
+    perceived_sleep_quality: Mapped[int | None] = mapped_column(Integer)
+    perceived_training_desire: Mapped[int | None] = mapped_column(Integer)
+    perceived_lower_discomfort: Mapped[int | None] = mapped_column(Integer)
+    perceived_upper_discomfort: Mapped[int | None] = mapped_column(Integer)
+
+    perception_index: Mapped[float | None] = mapped_column(Float)
+    perception_pct: Mapped[float | None] = mapped_column(Float)
+
+    # --- El rendimiento: cada componente por su lado ------------------------
+    # Series y repeticiones frente a lo PRESCRITO ese día, nunca frente a un
+    # volumen absoluto: una descarga bien hecha es cumplimiento del 100%.
+    comp_compliance: Mapped[float | None] = mapped_column(Float)
+    comp_progression: Mapped[float | None] = mapped_column(Float)
+    # RPE de la mañana SIGUIENTE (`checkins.yesterday_rpe`), relativizado a la
+    # carga que se movió. Por eso una sesión no se puede evaluar del todo hasta
+    # el día después, y por eso el aviso sale en el mensaje de mañana.
+    comp_rpe: Mapped[float | None] = mapped_column(Float)
+    comp_bike_hr: Mapped[float | None] = mapped_column(Float)
+    comp_bike_speed: Mapped[float | None] = mapped_column(Float)
+    comp_bike_elevation: Mapped[float | None] = mapped_column(Float)
+    components_json: Mapped[str | None] = mapped_column(Text)
+
+    performance_index: Mapped[float | None] = mapped_column(Float)
+    performance_pct: Mapped[float | None] = mapped_column(Float)
+
+    # --- El cruce ------------------------------------------------------------
+    # Positivo = la sesión salió mejor de lo que anunciaba la mañana.
+    gap_pct: Mapped[float | None] = mapped_column(Float)
+    # perception_worse | perception_better | aligned | na
+    #
+    # Los tres NOT NULL de abajo llevan `server_default` además del defecto de
+    # Python por lo mismo que `exercise_targets.below_plan_streak`: el defecto de
+    # Python no existe para `ALTER TABLE ADD COLUMN`, y sin defecto EN LA BASE
+    # una columna NOT NULL no se puede añadir a una tabla que ya tiene filas.
+    direction: Mapped[str] = mapped_column(
+        String(20), default="na", server_default=text("'na'"), index=True
+    )
+    # Solo las que pasan el umbral. Las demás se guardan igual, porque un
+    # contador que solo apunta los días buenos no es un contador, es un cartel.
+    dissociation: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0"), index=True
+    )
+    # Cuántas sesiones había detrás cuando se calcularon los percentiles.
+    n_sessions_base: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0")
+    )
+    # Por qué no se pudo calcular, cuando no se pudo. Nunca un 0 mudo.
+    na_reason: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # NULL = todavía no se ha contado en ningún mensaje de Telegram.
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_session_performance_pendientes", "reported_at", "dissociation"),
     )

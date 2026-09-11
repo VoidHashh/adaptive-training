@@ -376,11 +376,155 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_tres_trabajos_del_dia(cfg):
+def test_estan_los_tres_trabajos_del_dia_y_el_del_arranque(cfg):
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
-        "garmin_fetch", "decision_fallback", "reconcile"
+        "garmin_fetch", "decision_fallback", "reconcile", "backfill_wellness",
     }
+
+
+def test_la_recuperacion_no_tiene_hora_sino_retraso(cfg):
+    """Los agujeros de `daily_metrics` no los abre una hora del día.
+
+    Los abre que el proceso no estuviera corriendo. Un trabajo a las 06:40 no
+    arregla nada si el PC estuvo apagado la semana entera, porque a las 06:40 de
+    esos días tampoco había nadie. El único momento en que consta que el sistema
+    está vivo es justo después de arrancar.
+
+    El retraso es para no competir con el arranque: que el servidor acabe de
+    levantarse y la PWA responda antes de ponerse a hablar con Garmin.
+    """
+    from zoneinfo import ZoneInfo
+
+    from apscheduler.triggers.date import DateTrigger
+
+    from app.scheduler import RETRASO_BACKFILL_S
+
+    antes = datetime.now(ZoneInfo(cfg.timezone))
+    sched = build_scheduler(cfg, start=False)
+    trabajo = sched.get_job("backfill_wellness")
+
+    assert isinstance(trabajo.trigger, DateTrigger), (
+        "con un cron, un arranque a las 06:31 no repasaría nada hasta mañana"
+    )
+    espera = (trabajo.trigger.run_date - antes).total_seconds()
+    assert RETRASO_BACKFILL_S - 5 <= espera <= RETRASO_BACKFILL_S + 5, espera
+    assert 30 <= RETRASO_BACKFILL_S <= 300, (
+        "ni a la vez que el arranque, ni tan tarde que un contenedor que se "
+        "reinicia a menudo no llegue nunca a ejecutarlo"
+    )
+
+
+# ---------------------------------------------------------------------------
+# La recuperación de los días perdidos
+# ---------------------------------------------------------------------------
+
+
+class ClienteWellness:
+    """Garmin de mentira para el repaso del arranque."""
+
+    fetch_errors: list[str] = []
+
+    def __init__(self, revienta_desde: int | None = None) -> None:
+        self.revienta_desde = revienta_desde
+        self.pedidos = []
+
+    def day_metrics(self, dia):
+        from app.engine.signals import DayMetrics
+        from app.integrations.garmin import GarminRateLimited
+
+        self.pedidos.append(dia)
+        if self.revienta_desde is not None and len(self.pedidos) > self.revienta_desde:
+            raise GarminRateLimited("429")
+        return DayMetrics(
+            date=dia, hrv=57.0, rhr=46.0, sleep_min=420, sleep_score=74,
+            body_battery=70, not_requested=("readiness",),
+        )
+
+
+def _wellness(cfg_copia, dias_atras: int):
+    cfg_copia.raw.setdefault("wellness", {}).setdefault("backfill", {}).update(
+        {"recovery_days": dias_atras, "pause_seconds": 0}
+    )
+    return cfg_copia
+
+
+def test_la_recuperacion_no_se_conecta_si_no_falta_nada(en_memoria, cfg_copia):
+    """Se mira la base ANTES de hacer login.
+
+    En el caso normal -el PC encendido de ayer a hoy- no falta ningún día, y
+    entonces esto no puede gastar ni una petición ni una sesión de Garmin.
+    Conectarse primero y preguntar después convertiría cada despliegue en un
+    login, que es de las cosas que Garmin cuenta para cortar por IP.
+
+    Se prueba SIN inyectar cliente a propósito: si intentara construir uno,
+    `build_client` saldría a la red y el cerrojo de `conftest` lo mataría. O
+    sea que este test falla exactamente si el login deja de ser condicional.
+    """
+    from app.models import DailyMetrics
+    from app.scheduler import job_backfill_wellness
+
+    for i in range(2, 6):
+        en_memoria.add(DailyMetrics(date=LUNES - timedelta(days=i), fetch_status="ok"))
+    en_memoria.commit()
+
+    assert job_backfill_wellness(_wellness(cfg_copia, 5), day=LUNES).pedidos == []
+
+
+def test_la_recuperacion_apagada_no_pide_nada(en_memoria, cfg_copia):
+    from app.scheduler import job_backfill_wellness
+
+    assert job_backfill_wellness(_wellness(cfg_copia, 0), day=LUNES).pedidos == []
+
+
+def test_la_recuperacion_escribe_los_dias_que_faltan_y_los_marca(
+    en_memoria, cfg_copia
+):
+    """Ni hoy ni ayer: los datos de anoche llegan cuando el reloj sincroniza."""
+    from app.models import DailyMetrics
+    from app.scheduler import job_backfill_wellness
+
+    cliente = ClienteWellness()
+    res = job_backfill_wellness(_wellness(cfg_copia, 4), day=LUNES, cliente=cliente)
+
+    esperados = [LUNES - timedelta(days=i) for i in (4, 3, 2)]
+    assert res.escritos == esperados
+    assert LUNES not in cliente.pedidos
+    assert LUNES - timedelta(days=1) not in cliente.pedidos
+
+    filas = en_memoria.scalars(select(DailyMetrics)).all()
+    assert {f.date for f in filas} == set(esperados)
+    assert all(f.recovered_at is not None for f in filas), (
+        "se rellenaron a posteriori y tiene que constar, porque una fila "
+        "recuperada puede tener huecos que la del día no habría tenido"
+    )
+
+
+def test_un_corte_por_limite_al_arrancar_revienta_para_que_se_sepa(
+    en_memoria, cfg_copia
+):
+    """Un backfill a medias es justo el agujero que este trabajo existe para tapar.
+
+    Y nadie lo va a repetir: la recuperación solo se dispara al arrancar, y un
+    PC que se queda encendido no vuelve a arrancar en semanas. Lanzando, salta
+    `_avisador` y llega un Telegram; devolviendo el resultado y ya está, el
+    hueco se quedaría tapado a medias y en silencio, que es justo como se abrió.
+    """
+    from app.models import DailyMetrics
+    from app.scheduler import job_backfill_wellness
+
+    with pytest.raises(RuntimeError, match="límite"):
+        job_backfill_wellness(
+            _wellness(cfg_copia, 4), day=LUNES,
+            cliente=ClienteWellness(revienta_desde=1),
+        )
+
+    # Lanzar no puede costar lo ya escrito: `rellenar` hace commit por día, así
+    # que aquí no queda nada pendiente de una transacción que ya no se cierra.
+    filas = en_memoria.scalars(select(DailyMetrics)).all()
+    assert [f.date for f in filas] == [LUNES - timedelta(days=4)], (
+        "el día que sí llegó tiene que seguir escrito"
+    )
 
 
 def test_las_horas_salen_del_config_y_no_del_codigo(cfg_copia):

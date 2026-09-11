@@ -249,6 +249,142 @@ def test_una_base_anterior_a_la_adopcion_de_cargas_se_pone_al_dia(vieja, tmp_pat
     )
 
 
+def test_una_base_anterior_al_backfill_aprende_a_marcar_lo_recuperado(vieja, tmp_path):
+    """`daily_metrics.recovered_at`, contra una base que ya tiene wellness.
+
+    La columna parece contabilidad y no lo es. Una fila rellenada a posteriori
+    puede tener huecos que la del día no habría tenido -el body battery deja de
+    servirse a los cuatro meses, medido-, y sin la marca un hueco de los dos
+    tipos es la misma celda vacía: no se puede distinguir "esa noche no llevaba
+    el reloj" de "se preguntó demasiado tarde".
+
+    Y las filas que ya estaban entran a NULL, que aquí significa exactamente lo
+    que tiene que significar: se escribieron el día que les tocaba. Una fecha
+    inventada las convertiría a todas en recuperadas, que es la afirmación
+    contraria a la verdadera.
+    """
+    vieja.envejecer("daily_metrics", {"recovered_at"})
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO daily_metrics (date, hrv, rhr, fetch_status) "
+            "VALUES ('2026-06-01', 58.0, 47.0, 'ok')"
+        ))
+
+    cambios = ensure_schema(vieja)
+    assert any("recovered_at" in x for x in cambios), cambios
+
+    nueva = create_engine(f"sqlite:///{tmp_path / 'nueva.db'}", future=True)
+    Base.metadata.create_all(nueva)
+    dif = _dif_ddl(vieja, nueva, "daily_metrics")
+    assert not dif, f"nueva vs actualizada difieren en {dif}"
+
+    with vieja.begin() as c:
+        fila = list(c.execute(text(
+            "SELECT hrv, recovered_at FROM daily_metrics"
+        )))
+    assert fila == [(58.0, None)], (
+        f"lo que ya estaba se capturó en su día, no se recuperó: {fila}"
+    )
+
+
+def test_la_tabla_de_rendimiento_llega_a_una_base_que_ya_existia(vieja, monkeypatch):
+    """`session_performance` es tabla NUEVA, y de las que no pueden perder nada.
+
+    Vale lo mismo que para `load_adoptions`: `ensure_schema` no crea tablas y
+    `create_all` no toca las que están, así que el reparto solo cierra si se
+    llama a `init_db`. Por eso el test llama a `init_db` y no a las piezas.
+
+    Lo que se perdería es peor que un dato. Esta tabla es el contador de cuántas
+    veces la percepción fue peor que el rendimiento real, y es un contador que
+    se mira justo la mañana en que uno se levanta convencido de que no puede
+    entrenar. Si la tabla no existe, no revienta el arranque: revienta la
+    escritura de después de la sesión, en un hilo del scheduler, y el contador
+    se queda en el número de hace meses sin que nada lo diga.
+
+    Se escribe y se lee una fila de verdad, con el `unique` de `source_key`
+    incluido, porque `sqlite_master` solo demuestra que la tabla tiene nombre.
+    """
+    from app.models import SessionPerformance
+
+    with vieja.begin() as c:
+        c.exec_driver_sql('DROP TABLE "session_performance"')
+
+    assert ensure_schema(vieja) == [], (
+        "de las tablas AUSENTES no se encarga esta función"
+    )
+
+    monkeypatch.setattr(db, "engine", vieja)
+    db.init_db()
+
+    Sesion = sessionmaker(bind=vieja, future=True)
+    with Sesion() as s:
+        s.add(SessionPerformance(
+            date=date(2026, 9, 10), kind="strength",
+            source_key="strength:2026-09-10:dia_1", routine_key="dia_1",
+            perceived_fatigue=4, perception_pct=12.0,
+            performance_pct=68.0, gap_pct=56.0,
+            direction="worse_than_real", dissociation=True, n_sessions_base=22,
+        ))
+        s.commit()
+
+    with Sesion() as s:
+        fila = s.query(SessionPerformance).one()
+        assert fila.dissociation is True
+        assert fila.gap_pct == 56.0
+        # Los defectos tienen que venir del servidor, no solo de Python: una
+        # columna NOT NULL sin `server_default` se añade bien en una base nueva
+        # y revienta al migrar una que ya tiene filas.
+        assert fila.n_sessions_base == 22
+        assert fila.reported_at is None, (
+            "recién escrita no se ha contado todavía en ningún Telegram"
+        )
+
+    with vieja.begin() as c:
+        indices = {
+            f[1] for f in c.exec_driver_sql(
+                "PRAGMA index_list('session_performance')"
+            )
+        }
+    assert "ix_session_performance_pendientes" in indices, (
+        f"sin el índice, buscar lo no reportado es un recorrido entero: {indices}"
+    )
+
+
+def test_lo_no_reportado_no_se_puede_escribir_dos_veces(vieja, monkeypatch):
+    """El `unique` de `source_key` tiene que sobrevivir a la creación.
+
+    Aquí sí puede haber UNIQUE -y en `notifications` no- porque esta fila se
+    escribe ANTES de cualquier efecto irreversible. En `notifications` el UNIQUE
+    saltaba después de haber mandado el mensaje, y entonces destruía el registro
+    de lo que de verdad había pasado; aquí lo único que impide es contar dos
+    veces la misma sesión, que es exactamente lo que se quiere impedir.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from app.models import SessionPerformance
+
+    with vieja.begin() as c:
+        c.exec_driver_sql('DROP TABLE "session_performance"')
+    monkeypatch.setattr(db, "engine", vieja)
+    db.init_db()
+
+    Sesion = sessionmaker(bind=vieja, future=True)
+    with Sesion() as s:
+        s.add(SessionPerformance(
+            date=date(2026, 9, 10), kind="bike",
+            source_key="bike:2026-09-10:9911", garmin_activity_id=9911,
+        ))
+        s.commit()
+
+    with Sesion() as s:
+        s.add(SessionPerformance(
+            date=date(2026, 9, 10), kind="bike",
+            source_key="bike:2026-09-10:9911", garmin_activity_id=9911,
+        ))
+        with pytest.raises(IntegrityError):
+            s.commit()
+
+
 # ---------------------------------------------------------------------------
 # Lo que NO se arregla solo
 # ---------------------------------------------------------------------------

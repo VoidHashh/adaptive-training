@@ -448,6 +448,62 @@ def get_state(
     return repo.state_as_dict(estado)
 
 
+# ---------------------------------------------------------------------------
+# Métricas y análisis
+#
+# Todo lo de aquí se calcula EN EL SERVIDOR y viaja ya masticado. La PWA no hace
+# ni una media. No es manía de arquitectura: es que el día que un número salga
+# raro tiene que poder mirarse con un test, y un cálculo que vive en el navegador
+# no se puede probar ni auditar desde el móvil, que es desde donde se va a mirar.
+#
+# Los parámetros son los mismos en todos: `dias` de ventana y `metodo`. Spearman
+# por defecto porque seis de las siete series de percepción son un 1-5 ordinal,
+# donde la distancia entre un 2 y un 3 no tiene por qué ser la misma que entre un
+# 4 y un 5. Pearson se puede pedir, y compararlos dice bastante.
+# ---------------------------------------------------------------------------
+
+METODOS = ("spearman", "pearson")
+
+
+def _metodo(metodo: str) -> str:
+    if metodo not in METODOS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"método desconocido: {metodo!r}. Los que hay: {list(METODOS)}",
+        )
+    return metodo
+
+
+@app.get("/api/metrics/concordancia")
+def metrics_concordancia(
+    dias: int = Query(180, ge=7, le=730),
+    metodo: str = Query("spearman"),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 1: lo que nota frente a lo que mide el reloj, el mismo día."""
+    from app.analysis.concordancia import vista_concordancia
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    return vista_concordancia(s, dias=dias, metodo=_metodo(metodo))
+
+
+@app.get("/api/metrics/desfase")
+def metrics_desfase(
+    dias: int = Query(180, ge=7, le=730),
+    metodo: str = Query("spearman"),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 2: la misma pregunta corriendo la ventana de -3 a +3 días."""
+    from app.analysis.concordancia import vista_desfase
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    return vista_desfase(s, dias=dias, metodo=_metodo(metodo))
+
+
 @app.post("/api/reconcile")
 def post_reconcile(
     day: date | None = None,
