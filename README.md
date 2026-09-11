@@ -28,6 +28,12 @@ autenticación propia**. Ninguna. `/api/state`, `/api/decision` y `/api/export`
 —el CSV con el histórico entero— contestan a quien pregunte. No es un descuido
 pendiente de arreglar, es lo que decide cuál de los dos caminos vale para qué.
 
+Como eso no se puede comprobar desde dentro del contenedor —estar detrás de un
+proxy con login y estar publicado en crudo se ven exactamente igual—, **el
+arranque lo dice en el log**. `AUTH_FRONT=proxy` declara que hay un proxy
+delante y calla el aviso; cualquier otra cosa, incluido no poner nada, avisa.
+Ver [la tabla más abajo](#este-montaje-va-sin-autenticación-y-es-una-decisión).
+
 **En Umbrel, por su marco de aplicaciones.** Es el camino bueno para el uso
 real. El `app_proxy` de Umbrel pone delante su login sin escribir una línea de
 código, y es lo único que permite abrir el formulario desde el móvil sin dejar
@@ -39,8 +45,9 @@ wifi. Los tres ficheros y el procedimiento entero están en
 publica el 8000 **solo en el bucle local**, a propósito: se llega desde la
 propia máquina o por un túnel SSH, **no desde el móvil**. Si se cambia ese
 enlace a `0.0.0.0` para alcanzarlo desde el teléfono, se está publicando el
-histórico entero sin contraseña; para eso está el camino de arriba —o, mientras
-se prueba en el PC, [el proxy temporal](#temporal-el-móvil-mientras-se-prueba-en-el-pc).
+histórico entero; para eso está el camino de arriba —o, mientras se prueba en el
+PC, [el montaje temporal](#temporal-el-móvil-mientras-se-prueba-en-el-pc), que
+**también va sin contraseña** y explica allí por qué y qué queda expuesto.
 
 ```bash
 git clone <este-repo> adaptive-training
@@ -142,28 +149,58 @@ con wifi— no lo necesita.
 
 ### TEMPORAL: el móvil mientras se prueba en el PC
 
-> **Esto sobra en cuanto el sistema viva en Umbrel.** Son tres ficheros
-> —`docker-compose.pruebas-lan.yml`, `Caddyfile.pruebas`,
-> `.env.pruebas-lan.example`— y se borran los tres juntos: allí el `app_proxy`
-> hace lo mismo y mejor. Existe por una sola razón: poder abrir el formulario
-> desde el móvil por la mañana durante los días de comparar lo que decide el
-> sistema con lo que uno habría hecho.
+> **Esto sobra en cuanto el sistema viva en Umbrel.** Son dos ficheros
+> —`docker-compose.pruebas-lan.yml` y `Caddyfile.pruebas`— y se borran juntos:
+> allí el `app_proxy` hace lo mismo y mejor. Existe por una sola razón: poder
+> abrir el formulario desde el móvil por la mañana durante los días de comparar
+> lo que decide el sistema con lo que uno habría hecho.
 
-**No se publica el 8000; se pone un proxy con contraseña delante.** La
-aplicación no tiene autenticación —`/api/export` sirve el histórico entero y
-`POST /api/checkin` crea un check-in y dispara una decisión—, así que abrir el
-puerto a secas deja eso al alcance de cualquier cacharro del wifi. Y `DRY_RUN`
-no cubre: hoy desactiva la escritura, pero el propósito de esta fase es
-precisamente llegar a quitarlo. La exposición empeoraría justo el día en que uno
-ha dejado de pensar en ella. El proxy es además la **misma forma** que tendrá el
-despliegue de verdad, así que esta fase ensaya aquella.
+#### Este montaje va SIN AUTENTICACIÓN, y es una decisión
+
+No hay usuario ni contraseña. Se entra escribiendo la dirección. **Es
+deliberado**, no un cabo suelto: es la red de casa, con un solo usuario, y un
+login más delante de un formulario que se abre medio dormido a las siete de la
+mañana costaba más de lo que protegía. Antes había un `basic_auth` en Caddy con
+un hash de bcrypt; se quitó.
+
+**Lo que eso deja abierto**, escrito aquí para que nadie tenga que deducirlo:
+cualquier cacharro conectado al wifi puede
+
+- pedir `/api/export`, que es el histórico entero —sueño, HRV, RPE y el registro
+  de la lumbar—, y
+- llamar a `POST /api/checkin`, que no solo lee: **crea un check-in y dispara
+  una decisión**.
+
+`DRY_RUN=true` hoy corta la escritura en Hevy y en Telegram, pero **no cuenta
+como protección**: el propósito de esta fase es precisamente llegar a quitarlo,
+y entonces el riesgo empeora justo el día en que uno ha dejado de pensar en él.
+
+**Esta decisión NO viaja al despliegue definitivo.** En Umbrel va el `app_proxy`
+delante, que pone el login de Umbrel, y eso se queda como está. El trato es «sin
+contraseña en la LAN del PC», no «sin contraseña».
+
+Para que no se cuele en otro sitio por descuido, **la aplicación lo canta en el
+log en cada arranque** —por log y no por Telegram: Telegram es el canal de la
+decisión de la mañana y un aviso de despliegue ahí, o se ignora, o convierte el
+mensaje útil en ruido—. Lo gobierna `AUTH_FRONT`:
+
+| `AUTH_FRONT` | qué hace el arranque |
+|---|---|
+| sin poner | **WARNING**: sirviendo sin autenticación conocida, nadie ha declarado qué hay delante |
+| `ninguna` | **WARNING**: sirviendo sin autenticación, y está declarado así a propósito |
+| `proxy` | INFO: hay un proxy con credenciales delante; sin aviso |
+
+El defecto es el ruidoso a propósito. Desde dentro del contenedor no hay forma
+de distinguir «detrás del `app_proxy`» de «publicado en crudo», así que no se
+puede comprobar: se declara. Y si nadie declara nada, se avisa —lo contrario
+haría que el único caso peligroso fuese justo el silencioso—. `AUTH_FRONT=proxy`
+es lo único que quita el aviso, y ponerlo cuando no hay proxy es mentirse a uno
+mismo por escrito.
+
+El compose de pruebas ya trae `AUTH_FRONT=ninguna`, que es lo que hace que el
+aviso diga «a propósito» en vez de «nadie ha declarado nada».
 
 ```bash
-cp .env.pruebas-lan.example .env.pruebas-lan
-
-# El hash, no la contraseña. Se pega tal cual en LOCAL_PASSWORD_HASH.
-docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'la-que-sea'
-
 docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --build
 ```
 
@@ -172,17 +209,16 @@ docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --b
 Docker levanta la imagen vieja **sin decir nada**. Se ve como un formulario que
 no tiene los avisos de salud, o un `/api/health` sin `clock`. Pasó aquí.
 
-Desde el móvil: `http://<ip-del-pc>:8317` (la IP, con `ipconfig`). Pedirá usuario
-y contraseña. Si el navegador del móvil se queda colgando sin llegar a pedirlas
-—y desde el PC sí responde—, es el cortafuegos de Windows: hay que dejar pasar el
-puerto **para la red privada**, no para la pública.
+Desde el móvil: `http://<ip-del-pc>:8317` (la IP, con `ipconfig`). Entra directo.
+Si el navegador del móvil se queda colgando —y desde el PC sí responde—, es el
+cortafuegos de Windows: hay que dejar pasar el puerto **para la red privada**, no
+para la pública.
 
-Lo que sale a la red es solo el 8317 del proxy. El 8000 de la aplicación sigue
-atado a `127.0.0.1`, para los `curl` desde el propio PC.
-
-**Si el hash está vacío, Caddy no arranca.** Es deliberado, y es la parte que
-importa: un proxy que se cae se nota en el primer intento desde el móvil; uno que
-levantara sin contraseña no se notaría nunca.
+**Sigue habiendo un proxy aunque ya no pida nada**, por dos razones que
+sobreviven a la contraseña. Lo que sale a la red es solo el 8317; el 8000 de la
+aplicación sigue atado a `127.0.0.1`, para los `curl` desde el propio PC. Y un
+proxy delante es la **misma forma** que tendrá el despliegue de verdad, así que
+esta fase ensaya aquella en vez de inventarse otra.
 
 **En Windows, `data/` deja de verse desde el explorador.** El bind mount de la
 raíz no vale aquí: SQLite abre la base en modo WAL y el bind mount de Docker

@@ -1,4 +1,4 @@
-# TEMPORAL: la contraseña delante del formulario durante las pruebas en el PC.
+# TEMPORAL: el proxy de la fase de pruebas en el PC.
 # Se borra junto con `docker-compose.pruebas-lan.yml` al pasar a Umbrel.
 
 {
@@ -9,18 +9,32 @@
 	auto_https off
 }
 
+# VA SIN AUTENTICACIÓN, Y ES UNA DECISIÓN, NO UN OLVIDO
+# -----------------------------------------------------
+# Antes había un `basic_auth` aquí con un hash de bcrypt en
+# `.env.pruebas-lan`, y Caddy se negaba a arrancar si el hash faltaba. Se ha
+# quitado a petición expresa: esto es la red de casa, con un solo usuario, y
+# una contraseña más por delante de un formulario que uno abre medio dormido a
+# las siete de la mañana costaba más de lo que protegía.
+#
+# LO QUE QUEDA EXPUESTO, que no es poco y conviene tenerlo escrito: cualquier
+# cacharro del wifi puede pedir `/api/export` -el histórico entero: sueño, HRV,
+# RPE y el registro de la lumbar- y puede llamar a `POST /api/checkin`, que no
+# solo lee, sino que crea un check-in y dispara una decisión. `DRY_RUN=true`
+# hoy corta la escritura, pero el objetivo de esta fase es precisamente llegar
+# a quitarlo, así que no cuenta como protección.
+#
+# ESTA DECISIÓN NO VIAJA. En Umbrel va el `app_proxy` delante y ese sí pide
+# login; el trato es "sin contraseña en la LAN del PC", no "sin contraseña".
+# Para que no se cuele por descuido, la aplicación avisa en el log a cada
+# arranque: ver `AUTH_FRONT` en `app/settings.py` y `_avisar_de_la_puerta` en
+# `app/api.py`. El compose de pruebas pone `AUTH_FRONT=ninguna`, que es lo que
+# hace que el aviso diga "a propósito" en vez de "nadie ha declarado nada".
+#
+# Se sigue pasando por un proxy, y no se publica el 8000 a secas, por dos
+# razones que sobreviven a la contraseña: el 8000 se queda atado a 127.0.0.1
+# para los `curl` del propio PC, y este montaje es la MISMA forma que tendrá el
+# despliegue de verdad, así que esta fase ensaya aquella.
 :8317 {
-	# Fail-closed A PROPÓSITO: si `LOCAL_PASSWORD_HASH` está vacío -porque falta
-	# el `.env.pruebas-lan`, o porque nadie generó el hash-, Caddy no arranca.
-	#
-	# Es la parte que importa de este fichero. Lo contrario -arrancar sin
-	# contraseña y servirlo todo- sería el peor fallo posible: la red de casa
-	# entera con acceso al histórico y a `POST /api/checkin`, y nada en
-	# pantalla que lo delatara. Un proxy que se cae se nota en el primer
-	# intento; uno que abre la puerta no se nota nunca.
-	basic_auth {
-		{$LOCAL_USER} {$LOCAL_PASSWORD_HASH}
-	}
-
 	reverse_proxy app:8000
 }

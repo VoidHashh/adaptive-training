@@ -7,39 +7,45 @@
 # hecho. En cuanto eso esté estable, el destino es Umbrel (ver `umbrel/`), y
 # entonces ESTE FICHERO SOBRA: allí el `app_proxy` hace lo mismo y mejor.
 #
-# POR QUÉ UN PROXY Y NO ABRIR EL PUERTO A SECAS
-# ---------------------------------------------
-# La aplicación no tiene autenticación propia. `/api/export` devuelve el CSV
-# con el histórico entero -sueño, HRV, RPE, y el registro de la lumbar- y
-# `POST /api/checkin` no solo se lee: crea un check-in y dispara una decisión.
-# Publicar eso en la red de casa lo deja a la vista, y al alcance, de cualquier
-# cacharro conectado al wifi.
+# ESTO VA SIN CONTRASEÑA, A PROPÓSITO
+# -----------------------------------
+# Llevaba un `basic_auth` en el Caddyfile con un hash en `.env.pruebas-lan`.
+# Se ha quitado a petición expresa: red de casa, un solo usuario, y un login
+# más delante de un formulario que se abre medio dormido a las siete de la
+# mañana no compensaba.
 #
-# Y hay un detalle de calendario: hoy `DRY_RUN=true` desactiva la escritura, así
-# que un check-in falso no llega a Hevy ni a Telegram. Pero el propósito de esta
-# fase es precisamente llegar a quitar `DRY_RUN`. La exposición empeora justo el
-# día en que uno ha dejado de pensar en ella.
+# LO QUE QUEDA EXPUESTO, escrito para que nadie tenga que deducirlo: cualquier
+# cacharro del wifi puede pedir `/api/export` -el histórico entero: sueño, HRV,
+# RPE y el registro de la lumbar- y puede llamar a `POST /api/checkin`, que no
+# solo lee: crea un check-in y dispara una decisión. `DRY_RUN=true` hoy corta
+# la escritura, pero el propósito de esta fase es llegar a quitarlo, así que no
+# cuenta como protección: el riesgo empeora justo el día en que uno ha dejado
+# de pensar en él.
+#
+# Y NO VIAJA. En Umbrel va el `app_proxy` delante, que sí pide login. Para que
+# la decisión no se cuele en otro despliegue por descuido, la aplicación lo
+# canta en el log en cada arranque (ver `AUTH_FRONT` en `app/settings.py`). El
+# `AUTH_FRONT=ninguna` de aquí abajo es lo que hace que ese aviso diga "a
+# propósito" en vez de "nadie ha declarado qué hay delante".
+#
+# POR QUÉ SIGUE HABIENDO UN PROXY SI YA NO PIDE NADA
+# --------------------------------------------------
+# Por dos razones que sobreviven a la contraseña. Una: el 8000 de la aplicación
+# se queda atado a 127.0.0.1 por el compose de la raíz, para los `curl` desde
+# el propio PC, y lo único que sale a la red es el 8317. Y dos: un proxy
+# delante es la MISMA forma que tendrá el despliegue de verdad, así que esta
+# fase ensaya aquella en vez de inventarse otra.
 #
 # POR QUÉ NO AUTENTICACIÓN DENTRO DE LA APLICACIÓN
 # ------------------------------------------------
 # Porque en Umbrel no hará falta -el `app_proxy` la pone- y sería un segundo
-# login delante del primero. Un proxy aquí es la MISMA forma que tendrá el
-# despliegue de verdad: esta fase ensaya aquella.
+# login delante del primero.
 #
 # CÓMO SE USA
 # -----------
-#   cp .env.pruebas-lan.example .env.pruebas-lan
-#   docker run --rm caddy:2.10-alpine caddy hash-password --plaintext 'la-que-sea'
-#   # pegar el hash en .env.pruebas-lan
 #   docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d
 #
-# Desde el móvil: http://<ip-del-pc>:8317
-#
-# QUÉ QUEDA PUBLICADO Y QUÉ NO
-# ----------------------------
-# El 8000 de la aplicación NO se toca: sigue atado a 127.0.0.1 por el compose
-# de la raíz, para los `curl` desde el propio PC. Lo único que sale a la red es
-# el 8317 de este proxy, y ese pide contraseña.
+# Desde el móvil: http://<ip-del-pc>:8317, sin credenciales.
 
 services:
   # El compose de la raíz monta `./data` como bind mount, y en Windows ESO NO
@@ -60,14 +66,21 @@ services:
   #   docker cp adaptive-training:/app/data/hevy_backups ./hevy_backups
   #   docker cp adaptive-training:/app/data/app.db ./app.db
   app:
+    # Lo que convierte el aviso de arranque en informativo en vez de alarmante:
+    # "sin autenticación y es deliberado" se lee distinto que "sin
+    # autenticación y nadie ha dicho nada". El aviso sale igual -no hay forma de
+    # silenciarlo sin poner un proxy con login de verdad-, que es el punto.
+    environment:
+      AUTH_FRONT: ninguna
+
     volumes:
       - datos-pruebas:/app/data
       - ./config.yaml:/app/config.yaml:ro
 
   proxy:
-    # Versión fijada a propósito. `basic_auth` se llamaba `basicauth` antes de
-    # Caddy 2.8; con una etiqueta flotante, el día que cambie la sintaxis esto
-    # deja de arrancar una mañana cualquiera, sin avisar antes.
+    # Versión fijada a propósito: con una etiqueta flotante, el día que Caddy
+    # cambie algo de la sintaxis esto deja de arrancar una mañana cualquiera,
+    # sin avisar antes.
     image: caddy:2.10-alpine
     container_name: adaptive-training-proxy
     restart: unless-stopped
@@ -75,19 +88,9 @@ services:
     depends_on:
       - app
 
-    # Las credenciales por fichero APARTE, y no en el `.env` de siempre. No es
-    # manía de orden: `app/settings.py` valida el `.env` con `extra="forbid"`,
-    # así que una clave que la aplicación no conoce -como el hash de este
-    # proxy- haría que se negara a arrancar.
-    #
-    # Además, un `env_file` no lo interpola compose, y eso hace falta aquí: un
-    # hash de bcrypt empieza por `$2a$...` y en un bloque `environment:` cada
-    # `$` habría que escribirlo doble.
-    env_file:
-      - .env.pruebas-lan
-
     ports:
-      # A toda la red de casa, que es el objetivo. Detrás va la contraseña.
+      # A toda la red de casa, que es el objetivo, y sin contraseña detrás (ver
+      # la cabecera de este fichero).
       #
       # 8317 y no 8080 por dos motivos. El bueno: es el mismo puerto que reserva
       # `umbrel/umbrel-app.yml`, así que la dirección que uno se aprende ahora

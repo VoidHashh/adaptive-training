@@ -75,6 +75,51 @@ def _configurar_logs() -> None:
     )
 
 
+def _avisar_de_la_puerta(log_: logging.Logger | None = None) -> None:
+    """Deja dicho en el log qué protege el acceso, o que no lo protege nada.
+
+    Va por LOG y NO por Telegram a propósito. Telegram es el canal de la
+    decisión de la mañana: lo que llega ahí se lee mientras uno se ata las
+    zapatillas, y un aviso de despliegue metido en medio o se ignora o
+    convierte el mensaje útil en ruido. Esto es un hecho del arranque, y el
+    sitio de los hechos del arranque es `docker compose logs`.
+
+    Y va en el arranque y no en una comprobación periódica porque el momento en
+    que importa es exactamente ese: cuando alguien levanta esto en una máquina
+    nueva. El resto del tiempo la información no ha cambiado.
+    """
+    log_ = log_ or log
+    if settings.auth_front == "proxy":
+        log_.info(
+            "acceso: hay un proxy con credenciales delante (AUTH_FRONT=proxy); "
+            "la aplicación no comprueba nada por su cuenta"
+        )
+        return
+
+    if settings.auth_front == "ninguna":
+        cabeza = (
+            "SIRVIENDO SIN AUTENTICACIÓN, y está declarado así a propósito "
+            "(AUTH_FRONT=ninguna)."
+        )
+    else:
+        cabeza = (
+            "SIRVIENDO SIN AUTENTICACIÓN conocida: nadie ha declarado qué hay "
+            "delante (AUTH_FRONT sin poner)."
+        )
+
+    # El detalle importa tanto como el titular: "sin autenticación" suena a
+    # molestia menor hasta que uno recuerda QUÉ queda abierto.
+    log_.warning(
+        "%s Cualquiera que alcance este puerto puede leer /api/export -el "
+        "histórico entero: sueño, HRV, RPE y el registro de la lumbar- y "
+        "llamar a POST /api/checkin, que no solo lee: crea un check-in y "
+        "dispara una decisión. DRY_RUN no cubre esto y además está pensado "
+        "para quitarse. Si hay un proxy con login delante, ponlo por escrito "
+        "con AUTH_FRONT=proxy y este aviso desaparece.",
+        cabeza,
+    )
+
+
 def get_config():
     """El `config.yaml`, cargado una vez por proceso."""
     if not hasattr(get_config, "_cache"):
@@ -103,6 +148,7 @@ async def lifespan(app: FastAPI):
     _configurar_logs()
 
     init_db()
+    _avisar_de_la_puerta()
     faltan = settings.missing_secrets()
     if faltan:
         # Se arranca igual -hay que poder abrir el formulario para ver qué

@@ -138,6 +138,49 @@ def test_el_error_dice_qué_hacer_no_solo_que_algo_está_mal(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Quién protege la puerta
+# ---------------------------------------------------------------------------
+# `AUTH_FRONT` es un ajuste raro: no cambia nada de lo que hace el sistema,
+# solo cambia lo que el sistema DICE de sí mismo al arrancar. Precisamente por
+# eso hay que probarlo, porque un ajuste que no hace nada observable es un
+# ajuste que se puede romper sin que nadie se entere hasta el día que importa,
+# que es el día en que esto se levanta en una máquina nueva.
+
+
+def test_sin_declarar_nada_no_se_asume_que_hay_alguien_delante():
+    """El defecto tiene que ser el ruidoso.
+
+    Si el defecto fuese "proxy", el único caso peligroso -nadie ha pensado en
+    esto- sería justo el silencioso.
+    """
+    assert Settings(_env_file=None).auth_front == ""
+
+
+@pytest.mark.parametrize("valor", ["", "ninguna", "proxy", "PROXY", " Ninguna "])
+def test_los_valores_buenos_se_aceptan_y_se_normalizan(valor, tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(f"AUTH_FRONT={valor}\n", encoding="utf-8")
+    assert Settings(_env_file=env).auth_front == valor.strip().lower()
+
+
+@pytest.mark.parametrize("valor", ["prxy", "proxi", "si", "true", "app_proxy"])
+def test_una_errata_aqui_rompe_en_vez_de_degradar(valor, tmp_path):
+    """Las dos degradaciones posibles son mentira, así que no se degrada.
+
+    Cayendo a "" se avisaría teniendo proxy -ruido que enseña a ignorar el
+    aviso-; cayendo a "proxy" se callaría no teniéndolo, que es el fallo que
+    este ajuste existe para evitar. `app_proxy` está en la lista a propósito:
+    es el nombre del componente de Umbrel y es lo que uno escribiría de
+    memoria, así que el error tiene que ser explícito, no una sorpresa.
+    """
+    env = tmp_path / ".env"
+    env.write_text(f"AUTH_FRONT={valor}\n", encoding="utf-8")
+    with pytest.raises(Exception) as exc:
+        Settings(_env_file=env)
+    assert "AUTH_FRONT" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
 # `.env.example` como documentación
 # ---------------------------------------------------------------------------
 

@@ -127,6 +127,46 @@ class Settings(BaseSettings):
             )
         return nivel
 
+    # Qué hay DELANTE de esta aplicación controlando quién entra.
+    #
+    # La aplicación no tiene autenticación propia y no va a tenerla: en Umbrel
+    # el `app_proxy` ya pone un login, y montar otro por dentro serían dos
+    # contraseñas para la misma puerta. La consecuencia es que la protección
+    # vive SIEMPRE fuera, y por tanto este proceso no puede comprobarla: desde
+    # dentro del contenedor, estar detrás del `app_proxy` y estar publicado en
+    # crudo se ven exactamente igual.
+    #
+    # Como no se puede comprobar, se declara. Y el defecto es el ruidoso a
+    # propósito: sin declarar nada, el arranque avisa. Un despliegue nuevo que
+    # nadie configure se queja solo; lo contrario -callar por defecto- haría
+    # que el único caso peligroso fuese justo el silencioso.
+    #
+    #   ""         sin declarar. Se avisa, porque no se sabe.
+    #   "ninguna"  a propósito, sin contraseña. Se avisa igual, pero diciendo
+    #              que es deliberado. Es lo de la fase de pruebas en la LAN.
+    #   "proxy"    hay un proxy delante que pide credenciales (el `app_proxy`
+    #              de Umbrel). Se anota en el log y no se avisa.
+    auth_front: str = ""
+
+    @field_validator("auth_front")
+    @classmethod
+    def _frente_valido(cls, v: str) -> str:
+        """Una errata aquí NO puede degradar a silencio ni a aviso.
+
+        `AUTH_FRONT=prxy` cayendo a "" avisaría de más, y cayendo a "proxy"
+        callaría de menos. Las dos degradaciones son mentira sobre lo único que
+        este ajuste sirve para contar, así que se rompe y punto.
+        """
+        valor = str(v).strip().lower()
+        validos = {"", "ninguna", "proxy"}
+        if valor not in validos:
+            raise ValueError(
+                f"AUTH_FRONT={v!r} no es un valor válido. Usa `proxy` si hay un "
+                f"proxy con login delante, `ninguna` si estás sirviendo sin "
+                f"contraseña a propósito, o quítalo del entorno."
+            )
+        return valor
+
     # Si es true, el sistema decide y registra pero NO escribe en Hevy ni
     # envía Telegram. Equivale al flag --dry-run de la CLI.
     dry_run: bool = Field(default=False)

@@ -339,6 +339,112 @@ def test_un_log_level_mal_escrito_no_se_traga_en_silencio():
     assert "LOG_LEVEL" in str(exc.value)
 
 
+# ---------------------------------------------------------------------------
+# El aviso de que esto no tiene contraseña
+# ---------------------------------------------------------------------------
+# El montaje de pruebas en la LAN va sin autenticación a propósito: red de casa,
+# un solo usuario. La decisión es del usuario y está bien; lo que no puede pasar
+# es que VIAJE a otro despliegue sin que nadie se entere.
+#
+# Y no se puede comprobar desde dentro: estar detrás del `app_proxy` de Umbrel y
+# estar publicado en crudo en el wifi se ven idénticos desde este proceso. Así
+# que se declara con `AUTH_FRONT` y el arranque lo canta. Estos tests fijan las
+# dos mitades que importan: que el silencio SOLO se compre declarando un proxy,
+# y que el aviso diga qué queda abierto en vez de un "sin auth" que no asusta a
+# nadie.
+
+
+def _avisar(caplog, monkeypatch, valor):
+    """Llama al aviso directamente, no a través del arranque completo.
+
+    Por `basicConfig(..., force=True)`: el arranque reconfigura el logger raíz
+    y `force=True` se lleva por delante TODOS los manejadores, incluido el que
+    `caplog` acababa de poner. El aviso se emite -se ve en el stderr capturado-
+    pero `caplog.records` sale vacío. Es una peculiaridad de cómo se prueba
+    esto, no del aviso.
+
+    Que el arranque llame a esto lo fija el test de más abajo, por separado.
+    """
+    import logging
+
+    from app.api import _avisar_de_la_puerta
+
+    monkeypatch.setattr(settings, "auth_front", valor)
+    with caplog.at_level(logging.INFO, logger="app.api"):
+        _avisar_de_la_puerta()
+    return list(caplog.records)
+
+
+def test_el_arranque_llama_al_aviso(arrancada, monkeypatch):
+    """Lo de siempre: un aviso perfecto que nadie invoca no avisa de nada."""
+    import app.api as api
+
+    llamadas = []
+    monkeypatch.setattr(settings, "scheduler_enabled", False)
+    monkeypatch.setattr(api, "_avisar_de_la_puerta", lambda *a, **k: llamadas.append(1))
+    with TestClient(app):
+        pass
+    assert llamadas, "el arranque no dice nada sobre quién protege la puerta"
+
+
+@pytest.mark.parametrize("valor", ["", "ninguna"])
+def test_sin_proxy_delante_el_arranque_avisa(caplog, monkeypatch, valor):
+    avisos = [
+        r for r in _avisar(caplog, monkeypatch, valor)
+        if r.levelname == "WARNING" and "AUTENTICACIÓN" in r.getMessage()
+    ]
+    assert avisos, f"AUTH_FRONT={valor!r} tiene que avisar y no ha avisado"
+
+
+def test_declarar_un_proxy_es_lo_unico_que_calla_el_aviso(caplog, monkeypatch):
+    registros = _avisar(caplog, monkeypatch, "proxy")
+    assert not [
+        r for r in registros
+        if r.levelname == "WARNING" and "AUTENTICACIÓN" in r.getMessage()
+    ]
+    assert [r for r in registros if "proxy con credenciales" in r.getMessage()], (
+        "callar el aviso no puede ser callar del todo: que hay un proxy delante "
+        "es justo el dato que hace falta el día que alguien lo quite"
+    )
+
+
+def test_el_aviso_dice_QUE_queda_abierto_no_solo_que_no_hay_contrasena(
+    caplog, monkeypatch
+):
+    """«Sin autenticación» no mueve a nadie; «/api/export es tu histórico de
+    sueño, HRV y lumbar, y POST /api/checkin dispara una decisión» sí.
+
+    Y tiene que desmontar la coartada de `DRY_RUN`, que es la que uno se cuenta
+    a sí mismo: hoy corta la escritura, pero toda esta fase existe para llegar a
+    quitarlo.
+    """
+    texto = " ".join(
+        r.getMessage() for r in _avisar(caplog, monkeypatch, "ninguna")
+    )
+    assert "/api/export" in texto
+    assert "/api/checkin" in texto
+    assert "DRY_RUN" in texto
+    assert "AUTH_FRONT=proxy" in texto, "hay que decir cómo se arregla"
+
+
+def test_el_aviso_distingue_lo_deliberado_de_lo_no_pensado(caplog, monkeypatch):
+    """Las dos cosas son «sin contraseña», pero solo una es una decisión.
+
+    Si el mensaje fuese el mismo, el de la LAN -que está bien- enseñaría a
+    ignorar el de la máquina nueva, que es el que importa.
+    """
+    a_proposito = " ".join(
+        r.getMessage() for r in _avisar(caplog, monkeypatch, "ninguna")
+    )
+    caplog.clear()
+    sin_pensar = " ".join(
+        r.getMessage() for r in _avisar(caplog, monkeypatch, "")
+    )
+    assert "a propósito" in a_proposito
+    assert "a propósito" not in sin_pensar
+    assert "nadie ha declarado" in sin_pensar
+
+
 def test_la_salud_declara_lo_que_falta(cliente):
     """Un sistema arrancado a medias que contesta "ok" es peor que uno caído,
     porque nadie va a mirar."""
