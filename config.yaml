@@ -1936,23 +1936,42 @@ trend:
   #       máximo                   25,9              38,9
   #       días que disparan (>=18) 17 de 90          47 de 90
   #
-  # PENDIENTE DE DECISIÓN A MANO — NO TOCAR SIN MIRAR EL REPLAY:
+  # DECIDIDO A MANO DESPUÉS, EN SU PROPIO COMMIT, MIRANDO ESTA TABLA:
   #
-  #   caida_score_min: 2 se eligió como "el doble del p90" cuando el p90 era 1,0.
-  #   Ahora el p90 es 2,1, o sea que el 2 ya no es el doble de nada: está justo
-  #   EN el p90. Sigue siendo un sitio defendible -marca el 13% de días peores-
-  #   pero por accidente, no por el motivo que tiene escrito.
+  #   caida_min_min: 18 → 25. Era el único de los tres que estaba roto de
+  #   verdad. Se eligió entre el p75 y el p90 de la medida vieja; con la medida
+  #   buena el p50 es 18,4, o sea que el umbral había quedado POR DEBAJO DE LA
+  #   MEDIANA. Un cualificador que dice "es cantidad" más de la mitad de las
+  #   mañanas no cualifica nada: describe el clima. 25 lo devuelve justo por
+  #   encima del p75 (25,4), que es donde estaba pensado.
   #
-  #   caida_min_min: 18 es el que de verdad está roto. Se eligió entre el p75 y
-  #   el p90; ahora el p50 es 18,4, así que el umbral ha quedado POR DEBAJO DE LA
-  #   MEDIANA y dispara 47 de 90 días. Un cualificador que dice "es cantidad" más
-  #   de la mitad de las mañanas ha dejado de distinguir: para volver a donde
-  #   estaba pensado (entre p75 y p90) habría que subirlo a 25-29.
+  #   caida_score_min: 2 se queda. Se eligió como "el doble del p90" cuando el
+  #   p90 era 1,0 y ahora el p90 es 2,1, así que el motivo escrito ya no
+  #   describe el sitio -pero el sitio es bueno igual: marca el 13% de días
+  #   peores. Moverlo sin un motivo mejor que "el argumento viejo ha caducado"
+  #   sería tocar por tocar.
   #
-  # Se dejan los dos como estaban a propósito. Cambiarlos en el mismo commit que
-  # arregla la medida mezclaría dos cosas -corregir un cálculo y mover una
-  # política- y luego no habría forma de saber cuál de las dos produjo qué. Van
-  # después, a mano y mirando `--tendencia`.
+  #   delta_pp_min: 15 se queda, y aquí el criterio es DISTINTO a propósito. Ha
+  #   pasado de marcar el 12% de los días peores al 24%, que en el cualificador
+  #   habría sido motivo de subirlo. Aquí no: el detector 2 es confirmatorio y
+  #   está etiquetado RETROSPECTIVO en el propio texto, así que hablar más a
+  #   menudo no engaña a nadie. Lo que no puede es quedarse callado el mes que
+  #   hace falta. Si algún día se le quita la etiqueta, este umbral vuelve a
+  #   discusión.
+  #
+  # EFECTO MEDIDO DE SUBIR A 25, sobre los 179 días (día a día, sin agrupar):
+  #
+  #                          con 18        con 25
+  #     días con cualificador   26            26
+  #     "es cantidad"           12             6
+  #     "ninguna de las dos"    14            20
+  #     "es calidad"             0             0
+  #     "las dos cosas"          0             0
+  #
+  # Los dos veredictos de calidad siguen en cero y eso NO es un umbral mal
+  # puesto: es el histórico diciendo que cuando el motor señaló al sueño fue
+  # siempre cantidad. Si `caida_score_min` nunca dispara con datos reales de
+  # aquí a unos meses, entonces sí habrá que decidir si sobra.
   #
   # Lo que dice el histórico: cuando el motor señaló al sueño, SIEMPRE fue
   # cantidad y nunca calidad. En esos días Garmin puntuaba el sueño igual o
@@ -1961,4 +1980,4 @@ trend:
   # movió el umbral, no el descanso.
   sueno:
     caida_score_min: 2
-    caida_min_min: 18
+    caida_min_min: 25

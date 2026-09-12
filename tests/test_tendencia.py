@@ -696,14 +696,53 @@ class TestCualificadorSueno:
         """Un umbral que el histórico no alcanza nunca es folklore.
 
         La primera versión pedía 5 puntos de caída de `sleep_score` cuando el
-        máximo observado en 179 días fue 2,6: dos de los cuatro veredictos eran
-        opciones muertas recién nacidas. Este test no vuelve a medir el
-        histórico -eso lo hace `replay_semaforo.py --tendencia`- pero sí impide
-        que alguien los devuelva a un rango imposible sin enterarse.
+        máximo observado fue 2,6: dos de los cuatro veredictos eran opciones
+        muertas recién nacidas. Este test no vuelve a medir el histórico -eso lo
+        hace `replay_semaforo.py --tendencia`- pero sí impide que alguien los
+        devuelva a un rango imposible sin enterarse.
+
+        LOS TECHOS SE ACTUALIZARON AL ARREGLAR LAS VENTANAS, y conviene saber
+        por qué: eran 3 y 26 porque los máximos medidos eran 2,6 y 25,9, pero
+        esos máximos salían de la medida anidada, que amortiguaba un tercio.
+        Con las ventanas disjuntas los máximos reales sobre los mismos 179 días
+        son 4,0 y 38,9, así que los techos viejos no estaban "de sobra": iban
+        pegados a un número equivocado. El de 26 llegó a quedar por debajo del
+        p90 real (29,4), o sea que este guardia habría impedido subir
+        `caida_min_min` a donde de verdad tocaba.
+
+        Un test que fija una constante derivada de una medida caduca cuando
+        caduca la medida, y no avisa. Por eso el número va acompañado siempre
+        de de dónde sale.
         """
         sueno = cfg.raw["trend"]["sueno"]
-        assert sueno["caida_score_min"] <= 3
-        assert sueno["caida_min_min"] <= 26
+        assert sueno["caida_score_min"] <= 4, "máximo observado 4,0"
+        assert sueno["caida_min_min"] <= 39, "máximo observado 38,9"
+
+    def test_el_umbral_de_minutos_no_vuelve_a_caer_bajo_la_mediana(self, cfg):
+        """El techo solo caza un extremo, y el que falló fue el otro.
+
+        `caida_min_min` no llegó a 18 por una mala decisión: llegó ahí estando
+        bien puesto, y se quedó abajo cuando se arregló la MEDIDA. Nadie tocó el
+        número y aun así acabó bajo la mediana, diciendo "es cantidad" 47 de 90
+        mañanas. El techo de arriba no lo vio porque 18 es perfectamente
+        alcanzable; lo que no es, es distintivo.
+
+        Ese es el fallo que este test fija, y es estructural, no una
+        preferencia: un cualificador que da el mismo veredicto más de la mitad
+        de los días ha dejado de cualificar -describe el clima-, y eso vale
+        igual sea cual sea el número que se elija por encima.
+
+        18,4 ES UNA MEDIDA Y CADUCA. Sale de los 90 días con 90 de histórico del
+        replay de 2026, con las ventanas ya disjuntas, y hay que rehacerla con
+        `replay_semaforo.py --tendencia` cuando haya decisiones de verdad. Lo
+        que NO caduca es el criterio. Si al re-medir la mediana sube por encima
+        de 25, lo que hay que mover es el umbral, no este test.
+        """
+        MEDIANA_OBSERVADA = 18.4
+        assert cfg.raw["trend"]["sueno"]["caida_min_min"] > MEDIANA_OBSERVADA, (
+            "un umbral por debajo de la mediana dispara más de la mitad de los "
+            "días: eso no separa nada, solo repite el nombre de la regla"
+        )
 
 
 # ---------------------------------------------------------------------------
