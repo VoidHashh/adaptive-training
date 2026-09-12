@@ -179,6 +179,131 @@ def test_el_armazon_cachea_los_iconos_que_pide_el_manifest():
         )
 
 
+# ---------------------------------------------------------------------------
+# Los iconos: un binario en el repositorio no tiene forma de seguir siendo verdad
+# ---------------------------------------------------------------------------
+
+
+def _manifest() -> dict:
+    return json.loads((ESTATICOS / "manifest.webmanifest").read_text("utf-8"))
+
+
+def test_los_png_son_el_dibujo_del_svg_de_hoy():
+    """El único fallo que un PNG guardado puede tener, y no avisa de ninguno.
+
+    Se cambia un color en el SVG, el PNG se queda con el de antes, y nadie mira
+    un icono de 192 píxeles lo bastante de cerca como para verlo: quedan dos
+    semáforos de colores distintos según por dónde se abra la aplicación.
+
+    Se comparan PÍXELES y no bytes. Bytes compararía de paso la versión de zlib
+    de la máquina, que no es asunto de este proyecto: el mismo dibujo comprimido
+    por otro zlib son otros bytes y el mismo icono, y un test que falla por eso
+    se acaba borrando.
+    """
+    from scripts.generar_iconos import de_png, pintar_todo
+
+    for nombre, png in pintar_todo().items():
+        ruta = ESTATICOS / "icons" / nombre
+        assert ruta.is_file(), (
+            f"falta `{nombre}`. Se hace con: python scripts/generar_iconos.py"
+        )
+        assert de_png(ruta.read_bytes()) == de_png(png), (
+            f"`{nombre}` ya no es lo que dibuja su SVG. Vuelve a generarlo con: "
+            f"python scripts/generar_iconos.py"
+        )
+
+
+def test_cada_proposito_del_manifest_tiene_un_png():
+    """El fallo original: el manifest solo ofrecía SVG.
+
+    No da ningún error en ningún sitio. Da un cuadrado blanco con una letra
+    dentro en la pantalla de inicio, que uno lee como "la instalación no ha ido
+    bien" en vez de como "falta un formato".
+    """
+    por_proposito: dict[str, list[str]] = {}
+    for icono in _manifest()["icons"]:
+        por_proposito.setdefault(icono["purpose"], []).append(icono["type"])
+
+    assert set(por_proposito) == {"any", "maskable"}, (
+        f"propósitos en el manifest: {sorted(por_proposito)}. `maskable` es el "
+        f"que coge Android para la pantalla de inicio y `any` el resto; faltando "
+        f"uno, ese caso cae en el icono genérico"
+    )
+    for proposito, tipos in por_proposito.items():
+        assert "image/png" in tipos, (
+            f"el propósito `{proposito}` solo se ofrece en {sorted(set(tipos))}: "
+            f"el SVG en el manifest solo lo entiende un Chrome reciente"
+        )
+
+
+def test_el_apple_touch_icon_esta_enlazado_y_es_opaco():
+    """Safari no mira el manifest para esto, y no perdona la transparencia.
+
+    Dos fallos distintos, los dos silenciosos. Sin el `<link>`, "Añadir a
+    pantalla de inicio" en un iPhone guarda un RECORTE DE LA PÁGINA como icono.
+    Y con el icono equivocado -el normal, que trae sus propias esquinas
+    redondeadas y transparentes- iOS le aplica encima su máscara y rellena lo
+    que falta: sale un rectángulo redondeado dentro de otro, con una costura.
+
+    Por eso el `apple-touch-icon` sale del maskable, que es a sangre. Se
+    comprueba mirando las esquinas del PNG, que es donde se nota, y no el nombre
+    del SVG de origen: el nombre lo cambia un renombrado y las esquinas no.
+    """
+    from scripts.generar_iconos import de_png
+
+    for pagina in ("index.html", "metricas.html"):
+        html = (ESTATICOS / pagina).read_text(encoding="utf-8")
+        assert 'rel="apple-touch-icon"' in html, (
+            f"{pagina} no enlaza el apple-touch-icon: en iOS el icono de la "
+            f"pantalla de inicio sería una captura de la propia página"
+        )
+
+    lado, pixeles = de_png((ESTATICOS / "icons" / "apple-touch-icon.png").read_bytes())
+    esquinas = [(0, 0), (lado - 1, 0), (0, lado - 1), (lado - 1, lado - 1)]
+    for x, y in esquinas:
+        alfa = pixeles[(y * lado + x) * 4 + 3]
+        assert alfa == 255, (
+            f"la esquina ({x}, {y}) del apple-touch-icon tiene alfa {alfa}: iOS "
+            f"rellena lo transparente por su cuenta y deja costura"
+        )
+
+
+def test_un_svg_con_algo_que_el_dibujante_no_entiende_no_pasa_en_silencio(tmp_path):
+    """Lo que no se sabe dibujar tiene que reventar, no saltarse.
+
+    Un `<path>` nuevo ignorado en silencio daría un PNG al que le falta un trozo
+    del icono; un `opacity="0.5"` ignorado daría un PNG con un color distinto al
+    del SVG. Ninguna de las dos cosas se ve en un icono de 192 píxeles, y las
+    dos convierten el SVG y el PNG en dos dibujos diferentes.
+    """
+    import pytest as _pytest
+
+    from scripts.generar_iconos import SvgNoEntendido, leer_svg
+
+    cabecera = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+    casos = {
+        "figura_nueva": '<path d="M0 0 L10 10"/>',
+        "atributo_nuevo": '<circle cx="10" cy="10" r="5" fill="#ffffff" opacity="0.5"/>',
+        "color_por_nombre": '<circle cx="10" cy="10" r="5" fill="white"/>',
+    }
+    for nombre, cuerpo in casos.items():
+        ruta = tmp_path / f"{nombre}.svg"
+        ruta.write_text(f"{cabecera}{cuerpo}</svg>", encoding="utf-8")
+        with _pytest.raises(SvgNoEntendido):
+            leer_svg(ruta)
+
+    # Y el control: sin la parte rara, el mismo SVG sí se lee. Sin esto, los
+    # tres casos de arriba podrían estar fallando por cualquier otro motivo.
+    bueno = tmp_path / "bueno.svg"
+    bueno.write_text(
+        f'{cabecera}<circle cx="10" cy="10" r="5" fill="#ffffff"/></svg>',
+        encoding="utf-8",
+    )
+    assert leer_svg(bueno) == (512.0, [
+        {"t": "circulo", "cx": 10.0, "cy": 10.0, "r": 5.0, "color": (255, 255, 255)}
+    ])
+
+
 def test_el_service_worker_no_cachea_nada_de_la_api():
     """El motivo por el que existe el service worker tal y como está escrito.
 

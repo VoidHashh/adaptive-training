@@ -56,6 +56,15 @@ const ARMAZON = [
   // icono recortado dentro de un cuadrado blanco. Faltaba, y lo encontró el
   // test: es exactamente el olvido que ese test existe para no repetir.
   "/icons/icon-maskable.svg",
+  // Y los PNG, que son los que de verdad se instalan en casi todas partes: el
+  // SVG en el manifest solo lo entiende un Chrome moderno, y Safari no mira el
+  // manifest para esto. Los dibuja `scripts/generar_iconos.py` desde esos dos
+  // SVG de aquí arriba; no se editan a mano.
+  "/icons/icon-192.png",
+  "/icons/icon-512.png",
+  "/icons/icon-maskable-192.png",
+  "/icons/icon-maskable-512.png",
+  "/icons/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (ev) => {

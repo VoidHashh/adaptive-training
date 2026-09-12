@@ -8,6 +8,10 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<!-- Safari no mira el manifest para el icono de la pantalla de inicio: mira
+     esto, y en PNG. Sin esta línea, "Añadir a pantalla de inicio" en un iPhone
+     guarda un recorte de la propia página como icono. -->
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
 <meta name="theme-color" content="#14161a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">

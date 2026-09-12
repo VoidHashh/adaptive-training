@@ -328,6 +328,12 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m app.cli --dry-run
 ```
 
+**Los iconos PNG no se editan.** Se dibujan desde los dos SVG de
+`static/icons/` con `python scripts/generar_iconos.py`; si tocas un SVG, vuelve
+a pasarlo. La suite compara píxeles y avisa si se te olvida, porque un PNG
+guardado no tiene otra forma de dejar de ser verdad: se cambia un color en el
+SVG y quedan dos semáforos distintos según por dónde se abra la aplicación.
+
 ## Cómo está montado
 
 ```
