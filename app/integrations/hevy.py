@@ -624,6 +624,37 @@ def prune_backups(root: Path | str, routine_id: str, keep_last: int) -> list[Pat
     return borradas
 
 
+def leer_backup(path: Path | str, routine_id: str | None = None) -> Backup | None:
+    """Lee UNA copia concreta. `None` si no se puede usar, y se dice por qué.
+
+    Está separado de `latest_backup` porque hay dos formas de llegar a una
+    copia -la última, o una elegida a mano para saltarse una escritura mala- y
+    antes solo existía la primera. Duplicar la lectura habría dejado dos sitios
+    donde tratar un fichero corrupto, que es justo donde no conviene tener dos
+    criterios.
+
+    `taken_at` se leía sin red. Un JSON válido al que le falte el campo -uno de
+    una versión anterior, o escrito a medias- no es un fichero corrupto, así que
+    no lo cazaba el `except`: reventaba con un KeyError. Y esto se llama desde
+    `restore`, o sea en el peor momento posible. Ahora da el mismo resultado que
+    cualquier otra copia inservible: no la hay, y quien llame se entera por «no
+    hay ninguna copia» en vez de por una traza.
+    """
+    fichero = Path(path)
+    try:
+        datos = json.loads(fichero.read_text(encoding="utf-8"))
+        tomada = datetime.fromisoformat(datos["taken_at"])
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        log.error("copia ilegible %s: %s", fichero, exc)
+        return None
+    return Backup(
+        path=fichero,
+        routine_id=routine_id or str(datos.get("routine_id") or fichero.parent.name),
+        taken_at=tomada,
+        payload=datos.get("routine") or {},
+    )
+
+
 def latest_backup(root: Path | str, routine_id: str) -> Backup | None:
     """La copia más reciente de una rutina, o None si no hay ninguna."""
     carpeta = backup_dir(root, routine_id)
@@ -632,26 +663,7 @@ def latest_backup(root: Path | str, routine_id: str) -> Backup | None:
     ficheros = sorted(carpeta.glob("*.json"))
     if not ficheros:
         return None
-    ultimo = ficheros[-1]
-    try:
-        datos = json.loads(ultimo.read_text(encoding="utf-8"))
-        # `taken_at` se leía sin red. Un JSON válido al que le falte el campo
-        # -uno de una versión anterior, o escrito a medias- no es un fichero
-        # corrupto, así que no lo cazaba el `except` de arriba: reventaba con un
-        # KeyError. Y esto se llama desde `restore`, o sea en el peor momento
-        # posible. Ahora da el mismo resultado que cualquier otra copia
-        # inservible: no la hay, y quien llame se enterará por «no hay ninguna
-        # copia» en vez de por una traza.
-        tomada = datetime.fromisoformat(datos["taken_at"])
-    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        log.error("copia ilegible %s: %s", ultimo, exc)
-        return None
-    return Backup(
-        path=ultimo,
-        routine_id=routine_id,
-        taken_at=tomada,
-        payload=datos.get("routine") or {},
-    )
+    return leer_backup(ficheros[-1], routine_id)
 
 
 def pending_marker(root: Path | str) -> Path:

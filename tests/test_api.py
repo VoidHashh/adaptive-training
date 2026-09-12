@@ -17,6 +17,7 @@ import io
 import json
 import re
 from datetime import date, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -1644,3 +1645,115 @@ def test_la_pwa_no_calcula_nada_de_estadistica(cliente):
             f"la PWA contiene {sospecha!r}: la estadística se calcula en el "
             f"servidor, que es el único sitio donde se puede probar"
         )
+
+
+# ---------------------------------------------------------------------------
+# El hash del config: el de memoria contra el del disco
+# ---------------------------------------------------------------------------
+
+
+def test_health_dice_si_el_config_del_disco_es_el_que_esta_cargado(cliente, tmp_path, monkeypatch):
+    """El fallo que más veces ha aparecido en este proyecto, convertido en aviso.
+
+    «El valor que se lee no es el valor que se usa»: imagen vieja, esquema
+    viejo, Caddyfile viejo. Los tres tenían la misma forma -editar el fichero y
+    dar por hecho que el proceso lo había visto-. El `config.yaml` se carga UNA
+    vez por proceso, así que editarlo no cambia nada hasta recrear el
+    contenedor, y hasta ahora no había forma de notarlo desde fuera.
+
+    Se comprueban los dos lados, porque solo el primero no prueba nada: un
+    `in_sync: true` que no puede volverse `false` tranquiliza sin mirar.
+    """
+    fichero = tmp_path / "config.yaml"
+    original = Path("config.yaml").read_text(encoding="utf-8")
+    fichero.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(settings, "config_path", fichero)
+
+    # El cliente sirve el `cfg` de la fixture; para que la comparación tenga
+    # sentido, el fichero de disco arranca siendo ese mismo config.
+    cargado = cliente.get("/api/health").json()["config_file"]
+    assert cargado["file_hash"] is not None
+
+    # Y ahora el cambio de verdad: abrir el interruptor de escritura en el
+    # disco sin reiniciar. Es exactamente lo que pasa el lunes.
+    fichero.write_text(
+        original.replace("write_enabled: false", "write_enabled: true"),
+        encoding="utf-8",
+    )
+    tocado = cliente.get("/api/health").json()["config_file"]
+    assert tocado["file_hash"] != cargado["file_hash"], (
+        "cambiar write_enabled en el disco no ha movido el hash del fichero: "
+        "entonces la comparación no puede avisar de nada"
+    )
+    assert tocado["in_sync"] is False
+    assert "recrear" in tocado["error"]
+
+
+def test_health_avisa_si_el_config_del_disco_esta_roto(cliente, tmp_path, monkeypatch):
+    """Un YAML que no carga es un arranque futuro fallido, no un detalle.
+
+    La aplicación en marcha sobrevive -tiene el suyo en memoria- y justo por eso
+    nadie se enteraría hasta el siguiente reinicio, que es cuando ya no arranca.
+    """
+    fichero = tmp_path / "config.yaml"
+    fichero.write_text("integrations: [esto no\n  es: yaml", encoding="utf-8")
+    monkeypatch.setattr(settings, "config_path", fichero)
+
+    bloque = cliente.get("/api/health").json()["config_file"]
+    assert bloque["in_sync"] is False
+    assert bloque["file_hash"] is None
+    assert "no se puede cargar" in bloque["error"]
+    # Y el health sigue contestando 200: la app en marcha no está rota.
+    assert cliente.get("/api/health").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# La marca de escritura en curso
+# ---------------------------------------------------------------------------
+
+
+def test_health_saca_la_escritura_a_medias(cliente, tmp_path, monkeypatch):
+    """La señal que se emitía y no escuchaba nadie.
+
+    `write_routine` escribe esta marca justo antes del PUT y la borra justo
+    después, para que sobreviva a que el proceso muera entre las dos cosas.
+    Estaba escribiéndose desde el principio y no la leía nadie: ni endpoint, ni
+    mensaje, ni aviso. Si aparece, hay una rutina en Hevy cuyo estado no se
+    conoce, y eso tiene que verse sin ir a buscarlo.
+    """
+    from app.integrations.hevy import pending_marker
+
+    monkeypatch.setattr("app.api._raiz_de_datos", lambda: tmp_path)
+    assert cliente.get("/api/health").json()["writes"]["pending_write"] is None
+
+    marca = pending_marker(tmp_path)
+    marca.parent.mkdir(parents=True, exist_ok=True)
+    marca.write_text(
+        json.dumps({"routine_id": "abc", "backup": "x.json", "started_at": "2026-09-14T07:05:00"}),
+        encoding="utf-8",
+    )
+    pendiente = cliente.get("/api/health").json()["writes"]["pending_write"]
+    assert pendiente is not None, "la marca existe y el health dice que no hay ninguna"
+    assert pendiente["routine_id"] == "abc"
+
+    # Una marca corrupta NO es lo mismo que ninguna marca: sigue significando
+    # que hubo un PUT sin confirmar, solo que sin saber de qué rutina.
+    marca.write_text("{no es json", encoding="utf-8")
+    rota = cliente.get("/api/health").json()["writes"]["pending_write"]
+    assert rota is not None and rota["routine_id"] == "?"
+
+    marca.unlink()
+    assert cliente.get("/api/health").json()["writes"]["pending_write"] is None
+
+
+def test_health_publica_los_dos_interruptores_de_escritura(cliente):
+    """Los dos frenos, en el mismo sitio que el `dry_run`.
+
+    Estaban repartidos entre el `.env` y el YAML. Para saber si el sistema iba a
+    tocar algo hacia fuera había que abrir dos ficheros, y acordarse de que el
+    que manda no es el del disco sino el que se cargó al arrancar.
+    """
+    bloque = cliente.get("/api/health").json()["writes"]
+    assert set(bloque) >= {"hevy_write_enabled", "telegram_send_enabled", "pending_write"}
+    assert isinstance(bloque["hevy_write_enabled"], bool)
+    assert isinstance(bloque["telegram_send_enabled"], bool)

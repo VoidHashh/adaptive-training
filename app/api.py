@@ -245,13 +245,119 @@ def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
         "timezone": cfg.timezone,
         "secrets_missing": settings.missing_secrets(),
         "dry_run": settings.dry_run,
+        # Los dos interruptores de escritura, al lado del `dry_run`. Estaban
+        # repartidos entre el `.env` y el YAML, y para saber si el sistema iba a
+        # tocar algo hacia fuera había que abrir dos ficheros y acordarse de que
+        # el que manda es el que se cargó al arrancar, no el que está en disco.
+        "writes": _estado_escrituras(cfg),
         # Sin esto, una aplicación sin planificador es indistinguible de una
         # sana: sirve la PWA, contesta 200, y no decide nunca. Se dice cuántos
         # trabajos hay y cuándo toca cada uno, porque "arrancado" tampoco basta:
         # un planificador vivo con cero trabajos falla exactamente igual.
         "scheduler": _estado_planificador(request),
         "clock": _estado_del_reloj(cfg),
+        "config_file": _estado_del_config(cfg),
     }
+
+
+def _estado_escrituras(cfg) -> dict[str, Any]:
+    """Qué puede tocar el sistema hacia fuera, y si hay algo a medias.
+
+    LA MARCA PENDIENTE. `hevy.write_routine` escribe un fichero justo antes del
+    PUT y lo borra justo después. Existe para el caso en que el proceso muera
+    entre las dos cosas: entonces la marca sobrevive y dice que hay una rutina en
+    estado desconocido -puede ser la vieja, la nueva, o media escritura-. Estaba
+    escribiéndose desde el principio y no la leía **nadie**: ni un endpoint, ni
+    el mensaje de la mañana, ni un aviso. Una señal que se emite y nadie escucha
+    es igual de útil que no emitirla, y peor, porque parece que sí.
+
+    Aquí es donde tenía que estar: el healthcheck es lo único que se mira sin
+    que haya pasado algo. Si aparece `pending`, el sistema NO está sano aunque
+    conteste 200, y por eso el `status` de arriba se queda en "ok" pero este
+    bloque lo dice con todas las letras.
+    """
+    from app.integrations.hevy import read_pending
+
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    hevy_cfg = ((raw.get("integrations") or {}).get("hevy") or {})
+    tg_cfg = ((raw.get("integrations") or {}).get("telegram") or {})
+
+    try:
+        pendiente = read_pending(_raiz_de_datos())
+    except Exception as e:  # noqa: BLE001 - el healthcheck no puede caerse
+        # Que no se pueda leer la marca es en sí mismo un dato: significa que no
+        # se sabe si hay una escritura a medias. Se dice, en vez de contestar
+        # que no hay ninguna, que es lo que haría un `except` silencioso.
+        return {
+            "hevy_write_enabled": bool(hevy_cfg.get("write_enabled")),
+            "telegram_send_enabled": bool(tg_cfg.get("send_enabled")),
+            "pending_write": None,
+            "pending_error": f"no se ha podido leer la marca de escritura: {e}",
+        }
+
+    return {
+        "hevy_write_enabled": bool(hevy_cfg.get("write_enabled")),
+        "telegram_send_enabled": bool(tg_cfg.get("send_enabled")),
+        # `None` cuando no hay nada a medias. Cuando lo hay, sale el contenido
+        # entero de la marca: rutina, fecha y hora del intento.
+        "pending_write": pendiente,
+    }
+
+
+def _raiz_de_datos() -> Path:
+    """La carpeta de datos, deducida de `database_url`."""
+    url = str(settings.database_url)
+    return Path(url.split("///")[-1]).parent if "///" in url else Path("data")
+
+
+def _estado_del_config(cfg) -> dict[str, Any]:
+    """El hash del config en memoria contra el del fichero en disco AHORA.
+
+    POR QUÉ. «El valor que se lee no es el valor que se usa» es el fallo que más
+    veces ha aparecido en este proyecto: imagen vieja, esquema viejo, Caddyfile
+    viejo. Los tres tenían la misma forma -editar el fichero y dar por hecho que
+    el proceso lo había visto- y los tres se descubrieron tarde.
+
+    El `config.yaml` se carga UNA vez por proceso y se cachea. Editarlo no
+    cambia nada hasta recrear el contenedor. Hasta ahora `/api/health` devolvía
+    el hash de memoria, que es el que manda, pero sin nada con que compararlo:
+    coincidía consigo mismo siempre, o sea que tranquilizaba sin mirar.
+
+    Esto lee el fichero en cada petición -no se cachea, y ese es el punto- y
+    compara. `in_sync: false` significa exactamente una cosa: lo que hay escrito
+    en el disco no es lo que está decidiendo, y hace falta recrear el
+    contenedor. Es la comprobación de después de tocar el config, sin tener que
+    acordarse de hacerla a mano.
+    """
+    ruta = Path(settings.config_path)
+    try:
+        en_disco = load_config(ruta)
+    except Exception as e:  # noqa: BLE001 - un YAML roto no tumba el health
+        # Esto es un aviso serio y no un error de lectura cualquiera: el fichero
+        # del disco no se puede cargar, así que la próxima vez que se recree el
+        # contenedor la aplicación NO va a arrancar. Mejor enterarse ahora.
+        return {
+            "path": str(ruta),
+            "loaded_hash": cfg.hash,
+            "file_hash": None,
+            "in_sync": False,
+            "error": f"el config.yaml del disco no se puede cargar: {e}",
+        }
+
+    igual = en_disco.hash == cfg.hash
+    salida = {
+        "path": str(ruta),
+        "loaded_hash": cfg.hash,
+        "file_hash": en_disco.hash,
+        "in_sync": igual,
+    }
+    if not igual:
+        salida["error"] = (
+            "el config.yaml del disco NO es el que está cargado en memoria. "
+            "Los cambios no se aplican hasta recrear el contenedor: "
+            "docker compose up -d --force-recreate app"
+        )
+    return salida
 
 
 def _estado_del_reloj(cfg) -> dict[str, Any]:
