@@ -18,6 +18,7 @@ La regla 2 dejó de ser una convención y pasó a estar cerrada con llave
 from __future__ import annotations
 
 import copy
+import json
 import socket
 from datetime import date, timedelta
 from pathlib import Path
@@ -270,7 +271,61 @@ class FakeHTTP:
         return self._siguiente("get", url, **kwargs)
 
     def put(self, url: str, **kwargs) -> FakeResponse:
+        if "/v1/routines/" in url:
+            rechazo = _hevy_rechazaria(kwargs.get("json"))
+            if rechazo is not None:
+                # La llamada se registra igual: un test que quiera ver qué se
+                # intentó mandar tiene que poder mirarlo aunque se rechazara.
+                self.llamadas.append({"verb": "put", "url": url, **kwargs})
+                return rechazo
         return self._siguiente("put", url, **kwargs)
 
     def post(self, url: str, **kwargs) -> FakeResponse:
         return self._siguiente("post", url, **kwargs)
+
+
+# Claves que Hevy DEVUELVE en el GET y RECHAZA en el PUT con un 400.
+_PROHIBIDAS_EJERCICIO = {"index", "title"}
+_PROHIBIDAS_SERIE = {"index"}
+
+
+def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
+    """El 400 de verdad de Hevy, reproducido aquí.
+
+    POR QUÉ ESTÁ ESTO. El 2026-09-12 se descubrió que la reversión de rutinas
+    estaba rota desde siempre: `restore` reenviaba la copia -que es la respuesta
+    del GET tal cual, con `index` y `title`- y Hevy contestaba
+    `400 Unrecognized key(s) in object: 'index'`. Tenía seis tests y los seis
+    pasaban, porque este doble aceptaba cualquier cuerpo que le dieran.
+
+    Esa es la moraleja cara: un doble permisivo no prueba un contrato, prueba
+    que el código hace lo que hace. Los tests comprobaban la lógica de la
+    reversión -que elige la copia correcta, que respeta el interruptor- y ni uno
+    podía fallar por el motivo por el que la función fallaba de verdad.
+
+    Así que el doble ya no acepta cualquier cosa: rechaza exactamente lo que
+    rechaza Hevy. Si alguien vuelve a mandar la forma del GET en un PUT, se
+    entera aquí y no en la primera escritura real.
+    """
+    if not isinstance(cuerpo, dict):
+        return None
+    r = cuerpo.get("routine")
+    if not isinstance(r, dict):
+        return FakeResponse(
+            400, text='{"error":"Expected object at routine, received undefined"}'
+        )
+
+    malas: set[str] = set()
+    for ex in r.get("exercises") or []:
+        if not isinstance(ex, dict):
+            continue
+        malas |= set(ex) & _PROHIBIDAS_EJERCICIO
+        for s in ex.get("sets") or []:
+            if isinstance(s, dict):
+                malas |= set(s) & _PROHIBIDAS_SERIE
+    if malas:
+        detalle = ". ".join(
+            f"Unrecognized key(s) in object: {k!r}" for k in sorted(malas)
+        )
+        return FakeResponse(400, text=json.dumps({"error": detalle}))
+    return None

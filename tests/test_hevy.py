@@ -26,6 +26,7 @@ from app.integrations.hevy import (
     HevyClient,
     HevyError,
     build_routine_payload,
+    cuerpo_para_put,
     latest_backup,
     payload_diff,
     pending_marker,
@@ -454,7 +455,16 @@ def test_una_escritura_correcta_deja_copia_y_retira_la_marca(tmp_path):
     assert r.backup is not None and r.backup.payload == REMOTO
     assert read_pending(tmp_path) is None, "la marca debe retirarse al confirmar"
     assert [l["verb"] for l in doble.llamadas] == ["get", "put"]
-    assert doble.llamadas[1]["json"] == nuevo
+    # Lo que viaja NO es el payload tal cual, y dar eso por hecho -que es lo que
+    # este test daba por hecho- es lo que dejó la escritura rota hasta el día en
+    # que se abrió el interruptor: el payload del motor lleva `index` y `title`,
+    # que sirven para el diff y para el mensaje, y que Hevy rechaza con un 400.
+    enviado = doble.llamadas[1]["json"]
+    assert enviado == cuerpo_para_put(nuevo)
+    for ex in enviado["routine"]["exercises"]:
+        assert "index" not in ex and "title" not in ex
+        for s in ex["sets"]:
+            assert "index" not in s
 
 
 def test_un_put_rechazado_no_borra_la_marca_ni_la_copia(tmp_path):
@@ -509,7 +519,8 @@ def test_restaurar_ignora_el_interruptor(tmp_path):
     r = c.restore("r1")
     assert r.written
     assert doble.llamadas[0]["verb"] == "put"
-    assert doble.llamadas[0]["json"]["routine"]["exercises"] == REMOTO["exercises"]
+    enviado = doble.llamadas[0]["json"]["routine"]["exercises"]
+    assert enviado == cuerpo_para_put(REMOTO)["routine"]["exercises"]
 
 
 def test_restaurar_retira_la_marca_de_escritura_en_curso(tmp_path):
@@ -552,10 +563,19 @@ def test_escribir_y_revertir_devuelve_la_rutina_a_como_estaba(tmp_path):
     devuelto = doble.llamadas[2]["json"]["routine"]
     assert devuelto["title"] == REMOTO["title"]
     assert devuelto["notes"] == REMOTO["notes"]
-    assert devuelto["exercises"] == REMOTO["exercises"], (
+    # Se compara contra la copia PASADA POR EL CONTRATO, no contra la respuesta
+    # cruda del GET. La diferencia no es una licencia para que el test pase: es
+    # que `index` y `title` viajan en la respuesta y Hevy los RECHAZA en la
+    # petición, así que el cuerpo correcto no PUEDE ser igual al remoto. Lo que
+    # tiene que sobrevivir al viaje -qué ejercicios, en qué orden, cuántas
+    # series y con qué peso- sobrevive, y es lo que se comprueba.
+    assert devuelto["exercises"] == cuerpo_para_put(REMOTO)["routine"]["exercises"], (
         "lo revertido no es lo que había antes de escribir"
     )
     assert devuelto["exercises"][0]["sets"][1]["weight_kg"] == 55
+    assert [e["exercise_template_id"] for e in devuelto["exercises"]] == [
+        e["exercise_template_id"] for e in REMOTO["exercises"]
+    ], "la reversión ha cambiado los ejercicios o su orden"
 
 
 def test_sin_copia_no_se_puede_revertir(tmp_path):
@@ -736,3 +756,108 @@ def test_sin_limite_las_copias_se_acumulan(tmp_path):
     c.write_routine("r1", {"routine": {"exercises": []}})
 
     assert len(list((tmp_path / "hevy_backups" / "r1").glob("*.json"))) == 4
+
+
+# ---------------------------------------------------------------------------
+# El contrato del cuerpo del PUT
+# ---------------------------------------------------------------------------
+
+
+def test_el_cuerpo_del_put_no_lleva_las_claves_que_hevy_rechaza():
+    """La forma del GET no es la forma del PUT, y confundirlas es un 400 entero.
+
+    Este test es la cicatriz de un fallo real. Hasta el 2026-09-12 el sistema no
+    había hecho NUNCA un PUT que llegara a Hevy -`write_enabled` arrancó en
+    `false` y nadie lo abrió-, así que el cuerpo nunca se validó contra la API
+    de verdad. `restore` reenviaba la copia tal cual, con `index` y `title`, y
+    Hevy contestaba `400 Unrecognized key(s) in object: 'index'`. Seis tests en
+    verde y la reversión rota.
+    """
+    limpio = cuerpo_para_put(REMOTO)["routine"]
+    for ex in limpio["exercises"]:
+        assert "index" not in ex
+        assert "title" not in ex
+        for s in ex["sets"]:
+            assert "index" not in s
+
+
+def test_el_cuerpo_del_put_conserva_lo_que_importa():
+    """Limpiar no puede convertirse en perder.
+
+    Un saneado demasiado entusiasta que se llevara por delante el
+    `superset_id` deshace las superseries en la app, y eso no da ningún error:
+    la rutina queda escrita, distinta, y en silencio.
+    """
+    remoto = {
+        "title": "Día 1",
+        "notes": "una nota",
+        "exercises": [
+            {
+                "index": 0,
+                "title": "Hip thrust",
+                "exercise_template_id": "AAAA1111",
+                "superset_id": 7,
+                "rest_seconds": 90,
+                "notes": "cuidado lumbar",
+                "sets": [
+                    {"index": 0, "type": "warmup", "reps": 10, "weight_kg": 20.0,
+                     "distance_meters": None, "duration_seconds": None,
+                     "custom_metric": None},
+                ],
+            }
+        ],
+    }
+    r = cuerpo_para_put(remoto)["routine"]
+    assert r["title"] == "Día 1" and r["notes"] == "una nota"
+    ex = r["exercises"][0]
+    assert ex["exercise_template_id"] == "AAAA1111"
+    assert ex["superset_id"] == 7, "la supersería se deshace en la app y sin avisar"
+    assert ex["rest_seconds"] == 90
+    assert ex["notes"] == "cuidado lumbar"
+    assert ex["sets"][0] == {
+        "type": "warmup", "reps": 10, "weight_kg": 20.0,
+        "distance_meters": None, "duration_seconds": None, "custom_metric": None,
+    }
+
+
+def test_una_clave_desconocida_de_hevy_es_error_y_no_un_descarte_callado():
+    """Si la API añade un campo, hay que decidir qué se hace con él.
+
+    Tragárselo escribiría en Hevy una rutina a la que le falta algo -un RPE, una
+    nota nueva- sin que nadie se entere. Que reviente es recuperable: la copia
+    ya está hecha y el PUT todavía no ha salido.
+    """
+    remoto = {
+        "title": "x", "notes": None,
+        "exercises": [{"exercise_template_id": "A", "rpe_objetivo": 8, "sets": []}],
+    }
+    with pytest.raises(HevyError, match="rpe_objetivo"):
+        cuerpo_para_put(remoto)
+
+    con_serie_rara = {
+        "title": "x", "notes": None,
+        "exercises": [{"exercise_template_id": "A", "sets": [{"type": "normal", "tempo": "3011"}]}],
+    }
+    with pytest.raises(HevyError, match="tempo"):
+        cuerpo_para_put(con_serie_rara)
+
+
+def test_cuerpo_para_put_acepta_las_dos_formas_de_entrada():
+    """Envuelto o pelado: del motor llega envuelto y de una copia llega pelado."""
+    pelado = cuerpo_para_put(REMOTO)
+    envuelto = cuerpo_para_put({"routine": REMOTO})
+    assert pelado == envuelto
+
+
+def test_el_payload_del_motor_pasa_el_contrato():
+    """Lo que construye el motor cada mañana tiene que poder escribirse.
+
+    Sin esto, el contrato se comprobaría solo sobre las copias y no sobre la
+    escritura del día, que es la que ocurre 250 veces al año.
+    """
+    nuevo = build_routine_payload(SesionFalsa(exercises=[ejercicio()]), {})
+    limpio = cuerpo_para_put(nuevo)["routine"]
+    assert limpio["exercises"][0]["exercise_template_id"] == "AAAA1111"
+    assert len(limpio["exercises"][0]["sets"]) == 2
+    for ex in limpio["exercises"]:
+        assert not ({"index", "title"} & set(ex))

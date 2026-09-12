@@ -1674,12 +1674,20 @@ def test_health_dice_si_el_config_del_disco_es_el_que_esta_cargado(cliente, tmp_
     cargado = cliente.get("/api/health").json()["config_file"]
     assert cargado["file_hash"] is not None
 
-    # Y ahora el cambio de verdad: abrir el interruptor de escritura en el
-    # disco sin reiniciar. Es exactamente lo que pasa el lunes.
-    fichero.write_text(
-        original.replace("write_enabled: false", "write_enabled: true"),
-        encoding="utf-8",
-    )
+    # Y ahora el cambio de verdad: mover el interruptor de escritura en el
+    # disco sin reiniciar. Es exactamente lo que pasó al abrir los frenos.
+    #
+    # Se mueve en la dirección que toque en vez de escribir el valor a pelo.
+    # La primera versión ponía `false -> true` fijo, y dejó de comprobar nada
+    # el día que el interruptor se abrió: la sustitución no encontraba el texto,
+    # el fichero salía idéntico y el test pasaba sin haber cambiado el hash. Un
+    # test que depende del valor actual del config no prueba, acompaña.
+    if "write_enabled: true" in original:
+        tocado = original.replace("write_enabled: true", "write_enabled: false")
+    else:
+        tocado = original.replace("write_enabled: false", "write_enabled: true")
+    assert tocado != original, "no se ha tocado el config: el test no probaría nada"
+    fichero.write_text(tocado, encoding="utf-8")
     tocado = cliente.get("/api/health").json()["config_file"]
     assert tocado["file_hash"] != cargado["file_hash"], (
         "cambiar write_enabled en el disco no ha movido el hash del fichero: "

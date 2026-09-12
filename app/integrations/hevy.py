@@ -385,6 +385,89 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# La forma del cuerpo del PUT
+# ---------------------------------------------------------------------------
+#
+# Hevy NO acepta en el PUT la misma forma que devuelve en el GET, y la
+# diferencia no es cosmética: manda un 400 entero. `index` y `title` viajan en
+# la respuesta y están PROHIBIDOS en la petición.
+#
+#     {"error":"Unrecognized key(s) in object: 'index'..."}
+#
+# Esto costó descubrirlo lo que costó porque hasta el 2026-09-12 este sistema
+# no había hecho NUNCA un PUT que llegara a Hevy: `write_enabled` arrancó en
+# `false` y nadie lo abrió. La forma del cuerpo nunca se validó contra la API
+# de verdad, solo contra un doble de pruebas que aceptaba cualquier cosa. Los
+# seis tests de `restore` pasaban y la reversión estaba rota.
+#
+# Se usa LISTA BLANCA y no lista negra a propósito. Con lista negra bastaría
+# que Hevy añadiera un campo nuevo a la respuesta para que una reversión
+# -que reenvía lo que se leyó- volviera a fallar con el mismo 400, y el día que
+# eso pasara sería el día en que hace falta revertir. La lista blanca deja esa
+# puerta cerrada de una vez.
+_EJERCICIO_PUT = frozenset(
+    {"exercise_template_id", "superset_id", "rest_seconds", "notes", "sets"}
+)
+_SERIE_PUT = frozenset(
+    {"type", "weight_kg", "reps", "distance_meters", "duration_seconds", "custom_metric"}
+)
+# Las que Hevy devuelve y rechaza. Se quitan sin ruido porque se sabe qué son;
+# cualquier OTRA clave desconocida es un cambio de la API y sí se grita.
+_SOLO_RESPUESTA = frozenset({"index", "title"})
+
+
+def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
+    """El cuerpo exacto que acepta `PUT /v1/routines/{id}`.
+
+    Es el ÚNICO sitio que sabe qué forma tiene el cuerpo en la red. Lo usan las
+    dos escrituras -la del día y la reversión- porque tenerlo en dos sitios
+    significaría que la reversión se arregla y la escritura no, o al revés, y
+    justo esa asimetría es la que dejó la reversión rota mientras sus tests
+    pasaban.
+
+    Acepta las dos formas de entrada -`{"routine": {...}}` o el diccionario
+    pelado- porque las dos llegan: la del motor viene envuelta y la de una copia
+    de seguridad viene sin envolver, que es tal cual como la devolvió el GET.
+
+    Una clave desconocida es ERROR y no un descarte callado. Podría ser un
+    campo nuevo que importe -un RPE, una nota- y tragárselo escribiría en Hevy
+    una rutina a la que le falta algo sin que nadie se entere. Que reviente aquí
+    es recuperable: la copia ya está hecha y el PUT todavía no ha salido.
+    """
+    r = routine.get("routine", routine)
+
+    ejercicios: list[dict[str, Any]] = []
+    for i, ex in enumerate(r.get("exercises") or []):
+        sobra = set(ex) - _EJERCICIO_PUT - _SOLO_RESPUESTA
+        if sobra:
+            raise HevyError(
+                f"el ejercicio {i} lleva claves que Hevy no reconoce en un PUT: "
+                f"{sorted(sobra)}. Si la API ha cambiado, hay que decidir si ese "
+                f"campo se escribe o se descarta; escribir sin él a ciegas no."
+            )
+        limpio = {k: v for k, v in ex.items() if k in _EJERCICIO_PUT and k != "sets"}
+        series: list[dict[str, Any]] = []
+        for j, s in enumerate(ex.get("sets") or []):
+            sobra_s = set(s) - _SERIE_PUT - _SOLO_RESPUESTA
+            if sobra_s:
+                raise HevyError(
+                    f"la serie {j} del ejercicio {i} lleva claves que Hevy no "
+                    f"reconoce en un PUT: {sorted(sobra_s)}"
+                )
+            series.append({k: v for k, v in s.items() if k in _SERIE_PUT})
+        limpio["sets"] = series
+        ejercicios.append(limpio)
+
+    return {
+        "routine": {
+            "title": r.get("title"),
+            "notes": r.get("notes"),
+            "exercises": ejercicios,
+        }
+    }
+
+
 def _set_payload(
     index: int, s: dict[str, Any], es_calentamiento: bool = False
 ) -> dict[str, Any]:
@@ -414,10 +497,21 @@ def _set_payload(
 
 
 def build_routine_payload(session: Any, config: Any = None) -> dict[str, Any]:
-    """Cuerpo del PUT para la sesión de hoy.
+    """Cuerpo del PUT para la sesión de hoy, ANTES de pasarlo por el contrato.
 
-    `session` es el `BuiltSession` del motor. El resultado es exactamente lo
-    que viaja por la red: no hay ningún paso de transformación posterior.
+    `session` es el `BuiltSession` del motor.
+
+    Aquí ponía «el resultado es exactamente lo que viaja por la red: no hay
+    ningún paso de transformación posterior». Era mentira, y de la cara: este
+    diccionario lleva `index` y `title` en cada ejercicio, y Hevy contesta 400 a
+    un PUT que los incluya. La frase se escribió cuando era verdad y se quedó
+    ahí cuando dejó de serlo, que es como los comentarios hacen daño de verdad:
+    el que la leyera daba por comprobado un contrato que nadie había comprobado.
+
+    `index` y `title` se siguen calculando porque los usan `payload_diff` y el
+    mensaje de la mañana, donde un nombre legible vale más que un identificador
+    de plantilla. Lo que sale a la red es `cuerpo_para_put(...)`, y ese es el
+    único sitio que sabe qué acepta Hevy.
 
     `set_types.write_warmup_type_to_hevy` decide si la marca de calentamiento
     que calcula el motor se ESCRIBE en Hevy. Con la opción activa, la serie que
@@ -861,13 +955,27 @@ class HevyClient:
             encoding="utf-8",
         )
 
-        # 4. El PUT.
+        # 4. El PUT. `cuerpo_para_put` es el paso que faltaba: el payload que
+        # construye el motor lleva `index` y `title`, que sirven para el diff y
+        # para el mensaje pero que Hevy rechaza con un 400.
+        try:
+            cuerpo = cuerpo_para_put(payload)
+        except HevyError as exc:
+            # Antes de salir por la red y con la copia ya hecha: el mejor sitio
+            # posible para descubrir que el cuerpo no vale.
+            return WriteResult(
+                written=False,
+                routine_id=routine_id,
+                backup=copia,
+                diff=diff,
+                error=f"{exc} Copia en {copia.path}",
+            )
         try:
             with self._client() as c:
                 r = c.put(
                     f"/v1/routines/{routine_id}",
                     headers=self._headers(),
-                    json=payload,
+                    json=cuerpo,
                 )
         except Exception as exc:  # noqa: BLE001 - red: puede fallar de mil formas
             # La marca se queda a propósito: no sabemos si el PUT llegó.
@@ -922,13 +1030,12 @@ class HevyClient:
                 f"no se puede revertir"
             )
 
-        cuerpo = {
-            "routine": {
-                "title": copia.payload.get("title"),
-                "notes": copia.payload.get("notes"),
-                "exercises": copia.payload.get("exercises") or [],
-            }
-        }
+        # Una copia es la respuesta del GET tal cual, con `index` y `title` en
+        # cada ejercicio. Devolverla sin limpiar era un 400 seguro, y ahí estuvo
+        # rota la reversión desde el primer día: sus seis tests usaban un doble
+        # que aceptaba cualquier cuerpo, así que probaban la lógica y no el
+        # contrato. Un test que no puede fallar por el motivo real no prueba.
+        cuerpo = cuerpo_para_put(copia.payload)
         with self._client() as c:
             r = c.put(
                 f"/v1/routines/{routine_id}",

@@ -106,21 +106,34 @@ program:
 # -----------------------------------------------------------------------------
 # 0-ter. INTERRUPTORES DE ESCRITURA
 # -----------------------------------------------------------------------------
-# Todo lo que sale del sistema hacia fuera pasa por aquí. Empiezan APAGADOS.
+# Todo lo que sale del sistema hacia fuera pasa por aquí.
 #
-# El motivo de que `hevy.write_enabled` arranque en false no es la desconfianza
-# en el código: es que `PUT /v1/routines/{id}` REEMPLAZA la rutina entera, así
-# que el coste de una decisión mal construida no es un mal día de entreno, es
-# una rutina destruida. Con el interruptor apagado el sistema decide, avisa por
-# Telegram y registra qué HABRÍA escrito, pero no toca Hevy. Eso permite correr
-# una semana en seco comparando cada mañana el mensaje con lo que uno habría
-# hecho, y encenderlo solo cuando las dos cosas coincidan.
+# ABIERTOS DESDE EL 2026-09-14. Arrancaron apagados y la fase en seco se
+# descartó a propósito: compraba poco. El motor está validado contra 179 días
+# de repetición histórica, hay copia antes de cada PUT, y la reversión dejó de
+# ser una función sin llamar el día 12 -ahora es `python -m app.rutina
+# revertir`, probada de ida y vuelta contra Hevy de verdad-. El peor caso es
+# una sesión rara que se corrige a mano en dos minutos.
+#
+# Lo que sigue siendo verdad, y por eso se queda escrito: `PUT
+# /v1/routines/{id}` REEMPLAZA la rutina entera. El coste de una decisión mal
+# construida no es un mal día de entreno, es una rutina destruida. De ahí que
+# la copia previa no sea configurable -sin copia verificada no se escribe- y
+# que la reversión exista como comando y no como idea.
+#
+# CAMBIAR ESTO NO BASTA CON GUARDAR EL FICHERO. El `config.yaml` se carga una
+# vez por proceso: hay que recrear el contenedor y comprobarlo después.
+#   docker compose up -d --force-recreate app
+#   curl -s localhost:8317/api/health | python -m json.tool
+# En `config_file.in_sync` sale `false` mientras el fichero del disco no sea el
+# que está decidiendo, que es justo el fallo que este proyecto ha cometido ya
+# tres veces con la imagen, el esquema y el Caddyfile.
 #
 # El interruptor NO afecta a la reversión: si algo se rompió mientras estaba
 # encendido, se puede deshacer aunque luego se apague.
 integrations:
   hevy:
-    write_enabled: false
+    write_enabled: true
 
     # Copias de seguridad antes de cada escritura. No es configurable que se
     # hagan —sin copia verificada no se escribe, y eso está en el código— pero
