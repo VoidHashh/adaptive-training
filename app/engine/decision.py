@@ -243,6 +243,14 @@ class DayDecision:
     # nunca existieron -las que el motor HABRÍA tomado- sin construir sesiones ni
     # progresiones que no tendrían sentido en un pasado que no se vivió.
     tendencia: Any = None
+    # La cuenta hacia la próxima revisión de umbrales. Un `Recalibracion` de
+    # `app/engine/recalibracion.py`, colgado por `run_daily` igual que los dos
+    # campos de arriba y por el mismo motivo: necesita saber cuántos días con
+    # decisión hay guardados, y eso está en la base de datos.
+    #
+    # No entra en ninguna decisión ni la cambia. Es mantenimiento del sistema
+    # contado por el único canal que se lee todos los días.
+    recalibracion: Any = None
 
     @property
     def weekday(self) -> str:
@@ -276,6 +284,9 @@ class DayDecision:
             ),
             "load_adoptions": list(self.load_adoptions),
             "tendencia": self.tendencia.to_dict() if self.tendencia else None,
+            "recalibracion": (
+                self.recalibracion.to_dict() if self.recalibracion else None
+            ),
         }
 
 

@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 from app import repository as repo
 from app.engine.decision import apply_execution, decide
 from app.engine.message import render_telegram
+from app.engine.recalibracion import evaluar_recalibracion
 from app.engine.signals import Checkin, build_signals
 from app.engine.tendencia import DecisionDia, evaluar_tendencia
 from app.models import HevyWrite, Notification, WorkoutLog
@@ -179,6 +180,25 @@ def run_daily(
 
     res = DailyResult(day=day, decision=decision)
     fila = repo.save_decision(session, decision)
+
+    # El recordatorio de recalibración, DESPUÉS de guardar. `save_decision`
+    # hace `flush`, así que el día de hoy ya cuenta en la consulta de abajo y no
+    # hay que sumarlo a mano: la cuenta que se enseña es la misma que se leería
+    # después desde fuera, y no una versión de la cuenta que solo existe aquí.
+    #
+    # Cuando el día que se decide es ANTERIOR a la última revisión de umbrales
+    # -un replay, o volver a decidir una mañana vieja- no hay nada acumulado
+    # todavía y el rango saldría invertido, que es algo que `dias_con_decision`
+    # rechaza a gritos a propósito. Ese caso se escribe AQUÍ, que es el único
+    # sitio donde consta que es legítimo, en vez de ablandar el contador para
+    # todos los que lo llamen.
+    dias = (
+        repo.dias_con_decision(session, desde=cfg.recalibrado_el, hasta=day)
+        if day >= cfg.recalibrado_el
+        else 0
+    )
+    decision.recalibracion = evaluar_recalibracion(cfg, dias)
+
     _guardar_lo_leido(session, signals, metrics, res)
 
     motivos = client_errors or {}

@@ -96,6 +96,27 @@ class Config:
         return datetime.strptime(str(value), "%Y-%m-%d").date()
 
     @property
+    def recalibrar_cada_dias(self) -> int:
+        """Cada cuántos días CON DECISIÓN toca revisar los umbrales cortos.
+
+        Sin defecto y sin `.get(..., 28)`: el validador garantiza que está, y un
+        defecto escondido aquí convertiría un borrado accidental de la clave en
+        un sistema que sigue avisando con un número que no está escrito en
+        ninguna parte.
+        """
+        return int(self._data["program"]["recalibrar_cada_dias"])
+
+    @property
+    def recalibrado_el(self) -> date:
+        """El último día en que se revisaron. Origen de la cuenta."""
+        value = self._data["program"]["recalibrado_el"]
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+    @property
     def routines(self) -> dict[str, Any]:
         return self._data.get("routines", {})
 
@@ -325,6 +346,84 @@ def _validate(data: dict[str, Any]) -> list[str]:
             errors.append(
                 f"program.start '{prog_start}' está entre comillas. Quítalas para "
                 "que YAML lo lea como fecha y no como texto."
+            )
+
+    # --- el recordatorio de recalibración ------------------------------------
+    # Las dos claves son OBLIGATORIAS, y no por simetría con `start`. Este
+    # recordatorio existe porque un comentario que pide "revisar a las cuatro
+    # semanas" no lo lee nadie a las cuatro semanas; si además la clave que lo
+    # dispara se puede borrar sin consecuencias, lo que queda es un recordatorio
+    # que se puede apagar por descuido y que, apagado, no se distingue de uno
+    # que todavía no ha llegado el momento de dar. Se prefiere no arrancar.
+    #
+    # `check_keys` sobre `program` va aquí abajo por el mismo motivo de siempre:
+    # escribir `recalibrar_cada: 28` en vez de `recalibrar_cada_dias` daría un
+    # arranque limpio, la clave buena ausente y el aviso desactivado para
+    # siempre. Era, además, la única sección de primer nivel sin lista blanca.
+    check_keys(
+        data.get("program") or {},
+        {"start", "recalibrar_cada_dias", "recalibrado_el"},
+        "program",
+    )
+
+    cada = (data.get("program") or {}).get("recalibrar_cada_dias")
+    if cada is None:
+        errors.append(
+            "program.recalibrar_cada_dias está vacío o no existe. Es cada "
+            "cuántos días CON DECISIÓN guardada el mensaje de la mañana avisa "
+            "de que toca revisar los umbrales calibrados sobre muestras cortas "
+            "(la clasificación de bici, el umbral del fin de semana). Sin él "
+            "ese aviso no se da nunca y la revisión se queda en la promesa de "
+            "un comentario. Pon un entero de días; 28 son las cuatro semanas."
+        )
+    elif not _es_num(cada) or int(cada) != cada or int(cada) < 1:
+        errors.append(
+            f"program.recalibrar_cada_dias '{cada}' no es un número entero de "
+            "días mayor que cero."
+        )
+
+    recal = (data.get("program") or {}).get("recalibrado_el")
+    if recal is None:
+        errors.append(
+            "program.recalibrado_el está vacío o no existe. Es el día desde el "
+            "que se cuentan los días con decisión hasta el próximo aviso de "
+            "recalibración, y es también la ÚNICA forma de callar ese aviso: "
+            "ponerle la fecha de hoy significa 'ya lo he mirado'. Si nunca has "
+            "recalibrado, pon la misma fecha que program.start."
+        )
+    elif isinstance(recal, datetime):
+        errors.append(
+            f"program.recalibrado_el '{recal}' lleva hora. Debe ser una fecha "
+            "AAAA-MM-DD sin hora: la cuenta va por días."
+        )
+    elif not isinstance(recal, date):
+        try:
+            datetime.strptime(str(recal), "%Y-%m-%d")
+        except ValueError:
+            errors.append(
+                f"program.recalibrado_el '{recal}' no es una fecha AAAA-MM-DD válida"
+            )
+        else:
+            errors.append(
+                f"program.recalibrado_el '{recal}' está entre comillas. Quítalas "
+                "para que YAML lo lea como fecha y no como texto."
+            )
+    elif isinstance(prog_start, date) and not isinstance(prog_start, datetime):
+        # Las dos comprobaciones cruzadas. Ninguna de las dos rompe nada al
+        # instante, y las dos dejan el aviso mudo durante meses, que es
+        # exactamente lo que este recordatorio no puede permitirse.
+        if recal < prog_start:
+            errors.append(
+                f"program.recalibrado_el '{recal}' es anterior a program.start "
+                f"'{prog_start}'. La cuenta arrancaría en días que el programa "
+                "todavía no había vivido."
+            )
+        elif recal > date.today():
+            errors.append(
+                f"program.recalibrado_el '{recal}' está en el futuro (hoy es "
+                f"{date.today().isoformat()}). Casi siempre es un año mal "
+                "escrito, y el efecto es que el aviso de recalibración no "
+                "vuelve a salir hasta esa fecha."
             )
 
     routines = data["routines"]

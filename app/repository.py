@@ -30,7 +30,7 @@ from dataclasses import fields as dataclass_fields
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState
@@ -481,6 +481,46 @@ def current_decision(session: Session, day: date) -> DecisionRow | None:
             DecisionRow.date == day, DecisionRow.is_current.is_(True)
         )
     ).first()
+
+
+def dias_con_decision(session: Session, *, desde: date, hasta: date) -> int:
+    """Cuántos DÍAS distintos tienen decisión vigente en [desde, hasta].
+
+    Días y no filas, y ahí está todo el cuidado: un día puede tener varias
+    decisiones -la de las 07:00 sin check-in y la de las 09:40 con él- y contar
+    filas daría por acumulada el doble de muestra de la que hay.
+
+    NO se filtra por `is_current`, al revés que `serie_decisiones`. Allí importa
+    cuál de las dos decisiones del día quedó vigente, porque se está leyendo el
+    semáforo de cada día; aquí solo se pregunta si ese día pasó algo, y un día
+    cuya decisión de las 07:00 quedó superada por la de las 09:40 es un día
+    vivido igual. Añadir el filtro no cambiaría ninguna cuenta -toda fecha con
+    filas tiene al menos una vigente- y habría que escribir junto a él por qué
+    está, sin que nada lo comprobara nunca.
+
+    Lo usa el recordatorio de recalibración, que mide muestra acumulada y no
+    tiempo transcurrido: ver `app/engine/recalibracion.py`.
+    """
+    if desde > hasta:
+        # No es un rango vacío del que devolver 0 tranquilamente: es que quien
+        # llama ha calculado mal los extremos. Un cero aquí dejaría el aviso de
+        # recalibración contando desde cero para siempre, sin decir nada.
+        raise ValueError(
+            f"rango invertido: desde={desde.isoformat()} es posterior a "
+            f"hasta={hasta.isoformat()}"
+        )
+    # Sin `or 0` al final. `COUNT(*)` no devuelve NULL nunca, así que ese `or`
+    # no protegería de nada real y sí taparía el día que esta consulta deje de
+    # ser un COUNT: convertiría un None inesperado en un cero creíble, que es
+    # justo el aviso que este contador existe para no perder.
+    return int(
+        session.scalar(
+            select(func.count(distinct(DecisionRow.date))).where(
+                DecisionRow.date >= desde,
+                DecisionRow.date <= hasta,
+            )
+        )
+    )
 
 
 def serie_decisiones(session: Session, *, hasta: date) -> list[DecisionDia]:

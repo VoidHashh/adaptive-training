@@ -31,8 +31,47 @@ timezone: Europe/Madrid
 # Por eso el cargador se NIEGA A ARRANCAR si falta o está en null, en vez de
 # apuntarlo en una nota del informe. Una nota se lee el primer día y se ignora
 # el resto; un arranque fallido se arregla.
+#
+# LA RECALIBRACIÓN
+# ----------------
+# Varios umbrales de este fichero se calibraron sobre una muestra pequeña y con
+# la promesa, escrita en un comentario, de "revisarlos a las cuatro semanas".
+# Un comentario que pide que alguien se acuerde no es un recordatorio: es una
+# nota que se lee el día que se escribe y no se vuelve a leer nunca. Las dos
+# claves de abajo convierten esa promesa en algo que el sistema dice en voz
+# alta por Telegram cuando toca.
+#
+# POR QUÉ SE CUENTAN DÍAS CON DECISIÓN Y NO DÍAS DE CALENDARIO
+# Lo que hace recalibrable un umbral es la muestra acumulada, no el paso del
+# tiempo: cuatro semanas de calendario con el sistema apagado dos no son cuatro
+# semanas de datos, y avisar entonces invita a recalibrar sobre la mitad de la
+# muestra que se creía tener. Se cuentan los días que tienen una decisión
+# vigente guardada, que es exactamente la muestra con la que se va a recalibrar.
+#
+# POR QUÉ NO SE USA EL HASH DEL CONFIG
+# La tentación era contar decisiones tomadas bajo el `config_hash` de hoy, con
+# la gracia de que recalibrar cambia el hash y el contador se reinicia solo, sin
+# tener que acordarse de nada. Pero el hash cambia con CUALQUIER edición: tocar
+# `telegram.send_enabled` reiniciaría el contador de la recalibración sin que
+# nadie haya recalibrado nada, y el aviso desaparecería sin haberse atendido.
+# Un contador que se pone a cero por el motivo equivocado es peor que no
+# tenerlo, porque además certifica que no hay nada pendiente.
 program:
   start: 2026-09-08   # AAAA-MM-DD. Origen del contador de descargas.
+
+  # Cada cuántos días CON DECISIÓN GUARDADA vuelve a tocar revisar los umbrales
+  # calibrados sobre muestras cortas. 28 = las cuatro semanas prometidas, pero
+  # contadas en días de datos y no en días de hoja de calendario.
+  recalibrar_cada_dias: 28
+
+  # El último día en que se revisaron. Se cambia A MANO, y ese es el punto: la
+  # única forma de callar el aviso es haber mirado. Vale igual si de la revisión
+  # sale "no cambio nada" -se pone la fecha y el contador vuelve a empezar-,
+  # porque decidir no tocar también es haber recalibrado.
+  #
+  # Arranca igual que `start`: el día cero del programa nada se había revisado
+  # todavía, así que la primera cuenta va desde el principio.
+  recalibrado_el: 2026-09-08
 
 
 # -----------------------------------------------------------------------------
@@ -965,7 +1004,10 @@ cycling:
   #     SUAVE   -> AEROBIC_BASE / RECOVERY
   # Reparto resultante: 4 INTENSA, 4 MEDIA, 17 SUAVE.
   #
-  # PENDIENTE DE RECALIBRACIÓN: revisar a las 4 semanas con /api/export.
+  # PENDIENTE DE RECALIBRACIÓN. La muestra son 25 salidas de una sola temporada,
+  # así que estos dos cortes son los primeros candidatos a moverse. Se revisan
+  # con /api/export, y el aviso de que toca lo da el mensaje de la mañana:
+  # `program.recalibrar_cada_dias` arriba del todo. No hay que acordarse.
   classification:
     - level: intensa
       description: "Más del 30% del tiempo en Z4-Z5"
@@ -1022,7 +1064,8 @@ cycling:
     # ajustado a un fin de semana típico actual de 1-2,8 h; si empiezas a hacer
     # salidas largas de forma habitual, 2,5 h dejará de significar "fin de
     # semana duro" y pasará a significar "fin de semana normal", y el lunes
-    # saldrá en ámbar siempre. Revisar en la recalibración de las 4 semanas.
+    # saldrá en ámbar siempre. Es de los que hay que mirar cuando el mensaje de
+    # la mañana avise de que toca recalibrar (`program.recalibrar_cada_dias`).
     total_hours_threshold: 2.5
 
     # Ajustado a 1 tras arreglar el clasificador. El motivo original para

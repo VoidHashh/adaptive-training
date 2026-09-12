@@ -375,6 +375,27 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             f"recupera sola: si la quieres, hay que meterla a mano."
         )
 
+    # --- mantenimiento del propio sistema -----------------------------------
+    # FUERA de `include_reasoning`, y aquí el motivo es el más claro de todos:
+    # esto no es razonamiento, ni siquiera es sobre el entrenamiento de hoy. Es
+    # el sistema pidiendo que le miren unos números que se calibraron sobre
+    # muestras cortas y que llevan desde entonces decidiendo mañanas.
+    #
+    # Va al final, después de todo lo que hay que hacer hoy y de todos los
+    # avisos sobre la fiabilidad de la decisión, porque es lo único del mensaje
+    # que no tiene prisa. Y no va dentro de "Decidido con datos incompletos",
+    # que es donde cabría por parecido: aquello dice "hoy he decidido peor de lo
+    # normal"; esto dice "llevo un mes decidiendo con unos umbrales que
+    # prometiste revisar". Mezclarlos haría que el segundo se leyera como una
+    # degradación de hoy y se descartara con ella.
+    recalibracion = getattr(decision, "recalibracion", None)
+    lineas_recal = recalibracion.lineas() if recalibracion is not None else []
+    if lineas_recal:
+        L.append("")
+        L.append("🛠 <b>Toca recalibrar</b>")
+        for linea in lineas_recal:
+            L.append(f"• {linea}")
+
     # --- por qué ------------------------------------------------------------
     if incluir_motivo:
         L.append("")

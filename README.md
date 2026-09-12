@@ -21,6 +21,15 @@ El check-in son siete deslizadores y un comentario. **Un deslizador que no se
 toca no se envía**: el motor tiene un camino para las señales que faltan y ese
 camino es mejor que un 5 inventado.
 
+Cada cierto tiempo el mensaje de la mañana añade un bloque **🛠 Toca
+recalibrar**. No es un error ni una decisión: es el sistema recordando que
+varios umbrales del `config.yaml` se calibraron sobre muestras cortas y que ya
+hay datos suficientes para volver a mirarlos. Se cuenta en **días con decisión
+guardada**, no en días de calendario —cuatro semanas con el sistema apagado dos
+no son cuatro semanas de datos—, y la única forma de callarlo es poner la fecha
+de hoy en `program.recalibrado_el`. Si de mirarlo sale que no cambia nada, se
+cambia la fecha igual: decidir no tocar, habiendo mirado, también es recalibrar.
+
 ## Instalación
 
 Antes de elegir cómo instalarlo hay que saber esto: **la aplicación no tiene
