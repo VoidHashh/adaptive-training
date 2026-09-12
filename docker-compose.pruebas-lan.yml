@@ -7,6 +7,13 @@
 # hecho. En cuanto eso esté estable, el destino es Umbrel (ver `umbrel/`), y
 # entonces ESTE FICHERO SOBRA: allí el `app_proxy` hace lo mismo y mejor.
 #
+# Y "TEMPORAL" aquí arriba no es un plazo, es una intención -las que peor han
+# envejecido en este repositorio-. El plazo de verdad está en
+# `tests/test_andamiaje.py`, que se pone rojo cuando se cumple y dice qué hay
+# que borrar. Ese fichero ata además lo que este compose AFIRMA sobre otros: el
+# puerto que reserva Umbrel, dónde escucha la aplicación, que el 8000 no salga
+# del bucle local, y que `AUTH_FRONT` cuente lo que el proxy hace de verdad.
+#
 # ESTO VA SIN CONTRASEÑA, A PROPÓSITO
 # -----------------------------------
 # Llevaba un `basic_auth` en el Caddyfile con un hash en `.env.pruebas-lan`.

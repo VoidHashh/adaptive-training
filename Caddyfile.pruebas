@@ -1,5 +1,8 @@
 # TEMPORAL: el proxy de la fase de pruebas en el PC.
-# Se borra junto con `docker-compose.pruebas-lan.yml` al pasar a Umbrel.
+# Se borra junto con `docker-compose.pruebas-lan.yml` al pasar a Umbrel, y el
+# plazo para hacerlo está escrito en `tests/test_andamiaje.py`, que es también
+# donde se comprueba que el puerto y el destino de aquí abajo siguen siendo los
+# que la aplicación y el manifiesto de Umbrel dicen por su lado.
 
 {
 	# La API de administración de Caddy no pinta nada aquí. Escucha solo en

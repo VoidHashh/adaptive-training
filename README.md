@@ -154,6 +154,14 @@ con wifi— no lo necesita.
 > allí el `app_proxy` hace lo mismo y mejor. Existe por una sola razón: poder
 > abrir el formulario desde el móvil por la mañana durante los días de comparar
 > lo que decide el sistema con lo que uno habría hecho.
+>
+> **Y tiene fecha, no solo intención.** «Temporal» escrito en una cabecera no
+> caduca nunca; el plazo está en `tests/test_andamiaje.py` y la suite se pone en
+> rojo cuando se cumple, diciendo qué borrar. Ese mismo fichero ata las cuatro
+> cosas que estos dos ficheros afirman sobre otros —el puerto que reserva
+> Umbrel, dónde escucha la aplicación, que el 8000 no sale del bucle local, y
+> que `AUTH_FRONT` diga lo que el proxy hace de verdad—, porque ninguna de las
+> cuatro se rompe en voz alta.
 
 #### Este montaje va SIN AUTENTICACIÓN, y es una decisión
 
