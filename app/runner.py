@@ -46,6 +46,7 @@ from app.engine.message import render_telegram
 from app.engine.recalibracion import evaluar_recalibracion
 from app.engine.signals import Checkin, build_signals
 from app.engine.tendencia import DecisionDia, evaluar_tendencia
+from app.integrations.telegram import escapar_html
 from app.models import HevyWrite, Notification, WorkoutLog
 
 log = logging.getLogger(__name__)
@@ -388,9 +389,15 @@ def _mandar_telegram(
     # interruptor de solo lectura ("read_only") cambia qué hacer después, y eso
     # lo cuenta `hevy_reason`, que va en la segunda línea.
     if res.hevy_status in ("error", "read_only"):
+        # `hevy_reason` es `str(excepción)` cuando el estado es "error", o sea
+        # texto que viene de httpx o de la respuesta de Hevy, o sea texto con
+        # ángulos dentro más a menudo de lo que parece. Sin escapar, Telegram
+        # devuelve 400 «can't parse entities» y este aviso -que es el que dice
+        # que la rutina de hoy NO está en Hevy- se pierde entero. Fallo de Hevy
+        # y silencio de Telegram a la vez, y la app enseñando la rutina vieja.
         texto = (
             "⚠️ <b>La rutina NO se ha escrito en Hevy</b>\n"
-            f"{res.hevy_reason}\n"
+            f"{escapar_html(res.hevy_reason)}\n"
             "Lo de abajo es lo que tocaba hoy; tendrás que montarlo a mano.\n\n"
         ) + texto
 
@@ -407,17 +414,45 @@ def _mandar_telegram(
             f"de hoy no se ha contado a nadie"
         )
     else:
+        r = None
         try:
             r = client.send(texto, dry_run=dry_run)
-            res.telegram_status = (
-                "sent" if r.sent else ("dry_run" if dry_run else "skipped")
-            )
-            res.telegram_reason = r.reason
+            if r.sent:
+                res.telegram_status = "sent"
+                res.telegram_reason = r.reason
+            elif dry_run:
+                res.telegram_status = "dry_run"
+                res.telegram_reason = r.reason
+            elif r.error:
+                # Aquí se perdía el motivo. `send()` NO lanza cuando la API
+                # contesta que no: devuelve `sent=False` con el fallo en
+                # `error`, y `reason` vacío. Como esta rama guardaba `r.reason`
+                # y llamaba "skipped" a todo, un rechazo de Telegram quedaba
+                # registrado igual que un `send_enabled: false` deliberado, y
+                # con el motivo tirado a la basura. Los dos casos se leen luego
+                # en la misma columna, así que eran indistinguibles: "hoy no se
+                # mandó nada, y no consta por qué".
+                res.telegram_status = "error"
+                res.telegram_reason = r.error
+                res.problemas.append(f"Telegram: {r.error}")
+                log.error("Telegram no aceptó el mensaje: %s", r.error)
+            else:
+                res.telegram_status = "skipped"
+                res.telegram_reason = r.reason
         except Exception as exc:  # noqa: BLE001
             res.telegram_status = "error"
             res.telegram_reason = str(exc)
             res.problemas.append(f"Telegram: {exc}")
             log.exception("fallo enviando el mensaje")
+
+        # Llegó, pero no como se escribió. No es un error -el mensaje está
+        # entero- pero tiene que quedar registrado: significa que algo se
+        # interpoló sin escapar y que hay un `escapar_html` que falta.
+        if getattr(r, "plain_parts", 0):
+            res.problemas.append(
+                f"Telegram: {r.plain_parts} parte(s) salieron sin formato "
+                f"porque la API rechazó el HTML"
+            )
 
     session.add(
         Notification(

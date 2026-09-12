@@ -159,30 +159,93 @@ def test_reconciliar_sin_cliente_revienta_en_vez_de_callar(en_memoria, cfg):
     assert "HEVY_API_KEY" in msg, "el error tiene que decir por dónde empezar"
 
 
-def test_el_avisador_manda_telegram_cuando_la_reconciliacion_revienta():
+def _avisar_de(excepcion, monkeypatch, *respuestas):
+    """Dispara `_avisador` con un cliente de Telegram DE VERDAD.
+
+    Aquí había un doble con un `send()` de dos líneas que apuntaba el texto en
+    una lista y devolvía `None`. Aceptaba cualquier cosa, así que el test no
+    podía fallar por el motivo por el que el aviso fallaba de verdad: que
+    Telegram no sabía leer el HTML y no mandaba nada. Ahora pasa por el
+    `TelegramClient` real y por el doble de httpx, que reproduce ese 400.
+    """
+    import sys
+
+    from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent
+
+    from app.integrations.telegram import TelegramClient
+    from app.scheduler import _avisador
+    from tests.conftest import FakeHTTP, FakeResponse
+
+    doble = FakeHTTP(list(respuestas) or [FakeResponse(200, {"ok": True})])
+
+    class ModuloFalso:
+        @staticmethod
+        def Client(*a, **k):  # noqa: N802 - imita la API de httpx
+            return doble
+
+    monkeypatch.setitem(sys.modules, "httpx", ModuloFalso)
+
+    _avisador(TelegramClient(bot_token="123:abc", chat_id="42"))(
+        JobExecutionEvent(
+            EVENT_JOB_ERROR, "reconcile", None, None, exception=excepcion,
+        )
+    )
+    return doble
+
+
+def test_el_avisador_manda_telegram_cuando_la_reconciliacion_revienta(monkeypatch):
     """La cadena entera: excepción -> listener -> Telegram.
 
     Probar solo que lanza no sirve de nada si el aviso no llega: el motivo de
     lanzar es justamente que llegue.
     """
-    from apscheduler.events import EVENT_JOB_ERROR, JobExecutionEvent
+    doble = _avisar_de(RuntimeError("sin cliente de Hevy"), monkeypatch)
 
-    from app.scheduler import _avisador
+    assert len(doble.llamadas) == 1
+    enviado = doble.llamadas[0]["json"]
+    assert "reconcile" in enviado["text"]
+    assert enviado["parse_mode"] == "HTML"
 
-    enviados = []
 
-    class Tg:
-        def send(self, texto, **kw):
-            enviados.append(texto)
+def test_el_aviso_sale_aunque_la_excepcion_lleve_angulos(monkeypatch):
+    """EL FALLO. Un `<` en el texto de la excepción tumbaba el aviso entero.
 
-    _avisador(Tg())(
-        JobExecutionEvent(
-            EVENT_JOB_ERROR, "reconcile", None, None,
-            exception=RuntimeError("sin cliente de Hevy"),
+    `str()` de las excepciones de Python lleva ángulos constantemente. Este
+    `TypeError` es literal: es el que sale al comparar un `None` con un número,
+    que es exactamente la forma en que revienta un trabajo al que le falta un
+    dato. Sin escapar, Telegram contestaba `can't parse entities` y el aviso no
+    salía. O sea que el único efecto hacia fuera sin freno -el que avisa de que
+    algo ha reventado- se caía justo por reventar algo.
+
+    FALSACIÓN: quitando `escapar_html` de `scheduler.py`, este test falla con el
+    400 del doble. Comprobado.
+    """
+    exc = TypeError("'<' not supported between instances of 'NoneType' and 'int'")
+    doble = _avisar_de(exc, monkeypatch)
+
+    assert len(doble.llamadas) == 1, "un solo intento: no hizo falta el plan B"
+    enviado = doble.llamadas[0]["json"]
+    assert enviado["parse_mode"] == "HTML", "y salió con formato, no degradado"
+    assert "&lt;" in enviado["text"], "el ángulo va escapado"
+    assert "'<' not supported" not in enviado["text"]
+
+
+def test_si_el_aviso_no_se_envia_queda_dicho_en_el_log(monkeypatch, caplog):
+    """No se puede avisar de que el aviso falló mandando otro aviso.
+
+    `send()` no lanza cuando la API rechaza: devuelve `SendResult(sent=False)`.
+    El listener se lo tragaba. El log es el último sitio donde puede constar.
+    """
+    from tests.conftest import FakeResponse
+
+    with caplog.at_level("ERROR"):
+        _avisar_de(
+            RuntimeError("boom"), monkeypatch,
+            FakeResponse(400, text="Bad Request: chat not found"),
         )
-    )
-    assert len(enviados) == 1
-    assert "reconcile" in enviados[0]
+
+    assert "NO se ha enviado" in caplog.text, caplog.text
+    assert "chat not found" in caplog.text, "y con el motivo, no solo el hecho"
 
 
 def test_reconciliar_mira_hacia_atras_y_no_solo_hoy(en_memoria, cfg):

@@ -18,10 +18,12 @@ from app.integrations.telegram import (
     LIMIT,
     TelegramClient,
     TelegramError,
+    escapar_html,
+    sin_etiquetas,
     split_message,
 )
 
-from tests.conftest import FakeHTTP, FakeResponse
+from tests.conftest import FakeHTTP, FakeResponse, _telegram_rechazaria
 
 
 def _httpx_falso(doble: FakeHTTP):
@@ -148,6 +150,123 @@ def test_si_falla_la_primera_parte_no_se_dice_que_se_envio(red):
     assert not r.sent
     assert r.parts == 0
     assert "500" in (r.error or "")
+
+
+# ---------------------------------------------------------------------------
+# El HTML, que es lo que tumbaba el aviso
+# ---------------------------------------------------------------------------
+#
+# El doble de `conftest` ya no acepta cualquier texto: reproduce el 400 de
+# `can't parse entities` medido contra la API real. Eso convierte a TODOS los
+# tests de arriba en tests del contrato, no solo a los de aquí abajo.
+
+
+@pytest.mark.parametrize(
+    "roto",
+    [
+        "TypeError: '<' not supported between instances of 'str' and 'int'",
+        "5 < 7",
+        "hola <foo>mundo</foo>",
+        "<b>sin cerrar",
+        "cierre </b> suelto",
+        "<b>a<i>b</b>c</i>",
+    ],
+)
+def test_el_doble_rechaza_el_html_que_rechaza_telegram(roto):
+    """La falsación del propio doble: si esto pasara, no probaría nada.
+
+    Son los seis textos que se mandaron a la API de verdad con un `chat_id`
+    inválido -para que no le llegara a nadie- y que contestaron con un 400 de
+    entidades antes siquiera de mirar el chat.
+    """
+    r = _telegram_rechazaria({"text": roto, "parse_mode": "HTML"})
+    assert r is not None and r.status_code == 400
+    assert "can't parse entities" in r.text
+
+
+@pytest.mark.parametrize("bueno", ["Tom & Jerry", "algo &fo; mas", "3 > 2", "3->4"])
+def test_el_doble_no_inventa_rechazos_que_telegram_no_hace(bueno):
+    """Y la mitad que más se olvida: lo que la API SÍ acepta.
+
+    Un doble que rechazara de más también mentiría, y encima haría escribir
+    código para contentarlo. El `&` suelto Telegram lo perdona; medido.
+    """
+    assert _telegram_rechazaria({"text": bueno, "parse_mode": "HTML"}) is None
+
+
+def test_el_texto_de_una_excepcion_escapado_ya_no_lo_rechaza():
+    """El fallo concreto, reducido a una línea.
+
+    `scheduler.py` metía esto tal cual dentro de `<code>`. El `<` del mensaje
+    de la excepción abría una etiqueta inventada y el aviso entero se perdía.
+    """
+    exc = "TypeError: '<' not supported between instances of 'str' and 'int'"
+    crudo = f"<code>{exc}</code>"
+    escapado = f"<code>{escapar_html(exc)}</code>"
+
+    assert _telegram_rechazaria({"text": crudo, "parse_mode": "HTML"}) is not None
+    assert _telegram_rechazaria({"text": escapado, "parse_mode": "HTML"}) is None
+
+
+def test_si_telegram_rechaza_el_html_el_mensaje_sale_en_plano(red):
+    """La red de seguridad. Un aviso feo que llega vale más que uno que no.
+
+    El escapado debería hacer que esto no salte nunca. Está para lo que se haya
+    escapado, que es el motivo por el que el proyecto tuvo esta avería.
+    """
+    doble = red(FakeResponse(200, {"ok": True}))  # solo para el reintento
+    r = cliente().send("<b>roto: 5 < 7</b>")
+
+    assert r.sent is True, "el aviso tiene que salir igual"
+    assert r.parts == 1
+    assert r.plain_parts == 1, "y tiene que constar que salió degradado"
+    assert "SIN formato" in r.reason
+
+    assert len(doble.llamadas) == 2, "un intento en HTML y el reintento en plano"
+    assert doble.llamadas[0]["json"]["parse_mode"] == "HTML"
+    assert "parse_mode" not in doble.llamadas[1]["json"]
+    assert doble.llamadas[1]["json"]["text"] == "roto: 5 < 7", (
+        "en plano se quitan las etiquetas Y se deshace el escapado"
+    )
+
+
+def test_un_400_que_no_es_de_entidades_no_se_reintenta(red):
+    """`chat not found` no se arregla mandándolo otra vez sin formato.
+
+    Reintentarlo escondería el motivo de verdad detrás de un segundo error
+    idéntico, y encima diría que se envió.
+    """
+    doble = red(FakeResponse(400, text="Bad Request: chat not found"))
+    r = cliente().send("hola")
+
+    assert not r.sent
+    assert r.plain_parts == 0
+    assert "chat not found" in (r.error or "")
+    assert len(doble.llamadas) == 1, "no se reintenta"
+
+
+def test_si_el_reintento_en_plano_tambien_falla_no_se_dice_que_se_envio(red):
+    red(FakeResponse(500, text="boom"))
+    r = cliente().send("<b>roto: 5 < 7</b>")
+    assert not r.sent
+    assert r.parts == 0
+    assert "500" in (r.error or "")
+
+
+def test_escapar_html_hace_el_ampersand_primero():
+    """Al revés se re-escaparían los `&` que acabamos de escribir nosotros."""
+    assert escapar_html("<a & b>") == "&lt;a &amp; b&gt;"
+
+
+def test_sin_etiquetas_deshace_lo_que_escapar_html_hizo():
+    """Ida y vuelta: lo que sale por consola es el texto original."""
+    original = "Tom & Jerry: 5 < 7 > 3"
+    assert sin_etiquetas(f"<b>{escapar_html(original)}</b>") == original
+
+
+def test_sin_etiquetas_conoce_code_que_la_lista_vieja_no_conocia():
+    """La lista propia de `render_plain` solo tenía `<b>` e `<i>`."""
+    assert sin_etiquetas("<code>x</code>") == "x"
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from app import repository as repo
 from app.db import session_scope
+from app.integrations.telegram import escapar_html
 from app.runner import run_aviso_percepcion, run_daily, run_reconcile
 
 log = logging.getLogger(__name__)
@@ -453,17 +454,29 @@ def _avisador(telegram_client: Any) -> Callable:
 
     def escuchar(event) -> None:  # noqa: ANN001
         perdido = getattr(event, "exception", None) is None
+        # Todo lo que viene de fuera va escapado. El `job_id` lo pone este
+        # fichero y sería seguro, pero escaparlo cuesta lo mismo que razonar
+        # cada vez sobre si esta interpolación concreta es de las seguras.
+        quien = escapar_html(event.job_id)
         if perdido:
+            cuando = escapar_html(getattr(event, "scheduled_run_time", "?"))
             texto = (
-                f"⚠️ El trabajo <b>{event.job_id}</b> no llegó a ejecutarse "
-                f"(estaba previsto para {getattr(event, 'scheduled_run_time', '?')}). "
+                f"⚠️ El trabajo <b>{quien}</b> no llegó a ejecutarse "
+                f"(estaba previsto para {cuando}). "
                 f"Probablemente el sistema estuviera apagado."
             )
             log.error("trabajo perdido: %s", event.job_id)
         else:
+            # `escapar_html` aquí no es cosmética. El `str` de una excepción de
+            # Python lleva ángulos cada dos por tres -`'<' not supported
+            # between instances of...`, un `<Response [500]>`, un repr
+            # cualquiera- y sin escapar Telegram contesta 400 «can't parse
+            # entities» y el aviso NO SALE. Es decir: el único efecto hacia
+            # fuera sin freno, el que existe para que un fallo no sea mudo, se
+            # volvía mudo precisamente al fallar. Comprobado contra la API.
             texto = (
-                f"⚠️ El trabajo <b>{event.job_id}</b> ha fallado:\n"
-                f"<code>{event.exception}</code>\n"
+                f"⚠️ El trabajo <b>{quien}</b> ha fallado:\n"
+                f"<code>{escapar_html(event.exception)}</code>\n"
                 f"Hoy puede que no tengas decisión. Revisa los registros."
             )
             log.error("trabajo fallido: %s", event.job_id, exc_info=event.exception)
@@ -471,9 +484,22 @@ def _avisador(telegram_client: Any) -> Callable:
         if telegram_client is None:
             return
         try:
-            telegram_client.send(texto)
+            r = telegram_client.send(texto)
         except Exception:  # noqa: BLE001
             # Si ni el aviso se puede mandar, al menos que quede escrito.
             log.exception("no se pudo avisar de que el trabajo falló")
+            return
+
+        # El `send` de Telegram NO lanza cuando la API contesta que no: devuelve
+        # un `SendResult` diciéndolo. Aquí se tiraba ese valor a la basura, así
+        # que un rechazo de Telegram no dejaba rastro en ninguna parte: ni
+        # mensaje, ni línea de log, ni fila. El aviso de avería desaparecía
+        # entero y en silencio, que es el modo de fallo exacto que este
+        # `_avisador` existe para impedir.
+        if r is not None and not getattr(r, "sent", False):
+            log.error(
+                "el aviso del trabajo %s NO se ha enviado: %s",
+                event.job_id, getattr(r, "error", None) or getattr(r, "reason", ""),
+            )
 
     return escuchar

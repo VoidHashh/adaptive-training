@@ -24,7 +24,13 @@ import copy
 import pytest
 
 from app.engine.decision import EngineState, decide
-from app.engine.message import EMOJI, NOMBRE_LUZ, render_plain, render_telegram
+from app.engine.message import (
+    EMOJI,
+    LIMIT,
+    NOMBRE_LUZ,
+    render_plain,
+    render_telegram,
+)
 
 from tests.conftest import LUNES, sig, sig_completa
 
@@ -745,3 +751,226 @@ def test_va_despues_de_la_bici_y_antes_de_las_degradaciones(cfg):
     txt = render_telegram(d, cfg)
 
     assert txt.index("Tendencia") < txt.index(DEGRADACIONES[0])
+
+
+# ---------------------------------------------------------------------------
+# El HTML que sale de aquí tiene que poder parsearlo Telegram
+# ---------------------------------------------------------------------------
+#
+# `render_telegram` escribe `<b>`, `<i>` y `<code>` y los manda con
+# `parse_mode=HTML`. Telegram valida ese HTML DE VERDAD, y lo valida antes
+# incluso de mirar si el chat existe: si no lo sabe leer contesta
+# `400 can't parse entities` y no manda nada.
+#
+# El riesgo no es teórico y no es de este fichero: el mismo fallo estaba puesto
+# en `scheduler.py`, que metía `str(excepción)` dentro de `<code>` sin escapar.
+# Aquí está latente porque hoy el `config.yaml` no tiene ni un `<`, `>` ni `&`.
+# Estos tests son para que siga siendo latente el día que los tenga, y para que
+# una interpolación nueva sin escapar se caiga aquí y no un lunes a las 06:30.
+#
+# `_telegram_rechazaria` no es una aproximación: reproduce, medidas contra la
+# API real con un `chat_id` inválido, las respuestas exactas de Telegram.
+
+
+# Los cinco caracteres que importan, en el mínimo de sitio posible: el `<` que
+# abre una etiqueta inventada, el `>`, el `&`, la comilla suelta que es lo que
+# traen los `str()` de las excepciones, y un `</b>` huérfano. Corto a propósito:
+# con todos los bloques del mensaje encendidos a la vez, un veneno largo empuja
+# el texto por encima de 4096 y el recorte se lleva por delante justo las
+# interpolaciones que hay que cubrir.
+VENENO = " <x & 'y' </b>"
+
+
+def _envenenar_config(cfg):
+    """El mismo config con los caracteres peligrosos metidos en cada texto."""
+    c = copy.deepcopy(cfg)
+    for r in (c.raw.get("routines") or {}).values():
+        if not isinstance(r, dict):
+            continue
+        if r.get("focus"):
+            r["focus"] = f"{r['focus']}{VENENO}"
+        for ex in r.get("exercises") or []:
+            if isinstance(ex, dict) and ex.get("name"):
+                ex["name"] = f"{ex['name']}{VENENO}"
+    return c
+
+
+class _Texto:
+    """Un objeto con `.text()`, que es todo lo que `message.py` le pide."""
+
+    def __init__(self, t: str):
+        self._t = t
+
+    def text(self) -> str:
+        return self._t
+
+
+class _Lineas:
+    def __init__(self, *l: str):
+        self._l = list(l)
+
+    def lineas(self) -> list[str]:
+        return self._l
+
+
+def _envenenar_decision(d, cfg=None):
+    """Y lo mismo con todo lo que pone el motor, que no sale del YAML.
+
+    Enciende TODOS los bloques del mensaje a propósito. Un día real no los tiene
+    todos a la vez, y esa es justamente la trampa: si el veneno solo llega a los
+    cuatro bloques del día normal, el test da verde y deja sin cubrir los otros
+    dieciséis sitios donde se interpola. Se comprobó quitando los `escapar_html`
+    de uno en uno: con la versión corta de esta función, dieciséis de veintitrés
+    sobrevivían sin que fallara nada.
+    """
+    from datetime import timedelta
+
+    d.session.title = f"Día 1{VENENO}"
+    d.session.hiit_block = f"8x30s{VENENO}"
+    d.session.dropped = [f"peso muerto{VENENO}", f"remo{VENENO}"]
+    d.session.notes = list(d.session.notes) + [f"nota de sesión{VENENO}"]
+    d.session.deferred_from = LUNES - timedelta(days=3)
+    d.notes = list(d.notes) + [f"apunte del motor{VENENO}"]
+    d.signals.notes = list(d.signals.notes) + [f"degradación{VENENO}"]
+    # Dos ejercicios y no los nueve del día: con todos los bloques encendidos a
+    # la vez el mensaje se pasa de 4096 y el recorte se come la mitad de las
+    # interpolaciones que este test existe para cubrir.
+    d.session.exercises = d.session.exercises[:2]
+    for ex in d.session.exercises:
+        ex["name"] = f"{ex.get('name') or ex.get('key')}{VENENO}"
+
+    # Descarga, con motivo.
+    d.deload.active = True
+    d.deload.reason = f"semana 8{VENENO}"
+
+    # Adopciones: aplicada y rechazada, con motivo y con nombre del YAML.
+    clave = (d.session.exercises[0].get("key") if d.session.exercises else "x")
+    d.load_adoptions = [
+        {"routine": d.session.routine_key, "key": clave, "direction": "up",
+         "before_kg": 60.0, "after_kg": 65.0, "applied": True,
+         "reason": f"se levantó eso{VENENO}"},
+        {"routine": d.session.routine_key, "key": clave, "applied": False,
+         "before_kg": 60.0, "executed_kg": 600.0,
+         "reason": f"salto raro{VENENO}"},
+    ]
+
+    # Progresión: cambios, parados y la puerta cerrada con motivo. Se envenenan
+    # los objetos DE VERDAD -`changes` es una propiedad derivada de `exercises`
+    # y `stopped_lines()` se construye sola- en vez de poner un doble encima:
+    # así el texto que llega al mensaje pasa por el mismo `text()` que en
+    # producción.
+    if d.progression is not None:
+        for e in d.progression.exercises:
+            e.name = f"{e.name}{VENENO}"
+            e.changed = True
+            e.what = f"{e.what}{VENENO}"
+            e.why = f"{e.why}{VENENO}"
+        d.progression.notify_ceiling = True
+        d.progression.ceilings = [f"press militar{VENENO}"]
+        d.progression.missing_data = [f"remo en T{VENENO}"]
+        d.progression.gate_open = False
+        d.progression.gate_reason = f"el semáforo está en ámbar{VENENO}"
+
+    # Reglas activas, con y sin fecha de caducidad.
+    class _Regla:
+        def __init__(self, name, hasta=None, detail=None):
+            self.name, self.active_until = name, hasta
+            self.detail = detail or []
+
+    d.active_rules = [
+        _Regla(f"lumbar_alto{VENENO}", LUNES + timedelta(days=4)),
+        _Regla(f"otra_regla{VENENO}"),
+    ]
+
+    # Bici, tendencia, recalibración, sesión perdida y el bloque "Por qué".
+    d.bike = _Texto(f"Bici: intensa{VENENO}")
+    d.bike.applies = True
+    d.tendencia = _Lineas(f"Tendencia: seis días sin verde{VENENO}")
+    d.recalibracion = _Lineas(f"revisa caida_min_min{VENENO}")
+    d.expired_deferral = (f"dia_2{VENENO}", LUNES - timedelta(days=9))
+    d.trigger_rule = f"lumbar_alto{VENENO}"
+    d.light_decision.fired = [
+        _Regla(d.trigger_rule, detail=[f"lower_discomfort 6 > 5{VENENO}"])
+    ]
+    return d
+
+
+def _dia_de_descanso(cfg):
+    """La otra cabecera: `rest`/`pool`/`bike` no pasan por la de fuerza."""
+    d = decision(cfg)
+    d.session.kind = "rest"
+    d.session.title = f"Descanso{VENENO}"
+    return d
+
+
+def test_el_mensaje_de_un_dia_normal_lo_acepta_telegram(cfg):
+    from tests.conftest import _telegram_rechazaria
+
+    txt = render_telegram(decision(cfg, notas=DEGRADACIONES), cfg)
+    r = _telegram_rechazaria({"text": txt, "parse_mode": "HTML"})
+    assert r is None, r.text if r else ""
+
+
+def test_el_mensaje_lo_acepta_telegram_aunque_los_textos_lleven_angulos(cfg):
+    """El caso que hoy no puede pasar y mañana sí: un nombre con un `<`.
+
+    FALSACIÓN: quitando cualquiera de los `escapar_html` de `message.py`, este
+    test falla con el 400 de entidades. Comprobado quitándolos de uno en uno.
+    """
+    from tests.conftest import _telegram_rechazaria
+
+    c = _envenenar_config(cfg)
+    d = _envenenar_decision(decision(c), c)
+    txt = render_telegram(d, c)
+
+    assert "&lt;" in txt, "el veneno tiene que haber llegado al mensaje"
+    # Todos los bloques encendidos: si alguno deja de pintarse, este test deja
+    # de cubrir su interpolación y hay que enterarse aquí.
+    for cabecera in ("Ajustado a lo que levantaste", "No adoptado", "Sube hoy",
+                     "Sin progresar", "Fuera hoy", "Reglas activas",
+                     "Tendencia", "Decidido con datos incompletos",
+                     "Sesión perdida", "Toca recalibrar", "Semana de descarga",
+                     "HIIT", "Progresión cerrada", "Recuperas la sesión"):
+        assert cabecera in txt, f"el bloque «{cabecera}» no se ha pintado"
+
+    r = _telegram_rechazaria({"text": txt, "parse_mode": "HTML"})
+    assert r is None, r.text if r else ""
+
+
+def test_la_cabecera_de_un_dia_sin_fuerza_tambien_va_escapada(cfg):
+    """`rest`, `pool` y `bike` no pasan por la cabecera de la sesión de fuerza."""
+    from tests.conftest import _telegram_rechazaria
+
+    txt = render_telegram(_dia_de_descanso(cfg), cfg)
+    assert "&lt;" in txt
+    r = _telegram_rechazaria({"text": txt, "parse_mode": "HTML"})
+    assert r is None, r.text if r else ""
+
+
+def test_el_mensaje_recortado_tampoco_deja_una_etiqueta_a_medias(cfg):
+    """El recorte a 4096 corta por líneas, y cada línea cierra lo que abre.
+
+    Si cortara a media etiqueta, Telegram devolvería `Can't find end tag` y se
+    perdería el mensaje entero justo el día que hay más que contar.
+    """
+    from tests.conftest import _telegram_rechazaria
+
+    c = _envenenar_config(cfg)
+    d = _envenenar_decision(decision(c, notas=DEGRADACIONES * 40), c)
+    txt = render_telegram(d, c)
+
+    assert len(txt) <= LIMIT
+    assert "[mensaje recortado]" in txt, "el texto del test ya no se recorta"
+    r = _telegram_rechazaria({"text": txt, "parse_mode": "HTML"})
+    assert r is None, r.text if r else ""
+
+
+def test_la_consola_ve_el_texto_original_y_no_el_escapado(cfg):
+    """`render_plain` deshace el escapado: un `--dry-run` con `&lt;` mentiría."""
+    c = _envenenar_config(cfg)
+    d = _envenenar_decision(decision(c), c)
+    plano = render_plain(d, c)
+
+    assert "&lt;" not in plano and "&amp;" not in plano
+    assert "<b>" not in plano and "<code>" not in plano
+    assert "<x & 'y' </b>" in plano, "el original se lee tal cual"

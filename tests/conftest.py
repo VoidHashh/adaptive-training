@@ -281,6 +281,11 @@ class FakeHTTP:
         return self._siguiente("put", url, **kwargs)
 
     def post(self, url: str, **kwargs) -> FakeResponse:
+        if "/sendMessage" in url:
+            rechazo = _telegram_rechazaria(kwargs.get("json"))
+            if rechazo is not None:
+                self.llamadas.append({"verb": "post", "url": url, **kwargs})
+                return rechazo
         return self._siguiente("post", url, **kwargs)
 
 
@@ -328,4 +333,120 @@ def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
             f"Unrecognized key(s) in object: {k!r}" for k in sorted(malas)
         )
         return FakeResponse(400, text=json.dumps({"error": detalle}))
+    return None
+
+
+# Las etiquetas que el `parse_mode=HTML` de Telegram acepta. La lista es la de
+# su documentación; aquí importan `b`, `i` y `code`, que son las que escribe
+# `engine/message.py`. Las demás están para que el doble no invente un fallo si
+# algún día se usa una.
+_TG_ETIQUETAS = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "a", "code", "pre", "span", "tg-spoiler", "blockquote",
+}
+
+
+def _telegram_rechazaria(cuerpo: Any) -> FakeResponse | None:
+    """El 400 de verdad de Telegram cuando no sabe leer el HTML.
+
+    POR QUÉ ESTÁ ESTO. Mismo cuento que `_hevy_rechazaria` y descubierto por
+    tirar del mismo hilo. El doble aceptaba cualquier texto, así que ningún test
+    podía fallar por el motivo por el que el envío falla de verdad: Telegram
+    valida el HTML, lo valida ANTES de mirar si el chat existe, y si no lo sabe
+    leer NO manda nada. El sitio donde eso dolía era el aviso de trabajo
+    fallido, que interpolaba `str(excepción)` dentro de `<code>` sin escapar: un
+    `TypeError: '<' not supported between instances of...` tumbaba el único
+    aviso que no tiene freno, justo el día que hacía falta.
+
+    LO QUE HAY AQUÍ ESTÁ MEDIDO, NO RECORDADO. Contra la API real, con un
+    `chat_id` inválido para que no le llegara nada a nadie:
+
+        <foo>mundo</foo>      -> Unsupported start tag "foo" at byte offset 5
+        TypeError: '<' not..  -> Unsupported start tag "'" at byte offset 12
+        5 < 7                 -> Unsupported start tag "" at byte offset 2
+        hola <b>mundo         -> Can't find end tag corresponding to start tag "b"
+        hola </b>mundo        -> Unexpected end tag at byte offset 5
+        <b>a<i>b</b>c</i>     -> Unmatched end tag at byte offset 8, expected...
+
+    Y dos que SÍ pasan, que son tan informativas como las que fallan:
+
+        Tom & Jerry           -> llega a "chat not found"
+        algo &fo; mas         -> llega a "chat not found"
+
+    O sea que el `&` suelto Telegram lo perdona y el `<` no lo perdona nunca.
+    `escapar_html` escapa el `&` igualmente, pero por otro motivo: sin eso, un
+    texto que contenga literalmente "&lt;" se leería como un "<" que nadie
+    escribió. Es corrección de lo que se muestra, no del transporte.
+
+    Lo que este doble NO modela: atributos mal formados en `<a href=...>`,
+    `<pre>` con lenguaje, y el resto de la superficie que este proyecto no
+    escribe. Si algún día se escriben, esto se queda corto y hay que volver a
+    medirlo contra la API, no ampliarlo a ojo.
+    """
+    if not isinstance(cuerpo, dict):
+        return None
+    if cuerpo.get("parse_mode") != "HTML":
+        # Sin `parse_mode` no hay nada que parsear: es exactamente el reintento
+        # en plano, y tiene que poder salir aunque el texto lleve ángulos.
+        return None
+    texto = cuerpo.get("text")
+    if not isinstance(texto, str):
+        return None
+
+    def _mal(descripcion: str) -> FakeResponse:
+        return FakeResponse(
+            400,
+            {"ok": False, "error_code": 400, "description": descripcion},
+            text=json.dumps({"ok": False, "error_code": 400,
+                             "description": descripcion}),
+        )
+
+    abiertas: list[tuple[str, int]] = []
+    i = 0
+    while True:
+        i = texto.find("<", i)
+        if i < 0:
+            break
+        # Telegram cuenta el desplazamiento en BYTES utf-8, no en caracteres.
+        # Con emojis en la cabecera del mensaje, los dos números no coinciden.
+        pos = len(texto[:i].encode("utf-8"))
+        resto = texto[i + 1:]
+        cierre = resto.startswith("/")
+        if cierre:
+            resto = resto[1:]
+        # El nombre es lo que va hasta el primer espacio o hasta el '>'. No es
+        # un parser de HTML: es lo que se dedujo de las respuestas de arriba,
+        # donde `<'` dio nombre "'" y `< ` dio nombre "".
+        nombre = ""
+        for ch in resto:
+            if ch in " \t\n>":
+                break
+            nombre += ch
+        if nombre not in _TG_ETIQUETAS:
+            return _mal(
+                f"Bad Request: can't parse entities: Unsupported start tag "
+                f'"{nombre}" at byte offset {pos}'
+            )
+        if cierre:
+            if not abiertas:
+                return _mal(
+                    f"Bad Request: can't parse entities: Unexpected end tag "
+                    f"at byte offset {pos}"
+                )
+            esperada, _ = abiertas.pop()
+            if esperada != nombre:
+                return _mal(
+                    f"Bad Request: can't parse entities: Unmatched end tag at "
+                    f'byte offset {pos}, expected "</{esperada}>", found '
+                    f'"</{nombre}>"'
+                )
+        else:
+            abiertas.append((nombre, pos))
+        i += 1
+
+    if abiertas:
+        return _mal(
+            f"Bad Request: can't parse entities: Can't find end tag "
+            f'corresponding to start tag "{abiertas[-1][0]}"'
+        )
     return None

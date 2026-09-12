@@ -20,6 +20,20 @@ El mensaje se lee a las 7 de la mañana, de pie y con una mano. Por tanto:
 - Las reglas especiales activas se repiten cada día que duran. Que el peso
   muerto lleve nueve días retirado es exactamente lo que hay que recordar el
   noveno día.
+
+UNA REGLA AL INTERPOLAR
+-----------------------
+Este mensaje sale con `parse_mode=HTML`, y Telegram valida ese HTML de verdad:
+si no lo sabe leer devuelve `400 can't parse entities` y NO manda nada. Por eso,
+todo lo que entre aquí desde fuera -nombres del `config.yaml`, títulos de Hevy,
+motivos, apuntes del motor, el texto de una excepción- pasa por `escapar_html`.
+Las etiquetas `<b>`/`<i>` son nuestras y se escriben literales; lo demás, no.
+
+La regla es "escapar por defecto" y no "escapar donde haga falta" porque el
+valor peligroso no se sabe mirando el f-string: depende de lo que alguien
+escriba algún día en el YAML o de qué excepción reviente. Hoy el `config.yaml`
+no tiene ni un `<`, `>` ni `&`, así que esto no arregla nada visible; está para
+que el día que lo tenga, el mensaje de las 06:30 siga saliendo.
 """
 
 from __future__ import annotations
@@ -28,6 +42,13 @@ from datetime import date
 from typing import Any
 
 from app.engine.sets import warmup_flags
+# Sí, un módulo del motor importando de `integrations`. Es deliberado: este
+# fichero YA escribe `<b>` y `<i>`, o sea que ya está casado con el dialecto
+# HTML de Telegram; lo que no hacía era respetar la otra mitad del contrato, que
+# es escapar lo que NO son etiquetas nuestras. La alternativa -copiar aquí las
+# tres líneas de `escapar_html`- es exactamente la forma en que una de las dos
+# copias se queda vieja. No hay ciclo: `telegram.py` no importa nada del motor.
+from app.integrations.telegram import escapar_html, sin_etiquetas
 
 LIMIT = 4096  # límite duro de Telegram
 
@@ -148,21 +169,26 @@ def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> l
         L.append("")
         L.append("🔁 <b>Ajustado a lo que levantaste</b>")
         for a in aplicadas:
-            nombre = _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            nombre = escapar_html(
+                _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            )
             flecha = "↑" if a.get("direction") == "up" else "↓"
             L.append(
                 f"• {flecha} {nombre}: {fmt_num(a.get('before_kg'))}→"
-                f"{fmt_num(a.get('after_kg'))} kg — {_motivo_adopcion(a)}"
+                f"{fmt_num(a.get('after_kg'))} kg — {escapar_html(_motivo_adopcion(a))}"
             )
 
     if rechazadas:
         L.append("")
         L.append("🛑 <b>No adoptado</b>")
         for a in rechazadas:
-            nombre = _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            nombre = escapar_html(
+                _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            )
             L.append(
                 f"• {nombre}: se registraron {fmt_num(a.get('executed_kg'))} kg y "
-                f"sigue en {fmt_num(a.get('before_kg'))} kg — {_motivo_adopcion(a)}"
+                f"sigue en {fmt_num(a.get('before_kg'))} kg — "
+                f"{escapar_html(_motivo_adopcion(a))}"
             )
 
     return L
@@ -198,21 +224,24 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     if decision.deload.active:
         # El motivo va aquí, pegado al aviso, y no suelto entre los apuntes:
         # "semana 8 del programa" contesta la pregunta que provoca el 🔻.
-        motivo_dl = f" — {decision.deload.reason}" if decision.deload.reason else ""
+        motivo_dl = (
+            f" — {escapar_html(decision.deload.reason)}"
+            if decision.deload.reason else ""
+        )
         L.append(f"🔻 <i>Semana de descarga{motivo_dl}</i>")
 
     # --- la sesión ----------------------------------------------------------
     s = decision.session
     L.append("")
     if s.kind in {"rest", "pool", "bike"}:
-        L.append(f"😴 <b>{s.title}</b>")
+        L.append(f"😴 <b>{escapar_html(s.title)}</b>")
     else:
         etiqueta = {
             "full": "sesión completa",
             "reduced": "sesión reducida",
             "recovery": "recuperación",
         }.get(s.kind, s.kind)
-        cab = f"💪 <b>{s.title}</b> ({etiqueta})"
+        cab = f"💪 <b>{escapar_html(s.title)}</b> ({escapar_html(etiqueta)})"
         # `routines.*.focus` llevaba desde el principio en el YAML sin que lo
         # leyera nadie: "Tren inferior + core", "Cadena posterior + espalda",
         # "Caderas + hombro + brazo + core". Es la única frase del fichero que
@@ -226,14 +255,15 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         # queda como estaba.
         foco = ((raw.get("routines") or {}).get(s.routine_key or "") or {}).get("focus")
         if foco:
-            cab += f" — {foco}"
+            cab += f" — {escapar_html(foco)}"
         if s.deferred_from:
             cab += f"\n<i>Recuperas la sesión del {fmt_short(s.deferred_from)}</i>"
         L.append(cab)
         for ex in s.exercises:
-            L.append(f"• {ex.get('name', ex.get('key'))} — {_describe_sets(ex, set_cfg)}")
+            nombre_ex = escapar_html(ex.get("name", ex.get("key")))
+            L.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
         if s.hiit_block:
-            L.append(f"🔥 <b>HIIT:</b> {s.hiit_block}")
+            L.append(f"🔥 <b>HIIT:</b> {escapar_html(s.hiit_block)}")
 
     # --- lo que movió la carga que se levantó de verdad ---------------------
     # Va ANTES de "Sube hoy" porque ocurrió antes: la adopción se decide al
@@ -254,7 +284,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append("📈 <b>Sube hoy</b>")
         for e in cambios:
-            L.append(f"• {e.text()}")
+            L.append(f"• {escapar_html(e.text())}")
 
     # --- lo que lleva parado ------------------------------------------------
     # FUERA de `include_reasoning`, por lo mismo que los bloques de más abajo:
@@ -273,13 +303,16 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append("⏸️ <b>Sin progresar</b>")
         for linea in parados:
-            L.append(f"• {linea}")
+            L.append(f"• {escapar_html(linea)}")
 
     # Retiradas y recortes: son cambios que el usuario notará en la app y que
     # sin explicación parecen un fallo del sistema.
     if s.dropped:
         L.append("")
-        L.append(f"➖ <b>Fuera hoy:</b> {', '.join(s.dropped)}")
+        L.append(
+            f"➖ <b>Fuera hoy:</b> "
+            f"{', '.join(escapar_html(d) for d in s.dropped)}"
+        )
 
     # --- reglas especiales vigentes ----------------------------------------
     reglas = [r for r in decision.active_rules if r.name != "semana_de_descarga"]
@@ -288,12 +321,13 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("⚠️ <b>Reglas activas</b>")
         for r in reglas:
             hasta = f" (hasta el {fmt_short(r.active_until)})" if r.active_until else ""
-            L.append(f"• {r.name.replace('_', ' ').capitalize()}{hasta}")
+            nombre_r = escapar_html(r.name.replace("_", " ").capitalize())
+            L.append(f"• {nombre_r}{hasta}")
 
     # --- bici ---------------------------------------------------------------
     if decision.bike is not None and decision.bike.applies:
         L.append("")
-        L.append(f"🚴 {decision.bike.text()}")
+        L.append(f"🚴 {escapar_html(decision.bike.text())}")
 
     # --- lo que no se ve mirando un solo día --------------------------------
     # FUERA de `include_reasoning`, y es el bloque donde más claro está por qué.
@@ -314,7 +348,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         for linea in lineas_tendencia:
             # El prefijo "Tendencia:" que trae cada línea ya está en la cabecera
             # del bloque. Repetirlo ocho palabras más abajo solo gasta pantalla.
-            L.append(f"• {linea.removeprefix('Tendencia: ')}")
+            L.append(f"• {escapar_html(linea.removeprefix('Tendencia: '))}")
 
     # --- decidido con datos incompletos -------------------------------------
     # FUERA de `include_reasoning` a propósito. Apagar el razonamiento es
@@ -354,7 +388,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append("🔍 <b>Decidido con datos incompletos</b>")
         for n in degradaciones:
-            L.append(f"• {n}")
+            L.append(f"• {escapar_html(n)}")
 
     # --- una sesión que se ha perdido ---------------------------------------
     # FUERA de `include_reasoning`, por el mismo motivo que el bloque de
@@ -370,7 +404,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append("⏳ <b>Sesión perdida</b>")
         L.append(
-            f"• '{rutina}', aplazada el {aplazada.isoformat()}, ha caducado sin "
+            f"• '{escapar_html(rutina)}', aplazada el {aplazada.isoformat()}, ha caducado sin "
             f"que haya habido un día libre y en verde para recuperarla. No se "
             f"recupera sola: si la quieres, hay que meterla a mano."
         )
@@ -394,7 +428,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append("")
         L.append("🛠 <b>Toca recalibrar</b>")
         for linea in lineas_recal:
-            L.append(f"• {linea}")
+            L.append(f"• {escapar_html(linea)}")
 
     # --- por qué ------------------------------------------------------------
     if incluir_motivo:
@@ -406,13 +440,19 @@ def render_telegram(decision: Any, config: Any = None) -> str:
                  if r.name == decision.trigger_rule),
                 None,
             )
-            det = "; ".join(disparo.detail) if disparo and disparo.detail else ""
-            L.append(f"• {decision.trigger_rule}{f': {det}' if det else ''}")
+            det = escapar_html(
+                "; ".join(disparo.detail)
+            ) if disparo and disparo.detail else ""
+            regla = escapar_html(decision.trigger_rule)
+            L.append(f"• {regla}{f': {det}' if det else ''}")
         else:
             L.append("• Ninguna regla ha saltado hoy")
 
         if decision.progression and not decision.progression.gate_open:
-            L.append(f"• Progresión cerrada: {decision.progression.gate_reason}")
+            L.append(
+                f"• Progresión cerrada: "
+                f"{escapar_html(decision.progression.gate_reason)}"
+            )
 
         # El resto de apuntes del motor. No son degradaciones -por eso van
         # aquí y no arriba- pero tampoco eran visibles en ninguna parte: solo
@@ -432,7 +472,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             n for n in list(s.notes) + list(decision.notes) if n not in ya_dicho
         ]
         for n in apuntes:
-            L.append(f"• {n}")
+            L.append(f"• {escapar_html(n)}")
 
     texto = "\n".join(L)
     if len(texto) > LIMIT:
@@ -444,8 +484,12 @@ def render_telegram(decision: Any, config: Any = None) -> str:
 
 
 def render_plain(decision: Any, config: Any = None) -> str:
-    """La misma información sin etiquetas HTML, para consola y logs."""
-    txt = render_telegram(decision, config)
-    for tag in ("<b>", "</b>", "<i>", "</i>"):
-        txt = txt.replace(tag, "")
-    return txt
+    """La misma información sin etiquetas HTML, para consola y logs.
+
+    Usa el MISMO `sin_etiquetas` que el reintento en plano de `telegram.py`, y
+    no una lista de etiquetas propia. La lista propia ya se había quedado corta:
+    no conocía `<code>`, así que un mensaje con `<code>` salía por consola con
+    las etiquetas a la vista. Y ahora además hay que deshacer el escapado, o el
+    `--dry-run` imprimiría `&lt;` donde el mensaje real lleva un `<`.
+    """
+    return sin_etiquetas(render_telegram(decision, config))
