@@ -208,9 +208,22 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
     (
         "recalibrado_el en el futuro pasa",
         LOADER,
-        "        elif recal > date.today():",
+        "        elif recal > techo:",
         "        elif False:",
         ["test_recalibrado_el_en_el_futuro_impide_arrancar"],
+    ),
+    (
+        # El techo dejó de ser `hoy` a secas cuando `program.start` se movió al
+        # lunes de arranque real, que el día del cambio todavía era futuro: el
+        # mínimo pedía >= start y el máximo <= hoy, y no quedaba ningún valor
+        # entre los dos. Aflojar el mínimo en vez del máximo habría sido la
+        # tentación fácil, y habría dejado la cuenta arrancando en días que el
+        # programa no vivió. Esta mutación vigila que no se haga.
+        "el suelo de recalibrado_el desaparece",
+        LOADER,
+        "        if recal < prog_start:",
+        "        if False:",
+        ["test_recalibrado_el_antes_del_arranque_impide_arrancar"],
     ),
     (
         "el accesor se inventa un 28 por defecto",

@@ -19,7 +19,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +48,20 @@ WEEKDAYS = [
     "friday",
     "saturday",
     "sunday",
+]
+
+# Los mismos días en español, y a propósito en una lista aparte. `WEEKDAYS` es
+# vocabulario del config -lo que el usuario puede escribir en `week_starts_on`- y
+# tiene que seguir estando en inglés; esto es solo para redactar mensajes de
+# error legibles. Juntarlos obligaría a traducir en el sitio equivocado.
+DIAS_ES = [
+    "lunes",
+    "martes",
+    "miércoles",
+    "jueves",
+    "viernes",
+    "sábado",
+    "domingo",
 ]
 
 # Tipos de serie que acepta Hevy en el campo `type`.
@@ -347,6 +361,21 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 f"program.start '{prog_start}' está entre comillas. Quítalas para "
                 "que YAML lo lea como fecha y no como texto."
             )
+    elif prog_start.weekday() != 0:
+        # No es tiquismiquis. `_deload` no cuenta desde esta fecha: cuenta desde
+        # `week_start()` de esta fecha, porque las descargas empiezan siempre en
+        # lunes. Con un martes escrito aquí, el origen real es el lunes anterior
+        # y el valor que se lee en el YAML no es el que usa el sistema. El
+        # redondeo es correcto; lo que no puede es pasar callando, porque
+        # entonces la primera descarga "se adelanta" a las 6,9 semanas y el
+        # número no cuadra con nada que esté escrito.
+        lunes_real = prog_start - timedelta(days=prog_start.weekday())
+        errors.append(
+            f"program.start '{prog_start}' es {DIAS_ES[prog_start.weekday()]}, y "
+            f"tiene que ser LUNES. El contador de descargas redondea al lunes de "
+            f"esa semana, así que el origen de verdad sería {lunes_real} y no la "
+            f"fecha que pone aquí. Si querías esa semana, escribe {lunes_real}."
+        )
 
     # --- el recordatorio de recalibración ------------------------------------
     # Las dos claves son OBLIGATORIAS, y no por simetría con `start`. Este
@@ -412,18 +441,36 @@ def _validate(data: dict[str, Any]) -> list[str]:
         # Las dos comprobaciones cruzadas. Ninguna de las dos rompe nada al
         # instante, y las dos dejan el aviso mudo durante meses, que es
         # exactamente lo que este recordatorio no puede permitirse.
+        #
+        # El techo se calcula UNA vez y se usa en la condición y en el mensaje.
+        # Escrito dos veces, un cambio de criterio puede tocar solo una de ellas
+        # y dejar un error que rechaza por un motivo y explica otro.
+        techo = max(date.today(), prog_start)
         if recal < prog_start:
             errors.append(
                 f"program.recalibrado_el '{recal}' es anterior a program.start "
                 f"'{prog_start}'. La cuenta arrancaría en días que el programa "
                 "todavía no había vivido."
             )
-        elif recal > date.today():
+        elif recal > techo:
+            # El techo es el ÚLTIMO de los dos, no hoy a secas. Cuando el
+            # programa todavía no ha arrancado -se configura el sábado para
+            # empezar el lunes- la única fecha que cumple el mínimo de arriba es
+            # el propio `program.start`, y esa es futura por definición.
+            # Prohibirla dejaría el config sin ningún valor válido: el mínimo
+            # pide >= start y el máximo pedía <= hoy, y no hay número entre los
+            # dos. Lo que se persigue es el año mal escrito, y ese sigue cayendo.
+            #
+            # No pasa nada por contar desde una fecha que aún no ha llegado: lo
+            # que se cuenta son días CON DECISIÓN, y antes del arranque no hay
+            # ninguna. La cuenta sale 0 igual, pero ahora lo dice el calendario
+            # en vez de un hueco en la base de datos.
             errors.append(
-                f"program.recalibrado_el '{recal}' está en el futuro (hoy es "
-                f"{date.today().isoformat()}). Casi siempre es un año mal "
-                "escrito, y el efecto es que el aviso de recalibración no "
-                "vuelve a salir hasta esa fecha."
+                f"program.recalibrado_el '{recal}' está más allá de "
+                f"{techo.isoformat()} (hoy es {date.today().isoformat()}, "
+                f"program.start es {prog_start.isoformat()}). Casi siempre es un "
+                "año mal escrito, y el efecto es que el aviso de recalibración "
+                "no vuelve a salir hasta esa fecha."
             )
 
     routines = data["routines"]

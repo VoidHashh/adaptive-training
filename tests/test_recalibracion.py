@@ -259,10 +259,40 @@ def test_recalibrado_el_antes_del_arranque_impide_arrancar(cfg):
 
 
 def test_recalibrado_el_en_el_futuro_impide_arrancar(cfg):
-    """Casi siempre es un año mal escrito, y silencia el aviso durante meses."""
+    """Casi siempre es un año mal escrito, y silencia el aviso durante meses.
+
+    El desplazamiento es de un año y no de un día a propósito. El techo es el
+    ÚLTIMO entre hoy y `program.start`, así que "mañana" no siempre está fuera:
+    mientras el programa no haya arrancado, mañana puede ser perfectamente
+    legítimo. Un año no lo es nunca, y además es el error que esto persigue.
+    """
     data = copy.deepcopy(cfg.raw)
-    data["program"]["recalibrado_el"] = date.today() + timedelta(days=1)
-    assert "está en el futuro" in errores(data)
+    techo = max(date.today(), data["program"]["start"])
+    data["program"]["recalibrado_el"] = techo + timedelta(days=365)
+    assert "está más allá de" in errores(data)
+
+
+def test_el_techo_es_el_ultimo_entre_hoy_y_el_arranque(cfg):
+    """Configurar el sábado para empezar el lunes tiene que poder validarse.
+
+    El mínimo pide `recalibrado_el >= program.start` y el máximo pedía
+    `<= hoy`. Con un arranque futuro no queda ningún valor entre los dos y el
+    config se vuelve imposible de escribir: no hay número que cumpla. Se
+    comprueba con un arranque futuro inventado para que el día en que se
+    ejecuten estas pruebas no decida si pasan.
+    """
+    lunes_futuro = date.today() + timedelta(days=(7 - date.today().weekday()) % 7 or 7)
+    assert lunes_futuro.weekday() == 0 and lunes_futuro > date.today()
+
+    data = copy.deepcopy(cfg.raw)
+    data["program"]["start"] = lunes_futuro
+    data["program"]["recalibrado_el"] = lunes_futuro
+    fallos = errores(data)
+    assert "recalibrado_el" not in fallos, fallos
+
+    # Y un día más allá de ese arranque futuro sí que sobra.
+    data["program"]["recalibrado_el"] = lunes_futuro + timedelta(days=1)
+    assert "está más allá de" in errores(data)
 
 
 def test_el_accesor_no_se_inventa_un_valor_por_defecto(cfg):

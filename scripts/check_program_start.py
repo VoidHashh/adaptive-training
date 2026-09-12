@@ -45,10 +45,15 @@ print("=" * 74)
 
 espera_fallo(lambda d: d.__setitem__("program", {"start": None}), "start: null")
 espera_fallo(lambda d: d.__setitem__("program", {}), "sección program vacía")
-espera_fallo(lambda d: d.__setitem__("program", {"start": "2026-09-08"}),
+espera_fallo(lambda d: d.__setitem__("program", {"start": "2026-09-14"}),
              "fecha entrecomillada (llega como texto)")
 espera_fallo(lambda d: d.__setitem__("program", {"start": "no soy una fecha"}),
              "texto que no es fecha")
+# Un día cualquiera que no sea lunes. El validador tiene que decirlo, porque
+# `_deload` lo redondearía al lunes anterior sin avisar y el origen real dejaría
+# de ser el que está escrito en el YAML.
+espera_fallo(lambda d: d.__setitem__("program", {"start": date(2026, 9, 15)}),
+             "martes en vez de lunes")
 
 # Y que la ausencia de la sección entera también para el arranque.
 sin_seccion = copy.deepcopy(RAW)
@@ -59,7 +64,7 @@ print("  [ok] sección 'program' ausente -> falta la sección obligatoria")
 
 # El camino bueno.
 cfg = load_config(Path("config.yaml"))
-assert cfg.program_start == date(2026, 9, 8), cfg.program_start
+assert cfg.program_start == date(2026, 9, 14), cfg.program_start
 print(f"\n  [ok] config.yaml real carga con program.start = {cfg.program_start}")
 
 
@@ -110,14 +115,21 @@ for h in huecos:
         f"separación de {h} semanas fuera de la ventana [{every}, {every + jitter}]"
     )
 
-# La cuenta se hace entre INICIOS DE SEMANA, no desde la fecha cruda. El origen
-# es martes 2026-09-08 y las descargas siempre empiezan en lunes, así que medir
-# desde el martes daría 6,86 semanas y parecería que la primera se adelanta.
-# No se adelanta: cae en el lunes de la semana 7.
+# `_deload` no cuenta desde la fecha cruda: cuenta desde el lunes de su semana.
+# Antes esto importaba, porque el origen era un martes y la cuenta desde la fecha
+# escrita daba 6,86 semanas: parecía que la primera descarga se adelantaba cuando
+# en realidad caía en el lunes de la semana 7. Ahora el validador exige lunes, así
+# que el redondeo no mueve nada -y eso es justo lo que se comprueba aquí-. Se deja
+# el cálculo explícito en vez de dar por hecho que coinciden: si alguien relajase
+# la regla del lunes, esta línea es la que lo dice.
 lunes_origen = inicio - timedelta(days=inicio.weekday())
+assert lunes_origen == inicio, (
+    f"program.start {inicio} no es lunes: el origen real sería {lunes_origen} y "
+    f"el validador tendría que haberlo impedido"
+)
 primera = (arranques[0] - lunes_origen).days / 7
 print(f"  origen {inicio} ({['lun','mar','mié','jue','vie','sáb','dom'][inicio.weekday()]})"
-      f" -> lunes de esa semana: {lunes_origen}")
+      f" -> lunes de esa semana: {lunes_origen} (el mismo día)")
 print(f"  primera descarga a las {primera:.0f} semanas de ese lunes")
 assert every <= primera <= every + jitter + 0.01, primera
 assert all(a.weekday() == 0 for a in arranques), (

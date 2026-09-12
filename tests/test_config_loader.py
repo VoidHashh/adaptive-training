@@ -225,12 +225,24 @@ def test_sin_seccion_set_types_no_se_arranca(cfg_copia):
     [
         pytest.param({"start": None}, "program.start está vacío", id="null"),
         pytest.param({}, "program.start está vacío", id="seccion_vacia"),
-        pytest.param({"start": "2026-09-08"}, "entre comillas", id="entrecomillada"),
+        pytest.param({"start": "2026-09-14"}, "entre comillas", id="entrecomillada"),
         pytest.param({"start": "el lunes"}, "no es una fecha", id="texto_libre"),
         pytest.param({"start": "2026-13-45"}, "no es una fecha", id="fecha_imposible"),
         pytest.param(
-            {"start": datetime(2026, 9, 8, 7, 30)}, "lleva hora", id="con_hora"
+            {"start": datetime(2026, 9, 14, 7, 30)}, "lleva hora", id="con_hora"
         ),
+        # Fechas válidas y bien escritas, pero a media semana. `_deload` cuenta
+        # desde el lunes de esa semana, así que el origen de verdad no sería el
+        # que pone el YAML. Los siete días, para que quede fijado que el único
+        # que pasa es el lunes y no "cualquiera menos el martes".
+        pytest.param({"start": date(2026, 9, 15)}, "tiene que ser LUNES", id="martes"),
+        pytest.param(
+            {"start": date(2026, 9, 16)}, "tiene que ser LUNES", id="miercoles"
+        ),
+        pytest.param({"start": date(2026, 9, 17)}, "tiene que ser LUNES", id="jueves"),
+        pytest.param({"start": date(2026, 9, 18)}, "tiene que ser LUNES", id="viernes"),
+        pytest.param({"start": date(2026, 9, 19)}, "tiene que ser LUNES", id="sabado"),
+        pytest.param({"start": date(2026, 9, 20)}, "tiene que ser LUNES", id="domingo"),
     ],
 )
 def test_program_start_invalido_impide_arrancar(cfg, mutacion, fragmento):
@@ -246,8 +258,41 @@ def test_falta_la_seccion_program_entera(cfg):
 
 
 def test_program_start_valida_es_accesible_como_date(cfg):
-    assert cfg.program_start == date(2026, 9, 8)
+    assert cfg.program_start == date(2026, 9, 14)
     assert isinstance(cfg.program_start, date)
+
+
+def test_el_program_start_del_config_real_es_lunes(cfg):
+    """Control negativo de los seis casos de arriba.
+
+    Si la regla del lunes estuviera mal escrita al revés -rechazando lunes en
+    vez de aceptarlo- aquellos seis seguirían en verde y nadie se enteraría
+    hasta el arranque.
+    """
+    assert cfg.program_start.weekday() == 0, cfg.program_start
+    data = copy.deepcopy(cfg.raw)
+    assert "tiene que ser LUNES" not in errores(data)
+
+
+def test_el_error_del_lunes_dice_qué_día_es_y_cuál_sería_el_lunes(cfg):
+    """El mensaje tiene que traer la fecha que hay que escribir, ya calculada.
+
+    Un error que solo dice "tiene que ser lunes" obliga a mirar un calendario
+    para arreglarlo, y quien lo mire puede contar mal justo como contó mal al
+    escribir la fecha. El sábado 2026-09-19 pertenece a la semana del lunes
+    2026-09-14: ese es el número que el sistema va a usar de verdad.
+
+    Se busca dentro de LA LÍNEA del lunes y no en el texto entero. Escrito
+    contra el texto entero pasaba sin comprobar nada: mover `start` al 19
+    dispara además el cruce con `recalibrado_el`, cuyo mensaje ya menciona el
+    14 por su cuenta, así que la aserción se cumplía sola aunque el cálculo del
+    lunes estuviera roto. Lo cazó `scripts/check_lunes.py`.
+    """
+    data = copy.deepcopy(cfg.raw)
+    data["program"] = dict(data["program"], start=date(2026, 9, 19))
+    linea = next(p for p in _validate(data) if "tiene que ser LUNES" in p)
+    assert "es sábado" in linea
+    assert "2026-09-14" in linea
 
 
 def test_program_start_acepta_una_cadena_bien_escrita_en_el_accesor():
@@ -489,7 +534,7 @@ def test_los_ficheros_de_configuracion_no_se_modifican_al_validar(cfg):
 def test_el_config_del_repo_carga_desde_disco():
     c = load_config(REPO_ROOT / "config.yaml")
     assert c.hash and len(c.hash) == 16
-    assert c.program_start == date(2026, 9, 8)
+    assert c.program_start == date(2026, 9, 14)
 
 
 # ---------------------------------------------------------------------------

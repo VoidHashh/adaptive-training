@@ -302,9 +302,12 @@ def test_una_descarga_que_arranca_en_rojo_se_retrasa(cfg, estado_en_descarga):
 def test_la_descarga_se_programa_cada_siete_semanas_y_siempre_en_lunes(cfg):
     """Un año simulado desde el `program_start` real del YAML.
 
-    Se mide entre INICIOS DE SEMANA, no desde la fecha cruda: 2026-09-08 es
-    martes y las descargas siempre empiezan en lunes, así que la primera cae
-    legítimamente a 6,9 semanas del origen.
+    `_deload` mide entre INICIOS DE SEMANA, no desde la fecha cruda. Cuando el
+    origen era un martes eso hacía que la primera descarga cayera a 6,9 semanas
+    de la fecha escrita -correcto, pero raro de leer-. Desde que el validador
+    exige que `program.start` sea lunes, el redondeo no mueve nada y la cuenta
+    sale EXACTA. Por eso aquí no hay tolerancia: si vuelve a aparecer un 6,9 es
+    que alguien ha puesto un origen a media semana y el validador lo dejó pasar.
     """
     inicio = cfg.program_start
     st = EngineState(program_start=inicio)
@@ -324,8 +327,8 @@ def test_la_descarga_se_programa_cada_siete_semanas_y_siempre_en_lunes(cfg):
     assert arranques, "en un año entero no se programó ni una descarga"
     assert all(a.weekday() == 0 for a in arranques), "las descargas empiezan en lunes"
 
-    lunes_origen = inicio - timedelta(days=inicio.weekday())
-    assert (arranques[0] - lunes_origen).days / 7 == pytest.approx(7.0, abs=0.2)
+    assert inicio.weekday() == 0, f"program.start {inicio} no es lunes"
+    assert (arranques[0] - inicio).days / 7 == 7.0
 
     separaciones = [
         (b - a).days / 7 for a, b in zip(arranques, arranques[1:])

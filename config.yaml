@@ -32,6 +32,19 @@ timezone: Europe/Madrid
 # apuntarlo en una nota del informe. Una nota se lee el primer día y se ignora
 # el resto; un arranque fallido se arregla.
 #
+# Y TIENE QUE SER UN LUNES
+# El motor no cuenta desde esta fecha: cuenta desde `week_start()` de esta
+# fecha, porque las descargas empiezan siempre en lunes y un ciclo que arranca
+# a mitad de semana partiría el microciclo en dos. Con un martes escrito aquí,
+# el origen real es el lunes anterior y el valor que se lee en este fichero no
+# es el que usa el sistema: la primera descarga parece adelantarse a las 6,9
+# semanas cuando en realidad cae limpia en la semana 7. El redondeo no es el
+# problema -es correcto-; el problema es que pasaba en silencio. Ahora el
+# cargador exige el lunes, y así lo escrito y lo contado son lo mismo.
+#
+# Consecuencia práctica y buena: da igual qué día de la semana se encienda el
+# sistema de verdad. Lo que hay que acertar es la SEMANA, no el día.
+#
 # LA RECALIBRACIÓN
 # ----------------
 # Varios umbrales de este fichero se calibraron sobre una muestra pequeña y con
@@ -57,7 +70,13 @@ timezone: Europe/Madrid
 # Un contador que se pone a cero por el motivo equivocado es peor que no
 # tenerlo, porque además certifica que no hay nada pendiente.
 program:
-  start: 2026-09-08   # AAAA-MM-DD. Origen del contador de descargas.
+  # AAAA-MM-DD y LUNES. Origen del contador de descargas.
+  #
+  # Es el lunes de la semana en que el sistema empieza a decidir de verdad, no
+  # el día en que se escribió este fichero. Estuvo en 2026-09-08 -un martes de
+  # planificación, con la base de datos vacía- y eso dejaba el contador de
+  # descargas corriendo sobre una semana que nadie entrenó.
+  start: 2026-09-14
 
   # Cada cuántos días CON DECISIÓN GUARDADA vuelve a tocar revisar los umbrales
   # calibrados sobre muestras cortas. 28 = las cuatro semanas prometidas, pero
@@ -70,8 +89,18 @@ program:
   # porque decidir no tocar también es haber recalibrado.
   #
   # Arranca igual que `start`: el día cero del programa nada se había revisado
-  # todavía, así que la primera cuenta va desde el principio.
-  recalibrado_el: 2026-09-08
+  # todavía, así que la primera cuenta va desde el principio. Esta sí puede ser
+  # cualquier día de la semana: aquí no se redondea nada, se cuentan los días
+  # con decisión desde ella.
+  #
+  # Tiene que caer entre `start` y el último de estos dos: hoy, o el propio
+  # `start`. Lo segundo es por el caso de ahora mismo -se configura el sábado
+  # para arrancar el lunes-, en que la única fecha posible es futura porque el
+  # programa todavía no ha empezado. No pasa nada: lo que se cuentan son días
+  # CON DECISIÓN, y antes del arranque no hay ninguna. Lo que sí se sigue
+  # rechazando es la fecha muy por delante, que casi siempre es un año mal
+  # escrito y dejaría el aviso mudo hasta entonces.
+  recalibrado_el: 2026-09-14
 
 
 # -----------------------------------------------------------------------------
