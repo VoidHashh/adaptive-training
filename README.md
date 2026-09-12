@@ -132,6 +132,12 @@ se sabe que algo pasa.
 toca Hevy ni manda Telegram. Se quita cuando lo que decida coincida con lo que
 uno habría hecho, no antes.
 
+> **El guión del primer día está aparte: [`docs/primer-dia.md`](docs/primer-dia.md).**
+> Lo de aquí arriba es montar el sistema, que es un problema resuelto. Aquello es
+> qué mirar la primera mañana para saber si lo que ha arrancado está vivo o solo
+> lo parece —que no es lo mismo y desde fuera se ven igual—, en qué orden se
+> sueltan los dos frenos, y las tres averías que ya han pasado de verdad.
+
 Mientras esté puesto, la PWA lo dice en ámbar al abrirla. Es la razón de que ese
 aviso exista: un silencio *a propósito* y una avería se parecen demasiado desde
 el móvil, y las dos se leen igual —no llega mensaje—.
