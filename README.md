@@ -80,35 +80,63 @@ curl -s localhost:8000/api/health | python3 -m json.tool
 ```json
 {
   "status": "ok",
+  "config_hash": "8a0e1e304324a6be",
   "secrets_missing": [],
-  "dry_run": true,
+  "dry_run": false,
+  "writes": {
+    "hevy_write_enabled": true,
+    "telegram_send_enabled": true,
+    "pending_write": null
+  },
   "scheduler": {
     "running": true,
     "jobs": {
-      "garmin_fetch":      "2026-09-11T06:30:00+02:00",
-      "decision_fallback": "2026-09-11T09:00:00+02:00",
-      "reconcile":         "2026-09-10T22:30:00+02:00"
+      "reconcile":         "2026-09-12T22:30:00+02:00",
+      "garmin_fetch":      "2026-09-13T06:30:00+02:00",
+      "decision_fallback": "2026-09-13T09:00:00+02:00",
+      "perception_notice": "2026-09-13T09:30:00+02:00"
     }
   },
-  "clock": { "timezone": "Europe/Madrid", "offset": "+02:00", "matches": true }
+  "clock": { "timezone": "Europe/Madrid", "offset": "+02:00", "matches": true },
+  "config_file": {
+    "path": "/app/config.yaml",
+    "loaded_hash": "8a0e1e304324a6be",
+    "file_hash":   "8a0e1e304324a6be",
+    "in_sync": true
+  },
+  "auth_front": "ninguna"
 }
 ```
 
-Mirar estas tres cosas, no solo el `status`:
+Mirar estas cinco cosas, no solo el `status`:
 
 - **`secrets_missing` vacío.** Si falta algo, la aplicación arranca igual -para
   poder abrir el formulario y ver qué falta- pero no podrá hacer su trabajo.
-- **`scheduler.running` en `true` y los tres trabajos con hora.** Sin
-  planificador la aplicación sirve el formulario, contesta `ok` y no decide
-  nunca. Desde fuera se parece muchísimo a una semana de descanso.
+- **`scheduler.running` en `true` y los trabajos con hora.** Sin planificador la
+  aplicación sirve el formulario, contesta `ok` y no decide nunca. Desde fuera se
+  parece muchísimo a una semana de descanso.
 - **`clock.matches` en `true`.** Es el reloj del proceso comparado con la zona
   del `config.yaml`. Si no coinciden, un check-in enviado de madrugada se guarda
   con la fecha de ayer y a la mañana siguiente se decide como si no lo hubiera
   habido.
+- **`config_file.in_sync` en `true`.** Es el `config.yaml` del disco comparado
+  con el que el proceso lleva cargado en memoria. Se lee una vez al arrancar:
+  editar el fichero no cambia nada hasta recrear el contenedor, y hasta entonces
+  el sistema decide con las reglas viejas contestando `ok`. Si sale `false`, lo
+  que se está mirando en el editor no es lo que está gobernando las mañanas.
+- **`writes` diciendo lo que se espera.** `dry_run`, `hevy_write_enabled` y
+  `telegram_send_enabled` son [los tres frenos](#los-frenos); `pending_write`
+  con algo dentro significa que una escritura en Hevy se quedó a medias y hay
+  que mirarla.
 
-Las tres las pinta también la PWA nada más abrirla, en rojo y arriba del
-formulario, que es donde de verdad se van a mirar. Este `curl` es para cuando ya
-se sabe que algo pasa.
+Las tres primeras las pinta también la PWA nada más abrirla, en rojo y arriba
+del formulario, que es donde de verdad se van a mirar. Este `curl` es para
+cuando ya se sabe que algo pasa.
+
+`auth_front` no es salud, es un testigo de despliegue: dice qué declaró quien
+arrancó esto sobre lo que hay delante de la puerta. Vale para detectar que el
+contenedor se levantó con un compose distinto del que se cree —ver
+[el montaje temporal](#temporal-el-móvil-mientras-se-prueba-en-el-pc)—.
 
 > **No sirve mirar el `+02:00` de las horas de los trabajos.** Parece la
 > comprobación natural y no comprueba nada: los disparadores se construyen con
@@ -126,21 +154,59 @@ se sabe que algo pasa.
 | `TELEGRAM_BOT_TOKEN` | Lo da `@BotFather` al crear el bot. |
 | `TELEGRAM_CHAT_ID` | Escribirle al bot y mirar `api.telegram.org/bot<TOKEN>/getUpdates`. |
 
-### Empezar en seco
+### Los frenos
 
-`DRY_RUN=true` los primeros días. El sistema decide, guarda y registra, pero no
-toca Hevy ni manda Telegram. Se quita cuando lo que decida coincida con lo que
-uno habría hecho, no antes.
+Son **tres**, en dos ficheros, y son independientes. Los tres salen en
+`/api/health`, que es donde hay que mirarlos y no en el editor:
+
+| Freno | Dónde | Qué corta |
+|---|---|---|
+| `DRY_RUN` | `.env` | **Todo lo que sale**: ni escribe en Hevy ni manda el mensaje de la mañana. |
+| `integrations.hevy.write_enabled` | `config.yaml` | Solo la escritura en Hevy. El Telegram sigue saliendo, y **avisa arriba del todo de que la rutina no está escrita**. |
+| `integrations.telegram.send_enabled` | `config.yaml` | Solo el envío de Telegram. La rutina se escribe igual, sin que llegue nada. |
+
+Con ellos cerrados el sistema decide, guarda y registra igual: la decisión queda
+en la base, se puede consultar, y lo único que no ocurre es el efecto hacia
+fuera. Eso es lo que compran, y conviene saber lo que **no** compran: un sistema
+en seco no prueba que la escritura funcione. Lo que prueba la escritura es
+haberla hecho y haberla deshecho.
+
+**El tercero es el que peor se lee de los tres**, así que aquí queda dicho: con
+`send_enabled: false` el sistema **sí** toca Hevy y no manda nada, o sea que la
+rutina cambia sin que nadie lo cuente. Es el único de los tres que empeora el
+silencio en vez de reducirlo. Está en `true` y no hay motivo para tocarlo.
+
+**`DRY_RUN` tiene una excepción, y está puesta a propósito**: el aviso de
+Telegram que salta cuando **un trabajo del planificador revienta** sale igual.
+Un freno que además tapara los avisos de avería convertiría «el sistema está en
+seco» y «el sistema está roto» en el mismo silencio.
+
+**Este despliegue arranca con los tres abiertos**, a propósito. La razón no es
+optimismo: es que hay una copia de la rutina guardada **antes** de cada `PUT`,
+un `rutina revertir` probado contra el contenedor que corre, y un mensaje que
+dice explícitamente cuándo no ha escrito. Con eso, el peor caso es una sesión
+rara en Hevy que se corrige a mano en dos minutos —y esa corrección enseña algo,
+que es más de lo que enseña un mes mirando decisiones que no tocan nada—.
 
 > **El guión del primer día está aparte: [`docs/primer-dia.md`](docs/primer-dia.md).**
 > Lo de aquí arriba es montar el sistema, que es un problema resuelto. Aquello es
 > qué mirar la primera mañana para saber si lo que ha arrancado está vivo o solo
-> lo parece —que no es lo mismo y desde fuera se ven igual—, en qué orden se
-> sueltan los dos frenos, y las tres averías que ya han pasado de verdad.
+> lo parece —que no es lo mismo y desde fuera se ven igual—, el comando exacto
+> para deshacer una escritura en Hevy, cómo consultar qué se escribió y qué había
+> antes, la lista completa de lo que el sistema hace hacia fuera con los frenos
+> abiertos, y las averías que ya han pasado de verdad.
 
-Mientras esté puesto, la PWA lo dice en ámbar al abrirla. Es la razón de que ese
-aviso exista: un silencio *a propósito* y una avería se parecen demasiado desde
-el móvil, y las dos se leen igual —no llega mensaje—.
+Mientras `DRY_RUN` esté puesto, **la PWA lo dice en ámbar al abrirla**. Es la
+razón de que ese aviso exista: un silencio *a propósito* y una avería se parecen
+demasiado desde el móvil, y las dos se leen igual —no llega mensaje—.
+
+**Cambiar cualquiera de los tres exige recrear el contenedor.** El `.env` se lee
+al arrancar el proceso y el `config.yaml` se carga una vez; guardar el fichero no
+cambia nada y no avisa de nada. Después hay que **comprobarlo en
+`/api/health`**, que para eso expone `dry_run`, `writes.hevy_write_enabled` y
+`config_file.in_sync`. La regla vale para los frenos y para cualquier otro cambio
+en `config.yaml`, `.env` o el `Caddyfile`: recrear y verificar, sin dar por hecho
+que basta con editar.
 
 ### El formulario en el móvil
 
@@ -194,9 +260,14 @@ cualquier cacharro conectado al wifi puede
 - llamar a `POST /api/checkin`, que no solo lee: **crea un check-in y dispara
   una decisión**.
 
-`DRY_RUN=true` hoy corta la escritura en Hevy y en Telegram, pero **no cuenta
-como protección**: el propósito de esta fase es precisamente llegar a quitarlo,
-y entonces el riesgo empeora justo el día en que uno ha dejado de pensar en él.
+Mientras hubo frenos puestos se podía pensar que `DRY_RUN` amortiguaba esto.
+Nunca contó como protección —el propósito de esa fase era quitarlo— y ya está
+quitado, así que conviene decir dónde queda el riesgo ahora: **un `POST
+/api/checkin` desde cualquier cacharro del wifi reescribe la rutina de Hevy y
+manda el Telegram**. El peor caso deja de ser «alguien ve mis datos» y pasa a ser
+«alguien me cambia el entreno». Sigue siendo asumible por lo mismo que lo era
+abrir los frenos —hay copia previa y `rutina revertir`—, pero es otra frase, y
+merece estar escrita en vez de deducida.
 
 **Esta decisión NO viaja al despliegue definitivo.** En Umbrel va el `app_proxy`
 delante, que pone el login de Umbrel, y eso se queda como está. El trato es «sin
@@ -245,12 +316,11 @@ esta fase ensaya aquella en vez de inventarse otra.
 
 **En Windows, `data/` deja de verse desde el explorador.** El bind mount de la
 raíz no vale aquí: SQLite abre la base en modo WAL y el bind mount de Docker
-Desktop no soporta ese bloqueo —el contenedor muere al arrancar con
-`sqlite3.OperationalError: disk I/O error` y entra en bucle de reinicio—. El
-override usa un volumen nombrado. Es un problema **de Windows y solo de
-Windows**: en Umbrel el bind mount funciona, así que el apaño no viaja. Lo que
-hay que poder sacar de ahí son las copias previas a cada escritura en Hevy, que
-son lo único que permite deshacerla:
+Desktop no siempre soporta ese bloqueo —`sqlite3.OperationalError: disk I/O
+error` al arrancar, y bucle de reinicio—. El override usa un volumen nombrado.
+Es un problema **de Windows y solo de Windows**: en Umbrel el bind mount
+funciona, así que el apaño no viaja. Lo que hay que poder sacar de ahí son las
+copias previas a cada escritura en Hevy, que son lo único que permite deshacerla:
 
 ```bash
 docker cp adaptive-training:/app/data/hevy_backups ./hevy_backups
@@ -265,8 +335,10 @@ por la que esta fase es temporal y el destino es una máquina encendida.
 ## Dónde vive cada cosa
 
 ```
-config.yaml     Las reglas. Se versiona en git. Se edita sin reconstruir nada.
-.env            Los secretos. Ni a git ni a la imagen de Docker.
+config.yaml     Las reglas. Se versiona en git. Se edita sin reconstruir la
+                imagen, pero hay que RECREAR el contenedor y comprobarlo.
+.env            Los secretos y DRY_RUN. Ni a git ni a la imagen de Docker.
+                Se lee al arrancar el proceso: mismo trato que el config.
 data/           Todo lo que tiene que sobrevivir a una actualización:
   app.db          base de datos (check-ins, decisiones, estado del motor)
   garmin_tokens/  sesión de Garmin, para no volver a hacer login (y comerse 429)
@@ -276,7 +348,16 @@ data/           Todo lo que tiene que sobrevivir a una actualización:
 
 `data/hevy_backups/` es lo único que permite deshacer una escritura en Hevy. Si
 ese directorio no persiste, un error deja de tener vuelta atrás. Es el motivo de
-que todo cuelgue de un único volumen.
+que todo cuelgue de un único volumen. Se guarda una copia por escritura y **no
+se borra ninguna** salvo que se ponga `integrations.hevy.backup_keep_last`.
+
+Ni `config.yaml` ni `.env` se releen en caliente, y ninguno de los dos avisa de
+que no se ha releído: hasta recrear el contenedor, el sistema sigue decidiendo
+con lo de antes y contestando `ok`. `/api/health` lo delata en
+`config_file.in_sync` —y para el `.env`, en `dry_run`—. La regla, escrita una
+vez para no repetirla: **tocar `config.yaml`, `.env` o el `Caddyfile` obliga a
+recrear y a verificar después en el health.** El `caddy reload` en caliente
+tampoco vale aquí, porque el proxy corre con `admin off`.
 
 ## Actualizar
 
@@ -294,12 +375,28 @@ docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --b
 ```
 
 Un `docker compose up -d` a secas, por costumbre, recrea la aplicación con el
-bind mount de la raíz y en Windows la deja en bucle de reinicio
+bind mount de la raíz, y tiene **dos finales**. Aquí han pasado los dos.
+
+El ruidoso: en Windows la deja en bucle de reinicio
 (`sqlite3.OperationalError: disk I/O error`). El proxy sigue en pie —compose
 solo avisa de que lo ve huérfano—, así que desde el móvil no se ve un error de
-conexión sino un **502 del proxy**. Los datos no se pierden: siguen en el volumen
-nombrado, sin montar. Se arregla repitiendo el comando de arriba, con los dos
-`-f`. Comprobado.
+conexión sino un **502 del proxy**. Molesto, y se diagnostica en un minuto.
+
+El otro **arranca perfectamente**, y es el malo. El 12 de septiembre el
+contenedor pasó el día entero así: `status: ok`, planificador con sus trabajos,
+200 a todo. Y por dentro estaba usando otro directorio de datos —otra base, otras
+copias de Hevy, otros tokens de Garmin— sin una sola línea de log que lo dijera.
+El punto de montaje se llama `/app/data` en los dos casos, así que la aplicación
+no puede verlo. Lo que sí puede ver, y por eso está en el `/api/health`, es
+**`auth_front`**: en este PC tiene que decir `ninguna`, porque ese valor lo pone
+la superposición; si dice `sin_declarar`, se levantó con el compose equivocado.
+
+En los dos casos los datos siguen en el volumen nombrado, sin montar. Y en los
+dos se arregla repitiendo el comando de arriba con los dos `-f` —pero **hay que
+mirar antes si el contenedor equivocado escribió algo** en el bind mount, porque
+recrearlo «bien» cambia el directorio de datos debajo de los pies. El
+procedimiento, con el `wal_checkpoint` que hace falta para no perder el día, está
+en [`docs/primer-dia.md`](docs/primer-dia.md).
 
 En Umbrel se publica una imagen nueva y se actualiza desde su interfaz;
 el procedimiento está en [`umbrel/README.md`](umbrel/README.md).
@@ -327,7 +424,35 @@ docker exec roolez-adaptive-training_server_1 \
 ```
 
 Un trabajo que falla o que no llega a ejecutarse **manda un aviso por
-Telegram**. Si el sistema calla, es que no ha fallado.
+Telegram**. Si el sistema calla, es que no ha fallado. Ese aviso sale aunque
+`DRY_RUN` esté puesto: ver [los frenos](#los-frenos).
+
+### Deshacer una escritura en Hevy
+
+Es la vuelta atrás de lo único que el sistema cambia fuera de su propia base.
+Antes de cada `PUT` se guarda la rutina tal y como estaba; `rutina revertir` la
+devuelve a esa copia.
+
+```bash
+docker exec -it adaptive-training python -m app.rutina estado
+docker exec -it adaptive-training python -m app.rutina revertir --rutina dia_3
+```
+
+`estado` dice qué se escribió, cuándo y qué copia hay; `revertir` sin `--copia`
+usa la última, pide confirmación por teclado —de ahí el `-it`— y se la salta con
+`--si`. **No mira `write_enabled`**, a propósito: deshacer tiene que funcionar
+también cuando la escritura está apagada, que es justo el estado en el que uno
+la apaga después de un susto. Probado contra Hevy de verdad, ida y vuelta.
+
+Va por nombre de contenedor y no por `docker compose exec` para que el comando
+sea **el mismo en los dos despliegues**; en Umbrel el nombre es
+`roolez-adaptive-training_server_1`. Es deliberado: un comando de emergencia que
+depende de acertar con qué `-f` se levantó esto es un comando que va a fallar
+justo el día que haga falta.
+
+El guión completo —cómo consultar qué se escribió y qué había antes, y qué
+comparar en Hevy después del primer mensaje— está en
+[`docs/primer-dia.md`](docs/primer-dia.md).
 
 Sacar los datos, que son del usuario:
 
@@ -359,7 +484,9 @@ app/api.py       FastAPI: la API del formulario y, en su `lifespan`, los
                  misma base son dos decisiones pisándose el mismo día.
 app/scheduler.py APScheduler con las horas del `config.yaml`.
 static/          La PWA. Sin dependencias ni compilación.
-tests/           782 tests.
+tests/           La suite. `pytest -q` dice cuántos son; aquí había un número
+                 escrito a mano que llevaba cientos de tests desfasado, que es
+                 lo que pasa con los números que nadie comprueba.
 ```
 
 ### La idea que se repite en todo el código
