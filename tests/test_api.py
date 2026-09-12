@@ -1765,3 +1765,22 @@ def test_health_publica_los_dos_interruptores_de_escritura(cliente):
     assert set(bloque) >= {"hevy_write_enabled", "telegram_send_enabled", "pending_write"}
     assert isinstance(bloque["hevy_write_enabled"], bool)
     assert isinstance(bloque["telegram_send_enabled"], bool)
+
+
+def test_health_dice_quien_hay_delante_de_la_puerta(cliente, monkeypatch):
+    """El testigo de «me han recreado con el compose equivocado».
+
+    Pasó el 12 de septiembre: el contenedor llevaba el día entero levantado sin
+    el fichero de superposición de la LAN. Desde fuera era indistinguible de uno
+    sano -200, `status: ok`, planificador con sus cinco trabajos- y por dentro
+    montaba el bind mount de Windows en lugar del volumen nombrado, así que las
+    copias previas a cada escritura en Hevy vivían en otro sitio del que la guía
+    dice. El punto de montaje es `/app/data` en los dos casos, o sea que la
+    aplicación no puede ver esa diferencia. Sí puede ver ésta.
+
+    Se comprueban los tres valores y no sólo el de hoy: uno que no puede cambiar
+    tranquiliza sin mirar, que es peor que no mirar.
+    """
+    for puesto, esperado in (("ninguna", "ninguna"), ("proxy", "proxy"), ("", "sin_declarar")):
+        monkeypatch.setattr(settings, "auth_front", puesto)
+        assert cliente.get("/api/health").json()["auth_front"] == esperado

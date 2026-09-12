@@ -257,6 +257,24 @@ def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
         "scheduler": _estado_planificador(request),
         "clock": _estado_del_reloj(cfg),
         "config_file": _estado_del_config(cfg),
+        # Qué hay delante de la puerta, según quien arrancó esto. Hasta ahora
+        # sólo se decía en un WARNING del arranque, y un WARNING del arranque
+        # se lee una vez y nunca más.
+        #
+        # Lo que lo trajo aquí: el 12 de septiembre el contenedor llevaba el día
+        # entero recreado SIN el fichero de superposición de la LAN. Desde fuera
+        # se veía idéntico -200, `status: ok`, planificador con sus trabajos- y
+        # por dentro era otra cosa: montaba el bind mount de Windows en vez del
+        # volumen nombrado, así que las copias previas a cada escritura en Hevy
+        # estaban en un sitio distinto del que la guía dice, y `AUTH_FRONT` iba
+        # sin declarar. Recrearlo con el fichero bueno habría cambiado el
+        # directorio de datos debajo de los pies sin avisar.
+        #
+        # De las dos diferencias, ésta es la única que la aplicación puede ver:
+        # el punto de montaje es `/app/data` en los dos casos. Sirve de testigo
+        # barato -si aquí pone `sin_declarar` en este PC, el contenedor se
+        # levantó con el compose equivocado- y no cuesta nada mirarlo.
+        "auth_front": settings.auth_front or "sin_declarar",
     }
 
 
@@ -352,10 +370,21 @@ def _estado_del_config(cfg) -> dict[str, Any]:
         "in_sync": igual,
     }
     if not igual:
+        # El comando exacto NO se escribe aquí, y no por pereza. Este código
+        # corre en dos sitios con compose distintos -el PC de pruebas necesita
+        # `-f docker-compose.yml -f docker-compose.pruebas-lan.yml`, el Umbrel
+        # no-, y un aviso que dicta el comando de otro despliegue es peor que
+        # uno que no dicta ninguno: el 12 de septiembre el comando corto recreó
+        # el contenedor apuntando a un directorio de datos distinto, con otra
+        # base y otras copias de Hevy, y contestando `ok` todo el rato.
+        #
+        # Lo que sí se dice es la regla, que es la misma en los dos: el mismo
+        # compose con el que se levantó, y verificar después.
         salida["error"] = (
             "el config.yaml del disco NO es el que está cargado en memoria. "
-            "Los cambios no se aplican hasta recrear el contenedor: "
-            "docker compose up -d --force-recreate app"
+            "Los cambios no se aplican hasta recrear el contenedor, con el "
+            "MISMO compose con el que está levantado (el comando exacto de "
+            "este despliegue, en docs/primer-dia.md)."
         )
     return salida
 

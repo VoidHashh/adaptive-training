@@ -123,11 +123,21 @@ program:
 #
 # CAMBIAR ESTO NO BASTA CON GUARDAR EL FICHERO. El `config.yaml` se carga una
 # vez por proceso: hay que recrear el contenedor y comprobarlo después.
-#   docker compose up -d --force-recreate app
+#   docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml \
+#     up -d --force-recreate app
 #   curl -s localhost:8317/api/health | python -m json.tool
 # En `config_file.in_sync` sale `false` mientras el fichero del disco no sea el
 # que está decidiendo, que es justo el fallo que este proyecto ha cometido ya
 # tres veces con la imagen, el esquema y el Caddyfile.
+#
+# LOS DOS `-f` NO SON DECORACIÓN. Aquí había escrito `docker compose up -d
+# --force-recreate app` a secas, y ese comando es el que rompió el 12 de
+# septiembre: sin la superposición, el compose de la raíz monta `./data` como
+# bind mount de Windows en lugar del volumen nombrado, así que el contenedor
+# arranca apuntando a OTRO directorio de datos -otra base, otras copias de
+# Hevy, otros tokens de Garmin- y contesta `status: ok` igual de convencido.
+# `auth_front` en el health es el testigo: en este PC tiene que decir
+# «ninguna»; si dice «sin_declarar», se levantó con el compose equivocado.
 #
 # El interruptor NO afecta a la reversión: si algo se rompió mientras estaba
 # encendido, se puede deshacer aunque luego se apague.
