@@ -803,3 +803,209 @@ def test_un_429_sigue_propagandose_y_no_se_queda_en_un_apunte():
     c._api = ApiLimitada()
     with pytest.raises(GarminRateLimited):
         c.day_metrics(date(2026, 9, 7))
+
+
+# ---------------------------------------------------------------------------
+# La sesión: reanudada, nueva, o no se sabe
+# ---------------------------------------------------------------------------
+#
+# POR QUÉ ESTO TIENE BATERÍA PROPIA
+# ---------------------------------------------------------------------------
+# `session_resumed` es el sitio donde se mira para decidir si repetir la llamada
+# es gratis o cuesta un intento de login. Durante meses dijo `True` -"sesión
+# reanudada, no gasta intentos"- mientras por debajo la librería se comía dos
+# 429 seguidos, porque lo único que comprobaba era que `login()` no reventara.
+# `Garmin.login(tokenstore)` vuelve normalmente tanto si reanuda como si hace
+# login entero con credenciales, así que "no ha reventado" y "no ha hecho login"
+# eran la misma frase para dos cosas distintas. El de siempre: el valor que se
+# lee no es el valor que se usa.
+
+
+class _InternoFalso:
+    """El cliente de dentro de `Garmin`. Su `login` es el que cuesta dinero."""
+
+    def __init__(self):
+        self.veces = 0
+
+    def login(self, *a, **k):
+        self.veces += 1
+        return (None, None)
+
+
+class _GarminFalso:
+    """Imita las tres salidas reales de `Garmin.login(tokenstore)`.
+
+    `hace_login` decide si el camino simulado es el de reanudar (no toca el
+    login interno) o el de credenciales (lo llama). Los dos vuelven sin
+    excepción, que es justo lo que hacía indistinguibles a los dos casos.
+    """
+
+    def __init__(self, *, hace_login: bool, escribe=None):
+        self.client = _InternoFalso()
+        self._hace_login = hace_login
+        self._escribe = escribe
+        self.garth = self
+
+    def login(self, tokenstore=None):
+        if self._hace_login:
+            self.client.login("u", "p")
+            if self._escribe is not None:
+                self._escribe()
+        return (None, None)
+
+    def dump(self, ruta):  # api.garth.dump
+        if self._escribe is not None:
+            self._escribe()
+
+
+def _con_garmin_falso(monkeypatch, falso):
+    """`connect()` hace `from garminconnect import Garmin` por dentro."""
+    import sys
+    import types
+
+    modulo = types.ModuleType("garminconnect")
+    modulo.Garmin = lambda email, password: falso
+    monkeypatch.setitem(sys.modules, "garminconnect", modulo)
+
+
+def test_si_no_se_llama_al_login_interno_la_sesion_se_reanudo(monkeypatch, tmp_path):
+    falso = _GarminFalso(hace_login=False)
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir=str(tmp_path))
+    c.connect()
+
+    assert c.session_resumed is True
+    assert falso.client.veces == 0
+    # No hubo login, así que no había nada que guardar: afirmar sobre los tokens
+    # aquí sería inventarse una comprobación que no se ha hecho.
+    assert c.tokens_guardados is None
+
+
+def test_un_login_con_credenciales_no_se_disfraza_de_sesion_reanudada(
+    monkeypatch, tmp_path
+):
+    """El fallo de 2026-09-13, clavado.
+
+    La librería carga los tokens, la API los rechaza, y hace login entero por
+    dentro. `login()` vuelve normalmente. Antes eso se leía como "reanudada".
+    """
+    falso = _GarminFalso(
+        hace_login=True,
+        escribe=lambda: (tmp_path / "garmin_tokens.json").write_text("{}"),
+    )
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir=str(tmp_path))
+    c.connect()
+
+    assert c.session_resumed is False, (
+        "hubo login con credenciales y se ha dicho que se reanudó la sesión: "
+        "es exactamente la mentira que invita a repetir la llamada hasta el 429"
+    )
+    assert falso.client.veces == 1
+
+
+def test_un_login_que_no_deja_tokens_escritos_lo_dice(monkeypatch, tmp_path):
+    """La avería cara: funciona siempre porque no guarda nunca.
+
+    `Garmin.login()` guarda los tokens dentro de un `contextlib.suppress`, así
+    que un directorio sin permiso de escritura devuelve un login perfectamente
+    correcto y vacío. Cada mañana repite el login entero y nadie se entera,
+    porque cada ejecución por separado sale bien.
+    """
+    falso = _GarminFalso(hace_login=True, escribe=None)  # no escribe nada
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir=str(tmp_path))
+    c.connect()
+
+    assert c.session_resumed is False
+    assert c.tokens_guardados is False, (
+        "el directorio quedó vacío después de un login y no se ha dicho"
+    )
+
+
+def test_los_tokens_se_cuentan_por_lo_que_haya_y_no_por_nombre_esperado(
+    monkeypatch, tmp_path
+):
+    """Buscar `oauth1_token.json` habría dado un falso negativo.
+
+    La versión instalada guarda UN solo fichero, `garmin_tokens.json`. Dar por
+    hecha la pareja de ficheros de otra versión es el mismo error que dar por
+    hecha la forma de una respuesta: se comprueba que haya algo, no que se
+    llame como uno se imagina.
+    """
+    falso = _GarminFalso(
+        hace_login=True,
+        escribe=lambda: (tmp_path / "garmin_tokens.json").write_text("{}"),
+    )
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir=str(tmp_path))
+    c.connect()
+
+    assert c.tokens_guardados is True
+
+
+def test_los_ficheros_ocultos_no_cuentan_como_tokens(monkeypatch, tmp_path):
+    """Un `.gitkeep` no es una sesión guardada."""
+    falso = _GarminFalso(
+        hace_login=True,
+        escribe=lambda: (tmp_path / ".gitkeep").write_text(""),
+    )
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir=str(tmp_path))
+    c.connect()
+
+    assert c.tokens_guardados is False
+
+
+def test_un_directorio_de_tokens_ilegible_se_anota_pero_no_tumba_la_conexion(
+    monkeypatch, tmp_path
+):
+    """No poder guardar la sesión encarece mañana; no impide leer hoy.
+
+    Convertirlo en excepción cambiaría una degradación por una avería total y
+    dejaría al motor sin wellness por un problema de permisos.
+    """
+    falso = _GarminFalso(hace_login=True, escribe=None)
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(
+        email="a@b.c", password="x", token_dir=str(tmp_path / "no-existe")
+    )
+    c.connect()  # no debe reventar
+
+    assert c.tokens_guardados is False
+    assert c._api is falso, "la conexión tenía que quedar utilizable igualmente"
+
+
+def test_si_no_se_puede_mirar_el_login_se_dice_que_no_se_sabe(monkeypatch, tmp_path):
+    """Tercer estado. La librería cambió por dentro y no hay dónde engancharse.
+
+    Suponer lo cómodo aquí es elegir entre dos mentiras. `None` dice la verdad:
+    no se sabe.
+    """
+    class SinCliente:
+        client = None
+        garth = None
+
+        def login(self, tokenstore=None):
+            return (None, None)
+
+    falso = SinCliente()
+    _con_garmin_falso(monkeypatch, falso)
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir=str(tmp_path))
+    c.connect()
+
+    assert c.session_resumed is None
+
+
+def test_el_no_se_sabe_es_falsy_para_que_lo_de_siempre_degrade_al_lado_seguro():
+    """`None` tiene que caer del lado prudente.
+
+    Hay código -`app/cli.py`, el informe- que pregunta `if client.session_resumed`
+    sin distinguir los tres estados. Con `None` falsy, ese código deja de
+    afirmar que no hubo login, que es el lado que no hace daño. Si `None` fuera
+    truthy, "no se sabe" se leería como "reanudada" y volveríamos al 429.
+    """
+    assert not None
+    c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
+    c.session_resumed = None
+    assert not c.session_resumed

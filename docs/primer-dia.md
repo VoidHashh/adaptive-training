@@ -401,6 +401,69 @@ el motor no está dormido antes del lunes, simplemente el programa arranca el 14
 
 ---
 
+## 5 bis. Dos cosas que aparecieron el domingo 13 por la tarde
+
+Las dos son del mismo tipo: **el contenedor contestaba `status: ok` con los dos
+problemas puestos**. Ninguna habría dado la cara por sí sola.
+
+### a) El contenedor lleva un `config.yaml` que no es el del disco
+
+`get_config()` carga el YAML **una vez por proceso** y lo cachea. El contenedor
+arrancó el sábado 12 a las 12:04; el `config.yaml` se ha editado después. O sea
+que lo que decide no es lo que pone el fichero:
+
+| dónde | hash |
+|---|---|
+| `config.yaml` en disco | `02f523b6fe031eec` |
+| lo que sirve el contenedor en `/api/health` | `8a0e1e304324a6be` |
+
+Y hay una segunda capa, peor: el **código** del contenedor también es el del
+sábado, y su validador **rechaza** el `config.yaml` de ahora —no conoce la
+sección `metrics`—. Mientras nadie recargue, sigue funcionando con el de
+memoria. El día que el proceso se reinicie solo, arranca contra un YAML que su
+propio validador tira.
+
+**Hay que reconstruir antes del lunes.** No es opcional y no basta con
+reiniciar:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --build
+curl -s localhost:8317/api/health | python -m json.tool   # el hash tiene que ser el del disco
+```
+
+Comparar el `config_hash` con el del disco es la comprobación; el `status: ok`
+no lo es, porque salía `ok` con el config viejo puesto.
+
+### b) El directorio de tokens de Garmin no se podía escribir
+
+`data/garmin_tokens` estaba en modo `111` (`d--x--x--x`): ni listable ni
+escribible **por el propio usuario del contenedor**. Los hermanos (`cache`,
+`hevy_backups`) están en 777, así que parece un accidente de creación.
+
+Importa porque `Garmin.login()` guarda los tokens dentro de un
+`contextlib.suppress(Exception)`: si el directorio no deja escribir, **el login
+sale perfectamente correcto y no guarda nada**. No falla; encarece. Cada
+ejecución repite el login entero con su cadena de estrategias y sus 429, contra
+un servicio que corta por IP, y cada ejecución por separado parece bien.
+
+Ya está arreglado en el volumen que usa el contenedor (`chmod 700`), y
+verificado: dos ejecuciones seguidas reanudan sesión sin gastar login.
+
+> **Ojo con cuál es cuál.** El compose de `pruebas-lan` monta `/app/data` como
+> **volumen nombrado** (`hevy2garmin-test_datos-pruebas`), no como `./data`. Son
+> dos almacenes de tokens distintos. El arreglado es el del volumen, que es el
+> que usa el contenedor. El de `./data` —el que usaría el compose de Umbrel, y
+> el que usan los scripts lanzados a mano desde Windows— **sigue roto**, y ahí
+> el problema es una ACL de Windows que niega el acceso hasta para leerla.
+
+De esto sale además una comprobación nueva que antes no existía: después de un
+login con credenciales, el cliente mira si quedó algo escrito y lo dice. No
+revienta —no poder guardar la sesión encarece mañana, no impide leer hoy, y
+convertirlo en excepción cambiaría una degradación por una avería total—, pero
+deja un `ERROR` en el log y un paso en rojo en el botón de Garmin.
+
+---
+
 ## 6. El lunes 14
 
 ### 6.1 Al levantarte — el check-in, en el móvil

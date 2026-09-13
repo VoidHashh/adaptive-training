@@ -24,6 +24,7 @@ TRES DECISIONES QUE MERECEN EXPLICACIÓN
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -226,6 +227,54 @@ def _retry(
     ) from last
 
 
+class _CazaDe429(logging.Handler):
+    """Apunta los 429 que la librería se traga y solo cuenta en su propio log."""
+
+    def __init__(self, sink: list[str]) -> None:
+        super().__init__(level=logging.WARNING)
+        self.sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            texto = record.getMessage()
+        except Exception:  # noqa: BLE001 - un handler no puede reventar nunca
+            return
+        if "429" in texto and texto not in self.sink:
+            self.sink.append(f"login: {texto}")
+
+
+@contextlib.contextmanager
+def _429_a_la_vista(sink: list[str]):
+    """Mientras dure el bloque, los 429 de `garminconnect` acaban en `sink`.
+
+    POR QUÉ NO BASTA CON `_retry`
+    -----------------------------
+    `_retry` solo ve los 429 que salen como excepción hasta aquí. Pero la
+    cadena de login de la librería se los come uno a uno -prueba cinco
+    estrategias, y una que devuelve 429 no revienta: registra un `warning` y
+    pasa a la siguiente-, así que si la cuarta funciona la llamada termina
+    "bien" habiendo consumido tres 429 de los que aquí no se enteraba nadie.
+
+    El efecto era que el informe de la mañana podía decir "lectura limpia"
+    teniendo la IP a un paso del bloqueo. Un aviso que solo aparece cuando ya
+    es demasiado tarde no es un aviso.
+    """
+    logger = logging.getLogger("garminconnect")
+    handler = _CazaDe429(sink)
+    logger.addHandler(handler)
+    # Si el logger estuviera por encima de WARNING el handler no vería nada, y
+    # el silencio se leería como "no hubo 429".
+    nivel = logger.level
+    if nivel > logging.WARNING or nivel == logging.NOTSET:
+        logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        with contextlib.suppress(Exception):
+            logger.setLevel(nivel)
+
+
 @dataclass
 class GarminClient:
     """Cliente fino sobre `garminconnect`, con sesión persistida."""
@@ -241,7 +290,33 @@ class GarminClient:
     # Cada 429 encontrado, incluidos los superados al reintentar. El informe lo
     # lee para no presentar como lectura limpia algo que costó cinco intentos.
     rate_limit_events: list[str] = field(default_factory=list)
-    session_resumed: bool = False
+    # ¿Se reanudó la sesión de los tokens, o hubo login con credenciales?
+    #
+    # TRES ESTADOS, Y EL TERCERO NO SOBRA. `True` es que se reanudó, `False` es
+    # que hubo login de verdad, y `None` es que NO SE HA PODIDO SABER porque la
+    # librería de debajo no dejó mirar. Un booleano obligaría a elegir entre dos
+    # mentiras: decir "reanudada" sin saberlo -que invita a repetir la llamada
+    # que agota el límite- o decir "login" sin saberlo -que asusta con un
+    # problema que igual no existe-.
+    #
+    # `None` es falsy a propósito: todo el código que ya preguntaba
+    # `if client.session_resumed` sigue funcionando y, ante la duda, deja de
+    # afirmar que no hubo login, que es el lado seguro.
+    session_resumed: bool | None = False
+    # ¿Quedaron los tokens escritos en disco después de un login con credenciales?
+    #
+    # `None` mientras no haya habido login que guardar -si la sesión se reanudó,
+    # no hay nada que comprobar-. `True` si después del login hay ficheros en el
+    # directorio. `False` si hubo login y NO quedó nada, que es la avería que
+    # costó encontrar: `Garmin.login()` guarda los tokens dentro de un
+    # `contextlib.suppress(Exception)`, así que un directorio sin permiso de
+    # escritura se traga el fallo y devuelve un login perfectamente correcto.
+    #
+    # El efecto es que cada mañana se repite el login entero, con su cadena de
+    # estrategias y sus 429, y nadie se entera nunca porque cada ejecución por
+    # separado funciona. No revienta: degrada, y la degradación es invisible.
+    # Aquí se vuelve visible.
+    tokens_guardados: bool | None = None
     # Métricas que fallaron al leerse, una línea por (día, métrica).
     #
     # No es lo mismo "esa noche no hubo HRV" que "no se pudo leer el HRV de esa
@@ -260,21 +335,120 @@ class GarminClient:
             ) from exc
 
         api = Garmin(self.email, self.password)
-        # Primero se intenta reanudar la sesión guardada. Solo si no vale se
-        # hace login, que es la llamada que provoca los 429.
+
+        # AQUÍ HABÍA UNA MENTIRA, Y DE LAS CARAS (2026-09-13)
+        # ---------------------------------------------------
+        # Este bloque decía: "primero se intenta reanudar la sesión guardada;
+        # solo si no vale se hace login, que es la llamada que provoca los
+        # 429". Describía una librería que ya no es la que hay debajo.
+        #
+        # `Garmin.login(tokenstore)` hace HOY tres cosas distintas y vuelve
+        # normalmente de las tres: reanuda de los tokens; o no consigue
+        # cargarlos y hace login entero con credenciales; o los carga, la API
+        # los rechaza por caducos, y hace login entero igualmente. Como las
+        # tres vuelven sin excepción, `session_resumed = True` no significaba
+        # "se reanudó": significaba "login() no reventó".
+        #
+        # No era un matiz. Medido contra la cuenta real, `connect()` informaba
+        # "sesión reanudada desde los tokens (sin login)" mientras por debajo la
+        # cadena de estrategias de la librería se comía DOS 429 seguidos. O sea
+        # que el sitio donde se mira para saber si se puede repetir la llamada
+        # sin agotar el límite era justo el que decía que sí cuando había que
+        # parar. El de siempre: el valor que se lee no es el valor que se usa.
+        #
+        # Se mira quién llama de verdad al login con credenciales -el `login`
+        # del cliente interno, que es el que dispara la cadena- en vez de
+        # deducirlo de que no haya excepción.
+        contador = {"veces": 0}
+        interno = getattr(api, "client", None)
+        original = getattr(interno, "login", None)
+        if original is not None and callable(original):
+            def _contando(*a: Any, **k: Any) -> Any:
+                contador["veces"] += 1
+                return original(*a, **k)
+
+            interno.login = _contando  # type: ignore[union-attr]
+        else:
+            # No se ha podido enganchar: la librería ha cambiado por dentro. Se
+            # dice que no se sabe, en vez de suponer lo cómodo.
+            contador["veces"] = -1
+
         try:
-            api.login(self.token_dir)
-            self.session_resumed = True
-            log.info("Garmin: sesión reanudada desde %s", self.token_dir)
+            with _429_a_la_vista(self.rate_limit_events):
+                api.login(self.token_dir)
+            if contador["veces"] < 0:
+                self.session_resumed = None
+                log.info("Garmin: conectado; no se ha podido saber si hubo login")
+            elif contador["veces"] == 0:
+                self.session_resumed = True
+                log.info("Garmin: sesión reanudada desde %s", self.token_dir)
+            else:
+                self.session_resumed = False
+                log.info(
+                    "Garmin: los tokens de %s no valían; se ha hecho login con "
+                    "credenciales", self.token_dir,
+                )
+                self._comprobar_tokens_guardados()
         except Exception:  # noqa: BLE001
             log.info("Garmin: sesión no reutilizable, haciendo login")
-            _retry(api.login, what="login", sink=self.rate_limit_events, policy=self.retry)
+            self.session_resumed = False
+            with _429_a_la_vista(self.rate_limit_events):
+                _retry(
+                    api.login, what="login", sink=self.rate_limit_events,
+                    policy=self.retry,
+                )
             try:
                 api.garth.dump(self.token_dir)
             except Exception:  # noqa: BLE001 - guardar es best-effort
                 log.warning("Garmin: no se pudieron guardar los tokens en %s",
                             self.token_dir)
+            self._comprobar_tokens_guardados()
+        finally:
+            if original is not None and callable(original):
+                with contextlib.suppress(Exception):
+                    interno.login = original  # type: ignore[union-attr]
         self._api = api
+
+    def _comprobar_tokens_guardados(self) -> None:
+        """Después de un login, mirar si quedó algo escrito donde se prometió.
+
+        Se llama SOLO cuando ha habido login con credenciales, porque es el único
+        caso en que había algo que guardar. Si la sesión se reanudó, los tokens ya
+        estaban ahí y `tokens_guardados` se queda en `None`: no hay nada que
+        afirmar.
+
+        NO REVIENTA, Y ES A PROPÓSITO. No poder guardar los tokens no impide leer
+        el wellness de esta mañana: solo obliga a repetir el login la mañana
+        siguiente. Convertirlo en excepción cambiaría una degradación cara por una
+        avería total, y dejaría al motor sin datos por un problema de permisos de
+        un directorio. Lo que hacía falta no era que parase, sino que se notara:
+        queda en el log como error y en el botón de diagnóstico como paso en rojo.
+        """
+        import os
+
+        try:
+            hay = [
+                n for n in os.listdir(self.token_dir)
+                if not n.startswith(".")
+            ]
+        except Exception as exc:  # noqa: BLE001
+            self.tokens_guardados = False
+            log.error(
+                "Garmin: hubo login con credenciales pero el directorio de tokens "
+                "%s no se puede ni leer (%s). La sesión NO se está guardando, así "
+                "que cada ejecución repetirá el login entero.",
+                self.token_dir, exc,
+            )
+            return
+
+        self.tokens_guardados = bool(hay)
+        if not hay:
+            log.error(
+                "Garmin: hubo login con credenciales y el directorio de tokens %s "
+                "ha quedado vacío. La sesión NO se está guardando, así que cada "
+                "ejecución repetirá el login entero y gastará el límite de "
+                "intentos.", self.token_dir,
+            )
 
     # --- wellness -----------------------------------------------------------
 

@@ -824,6 +824,50 @@ def metrics_percepcion(
     return poner("percepcion", vista_percepcion(s, dias=dias))
 
 
+@app.post("/api/probar/telegram")
+def probar_telegram_endpoint(
+    texto: str | None = None,
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Manda un mensaje de prueba de verdad al canal de siempre.
+
+    Es POST y no GET a propósito, aunque "probar" suene a consulta: esto tiene
+    un efecto en el mundo -llega un mensaje al móvil- y las cosas con efecto no
+    se ponen detrás de un verbo que cualquier precargador de enlaces puede
+    disparar solo.
+    """
+    from app.diagnostico import probar_telegram
+
+    return probar_telegram(settings, cfg, texto=texto)
+
+
+@app.post("/api/probar/hevy")
+def probar_hevy_endpoint(cfg=Depends(get_config)) -> dict[str, Any]:
+    """Comprueba la conexión con Hevy SIN escribir nada.
+
+    Lee los entrenamientos del último mes y pide una por una las rutinas que el
+    config dice que va a reescribir. Un identificador que apunta a una rutina
+    borrada desde el móvil no daría la cara hasta la mañana en que toca
+    escribirla.
+    """
+    from app.diagnostico import probar_hevy
+
+    return probar_hevy(settings, cfg)
+
+
+@app.post("/api/probar/garmin")
+def probar_garmin_endpoint(cfg=Depends(get_config)) -> dict[str, Any]:
+    """Entra en Garmin y lee un día reciente.
+
+    El resultado dice si la sesión se reanudó de los tokens o si hubo login
+    nuevo, porque de eso depende que se pueda repetir la prueba sin provocar un
+    429.
+    """
+    from app.diagnostico import probar_garmin
+
+    return probar_garmin(settings, cfg)
+
+
 @app.post("/api/reconcile")
 def post_reconcile(
     day: date | None = None,
