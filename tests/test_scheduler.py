@@ -439,11 +439,19 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_cuatro_trabajos_del_dia_y_el_del_arranque(cfg):
+def test_estan_los_cuatro_trabajos_del_dia_y_los_dos_del_arranque(cfg):
+    """Cuatro con hora y dos que se disparan al arrancar.
+
+    Los dos del arranque hacen cosas distintas y por eso son dos: uno recupera
+    de Garmin los días de bienestar que falten, y el otro -`startup_audit`-
+    mira qué trabajos DEBIERON correr mientras el sistema no estaba. Ver
+    `tests/test_arranque_perdido.py` para por qué el aviso de APScheduler no
+    cubre ese caso.
+    """
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
         "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
-        "backfill_wellness",
+        "backfill_wellness", "startup_audit",
     }
 
 

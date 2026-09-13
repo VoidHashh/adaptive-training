@@ -582,6 +582,58 @@ class Notification(Base):
     __table_args__ = (Index("ix_notifications_date_kind", "date", "kind"),)
 
 
+class JobRun(Base):
+    """Cuándo corrió por última vez cada trabajo del planificador.
+
+    POR QUÉ HACE FALTA UNA TABLA PARA ESTO
+    --------------------------------------
+    APScheduler ya avisa de un disparo perdido (`EVENT_JOB_MISSED`), y ese aviso
+    funciona: el domingo 13 se perdieron cuatro trabajos y salieron sus cuatro
+    mensajes de Telegram. Pero ese escuchador solo puede saltar si el PROCESO
+    sigue vivo cuando pasa la hora. Ese día la máquina virtual estuvo
+    suspendida -congelada, no matada-, así que al despertar APScheduler miró el
+    reloj, vio las horas pasadas y protestó.
+
+    Si el contenedor se para de verdad -`docker stop`, un reinicio del anfitrión,
+    una actualización, un cuelgue-, el planificador muere con él. Al volver se
+    construye uno nuevo con el almacén de trabajos en MEMORIA, que nace sin
+    pasado: para el `CronTrigger` recién creado, la ejecución de las 09:00 de
+    esta mañana no es una cita perdida, es que la próxima cita es mañana. No
+    salta ningún evento, no se manda ningún mensaje, y la mañana sin decisión se
+    parece exactamente a una mañana de descanso.
+
+    Es decir: el aviso de trabajo perdido cubría el caso en que la máquina se
+    duerme y el caso en que se apaga NO, que es el más probable de los dos. Esta
+    tabla es la memoria que le falta al almacén en memoria.
+
+    LAS TRES MARCAS, Y POR QUÉ SON TRES
+    -----------------------------------
+    - `last_finished_at`: lo pone el escuchador cada vez que un trabajo TERMINA
+      bien. Es la prueba positiva de que corrió.
+    - `first_seen_at`: la primera vez que este trabajo se registró. Sin esto, el
+      primer arranque con la tabla vacía no tendría suelo desde el que contar y
+      habría que elegir entre inventar uno o callarse; ninguna de las dos es
+      aceptable. Con él, el primer arranque no acusa a nadie y el segundo ya
+      vigila de verdad.
+    - `checked_through`: hasta dónde llegó la última auditoría de arranque. Es lo
+      que hace que el aviso no se repita. Sin esta marca, un contenedor que se
+      reinicia cinco veces seguidas manda cinco veces el mismo aviso del mismo
+      hueco, y un aviso que se repite solo enseña a no leer los avisos.
+
+    El suelo desde el que se cuenta es el MÁS RECIENTE de los tres. Cada uno
+    responde a una pregunta distinta -cuándo corrió, desde cuándo existe, hasta
+    cuándo se miró- y quedarse con el mayor es la única combinación que no
+    acusa de un hueco que ya se contó ni se salta uno que no.
+    """
+
+    __tablename__ = "job_runs"
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    checked_through: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class LoadAdoption(Base):
     """Cada vez que la carga ejecutada en Hevy movió -o intentó mover- el objetivo.
 

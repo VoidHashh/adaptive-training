@@ -32,11 +32,11 @@ explicar por qué el semáforo de un martes salió sin la mitad de las señales.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
@@ -358,6 +358,249 @@ def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
 
 
 # ---------------------------------------------------------------------------
+# La auditoría de arranque: qué NO corrió mientras el sistema no estaba
+# ---------------------------------------------------------------------------
+
+# Cuántos disparos perdidos se enumeran como mucho. Un contenedor parado tres
+# meses tiene noventa disparos perdidos de cada trabajo, y ni el mensaje ni el
+# bucle tienen por qué recorrerlos: a partir de un puñado, lo que informa es
+# «desde tal día no corre», no la lista. El número exacto SÍ se cuenta hasta el
+# tope y se dice que hay más, porque un «20+» que en realidad son 3 mentiría.
+TOPE_PERDIDOS = 20
+
+# Cuánto espera la auditoría antes de mirar. Corta, al revés que la de bienestar:
+# esto no habla con Garmin ni con Hevy -lee cuatro filas y manda un mensaje-, y
+# lo que cuenta es que el aviso llegue mientras el usuario todavía relaciona el
+# mensaje con el reinicio que acaba de hacer.
+RETRASO_AUDITORIA_S = 10
+
+
+def disparos_perdidos(
+    trigger: CronTrigger,
+    desde: datetime,
+    hasta: datetime,
+    *,
+    tope: int = TOPE_PERDIDOS,
+) -> tuple[list[datetime], bool]:
+    """A qué horas debió saltar este disparador entre `desde` y `hasta`.
+
+    Los dos extremos son ABIERTO por abajo y CERRADO por arriba: un disparo que
+    cae exactamente en `desde` ya está contado -`desde` es la última vez que el
+    trabajo terminó bien, o hasta dónde miró la auditoría anterior- y volver a
+    contarlo avisaría de un hueco que no existe.
+
+    Devuelve la lista y un booleano que dice si se cortó por el tope. El
+    booleano existe para que el mensaje pueda distinguir «han sido veinte» de
+    «han sido veinte o más», que con el sistema parado una temporada es la
+    diferencia entre un dato y un número inventado.
+    """
+    perdidos: list[datetime] = []
+    # El microsegundo NO es cosmético: `get_next_fire_time` devuelve la primera
+    # cita MAYOR O IGUAL que el cursor, así que arrancando en `desde` clavado el
+    # primer resultado es el propio `desde`. Con `desde` = «la última vez que el
+    # trabajo terminó bien», eso hacía que la auditoría acusara de haber perdido
+    # justo la ejecución que sí se hizo, y que lo hiciera en CADA arranque. Lo
+    # encontró `test_el_disparo_que_cae_justo_en_el_suelo_no_se_vuelve_a_contar`.
+    cursor = desde + timedelta(microseconds=1)
+    while len(perdidos) < tope:
+        # `previous_fire_time=None` a propósito: así `now` manda y el disparador
+        # devuelve la primera cita a partir del cursor, que es justo la forma de
+        # recorrer hacia delante un intervalo ya pasado.
+        siguiente = trigger.get_next_fire_time(None, cursor)
+        if siguiente is None or siguiente > hasta:
+            return perdidos, False
+        perdidos.append(siguiente)
+        cursor = siguiente + timedelta(microseconds=1)
+    # Se ha llenado el cupo: queda por saber si había alguno más.
+    siguiente = trigger.get_next_fire_time(None, cursor)
+    return perdidos, bool(siguiente is not None and siguiente <= hasta)
+
+
+def suelo_de_vigilancia(fila: Any, arranque: datetime) -> datetime:
+    """Desde cuándo se cuentan los huecos de un trabajo.
+
+    El más reciente de las tres marcas de `JobRun`, y si no hay fila, el momento
+    del arranque. Ver el docstring del modelo para por qué son tres.
+
+    Que el caso «no hay fila» valga `arranque` es lo que hace que el primer
+    arranque de la vida del sistema -o el primero tras crear la tabla- no acuse
+    a nadie: el intervalo (arranque, ahora] está vacío. No se inventa un pasado
+    limpio, es que de verdad no hay pasado que juzgar, y decir lo contrario sería
+    exactamente el fallo que esta tabla existe para evitar.
+    """
+    if fila is None:
+        return arranque
+    marcas = [
+        m for m in (fila.first_seen_at, fila.last_finished_at, fila.checked_through)
+        if m is not None
+    ]
+    return max(marcas) if marcas else arranque
+
+
+def _a_utc_naive(momento: datetime) -> datetime:
+    """A UTC sin tzinfo, que es como guarda las fechas el resto de la base.
+
+    `server_default=func.now()` de SQLite escribe UTC naive, y mezclar en una
+    misma columna fechas con zona y sin ella hace que las comparaciones lancen
+    o, peor, que se comparen mal en silencio.
+    """
+    if momento.tzinfo is None:
+        return momento
+    return momento.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def auditar_arranque(
+    vigilados: dict[str, CronTrigger],
+    tz: ZoneInfo,
+    *,
+    telegram_client: Any = None,
+    dry_run: bool = False,
+    ahora: datetime | None = None,
+) -> list[tuple[str, list[datetime], bool]]:
+    """Qué trabajos debieron correr mientras el sistema no estaba, y avisar.
+
+    POR QUÉ ESTO NO LO CUBRE `EVENT_JOB_MISSED`
+    -------------------------------------------
+    Porque ese evento necesita un proceso vivo al que se le pase la hora. Cuando
+    el contenedor se para y vuelve, el planificador nuevo nace sin pasado y sus
+    `CronTrigger` calculan la próxima cita desde ahora: las de ayer no son citas
+    perdidas, son citas que para él nunca existieron. Ver `JobRun`.
+
+    Devuelve lo encontrado ADEMÁS de avisar, para que se pueda comprobar sin
+    mirar Telegram y para que la llamada tenga algo que afirmar en los tests.
+    """
+    from app.models import JobRun
+
+    ahora = ahora or datetime.now(tz)
+    arranque_utc = _a_utc_naive(ahora)
+    encontrados: list[tuple[str, list[datetime], bool]] = []
+
+    with session_scope() as s:
+        for job_id, trigger in vigilados.items():
+            fila = s.get(JobRun, job_id)
+            if fila is None:
+                fila = JobRun(job_id=job_id, first_seen_at=arranque_utc)
+                s.add(fila)
+            suelo = suelo_de_vigilancia(fila, arranque_utc)
+            # El disparador piensa en hora local con zona; la base guarda UTC
+            # naive. La conversión va aquí, en la frontera, y no repartida.
+            desde = suelo.replace(tzinfo=timezone.utc).astimezone(tz)
+            perdidos, hay_mas = disparos_perdidos(trigger, desde, ahora)
+            # La marca se mueve SIEMPRE, haya habido hueco o no. Si solo se
+            # moviera al avisar, un reinicio detrás de otro volvería a mirar el
+            # mismo intervalo y repetiría el mismo aviso.
+            fila.checked_through = arranque_utc
+            if perdidos:
+                encontrados.append((job_id, perdidos, hay_mas))
+                log.error(
+                    "trabajo no ejecutado mientras el sistema no estaba: %s, "
+                    "%d disparo(s) desde %s",
+                    job_id, len(perdidos), desde,
+                )
+
+    if not encontrados:
+        log.info(
+            "auditoría de arranque: los %d trabajos vigilados al día",
+            len(vigilados),
+        )
+        return encontrados
+
+    if telegram_client is not None:
+        texto = mensaje_de_arranque(encontrados, tz)
+        try:
+            r = telegram_client.send(texto, dry_run=dry_run)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo avisar de los trabajos no ejecutados")
+            return encontrados
+        # Mismo motivo que en `_avisador`: `send` no lanza cuando Telegram dice
+        # que no, devuelve un resultado diciéndolo, y tirarlo dejaba el aviso de
+        # avería sin rastro en ninguna parte.
+        if r is not None and not getattr(r, "sent", False):
+            log.error(
+                "el aviso de trabajos no ejecutados NO se ha enviado: %s",
+                getattr(r, "error", None) or getattr(r, "reason", ""),
+            )
+    return encontrados
+
+
+# Cómo se llama cada trabajo cuando hay que explicárselo a una persona. El
+# `job_id` es para el log; en el móvil no dice nada. Si un trabajo no está aquí
+# sale su id crudo: feo, pero cierto, y prefiero eso a que un trabajo nuevo se
+# quede fuera del aviso por no haberlo apuntado en dos sitios.
+NOMBRES_LEGIBLES = {
+    "garmin_fetch": "traer los datos de Garmin",
+    "decision_fallback": "decidir el semáforo del día",
+    "reconcile": "apuntar lo que entrenaste",
+    "perception_notice": "revisar las sesiones de ayer",
+}
+
+
+def mensaje_de_arranque(
+    encontrados: list[tuple[str, list[datetime], bool]], tz: ZoneInfo
+) -> str:
+    """El aviso, en el idioma del usuario y no en el del planificador.
+
+    Dice QUÉ no se hizo y desde cuándo, no «job_id decision_fallback misfired».
+    Y dice qué significa, que es lo único que el usuario puede usar para decidir
+    si tiene que hacer algo.
+    """
+    lineas = [
+        "⚠️ <b>El sistema ha estado parado y se ha perdido trabajo.</b>",
+        "",
+        "Mientras no estaba en marcha no se ejecutó:",
+    ]
+    for job_id, perdidos, hay_mas in encontrados:
+        que = NOMBRES_LEGIBLES.get(job_id, job_id)
+        primero = perdidos[0].astimezone(tz)
+        n = len(perdidos)
+        varias = n > 1 or hay_mas
+        # "1 vez/veces" es de las cosas que delatan que el mensaje lo escribió
+        # una plantilla y no una persona, y este aviso llega el día en que hay
+        # que entender algo rápido.
+        cuantos = f"{n}{'+' if hay_mas else ''} veces" if varias else "1 vez"
+        cual = "la primera el" if varias else "el"
+        lineas.append(
+            f"• <b>{escapar_html(que)}</b> — {cuantos}, "
+            f"{cual} {primero.strftime('%d/%m a las %H:%M')}"
+        )
+    lineas += [
+        "",
+        "Los días afectados no tienen decisión guardada ni entrenos apuntados. "
+        "Lo de Garmin se recupera solo al arrancar; lo demás, no.",
+    ]
+    return "\n".join(lineas)
+
+
+def _apuntador() -> Callable:
+    """Apunta en `job_runs` cada trabajo que TERMINA bien.
+
+    Solo los que terminan: un trabajo que revienta no ha hecho su trabajo, y
+    marcarlo como ejecutado taparía el hueco que la auditoría del próximo
+    arranque tendría que encontrar. De eso ya avisa `_avisador` por su lado.
+    """
+    from app.models import JobRun
+
+    def escuchar(event) -> None:  # noqa: ANN001
+        try:
+            with session_scope() as s:
+                fila = s.get(JobRun, event.job_id)
+                ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+                if fila is None:
+                    s.add(JobRun(job_id=event.job_id, first_seen_at=ahora,
+                                 last_finished_at=ahora))
+                else:
+                    fila.last_finished_at = ahora
+        except Exception:  # noqa: BLE001
+            # Que no se pueda apuntar NO puede tumbar el trabajo que ya salió
+            # bien. Pero se registra: sin esta línea, una base bloqueada dejaría
+            # la vigilancia ciega sin que nadie lo supiera, y la próxima
+            # auditoría acusaría de un hueco inventado.
+            log.exception("no se pudo apuntar la ejecución de %s", event.job_id)
+
+    return escuchar
+
+
+# ---------------------------------------------------------------------------
 # Montaje
 # ---------------------------------------------------------------------------
 
@@ -385,16 +628,26 @@ def build_scheduler(
         },
     )
 
-    def cron(clave: str, defecto: str) -> CronTrigger:
+    # Los disparadores de hora fija, apuntados según se crean. Son los únicos
+    # que la auditoría de arranque puede juzgar: de un trabajo con hora se sabe
+    # cuándo debió correr, y del que se dispara al arrancar no hay nada que
+    # reprochar porque su cita ES el arranque. Recogerlos aquí, en el mismo
+    # sitio donde se construyen, evita la segunda lista escrita a mano que se
+    # queda vieja el día que se añada un trabajo.
+    vigilados: dict[str, CronTrigger] = {}
+
+    def cron(clave: str, defecto: str, job_id: str) -> CronTrigger:
         h, m = _hora(cfg, clave, defecto)
-        return CronTrigger(hour=h, minute=m, timezone=tz)
+        t = CronTrigger(hour=h, minute=m, timezone=tz)
+        vigilados[job_id] = t
+        return t
 
     sched.add_job(
-        job_fetch_garmin, cron("garmin_fetch_time", "06:30"),
+        job_fetch_garmin, cron("garmin_fetch_time", "06:30", "garmin_fetch"),
         args=[cfg], id="garmin_fetch", name="Refrescar caché de Garmin",
     )
     sched.add_job(
-        job_decision, cron("fallback_decision_time", "09:00"),
+        job_decision, cron("fallback_decision_time", "09:00", "decision_fallback"),
         args=[cfg],
         kwargs={
             "hevy_client": hevy_client, "telegram_client": telegram_client,
@@ -405,7 +658,7 @@ def build_scheduler(
         id="decision_fallback", name="Decisión sin check-in",
     )
     sched.add_job(
-        job_reconcile, cron("evening_summary_time", "22:30"),
+        job_reconcile, cron("evening_summary_time", "22:30", "reconcile"),
         args=[cfg], kwargs={"hevy_client": hevy_client},
         id="reconcile", name="Reconciliar lo entrenado",
     )
@@ -415,7 +668,7 @@ def build_scheduler(
     # de hoy. Antes de las nueve competiría con el check-in de la mañana, que es
     # justo el dato que hace falta para poder evaluar la sesión de ayer.
     sched.add_job(
-        job_aviso_percepcion, cron("perception_notice_time", "09:30"),
+        job_aviso_percepcion, cron("perception_notice_time", "09:30", "perception_notice"),
         args=[cfg],
         kwargs={
             "telegram_client": telegram_client,
@@ -436,9 +689,25 @@ def build_scheduler(
         name="Recuperar días de bienestar perdidos",
     )
 
+    # La auditoría del arranque. Va como trabajo y no dentro de `build_scheduler`
+    # por lo mismo que el backfill: manda un Telegram, y una llamada de red en el
+    # camino del arranque retrasa la respuesta de la PWA. Diez segundos bastan
+    # para no competir con el arranque y son pocos para que el aviso llegue
+    # mientras el usuario todavía se acuerda de haber reiniciado.
+    sched.add_job(
+        auditar_arranque,
+        DateTrigger(run_date=datetime.now(tz) + timedelta(seconds=RETRASO_AUDITORIA_S)),
+        args=[vigilados, tz],
+        kwargs={"telegram_client": telegram_client, "dry_run": dry_run},
+        id="startup_audit", name="Mirar qué no corrió mientras no estaba",
+    )
+
     sched.add_listener(
         _avisador(telegram_client), EVENT_JOB_ERROR | EVENT_JOB_MISSED
     )
+    # Y el que apunta lo que SÍ sale bien, que es de donde la auditoría del
+    # próximo arranque saca el suelo desde el que contar.
+    sched.add_listener(_apuntador(), EVENT_JOB_EXECUTED)
 
     if start:
         sched.start()

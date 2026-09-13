@@ -242,6 +242,11 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     disociaciones: sin montar, `session_performance` no se escribiría NUNCA, el
     contador de la vista 5 se quedaría a cero para siempre y la pantalla diría
     "todavía no se puede contar" mes tras mes sin que nada diera un error.
+
+    `startup_audit` es el último en llegar y es el que vigila a los demás: mira
+    qué trabajos debieron correr mientras el contenedor no estaba. Sin montar,
+    el sistema vuelve a no tener forma de saber que se perdió una mañana, que es
+    el silencio que todos los de esta lista comparten.
     """
     monkeypatch.setattr(settings, "scheduler_enabled", True)
 
@@ -251,7 +256,7 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     assert sched["running"] is True, "la aplicación arrancó sin planificador"
     assert set(sched["jobs"]) == {
         "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
-        "backfill_wellness",
+        "backfill_wellness", "startup_audit",
     }
     assert all(sched["jobs"].values()), (
         "un trabajo sin próxima ejecución está montado pero no se va a ejecutar, "
