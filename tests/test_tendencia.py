@@ -785,11 +785,28 @@ class TestTemas:
                 assert not tema_de_regla(cfg.raw, nombre).startswith("«"), nombre
 
     def test_las_senales_salen_del_arbol_no_de_requires(self, cfg):
-        """`requires` es documentación y puede mentir; `when` es lo que se evalúa."""
-        regla = next(r for r in cfg.raw["thresholds"]["amber"]
-                     if r["name"] == "resaca_finde")
-        assert senales_de_regla(regla) == {"weekend_intense_rides",
-                                           "weekend_total_hours"}
+        """`requires` es documentación y puede mentir; `when` es lo que se evalúa.
+
+        Esto se apoyaba en `resaca_finde`, que ya no existe, y además se apoyaba
+        mal: aquella regla declaraba en `requires` exactamente las dos señales
+        que usaba, así que el test habría pasado igual leyendo `requires`. No
+        demostraba nada; coincidía.
+
+        Ahora la regla es de laboratorio y su `requires` MIENTE a propósito:
+        nombra una señal que el árbol no toca y se calla dos que sí. Si la
+        implementación volviera a leer `requires`, aquí se ve.
+        """
+        regla = {
+            "name": "sintetica",
+            "requires": ["hrv_ratio"],
+            "when": {
+                "any": [
+                    {"load_3d": {"gt_adaptive": "load_3d_p90"}},
+                    {"not": {"sleep_min": {"lt": 300}}},
+                ]
+            },
+        }
+        assert senales_de_regla(regla) == {"load_3d", "sleep_min"}
 
 
 # ---------------------------------------------------------------------------

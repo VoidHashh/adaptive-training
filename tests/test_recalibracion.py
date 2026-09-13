@@ -321,9 +321,15 @@ def test_el_accesor_no_se_inventa_un_valor_por_defecto(cfg):
 # el mensaje seguiría leyéndose perfectamente y mandaría a un sitio que ya no
 # está: es la clase de fallo que solo se descubre intentando seguir la
 # instrucción, seis semanas después y con prisa.
+#
+# `cycling.weekend.total_hours_threshold` estaba en esta lista y ya no: era el
+# umbral de `resaca_finde`, que se ha borrado. El aviso mandaba a revisarlo, y
+# quien fuera a mirarlo seis semanas después no lo encontraría, ni sabría si es
+# que ya estaba bien o es que estaba buscando mal. Este test es exactamente lo
+# que impidió que el aviso se quedara apuntando a un sitio vacío.
 RUTAS_CITADAS = [
     ("cycling", "classification"),
-    ("cycling", "weekend", "total_hours_threshold"),
+    ("adaptive_thresholds",),
     ("program", "recalibrado_el"),
 ]
 

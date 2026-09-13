@@ -749,8 +749,19 @@ def test_la_vista_entera_sale_con_el_config_de_verdad(db):
     """Contra el `config.yaml` real, que es el que tiene que poder auditar.
 
     Un doble de test puede tener tres reglas bien formadas; el archivo de verdad
-    tiene trece y tres especiales, y es donde aparecería un `name` repetido o un
-    bloque que la vista no sabe leer.
+    tiene todas las del semáforo y tres especiales, y es donde aparecería un
+    `name` repetido o un bloque que la vista no sabe leer.
+
+    Aquí había un `== 13` escrito a mano, y al borrar `resaca_finde` este test
+    se puso rojo por la única razón por la que no debería: porque el número de
+    reglas había cambiado a propósito. Un test que hay que ir a actualizar cada
+    vez que se toca el YAML enseña a actualizarlo sin mirar.
+
+    Lo que de verdad importaba comprobar -y el contador no comprobaba- es que la
+    vista vea EXACTAMENTE las reglas que hay en el fichero, ni una de menos. Una
+    regla que se evalúa cada mañana y no sale en la auditoría es una regla que
+    decide sin que se pueda revisar, y esa es la única forma de que se quede mal
+    calibrada para siempre.
     """
     from app.config_loader import load_config
 
@@ -761,14 +772,20 @@ def test_la_vista_entera_sale_con_el_config_de_verdad(db):
 
     v = vista_auditoria(db, cfg, dias=N, hoy=HOY)
 
+    en_el_yaml = {
+        r["name"]
+        for luz in ("red", "amber")
+        for r in cfg.raw["thresholds"].get(luz) or []
+    }
     assert v["vista"] == "auditoria"
     assert v["ventana"]["dias"] == N
     assert len(v["dias"]) == N
     assert v["distribucion"]["global"]["n"] == N
-    assert len(v["reglas"]) == 13
+    assert {r["nombre"] for r in v["reglas"]} == en_el_yaml
+    assert len(v["reglas"]) == len(en_el_yaml), "alguna sale dos veces"
     # Ninguna disparó, pero TODAS se evaluaron: es el caso "o mal calibradas o
     # sobran" en estado puro, y tiene que salir dicho así.
-    assert len(v["nunca_dispararon"]) == 13
+    assert len(v["nunca_dispararon"]) == len(en_el_yaml)
     assert all(f["estado"] == "nunca_disparo" for f in v["nunca_dispararon"])
     assert {r["nombre"] for r in v["reglas_especiales"]} == {
         "retirada_peso_muerto",

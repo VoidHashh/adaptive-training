@@ -84,10 +84,22 @@ class Recalibracion:
             f"Llevas {self.dias} días con decisión desde la última revisión de "
             f"umbrales ({self.desde.isoformat()}), y el aviso estaba puesto en "
             f"{self.cada}.",
-            "Toca mirar con /api/export los umbrales calibrados sobre muestras "
-            "cortas: la clasificación de las salidas de bici "
-            "(cycling.classification) y el umbral del fin de semana "
-            "(cycling.weekend.total_hours_threshold).",
+            # Aquí se nombraba también `cycling.weekend.total_hours_threshold`,
+            # que era el umbral de `resaca_finde`. Los dos se han borrado, y el
+            # aviso no puede seguir mandando a revisar un número que ya no
+            # existe: quien fuera a mirarlo no lo encontraría y se quedaría sin
+            # saber si es que ya estaba bien o es que buscaba mal.
+            #
+            # Lo que queda por revisar a mano es uno solo, y no por casualidad:
+            # el resto de umbrales de este sistema se recalibran ellos contra la
+            # propia distribución histórica (`adaptive_thresholds`). La
+            # clasificación de las salidas es el último que sigue siendo un
+            # número escrito, y por eso es el único que hay que ir a mirar.
+            "Toca mirar con /api/export el único umbral que sigue calibrado a "
+            "mano sobre una muestra corta: la clasificación de las salidas de "
+            "bici (cycling.classification). Los demás se recalibran solos "
+            "contra tu histórico (adaptive_thresholds); comprueba de paso que "
+            "sus ventanas siguen teniendo días suficientes.",
             "Para que deje de salir, pon la fecha de hoy en "
             "program.recalibrado_el. Si de mirarlo sale que no cambias nada, "
             "cámbiala igual: eso también es haber recalibrado.",

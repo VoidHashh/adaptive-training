@@ -562,6 +562,24 @@ def _validate(data: dict[str, Any]) -> list[str]:
             name = rule.get("name")
             require(bool(name), f"hay una regla en thresholds.{light} sin 'name'")
             require(name not in seen_names, f"nombre de regla duplicado: '{name}'")
+            # `resaca_finde` frenaba el lunes contando horas de bici del fin de
+            # semana. Se ha borrado porque disparaba con la HRV alta y la carga
+            # muy por debajo del propio p90, y porque era el único freno por
+            # cuenta que llegaba a la sesión de fuerza. Se rechaza por nombre en
+            # vez de dejar que se reescriba: el resto de la validación la daría
+            # por buena -la gramática es correcta y los operadores existen- y
+            # volvería a decidir los lunes sin que nada lo dijera.
+            require(
+                name != "resaca_finde",
+                "thresholds.{}.resaca_finde ya no existe. Frenaba el lunes por "
+                "horas de bici del fin de semana, y sobre 180 días disparó dos "
+                "veces como única causa del ámbar con cero salidas intensas, la "
+                "HRV en 1,62 y la carga de tres días a un cuarto de tu p90. Lo "
+                "que mide eso de verdad es thresholds.amber.carga_acumulada, "
+                "contra tu propia distribución. Si hace falta apretar por ahí, "
+                "se baja el percentil en adaptive_thresholds.load_3d_p90."
+                .format(light),
+            )
             seen_names.add(name)
             require("when" in rule, f"la regla '{name}' no tiene bloque 'when'")
             for day in rule.get("only_on_weekday", []):
@@ -1611,6 +1629,28 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "computed' implementado, así que rellenar 'max_hr' no cambiaría ni una "
         "clasificación. Bórralo.",
     )
+    # `cycling.weekend` ya no tiene umbrales: solo dice qué días se agrupan al
+    # resumir el fin de semana. Los dos que había alimentaban `resaca_finde` con
+    # el operador `_option`, y se fueron con ella.
+    #
+    # Se nombran uno a uno en vez de dejar que `check_keys` los rechace con el
+    # mensaje genérico de clave desconocida. Escribirlos otra vez no sería una
+    # errata: sería alguien reponiendo un freno a mano, convencido de que vuelve
+    # a decidir los lunes. Y no volvería: sin la regla que los leía, estos dos
+    # números no los mira nadie. Un freno que se cree repuesto y no lo está es
+    # peor que no tenerlo, porque se sale a rodar contando con él.
+    finde = (data.get("cycling") or {}).get("weekend") or {}
+    for muerto in ("total_hours_threshold", "intense_rides_threshold"):
+        require(
+            muerto not in finde,
+            f"cycling.weekend.{muerto} ya no lo lee nadie: era un umbral de "
+            f"`resaca_finde`, que se ha borrado. Reescribirlo aquí no volvería a "
+            f"poner el lunes en ámbar, solo lo parecería. Para frenar por carga "
+            f"acumulada está thresholds.amber.carga_acumulada, que compara con "
+            f"tu propia distribución y no con un número escrito a mano.",
+        )
+    check_keys(finde, {"days"}, "cycling.weekend")
+
     # Y con eso la sección queda cerrada: cualquier clave nueva aquí o es una
     # errata o es una opción que alguien ha escrito esperando que se lea.
     check_keys(
