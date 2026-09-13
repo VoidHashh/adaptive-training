@@ -51,6 +51,85 @@ RECOVERY = "recovery"
 REST = "rest"
 
 
+def _tipo_de_sesion(action: dict[str, Any], light: str) -> str:
+    """Qué sesión toca con esta luz, SIN defecto.
+
+    Aquí había un `str(action.get("session", FULL))`, repetido en tres sitios, y
+    ese defecto era el valor más permisivo de los tres posibles. Con `actions`
+    sin whitelist -que era el caso-, escribir `sesion:` en vez de `session:`
+    bajo `actions.red` no daba ningún error y construía la sesión COMPLETA un
+    día rojo, con progresión, y la escribía en Hevy. El fichero decía
+    "recovery"; el gimnasio recibía "full".
+
+    De los fallos que ha tenido este proyecto, es el único que SUELTA en vez de
+    frenar. Todos los demás -el presupuesto agotado, el freno del lunes, la
+    racha en cero- pecaban de prudentes: recortaban de más. Este abre la sesión
+    entera el día que el cuerpo ha dicho que pares, y con una hernia L4-L5 eso
+    no es un número mal calculado, es una lesión.
+
+    El validador ya exige que la clave exista y que valga uno de los tres. Esto
+    es la segunda cerradura, para la ruta que algún día entre sin pasar por él:
+    si falta, revienta con el nombre de la luz puesto. Un `KeyError` a las 06:30
+    es un mal día; una sesión completa en rojo es un mes fuera.
+    """
+    sesion = action.get("session")
+    if sesion is None:
+        raise RuleError(
+            f"actions.{light}.session no está en el config. No hay valor por "
+            f"defecto a propósito: el que había era 'full', el más permisivo de "
+            f"los tres, y en rojo eso significa la sesión entera el día que "
+            f"tocaba recuperación."
+        )
+    sesion = str(sesion)
+    if sesion not in (FULL, REDUCED, RECOVERY):
+        raise RuleError(
+            f"actions.{light}.session vale {sesion!r}, que no es "
+            f"{FULL}, {REDUCED} ni {RECOVERY}. Antes un valor desconocido caía "
+            f"en la rama de sesión completa sin decir nada."
+        )
+    return sesion
+
+
+def caducidad_del_aplazamiento(raw: dict[str, Any]) -> int:
+    """Cuántos días sobrevive una sesión aplazada por un rojo, SIN defecto.
+
+    El número estaba escrito a mano, como `7`, en dos sitios: aquí y en
+    `decision.py`. Dos copias del mismo defecto son dos sitios donde cambiar el
+    YAML no cambia nada, y además son dos sitios que pueden acabar diciendo
+    cosas distintas: `decision` decide si el aplazamiento ha caducado y
+    `build_session` decide si se recupera, así que con los dos números
+    desalineados la sesión podía darse por caducada en un módulo y por vigente
+    en el otro el mismo día.
+
+    No hay valor por defecto a propósito. Se llama solo cuando hay un
+    aplazamiento pendiente de verdad, y en ese momento no saber cuánto dura no
+    es una situación que se pueda resolver inventando una semana.
+    """
+    accion_roja = (raw.get("actions", {}) or {}).get("red", {}) or {}
+    if "defer_expires_days" not in accion_roja:
+        raise RuleError(
+            "hay una sesión de fuerza aplazada pero actions.red.defer_expires_days "
+            "no está en el config. Si has quitado defer_strength, el aplazamiento "
+            "guardado en el estado sigue ahí y nadie sabe ya cuándo caduca: o se "
+            "repone la clave o se limpia el pendiente. Antes esto valía 7 por "
+            "defecto, escrito a mano en dos módulos distintos."
+        )
+    dias = accion_roja["defer_expires_days"]
+    if isinstance(dias, bool) or not isinstance(dias, int):
+        raise RuleError(
+            f"actions.red.defer_expires_days vale {dias!r} ({type(dias).__name__}), "
+            f"y tiene que ser un entero de días. Un 7.9 se convertía en 7 sin "
+            f"decir nada y un '7' con comillas también colaba."
+        )
+    if dias < 1:
+        raise RuleError(
+            f"actions.red.defer_expires_days vale {dias}, y con menos de un día "
+            f"toda sesión aplazada nace caducada: el rojo dejaría de aplazar y "
+            f"pasaría a borrar, que no es lo que dice la palabra 'aplazar'."
+        )
+    return dias
+
+
 @dataclass
 class BuiltSession:
     """La sesión de hoy, lista para escribirse en Hevy y contarse por Telegram."""
@@ -482,7 +561,7 @@ def build_session(
     # No se apila sobre la del día: se hace EN VEZ DE descansar.
     if routine_key is None and pending_strength and light == "green":
         pkey, pday = pending_strength
-        expires = int((actions.get("red", {}) or {}).get("defer_expires_days", 7))
+        expires = caducidad_del_aplazamiento(raw)
         if (day - pday).days <= expires and not plan.get("bike"):
             routine_key, deferred_from = pkey, pday
 
@@ -498,10 +577,25 @@ def build_session(
             write_to_hevy=False,
         )
 
+    sesion = _tipo_de_sesion(action, light)
+
     # --- día rojo: bloque de recuperación -----------------------------------
-    if str(action.get("session", FULL)) == RECOVERY:
+    if sesion == RECOVERY:
         block_key = str(action.get("recovery_block", ""))
-        block = (raw.get("recovery_blocks", {}) or {}).get(block_key, {}) or {}
+        bloques = raw.get("recovery_blocks", {}) or {}
+        # Un nombre que no existe daba `{}`, y de `{}` salía una sesión de
+        # recuperación con título, cero ejercicios y cara de estar bien. El día
+        # rojo es justo el día en que el mensaje tiene que decir qué hacer, así
+        # que se para. Lo valida también el `config_loader` al arrancar; esto es
+        # la cerradura de dentro.
+        if block_key not in bloques:
+            raise RuleError(
+                f"actions.{light}.recovery_block '{block_key}' no está en "
+                f"recovery_blocks (hay: {sorted(bloques)}). Antes esto devolvía "
+                f"un bloque vacío y el día rojo llegaba a Telegram sin un solo "
+                f"ejercicio, sin que nada dijera que faltaba."
+            )
+        block = bloques.get(block_key) or {}
         out = BuiltSession(
             day=day, kind=RECOVERY, routine_key=block_key,
             title=str(block.get("title", "Recuperación")),
@@ -524,7 +618,7 @@ def build_session(
     )
     out = BuiltSession(
         day=day,
-        kind=str(action.get("session", FULL)),
+        kind=sesion,
         routine_key=routine_key,
         title=str(routine.get("title", routine_key)),
         hevy_routine_id=routine.get("hevy_routine_id"),
@@ -565,7 +659,7 @@ def build_session(
     out.changes.extend(apply_rule_load_cuts(exercises, active_rules or []))
 
     # 5. ámbar
-    if str(action.get("session", FULL)) == REDUCED:
+    if sesion == REDUCED:
         exercises, log, dropped = apply_amber_reduction(exercises, action, set_cfg)
         out.changes.extend(log)
         out.dropped.extend(dropped)

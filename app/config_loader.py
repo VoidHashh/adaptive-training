@@ -593,12 +593,201 @@ def _validate(data: dict[str, Any]) -> list[str]:
         set(order) == set(types),
         f"intensity_order {sorted(order)} y types {sorted(types)} no coinciden",
     )
-    for light in ("green", "amber", "red"):
+    # -----------------------------------------------------------------------
+    # `actions` es el bloque más peligroso del fichero, y era el único sin
+    # cerrar. Merece el comentario largo.
+    #
+    # `session_builder` leía el tipo de sesión así:
+    #
+    #     kind = str(action.get("session", FULL))
+    #
+    # y ese defecto es el valor MÁS permisivo de los tres. O sea: escribir
+    # `sesion: recovery` en vez de `session: recovery` bajo `actions.red` no
+    # daba ningún error -no había whitelist- y construía una sesión COMPLETA un
+    # día rojo, con progresión si el resto del bloque lo permitía, y la escribía
+    # en Hevy. El fichero diría "recovery" y el gimnasio diría "full".
+    #
+    # Para una espalda con hernia L4-L5 ese es el único fallo del sistema que
+    # SUELTA en vez de frenar, y por eso se cierra por cuatro sitios a la vez:
+    #
+    #   1. whitelist de `actions` y de cada luz -> una errata no entra;
+    #   2. `session` obligatoria y contra la lista de valores válidos -> un
+    #      valor inventado no entra;
+    #   3. la sesión no puede ser MÁS permisiva cuanto peor es la luz -> un
+    #      `actions.red.session: full` bien escrito tampoco entra, que es el
+    #      caso que se le escapa a las dos comprobaciones anteriores;
+    #   4. y el motor deja de tener defecto: lee la clave y revienta si falta,
+    #      en vez de elegir la más permisiva por su cuenta.
+    #
+    # La 3 no es paranoia de más. Las dos primeras cazan la errata y el disparate
+    # tipográfico; la que caza el error de criterio a las once de la noche
+    # editando el YAML es esta. Rojo significa que el cuerpo dice que pares: no
+    # hay ninguna versión futura de este sistema en la que rojo deba dar una
+    # sesión completa, así que se deja escrito en el validador y no en la
+    # memoria de nadie.
+    SESIONES = ("full", "reduced", "recovery")
+    # De más permisiva a menos. El índice es lo que se compara en la 3.
+    PERMISIVIDAD = {"full": 0, "reduced": 1, "recovery": 2}
+    LUCES_DE_PEOR_A_MEJOR = ("green", "amber", "red")
+
+    check_keys(data["actions"], set(LUCES_DE_PEOR_A_MEJOR), "actions")
+
+    sesion_por_luz: dict[str, str] = {}
+    for light in LUCES_DE_PEOR_A_MEJOR:
         require(light in data["actions"], f"falta actions.{light}")
-        cap = data["actions"].get(light, {}).get("bike_max")
+        accion = data["actions"].get(light) or {}
+
+        check_keys(
+            accion,
+            {
+                "session",
+                "allow_progression",
+                "allow_hiit",
+                "bike_max",
+                "set_reduction",
+                "min_sets_per_exercise",
+                "drop_expendable",
+                "defer_strength",
+                "defer_expires_days",
+                "recovery_block",
+            },
+            f"actions.{light}",
+        )
+
+        sesion = accion.get("session")
+        require(
+            sesion is not None,
+            f"actions.{light}.session no está. Sin ella el motor construía una "
+            f"sesión COMPLETA por defecto, que en rojo es la sesión entera el "
+            f"día que el cuerpo dice que pares.",
+        )
+        require(
+            sesion in SESIONES,
+            f"actions.{light}.session vale {sesion!r} y solo puede ser una de "
+            f"{list(SESIONES)}. Un valor que el motor no reconoce no se salta: "
+            f"cae en la rama de sesión completa, que es la más permisiva.",
+        )
+        if sesion in PERMISIVIDAD:
+            sesion_por_luz[light] = str(sesion)
+
+        # Los tres booleanos que abren la puerta. Que existan no basta: un
+        # `allow_progression: "false"` -con comillas- es una cadena no vacía y
+        # en Python es verdadera, así que abriría la progresión justo donde el
+        # YAML dice que la cierra.
+        for bandera in ("allow_progression", "allow_hiit"):
+            require(
+                bandera in accion,
+                f"falta actions.{light}.{bandera}. El motor tenía un defecto "
+                f"en el código y ganaba en silencio.",
+            )
+            require(
+                isinstance(accion[bandera], bool),
+                f"actions.{light}.{bandera} vale {accion[bandera]!r}, que no es "
+                f"true ni false. Una cadena como 'false' es VERDADERA en Python "
+                f"y abriría lo que aquí se quiere cerrar.",
+            )
+
+        cap = accion.get("bike_max")
         require(
             cap in order,
             f"actions.{light}.bike_max '{cap}' no está en intensity_order",
+        )
+
+    # La comprobación 3: cuanto peor la luz, no puede haber más manga ancha.
+    for peor, mejor in zip(LUCES_DE_PEOR_A_MEJOR[1:], LUCES_DE_PEOR_A_MEJOR[:-1]):
+        a, b = sesion_por_luz.get(peor), sesion_por_luz.get(mejor)
+        if a is None or b is None:
+            continue  # ya se ha protestado arriba
+        require(
+            PERMISIVIDAD[a] >= PERMISIVIDAD[b],
+            f"actions.{peor}.session es '{a}' y actions.{mejor}.session es "
+            f"'{b}': el día PEOR daría una sesión más exigente que el mejor. "
+            f"El semáforo solo puede recortar hacia abajo; si esto se permite, "
+            f"el único fallo que suelta en vez de frenar deja de tener red.",
+        )
+
+    # --- B-2: el bloque de recuperación del día rojo ------------------------
+    #
+    # `actions.red.recovery_block` nombra una entrada de `recovery_blocks`, y
+    # nadie comprobaba que existiera. El motor hace:
+    #
+    #     block = (raw.get("recovery_blocks", {}) or {}).get(block_key, {}) or {}
+    #
+    # o sea que un nombre mal escrito da `{}`, y de `{}` sale una sesión de
+    # recuperación con título "Recuperación", CERO ejercicios y `write_to_hevy`
+    # en falso. Se lee en Telegram como un día de recuperación normal. El día que
+    # más falta hace saber qué hacer, el mensaje no dice nada y parece que sí.
+    #
+    # `recovery_blocks` además no se validaba en absoluto: ni que fuera un mapa,
+    # ni que sus bloques tuvieran ejercicios.
+    bloques = data.get("recovery_blocks") or {}
+    require(
+        isinstance(bloques, dict) and bloques,
+        "recovery_blocks no es un mapa con al menos un bloque. Es de donde sale "
+        "la sesión del día rojo.",
+    )
+    if isinstance(bloques, dict):
+        for nombre, bloque in bloques.items():
+            require(
+                isinstance(bloque, dict),
+                f"recovery_blocks.{nombre} no es un bloque",
+            )
+            if not isinstance(bloque, dict):
+                continue
+            check_keys(
+                bloque, {"title", "write_to_hevy", "exercises"}, f"recovery_blocks.{nombre}"
+            )
+            require(
+                bool(bloque.get("exercises")),
+                f"recovery_blocks.{nombre} no tiene ejercicios. Un bloque vacío "
+                f"sale por Telegram como un día de recuperación con la lista en "
+                f"blanco, y eso no se distingue de un bloque bien escrito.",
+            )
+            require(
+                isinstance(bloque.get("write_to_hevy", False), bool),
+                f"recovery_blocks.{nombre}.write_to_hevy tiene que ser true o false",
+            )
+
+    for light in LUCES_DE_PEOR_A_MEJOR:
+        accion = data["actions"].get(light) or {}
+        if accion.get("session") != "recovery":
+            require(
+                "recovery_block" not in accion,
+                f"actions.{light}.recovery_block está puesto pero "
+                f"actions.{light}.session es {accion.get('session')!r}: el "
+                f"bloque no se leería nunca, y el fichero da a entender que sí.",
+            )
+            continue
+        clave = accion.get("recovery_block")
+        require(
+            bool(clave),
+            f"actions.{light}.session es 'recovery' pero no dice qué "
+            f"recovery_block usar. Sin él, la sesión sale sin un solo "
+            f"ejercicio y con cara de estar bien.",
+        )
+        require(
+            not clave or clave in bloques,
+            f"actions.{light}.recovery_block '{clave}' no existe en "
+            f"recovery_blocks (hay: {sorted(bloques)}). El motor no falla con "
+            f"esto: devuelve un bloque vacío, y el día rojo -el día que más "
+            f"falta hace saber qué hacer- el mensaje llega sin nada dentro.",
+        )
+
+    # `defer_expires_days` lo leían `session_builder` y `decision` cada uno por
+    # su cuenta, con un 7 escrito a mano en los dos. Dos copias del mismo
+    # defecto son dos sitios donde cambiar el fichero no cambia nada, y además
+    # dos sitios que podían acabar diciendo cosas distintas: `decision` decide
+    # si el aplazamiento ha CADUCADO y `build_session` decide si se RECUPERA.
+    # Ahora hay un solo lector, `caducidad_del_aplazamiento`, y lo de aquí es
+    # que el fichero traiga el número y no haya nada que inventar.
+    roja = data["actions"].get("red") or {}
+    if roja.get("defer_strength"):
+        dias = roja.get("defer_expires_days")
+        require(
+            isinstance(dias, int) and not isinstance(dias, bool) and dias > 0,
+            f"actions.red.defer_expires_days vale {dias!r} y tiene que ser un "
+            f"entero de días positivo: es lo que decide cuánto tiempo sigue "
+            f"viva una sesión aplazada por un rojo.",
         )
 
     rec = data["cycling"].get("recommendation", {})

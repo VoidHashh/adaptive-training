@@ -51,7 +51,12 @@ from typing import Any, Sequence
 from app.engine.bike_advisor import BikeRecommendation, recommend_bike
 from app.engine.progression import ProgressionPlan, plan_progression
 from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_light
-from app.engine.session_builder import BuiltSession, build_session, today_plan
+from app.engine.session_builder import (
+    BuiltSession,
+    build_session,
+    caducidad_del_aplazamiento,
+    today_plan,
+)
 from app.engine.signals import Signals, WEEKDAY_NAMES, week_start
 
 DELOAD_RULE = "semana_de_descarga"
@@ -606,11 +611,7 @@ def decide(
     expired_deferral: tuple[str, date] | None = None
     if state.pending_strength:
         pkey, pday = state.pending_strength
-        expires = int(
-            ((raw.get("actions", {}) or {}).get("red", {}) or {}).get(
-                "defer_expires_days", 7
-            )
-        )
+        expires = caducidad_del_aplazamiento(raw)
         if (day - pday).days > expires:
             # Solo el dato estructurado. El texto lo redacta `message.py`, que
             # es quien sabe a quién se lo está contando, y así no hay dos
