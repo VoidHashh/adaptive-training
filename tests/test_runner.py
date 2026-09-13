@@ -784,7 +784,7 @@ def test_el_hiit_del_plan_no_puede_cerrar_la_puerta_de_la_fuerza(db, cfg_lunes):
     )
 
 
-def test_un_hiit_registrado_el_martes_gasta_presupuesto_el_sabado(db, cfg):
+def test_un_hiit_registrado_el_martes_se_cuenta_el_sabado(db, cfg):
     """El agujero que el usuario diagnosticó: "si el HIIT no suma, ese
     presupuesto va corto y me está dejando margen que no tengo".
 
@@ -792,14 +792,18 @@ def test_un_hiit_registrado_el_martes_gasta_presupuesto_el_sabado(db, cfg):
     día y nadie se lo pasaba nunca -ni `run_daily` ni `cli.py`-; el único sitio
     del proyecto donde se construía un `StrengthSession` era `test_signals.py`.
     Así que `counts_as_intense.hiit_executed: true` llevaba toda la vida puesto
-    y sin efecto, y el presupuesto semanal de intensas solo contaba salidas de
-    bici. Un límite que se aplica sobre un numerador incompleto es peor que no
-    tener límite: parece que alguien lo está vigilando.
+    y sin efecto, y el recuento semanal de intensas solo contaba salidas de bici.
+
+    Cuando esto era un presupuesto, un numerador incompleto era peor que no
+    tener límite: parecía que alguien lo estaba vigilando. Ahora que solo cuenta,
+    el precio es otro y sigue importando: el número que el usuario lee cada
+    mañana tiene que ser el número de verdad, o no sirve para nada. Un dato que
+    no decide nada es justamente el que nadie va a ir a verificar.
 
     El test va por `run_daily` a propósito. El fallo no estaba en el cálculo
-    -`intensity_budget` siempre supo contar HIIT- sino en el cable, y un test
-    que llamara a `intensity_budget` directamente habría pasado desde el
-    principio sin enterarse de nada.
+    -`intensity_count` siempre supo contar HIIT- sino en el cable, y un test que
+    llamara a `intensity_count` directamente habría pasado desde el principio
+    sin enterarse de nada.
     """
     martes = LUNES + timedelta(days=1)
     db.add(WorkoutLog(hevy_workout_id="h", date=martes, routine_key="hiit_dia_1"))
@@ -808,22 +812,24 @@ def test_un_hiit_registrado_el_martes_gasta_presupuesto_el_sabado(db, cfg):
     sabado = LUNES + timedelta(days=5)
     res = corre(db, cfg, day=sabado, hevy=HevyFalso(), tg=TelegramFalso())
 
-    budget = res.decision.signals.budget
-    assert budget is not None
-    assert budget.used == 1, f"el HIIT del martes no ha gastado nada: {budget.detail}"
-    assert any("HIIT" in d for d in budget.detail), budget.detail
+    conteo = res.decision.signals.intense_count
+    assert conteo is not None
+    assert conteo.used == 1, f"el HIIT del martes no se ha contado: {conteo.detail}"
+    assert any("HIIT" in d for d in conteo.detail), conteo.detail
 
 
-def test_la_fuerza_registrada_no_gasta_presupuesto_de_intensas(db, cfg):
+def test_la_fuerza_registrada_no_cuenta_como_sesion_intensa(db, cfg):
     """`counts_as_intense.strength_session` está en false y tiene que seguir
     mandando ahora que las sesiones sí llegan. Contar la fuerza como intensa
-    agotaría el presupuesto cada semana solo por entrenar el programa."""
+    haría que el número subiera cada semana solo por entrenar el programa, y un
+    recuento que sube siempre igual deja de informar de nada."""
     martes = LUNES + timedelta(days=1)
     db.add(WorkoutLog(hevy_workout_id="f", date=martes, routine_key="dia_1"))
     db.flush()
 
     res = corre(db, cfg, day=LUNES + timedelta(days=5), hevy=HevyFalso(), tg=TelegramFalso())
-    assert res.decision.signals.budget.used == 0, res.decision.signals.budget.detail
+    conteo = res.decision.signals.intense_count
+    assert conteo.used == 0, conteo.detail
 
 
 # ---------------------------------------------------------------------------

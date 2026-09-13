@@ -156,9 +156,9 @@ def run_daily(
     checkin = Checkin(date=day, values=valores) if valores else None
 
     # `sessions` es lo que se entrenó DE VERDAD, leído de `workout_log`. Se
-    # pasa aquí porque sin ello `intensity_budget` contaba solo las salidas de
-    # bici: un HIIT hecho el martes no gastaba presupuesto y el sábado quedaba
-    # un margen que no existía. La ventana son 14 días porque el presupuesto es
+    # pasa aquí porque sin ello `intensity_count` contaba solo las salidas de
+    # bici: un HIIT hecho el martes no sumaba y el número que sale en el mensaje
+    # del sábado quedaba corto. La ventana son 14 días porque el recuento es
     # semanal y la semana puede haber empezado hace seis; sobra de propósito.
     #
     # `checkin_history` es el mismo arreglo para el otro parámetro que nadie

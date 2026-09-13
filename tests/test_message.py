@@ -760,6 +760,144 @@ def test_va_despues_de_la_bici_y_antes_de_las_degradaciones(cfg):
 
 
 # ---------------------------------------------------------------------------
+# El recuento semanal: informa todos los días y no regaña ninguno
+# ---------------------------------------------------------------------------
+#
+# Antes el número solo se escribía cuando servía para recortar la salida del
+# sábado, así que de lunes a viernes el sistema lo sabía y no lo decía. Un dato
+# que solo aparece cuando además te frena no es información: es la
+# justificación del frenazo. Ahora que no frena nada, tiene que estar todos los
+# días o no está.
+
+
+def _con_conteo(cfg, used: int, unknown: int = 0):
+    from app.engine.signals import IntensityCount
+
+    d = decision(cfg)
+    d.signals.intense_count = IntensityCount(
+        used=used, detail=[], week_start=LUNES, unknown=unknown
+    )
+    return d
+
+
+def test_el_recuento_sale_un_lunes_que_no_es_dia_de_bici(cfg):
+    """LUNES: no hay recomendación de bici, y el número tiene que salir igual."""
+    txt = render_telegram(_con_conteo(cfg, used=3), cfg)
+    assert "3 sesiones intensas esta semana" in txt
+
+
+def test_el_recuento_sale_tambien_cuando_es_cero(cfg):
+    """Cero no es un hueco: es el dato de que la semana está entera por delante.
+
+    Si el bloque se saltara con `if conteo.used:`, el lunes por la mañana -que
+    es cuando más sentido tiene leerlo- no habría línea, y el mensaje del día
+    que no has hecho nada sería idéntico al del día que el recuento se rompió.
+    """
+    txt = render_telegram(_con_conteo(cfg, used=0), cfg)
+    assert "inguna sesión intensa esta semana" in txt
+
+
+def test_sin_recuento_no_hay_linea_ni_hueco(cfg):
+    """El None legítimo: una ruta que no construye el recuento no pinta nada."""
+    d = decision(cfg)
+    assert d.signals.intense_count is None
+    assert "🔥" not in render_telegram(d, cfg)
+
+
+def test_el_recuento_del_mensaje_no_lleva_denominador(cfg):
+    """Un "de 4" convierte el dato en un marcador, y un marcador prescribe.
+
+    Da igual que el código no recorte: quien lee "3 de 4" en el móvil un martes
+    entiende que le queda una, y eso es exactamente lo que se ha quitado.
+    """
+    txt = render_telegram(_con_conteo(cfg, used=3), cfg)
+    linea = next(l for l in txt.splitlines() if "sesiones intensas" in l)
+    assert "/" not in linea and " de " not in linea, linea
+
+
+def test_el_recuento_alto_tampoco_regaña(cfg):
+    """Nueve sesiones en una semana es la semana de viaje, no una infracción."""
+    txt = render_telegram(_con_conteo(cfg, used=9), cfg).lower()
+    linea = next(l for l in txt.splitlines() if "sesiones intensas" in l)
+    for palabra in ("demasiad", "exceso", "excedid", "cuidado", "agotado", "límite"):
+        assert palabra not in linea, f"tono de reproche: '{palabra}' en {linea!r}"
+
+
+def test_las_notas_de_la_bici_llegan_al_mensaje(cfg):
+    """Las notas existen PARA esto, y nada más lo comprobaba.
+
+    Lo encontró la falsación: borrar el bucle que las pinta -`for nota in []`-
+    dejaba los 59 tests de este fichero en verde. Los tests del sábado
+    comprueban que la recomendación LLEVA las notas, y el test del veneno
+    comprueba que si se pintan van escapadas; entre los dos quedaba el hueco
+    exacto de que no se pintaran. Y es el hueco que importa: una nota que se
+    calcula bien y no sale del móvil es un dato que no existe.
+    """
+    from datetime import timedelta
+
+    from app.engine.signals import IntensityCount
+
+    sabado = LUNES + timedelta(days=5)
+    s = sig_completa(sabado, yesterday_ride_level="intensa")
+    s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
+    d = decide(cfg, sabado, s, EngineState())
+
+    assert d.bike is not None and d.bike.applies
+    txt = render_telegram(d, cfg)
+    for nota in d.bike.texto_notas():
+        assert nota in txt, f"la nota «{nota}» se calcula y no sale del móvil"
+    assert d.bike.texto_notas(), "sin notas este test no prueba nada"
+
+
+def test_las_notas_van_debajo_del_nivel_y_no_pegadas_a_el(cfg):
+    """La distinción entre recortar y contar tiene que verse en la pantalla.
+
+    Si la nota compartiera línea con "Bici: intensa", se leería como el motivo
+    del nivel. No lo es: ninguna nota ha entrado en la decisión. Van en líneas
+    propias y con viñeta, que es lo que separa un dato de una justificación.
+    """
+    from datetime import timedelta
+
+    from app.engine.signals import IntensityCount
+
+    sabado = LUNES + timedelta(days=5)
+    s = sig_completa(sabado)
+    s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
+    txt = render_telegram(decide(cfg, sabado, s, EngineState()), cfg)
+
+    lineas = txt.splitlines()
+    i = next(n for n, l in enumerate(lineas) if "🚴" in l)
+    assert "sesiones intensas" not in lineas[i], "la nota se ha pegado al nivel"
+    assert "sesiones intensas" in lineas[i + 1]
+    assert lineas[i + 1].lstrip().startswith("·")
+
+
+def test_el_recuento_no_se_repite_el_sabado(cfg):
+    """Sale como nota de la bici; repetirlo ocho palabras más abajo gasta
+    pantalla y hace que parezca que son dos cosas distintas."""
+    from datetime import timedelta
+
+    from app.engine.signals import IntensityCount
+
+    sabado = LUNES + timedelta(days=5)
+    s = sig_completa(sabado)
+    s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
+    txt = render_telegram(decide(cfg, sabado, s, EngineState()), cfg)
+    assert txt.count("sesiones intensas esta semana") == 1
+
+
+def test_las_salidas_sin_clasificar_salen_en_la_misma_linea(cfg):
+    """`used` es un MÍNIMO, y el mensaje tiene que decir que lo es.
+
+    Callarlo sería enseñar un número redondo que puede estar corto, y un número
+    corto en el sitio donde el usuario se hace la idea de cómo va su semana vale
+    menos que no poner nada.
+    """
+    txt = render_telegram(_con_conteo(cfg, used=2, unknown=1), cfg)
+    assert "sin clasificar" in txt
+
+
+# ---------------------------------------------------------------------------
 # El HTML que sale de aquí tiene que poder parsearlo Telegram
 # ---------------------------------------------------------------------------
 #
@@ -802,13 +940,25 @@ def _envenenar_config(cfg):
 
 
 class _Texto:
-    """Un objeto con `.text()`, que es todo lo que `message.py` le pide."""
+    """Un objeto con `.text()` y `.texto_notas()`, que es lo que `message.py` pide.
 
-    def __init__(self, t: str):
+    Las notas nacieron aquí mismo: este doble no las tenía y el mensaje reventó
+    con un AttributeError en cuanto se añadió la línea que las pinta. Eso está
+    bien y es lo que tenía que pasar -un doble que se queda corto respecto a la
+    interfaz real tiene que romperse, no fingir-, pero además abre un hueco de
+    verdad: las notas son texto que acaba en un mensaje HTML, así que también
+    hay que envenenarlas para comprobar que pasan por `escapar_html`.
+    """
+
+    def __init__(self, t: str, notas: list[str] | None = None):
         self._t = t
+        self._notas = list(notas or [])
 
     def text(self) -> str:
         return self._t
+
+    def texto_notas(self) -> list[str]:
+        return list(self._notas)
 
 
 class _Lineas:
@@ -889,7 +1039,13 @@ def _envenenar_decision(d, cfg=None):
     ]
 
     # Bici, tendencia, recalibración, sesión perdida y el bloque "Por qué".
-    d.bike = _Texto(f"Bici: intensa{VENENO}")
+    d.bike = _Texto(
+        f"Bici: intensa{VENENO}",
+        notas=[
+            f"ayer hiciste una salida intensa{VENENO}",
+            f"llevas 5 sesiones intensas esta semana{VENENO}",
+        ],
+    )
     d.bike.applies = True
     d.tendencia = _Lineas(f"Tendencia: seis días sin verde{VENENO}")
     d.recalibracion = _Lineas(f"revisa caida_min_min{VENENO}")

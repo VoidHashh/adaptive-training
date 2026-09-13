@@ -489,14 +489,14 @@ def estado_para_el_ensayo(cfg) -> tuple[EngineState, str]:
 
 
 def sesiones_para_el_ensayo(cfg, day: date) -> tuple[list, str]:
-    """Lo que se entrenó de verdad, para que el ensayo gaste el mismo presupuesto.
+    """Lo que se entrenó de verdad, para que el ensayo cuente lo mismo que el día.
 
     Va aparte de `estado_para_el_ensayo` porque esto depende del DÍA y el estado
     no, pero el motivo de que exista es el mismo que el de aquella: si el ensayo
-    no lee esto, `intensity_budget` recibe una lista vacía y el ensayo cree que
-    queda margen para una salida intensa que en producción ya está gastado. Otra
-    vez un error en una sola dirección -predecir de más-, que es el que nunca
-    sorprende a nadie y por eso no se detecta.
+    no lee esto, `intensity_count` recibe una lista vacía y el ensayo enseña un
+    recuento semanal más bajo que el de producción. Un ensayo que no coincide con
+    lo que va a salir por Telegram sirve para menos de lo que parece: se usa
+    justamente para ver el mensaje antes de que lo lea nadie.
 
     Cuando no se puede leer, se dice. Devolver [] callando sería indistinguible
     de una semana sin entrenar.

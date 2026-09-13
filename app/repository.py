@@ -718,16 +718,21 @@ def sesiones_ejecutadas(
     `build_signals` acepta `sessions=` desde el primer día y NADIE se lo pasaba
     nunca: ni `runner.run_daily` ni `cli.py`. El único sitio del proyecto donde
     se construía un `StrengthSession` era `tests/test_signals.py`. El efecto es
-    que `intensity_budget` -que sí sabe contar HIIT y fuerza, y tiene el
+    que `intensity_count` -que sí sabe contar HIIT y fuerza, y tiene el
     interruptor `counts_as_intense.hiit_executed: true` puesto- llevaba toda la
     vida recibiendo una lista vacía.
 
-    Consecuencia concreta, que es la que importa: el presupuesto semanal de
+    Consecuencia concreta, que es la que importa: el recuento semanal de
     sesiones intensas solo contaba las salidas de bici. Un HIIT hecho el martes
-    no gastaba nada, así que el sábado el sistema creía tener margen para
-    recomendar una salida intensa que en realidad ya no cabía. El límite
-    existía y se aplicaba sobre un numerador incompleto, que es peor que no
-    tener límite: parece que alguien lo está vigilando.
+    no sumaba, así que el número era falso por abajo.
+
+    Cuando este recuento era un presupuesto, el numerador incompleto dejaba
+    margen que no existía y el sábado salía una intensa que no cabía: un límite
+    aplicado sobre una cuenta corta es peor que no tener límite, porque parece
+    que alguien lo está vigilando. Hoy no limita nada, y lo que se estropea es
+    más pequeño y no menos real: el número que el usuario lee cada mañana. Un
+    dato que no decide nada es justamente el que nadie va a ir a comprobar, así
+    que tiene que salir bien de aquí o no sale bien de ningún sitio.
 
     `is_hiit` sale de `hiit.blocks` del config y no de una lista aparte, para
     que añadir un tercer bloque no exija acordarse de tocar esto también.

@@ -1,8 +1,17 @@
 """Smoke test de bike_advisor contra el config real.
 
 Recorre sábado y domingo x semáforo x escenarios de historial, e imprime el
-nivel resultante y la cadena de recortes. No es el test definitivo: es la
-comprobación de que la cadena se comporta como dice el docstring.
+nivel resultante, la cadena de recortes y las notas. No es el test definitivo:
+es la comprobación de que la cadena se comporta como dice el docstring.
+
+LO QUE ESTE GUIÓN TIENE QUE ENSEÑAR AHORA
+-----------------------------------------
+Antes servía para ver saltar los frenos. Ahora sirve para ver que NO saltan: la
+columna de recortes tiene que estar vacía en todo lo que no sea el techo del
+semáforo, y la de notas tiene que llevar el dato que antes justificaba el
+recorte. Por eso se imprimen las dos por separado y con etiquetas distintas: si
+alguna vez un hecho de contexto vuelve a aparecer en `recortes`, se ve de un
+vistazo y sin leer una línea de código.
 """
 
 from __future__ import annotations
@@ -16,7 +25,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from app.config_loader import load_config
 from app.engine.bike_advisor import recommend_bike
-from app.engine.signals import ClassifiedRide, IntensityBudget, Ride, Signals
+from app.engine.signals import ClassifiedRide, IntensityCount, Ride, Signals
 
 CFG = load_config(Path(__file__).resolve().parents[1] / "config.yaml")
 
@@ -28,7 +37,7 @@ def make_signals(
     day: date,
     rides: list[ClassifiedRide] | None = None,
     yesterday_level: str | None = None,
-    budget: IntensityBudget | None = None,
+    conteo: IntensityCount | None = None,
 ) -> Signals:
     return Signals(
         day=day,
@@ -38,16 +47,27 @@ def make_signals(
         notes=[],
         rides=rides or [],
         weekend=None,
-        budget=budget,
+        intense_count=conteo,
+    )
+
+
+def cuenta(used: int, unknown: int = 0) -> IntensityCount:
+    return IntensityCount(
+        used=used,
+        detail=["test"],
+        week_start=SAT - timedelta(days=5),
+        unknown=unknown,
     )
 
 
 def show(title: str, sig: Signals, light: str) -> None:
     r = recommend_bike(CFG, sig, light)
-    chain = " -> ".join(f"{a}>{b} ({why})" for a, b, why in r.downgrades) or "sin recortes"
+    chain = " -> ".join(f"{a}>{b} ({why})" for a, b, why in r.downgrades) or "NINGUNO"
     print(f"\n{title}")
     print(f"  luz={light:5s} baseline={r.baseline:9s} final={r.level}")
-    print(f"  cadena: {chain}")
+    print(f"  recortes (bajan el nivel): {chain}")
+    for n in r.texto_notas():
+        print(f"  nota     (no baja nada) : {n}")
     print(f"  texto : {r.text() or '(no aplica: ' + str(r.skip_reason) + ')'}")
 
 
@@ -70,7 +90,7 @@ for day, name in ((SAT, "sábado"), (SUN, "domingo")):
 
 print()
 print("=" * 78)
-print("B. Ayer se hizo una intensa (no dos seguidas)")
+print("B. Ayer se hizo una intensa: se dice, no se recorta")
 print("=" * 78)
 show(
     "domingo, sábado intenso",
@@ -80,16 +100,14 @@ show(
 
 print()
 print("=" * 78)
-print("C. Presupuesto semanal agotado")
+print("C. Recuento semanal alto: sigue saliendo 'intensa'")
 print("=" * 78)
+print("   (aquí antes había un 2/2 que bajaba el sábado a 'suave')")
+for n in (0, 2, 4, 7, 12):
+    show(f"sábado, {n} sesiones intensas esta semana", make_signals(SAT, conteo=cuenta(n)), "green")
 show(
-    "sábado, presupuesto 2/2",
-    make_signals(SAT, budget=IntensityBudget(limit=2, used=2, detail=["test"], week_start=SAT - timedelta(days=5))),
-    "green",
-)
-show(
-    "sábado, presupuesto 1/2",
-    make_signals(SAT, budget=IntensityBudget(limit=2, used=1, detail=["test"], week_start=SAT - timedelta(days=5))),
+    "sábado, 2 contadas y 1 sin clasificar",
+    make_signals(SAT, conteo=cuenta(2, unknown=1)),
     "green",
 )
 
@@ -110,9 +128,10 @@ show(
 
 print()
 print("=" * 78)
-print("E. Intensa exige verde")
+print("E. El techo del semáforo, que es el único recorte que queda")
 print("=" * 78)
 show("sábado ámbar", make_signals(SAT), "amber")
+show("sábado ámbar con 9 intensas esta semana", make_signals(SAT, conteo=cuenta(9)), "amber")
 
 print()
 print("=" * 78)
@@ -122,10 +141,15 @@ show("miércoles", make_signals(date(2026, 9, 2)), "green")
 
 print()
 print("=" * 78)
-print("G. El finde ANTERIOR no debe contaminar (ride de hace 8 días)")
+print("G. El finde ANTERIOR no debe contaminar el recuento del finde")
 print("=" * 78)
 show(
     "sábado, intensa hace 8 días",
     make_signals(SAT, rides=[ride(SAT - timedelta(days=8), "intensa")]),
+    "green",
+)
+show(
+    "sábado, intensa el DOMINGO PASADO (hace 6 días: el caso del fallo)",
+    make_signals(SAT, rides=[ride(SAT - timedelta(days=6), "intensa")]),
     "green",
 )

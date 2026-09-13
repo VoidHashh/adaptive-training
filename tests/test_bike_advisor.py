@@ -108,166 +108,184 @@ def test_entre_semana_no_se_recomienda_bici_y_se_dice_por_que(cfg):
     assert rec.text() == "", "si no aplica, no puede ocupar una línea del mensaje"
 
 
-# --- el presupuesto que no se sabe si está agotado --------------------------
+# ---------------------------------------------------------------------------
+# El recuento CUENTA. No recorta. Nunca.
+# ---------------------------------------------------------------------------
+#
+# Estos tests son la frontera entre el sistema de antes y el de ahora, y están
+# escritos al revés que los que sustituyen: antes se comprobaba que el freno
+# saltara, y ahora se comprueba que NO salte por mucho que se le cargue la
+# semana. Los cuatro frenos por recuento que había -`weekly_limit`,
+# `on_budget_exhausted`, `max_intense_rides_per_weekend` y
+# `require_green_for_intense`- ya no existen.
+#
+# Lo que queda es un único recorte: el techo del semáforo. Ese sí puede bajar el
+# nivel, porque sale de lo que mide el cuerpo -HRV, sueño, pulso de reposo,
+# carga de Garmin- y no de una hoja de cálculo.
 
 
-def _con_presupuesto(day: date, used: int, unknown: int, limit: int = 3) -> Signals:
-    from app.engine.signals import IntensityBudget
+def _con_recuento(day: date, used: int, unknown: int = 0) -> Signals:
+    from app.engine.signals import IntensityCount
 
     s = Signals(day=day)
-    s.budget = IntensityBudget(
-        limit=limit, used=used, detail=[], week_start=day, unknown=unknown
+    s.intense_count = IntensityCount(
+        used=used, detail=[], week_start=day, unknown=unknown
     )
     return s
 
 
-def test_una_salida_sin_clasificar_no_deja_pasar_la_intensa(cfg):
-    """El agujero, visto desde donde se nota.
+@pytest.mark.parametrize("hechas", [0, 1, 3, 4, 7, 12])
+def test_el_recuento_no_baja_el_nivel_por_alto_que_sea(cfg, hechas):
+    """La semana de viaje: siete días de bici seguidos y el sábado sigue libre.
 
-    Dos intensas confirmadas y una salida sin clasificar, con el límite en 3.
-    Antes: las desconocidas no se contaban, `exhausted` era False y el sábado
-    salía 'intensa'. Un presupuesto que se salta solo cuando faltan datos no es
-    un presupuesto: la semana en que Garmin no clasifica bien es justamente la
-    que acaba con una salida fuerte de más.
+    Antes, de la cuarta sesión fuerte en adelante el sábado salía 'suave' con el
+    motivo "presupuesto agotado". Eso es el sistema decidiendo qué se puede
+    hacer, y es justo lo que se ha quitado: el sistema registra y se adapta.
     """
-    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=2, unknown=1), "green")
-    assert rec.level == "suave"
-
-
-def test_el_motivo_dice_que_no_se_sabe_y_no_que_esta_agotado(cfg):
-    """Frenar por falta de datos y frenar por un hecho no son lo mismo.
-
-    El motivo va escrito en el mensaje precisamente para que el sábado por la
-    mañana se pueda decidir a mano con la información buena.
-    """
-    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=2, unknown=1), "green")
-    motivo = rec.downgrades[-1][2]
-    assert "puede que" in motivo
-    assert "sin clasificar" in motivo
-    assert "agotado (" not in motivo, "no se puede afirmar lo que no se sabe"
-
-
-def test_con_el_presupuesto_agotado_de_verdad_el_motivo_lo_afirma(cfg):
-    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=3, unknown=0), "green")
-    assert rec.level == "suave"
-    assert "agotado" in rec.downgrades[-1][2]
-
-
-def test_sin_salidas_sin_clasificar_la_intensa_del_sabado_sigue_saliendo(cfg):
-    """Que el freno nuevo no se coma todos los sábados.
-
-    Un presupuesto que recorta siempre no es un presupuesto, y este test es lo
-    único que separa las dos cosas.
-    """
-    rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=1, unknown=0), "green")
-    assert rec.level == "intensa"
+    rec = recommend_bike(cfg, _con_recuento(SABADO, used=hechas), "green")
+    assert rec.level == "intensa", [d[2] for d in rec.downgrades]
     assert not rec.downgrades
 
 
+def test_el_recuento_sale_como_nota_y_no_como_recorte(cfg):
+    """La distinción tiene que sobrevivir hasta la pantalla del móvil.
+
+    `downgrades` cambia el nivel recomendado; `notas` no. Si el recuento se
+    colara en `downgrades`, el mensaje diría "intensa, recortada por..." sin
+    haber recortado nada, y a partir de ahí da igual lo que haga el código:
+    quien lo lee entiende que le han frenado.
+    """
+    rec = recommend_bike(cfg, _con_recuento(SABADO, used=5), "green")
+    assert not rec.downgrades
+    notas = rec.texto_notas()
+    assert any("5" in n for n in notas), notas
+    assert rec.level == "intensa"
+
+
+def test_la_nota_del_recuento_no_lleva_tono_de_reprimenda(cfg):
+    """"El sistema informa y se adapta, no juzga." Dicho literal del usuario.
+
+    Esto no es cosmética. Una nota que regaña convierte el recuento en una
+    prescripción por la puerta de atrás: no frena el código, frena el que lo
+    lee. Y la semana de más carga es precisamente la semana en que menos falta
+    hace que nadie te riña.
+    """
+    rec = recommend_bike(cfg, _con_recuento(SABADO, used=9), "green")
+    junto = " ".join(rec.texto_notas()).lower()
+    for palabra in (
+        "demasiad", "exceso", "excedid", "deberías", "cuidado", "ojo",
+        "agotado", "límite", "te pasas", "de más",
+    ):
+        assert palabra not in junto, f"tono de reproche: '{palabra}' en {junto!r}"
+
+
+def test_una_salida_sin_clasificar_sale_en_la_nota_y_no_recorta(cfg):
+    """El sesgo cambió de sitio al quitar el freno, pero no desapareció.
+
+    Cuando esto era un presupuesto, ignorar una salida sin clasificar abría la
+    puerta a una sesión fuerte de más. Ahora no hay puerta: lo único que se
+    estropea es el número que sale escrito, que quedaría corto. Se dice, y ya.
+    """
+    rec = recommend_bike(cfg, _con_recuento(SABADO, used=2, unknown=1), "green")
+    assert rec.level == "intensa"
+    assert not rec.downgrades
+    assert any("sin clasificar" in n for n in rec.texto_notas())
+
+
+def test_el_semaforo_sigue_mandando_por_encima_del_recuento(cfg):
+    """Quitar los frenos de cuenta no puede haber tocado el freno del cuerpo.
+
+    Es el reverso exacto del cambio: el recuento no recorta NUNCA, y el ámbar
+    recorta SIEMPRE. Si al quitar los cuatro frenos se hubiera llevado por
+    delante el techo del semáforo, el sistema habría pasado de frenar de más a
+    no frenar nada, que es bastante peor.
+    """
+    rec = recommend_bike(cfg, _con_recuento(SABADO, used=9), "amber")
+    assert rec.level == "suave"
+    assert rec.downgrades, "el ámbar tiene que seguir explicando por qué recorta"
+    assert "ámbar" in rec.downgrades[0][2].lower()
+
+
+def test_con_el_recuento_ausente_no_hay_nota_ni_hueco(cfg):
+    """Un día sin recuento -cualquier ruta que no pase por `build_signals`- no
+    puede sacar una línea vacía ni un "None" en el mensaje."""
+    rec = recommend_bike(cfg, _senales(SABADO), "green")
+    assert rec.texto_notas() == []
+    assert rec.level == "intensa"
+
+
 # ---------------------------------------------------------------------------
-# El reparto que describe la regla tiene que caber en el número
+# La ventana del fin de semana contaba el domingo de la semana pasada
 # ---------------------------------------------------------------------------
 #
-# Los tests de arriba fijan el MECANISMO y se fabrican su propio `limit=3`, así
-# que ninguno mira el `weekly_limit` de verdad. El número del YAML se quedaba
-# sin nadie que lo defendiera, y no es un número cualquiera: describe un reparto
-# concreto -hasta 2 HIIT entre semana, 1 intensa suelta y 1 salida fuerte el fin
-# de semana- que con el límite en 3 no cabía. Los dos HIIT caen lunes y jueves,
-# o sea ANTES del fin de semana, así que el sábado llegaba a 2/3 y cualquier
-# intensidad de entre semana lo dejaba sin salida. Medido sobre 25 semanas
-# reales, uno de cada cinco fines de semana.
-#
-# Estos tests leen el config del repositorio a propósito. Volver a 3 los rompe,
-# que es justo lo que tienen que hacer.
+# El filtro era `<= 6 días`, y un sábado el domingo anterior cae exactamente a
+# 6. El número que se enseña tiene que ser verdad aunque no decida nada; si
+# acaso más, porque un dato que no decide es un dato que nadie va a ir a
+# comprobar.
 
 
-def _presupuesto_real(
-    cfg, day, *, hiit: int, intensas_entre_semana: int, sabado_intenso: bool = False
-):
-    """Gasta el presupuesto con el `weekly_limit` DE VERDAD, no con uno de test."""
-    from datetime import timedelta as _td
+def _con_salidas(day: date, fechas: list[date]) -> Signals:
+    from app.engine.signals import ClassifiedRide, Ride
 
-    from app.engine.signals import (
-        ClassifiedRide,
-        Ride,
-        StrengthSession,
-        intensity_budget,
-    )
-
-    lunes = day - _td(days=day.weekday())
-
-    def _salida(d):
-        return ClassifiedRide(
+    s = Signals(day=day)
+    s.rides = [
+        ClassifiedRide(
             ride=Ride(date=d, duration_s=7200),
             level="intensa",
             source="test",
             load=100.0,
             load_estimated=False,
         )
-
-    sesiones = [
-        StrengthSession(date=lunes + _td(days=d), routine_key=k, is_hiit=True)
-        for d, k in list(enumerate(("hiit_dia_1", "hiit_dia_2")))[:hiit]
+        for d in fechas
     ]
-    rides = [_salida(lunes + _td(days=1 + i)) for i in range(intensas_entre_semana)]
-    if sabado_intenso:
-        rides.append(_salida(lunes + _td(days=5)))
-    s = Signals(day=day)
-    s.rides = rides
-    s.budget = intensity_budget(rides, sesiones, day, cfg.raw["cycling"])
     return s
 
 
-def test_los_dos_hiit_de_la_semana_no_se_comen_la_salida_del_sabado(cfg):
-    """Lo que motivó subir el límite: hacer el plan entero no puede castigarte.
+def test_el_domingo_pasado_no_es_este_fin_de_semana(cfg):
+    from app.engine.bike_advisor import _intense_rides_this_weekend
 
-    Dos HIIT hechos -exactamente lo que el plan pide- más una salida intensa
-    suelta entre semana. Con el límite en 3 esto daba 3/3 y el sábado salía
-    'suave': el sistema recortaba la salida por haber cumplido.
+    domingo_pasado = SABADO - timedelta(days=6)
+    assert domingo_pasado.weekday() == 6
+    sig = _con_salidas(SABADO, [domingo_pasado])
+    assert _intense_rides_this_weekend(sig, cfg.raw["cycling"]) == 0
+
+
+def test_el_sabado_de_ayer_si_es_este_fin_de_semana(cfg):
+    from app.engine.bike_advisor import _intense_rides_this_weekend
+
+    sig = _con_salidas(DOMINGO, [SABADO])
+    assert _intense_rides_this_weekend(sig, cfg.raw["cycling"]) == 1
+
+
+def test_la_salida_del_fin_de_semana_se_cuenta_pero_no_recorta(cfg):
+    """El freno que había aquí, `max_intense_rides_per_weekend`, ya no está.
+
+    Y aparte de sobrar, contaba mal: solo era alcanzable los sábados -el punto
+    de partida del domingo es 'media' y el bloque entero se saltaba- y en los
+    sábados miraba al domingo de la semana anterior.
     """
-    sig = _presupuesto_real(cfg, SABADO, hiit=2, intensas_entre_semana=1)
-    assert not sig.budget.exhausted, (
-        f"{sig.budget.used}/{sig.budget.limit}: el reparto que describe la "
-        "regla no cabe en el presupuesto"
-    )
+    sig = _con_salidas(DOMINGO, [SABADO])
     rec = recommend_bike(cfg, sig, "green")
-    assert rec.level == "intensa", [d[2] for d in rec.downgrades]
+    assert rec.level == "media", [d[2] for d in rec.downgrades]
+    assert not rec.downgrades
+    nota = next(n for n in rec.texto_notas() if "fin de semana" in n)
+    assert nota == "llevas 1 salida intensa este fin de semana", nota
+    assert "(s)" not in nota, "esto lo lee una persona, no un log"
 
 
-def test_el_presupuesto_sigue_frenando_cuando_de_verdad_hay_de_mas(cfg):
-    """Subir el límite no puede equivaler a quitar el freno.
+def test_la_intensa_de_ayer_avisa_pero_ya_no_baja_el_nivel(cfg):
+    """`no_consecutive_intense` era el único de los tres que sí disparaba.
 
-    Dos HIIT y DOS intensas entre semana ya son cuatro sesiones fuertes antes
-    del sábado. Ahí el presupuesto tiene que cortar, o no es un presupuesto.
+    108 veces en la rejilla de 648 combinaciones. Por eso es el que más se nota
+    al quitarlo, y por eso tiene que dejar dicho lo que sabe: dos intensas
+    seguidas es un dato que importa, y quien decide si hoy toca o no es el que
+    pedalea.
     """
-    sig = _presupuesto_real(cfg, SABADO, hiit=2, intensas_entre_semana=2)
-    assert sig.budget.exhausted, f"{sig.budget.used}/{sig.budget.limit}"
-    rec = recommend_bike(cfg, sig, "green")
-    assert rec.level == "suave"
-    assert "agotado" in rec.downgrades[-1][2]
-
-
-def test_el_domingo_no_depende_del_presupuesto_para_frenar(cfg):
-    """El freno del domingo no puede ser el número que acabamos de subir.
-
-    Con el límite en 3 el domingo posterior a un sábado intenso salía agotado y
-    eso tapaba que ya había otros dos frenos puestos. Al subirlo a 4 el
-    presupuesto deja de cortar ahí -3/4- y queda a la vista quién sostiene de
-    verdad el domingo. Con una hernia L4-L5 eso no puede quedar sin comprobar.
-
-    El sábado intenso tiene que estar en las salidas y no solo en
-    `yesterday_ride_level`: sin él el presupuesto se queda en 2/4, nunca llega a
-    estar cerca de agotarse y el test aprobaría sin haber probado nada.
-    """
-    sig = _presupuesto_real(
-        cfg, DOMINGO, hiit=2, intensas_entre_semana=0, sabado_intenso=True
-    )
+    sig = _senales(SABADO)
     sig.values["yesterday_ride_level"] = "intensa"
-    assert not sig.budget.exhausted, (
-        f"{sig.budget.used}/{sig.budget.limit}: si el presupuesto ya corta "
-        "aquí, este test no comprueba que los otros frenos existan"
-    )
-
     rec = recommend_bike(cfg, sig, "green")
-    assert rec.level == "suave"
-    assert "intensa" in rec.downgrades[-1][2]
+    assert rec.level == "intensa"
+    assert not rec.downgrades
+    assert any("intensa" in n for n in rec.texto_notas())
+
+

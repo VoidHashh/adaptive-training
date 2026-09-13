@@ -587,10 +587,18 @@ def _validate(data: dict[str, Any]) -> list[str]:
     for day, level in rec.get("baseline_by_weekday", {}).items():
         require(day in WEEKDAYS, f"baseline_by_weekday: '{day}' no es un día válido")
         require(level in order, f"baseline_by_weekday.{day}: '{level}' no está en intensity_order")
-    require(
-        rec.get("after_intense_downgrade_to") in order,
-        "after_intense_downgrade_to no está en intensity_order",
-    )
+    # `no_consecutive_intense` y `after_intense_downgrade_to` recortaban la
+    # salida del domingo si el sábado había sido intensa. Se han borrado: eso
+    # es una cuenta, no una señal del cuerpo, y ahora sale como nota. Van a la
+    # lista negra por lo mismo que las del recuento: reescribirlas aquí sería
+    # creer que se recupera un freno que ya no existe.
+    for muerta in ("no_consecutive_intense", "after_intense_downgrade_to"):
+        require(
+            muerta not in rec,
+            f"cycling.recommendation.{muerta} ya no existe. La salida intensa "
+            f"de ayer ahora se cuenta y se dice, no recorta la de hoy. Quien "
+            f"frena por acumulación es el semáforo.",
+        )
 
     # --- clasificación de salidas ------------------------------------------
     levels = [c.get("level") for c in data["cycling"].get("classification", [])]
@@ -926,42 +934,73 @@ def _validate(data: dict[str, Any]) -> list[str]:
                         )
                         break
 
-    # --- presupuesto semanal de intensidad ----------------------------------
-    budget = (
-        data["cycling"].get("recommendation", {}).get("intensity_budget", {})
+    # --- recuento semanal de intensidad -------------------------------------
+    conteo = (
+        data["cycling"].get("recommendation", {}).get("intensity_count", {})
     )
     # `enabled` se exige EXPLÍCITO, y no basta con que sea verdadero.
     #
-    # La validación de aquí abajo estaba colgada de `budget.get("enabled")`,
-    # mientras que quien aplica el presupuesto -`bike_advisor`- lee
-    # `budget_cfg.get("enabled", True)`. Los dos defectos apuntan a lados
-    # contrarios: sin la clave, el validador se salta el bloque entero y el
-    # motor lo aplica igualmente con los valores que se invente. Un `enable:`
-    # por `enabled:` dejaba el fichero pasando la validación y el sábado
-    # decidido con un límite que no está escrito en ninguna parte.
-    if budget:
+    # La validación de aquí abajo estaba colgada de `.get("enabled")`, mientras
+    # que quien lo consume lee `.get("enabled", True)`. Los dos defectos
+    # apuntan a lados contrarios: sin la clave, el validador se salta el bloque
+    # entero y el motor lo aplica igualmente con los valores que se invente. Un
+    # `enable:` por `enabled:` dejaba el fichero pasando la validación.
+    # El bloque tiene que ESTAR. Antes daba igual que faltara porque lo único
+    # que se perdía era un freno de más; ahora lo que se pierde es el recuento,
+    # que es la única razón por la que el bloque sigue existiendo. Un
+    # `intensity_cout:` mal tecleado dejaría el bloque ausente, el diccionario
+    # vacío, y el número desaparecería del mensaje sin una sola queja. Apagarlo
+    # a propósito se hace con `enabled: false`, que es una decisión escrita.
+    require(
+        bool(conteo),
+        "falta cycling.recommendation.intensity_count. Para no contar hay que "
+        "escribir `enabled: false` dentro del bloque, no quitar el bloque: "
+        "ausente y desactivado se parecen mucho en el YAML y nada en el log.",
+    )
+    if conteo:
         require(
-            isinstance(budget.get("enabled"), bool),
-            "intensity_budget.enabled tiene que estar y ser true o false. Sin "
+            isinstance(conteo.get("enabled"), bool),
+            "intensity_count.enabled tiene que estar y ser true o false. Sin "
             "ella el validador se salta el bloque y el motor lo aplica igual.",
         )
-    if budget.get("enabled"):
+    if conteo.get("enabled"):
         require(
-            isinstance(budget.get("weekly_limit"), int) and budget["weekly_limit"] > 0,
-            "intensity_budget.weekly_limit debe ser un entero positivo",
+            conteo.get("week_starts_on") in WEEKDAYS,
+            f"intensity_count.week_starts_on '{conteo.get('week_starts_on')}' no es válido",
         )
+
+    # LISTA NEGRA: las claves de cuando esto era un presupuesto y recortaba.
+    #
+    # Se comprueba SIEMPRE, esté el bloque encendido, apagado o ausente, y
+    # también bajo el nombre viejo `intensity_budget`. Una clave muerta que se
+    # ignora en silencio es peor que una clave mal escrita: quien escriba
+    # `weekly_limit: 2` va a creer que se ha puesto un tope de dos sesiones
+    # intensas a la semana, el fichero va a validar, y no va a pasar nada de
+    # nada. Es el mismo fallo que el `enable:`/`enabled:` de aquí arriba pero
+    # al revés y más caro, porque el silencio cae del lado de creerse protegido.
+    #
+    # El bloque entero bajo el nombre viejo también revienta: `intensity_budget`
+    # ya no lo lee nadie, así que dejarlo puesto sería tener la configuración
+    # del recuento escrita en un sitio que el motor no mira.
+    viejo = data["cycling"].get("recommendation", {}).get("intensity_budget")
+    require(
+        viejo is None,
+        "cycling.recommendation.intensity_budget ya no existe: se llama "
+        "intensity_count y solo cuenta, no limita. Dejarlo aquí es configurar "
+        "algo que el motor no lee.",
+    )
+    for muerta in (
+        "weekly_limit",
+        "on_budget_exhausted",
+        "max_intense_rides_per_weekend",
+        "require_green_for_intense",
+    ):
         require(
-            budget.get("week_starts_on") in WEEKDAYS,
-            f"intensity_budget.week_starts_on '{budget.get('week_starts_on')}' no es válido",
-        )
-        require(
-            budget.get("on_budget_exhausted") in order,
-            f"intensity_budget.on_budget_exhausted '{budget.get('on_budget_exhausted')}' "
-            "no está en intensity_order",
-        )
-        require(
-            isinstance(budget.get("max_intense_rides_per_weekend"), int),
-            "falta intensity_budget.max_intense_rides_per_weekend",
+            muerta not in conteo,
+            f"intensity_count.{muerta} es una clave de cuando el recuento "
+            f"recortaba la salida del fin de semana. Ya no recorta: informa. "
+            f"Para frenar por carga acumulada está thresholds.amber.carga_acumulada, "
+            f"que mira la carga de Garmin contra tu propio percentil 90.",
         )
 
     # --- rutinas ------------------------------------------------------------

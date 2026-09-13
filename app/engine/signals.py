@@ -47,11 +47,15 @@ WEEKDAY_NAMES = [
 UNKNOWN = "desconocida"
 
 
-class BudgetConfigError(ValueError):
-    """El presupuesto de intensas está declarado a medias en el YAML.
+class IntensityCountConfigError(ValueError):
+    """El bloque de recuento de intensas trae claves de cuando limitaba.
 
-    Se para en vez de completar el hueco con un número razonable, porque el
-    número razonable resultó ser el valor viejo del propio fichero.
+    `weekly_limit`, `on_budget_exhausted`, `max_intense_rides_per_weekend` y
+    `require_green_for_intense` existieron y recortaban la salida del fin de
+    semana. Ya no existe nada que las lea. Dejarlas pasar en silencio sería la
+    trampa exacta que el sistema lleva meses pagando, y encima en la dirección
+    más engañosa que hay: alguien escribe `weekly_limit: 2` convencido de que
+    se está poniendo un tope, el fichero valida, y no pasa absolutamente nada.
     """
 
 
@@ -222,7 +226,7 @@ class Signals:
     # snapshot, y ahí solo deben vivir señales evaluables.
     rides: list[ClassifiedRide] = field(default_factory=list)
     weekend: WeekendSummary | None = None
-    budget: IntensityBudget | None = None
+    intense_count: IntensityCount | None = None
 
     def get(self, name: str) -> Any:
         if name in self.values:
@@ -240,13 +244,26 @@ class Signals:
         return WEEKDAY_NAMES[self.day.weekday()]
 
     def snapshot(self) -> dict[str, Any]:
-        """Lo que se guarda en `decisions.inputs_snapshot_json`."""
+        """Lo que se guarda en `decisions.inputs_snapshot_json`.
+
+        `intense_count` entra aquí desde que el recuento dejó de recortar. Antes
+        no hacía falta guardarlo: la cuenta acababa escrita en el motivo del
+        recorte de bici y de ahí se podía reconstruir. Al quitar el recorte, ese
+        rastro desaparece, y sin esta línea el sistema habría dejado de
+        registrar exactamente el dato que se le pidió que registrase. El detalle
+        va entero -qué día y de qué tipo fue cada sesión- porque un contador sin
+        desglose no se puede auditar y un contador que no se puede auditar acaba
+        siendo un número en el que nadie confía.
+        """
         return {
             "day": self.day.isoformat(),
             "weekday": self.weekday(),
             "values": {k: v for k, v in sorted(self.values.items())},
             "adaptive": {k: v for k, v in sorted(self.adaptive.items())},
             "notes": list(self.notes),
+            "intense_count": (
+                self.intense_count.to_dict() if self.intense_count else None
+            ),
         }
 
 
@@ -549,8 +566,27 @@ def weekend_summary(
 
 
 @dataclass(frozen=True)
-class IntensityBudget:
-    limit: int
+class IntensityCount:
+    """Sesiones intensas de la semana en curso. Cuenta; no limita.
+
+    ESTO ERA UN PRESUPUESTO Y AHORA ES UN CONTADOR
+    -----------------------------------------------
+    Tenía un `limit`, un `remaining`, un `exhausted` y un `indeterminate`, y
+    con ellos `bike_advisor` bajaba la salida del sábado. Ya no: el sistema no
+    decide lo que se puede hacer, registra lo que se hizo. Los cuatro campos
+    se han borrado enteros en vez de dejarlos sin usar, porque un `limit` que
+    no limita es exactamente la clase de nombre que en este proyecto acaba
+    costando una tarde: alguien lo lee dentro de seis meses, deduce que hay un
+    tope, y se pone a buscar por qué no se aplica.
+
+    Lo que sí se conserva es `unknown`, y es lo único de todo esto que sigue
+    siendo crítico. `used` solo suma salidas con `level == "intensa"`; una que
+    Garmin no pudo clasificar -sin zonas de FC y sin Training Effect- sale
+    'desconocida'. O sea que `used` es un MÍNIMO y no el número, y ahora que
+    se enseña en el mensaje todos los días eso hay que decirlo cada vez que
+    pase, no solo cuando además frenaba.
+    """
+
     used: int
     detail: list[str]
     week_start: date
@@ -558,71 +594,88 @@ class IntensityBudget:
     # intensas, así que `used` es un MÍNIMO, no el número.
     unknown: int = 0
 
-    @property
-    def remaining(self) -> int:
-        return max(0, self.limit - self.used)
+    def linea(self) -> str:
+        """La frase informativa del mensaje. Sin referencia y sin juicio.
 
-    @property
-    def exhausted(self) -> bool:
-        """Agotado con certeza: solo cuenta lo confirmado."""
-        return self.used >= self.limit
+        No lleva un "de 4" detrás a propósito. Un denominador convierte un
+        recuento en una nota, y una nota con denominador se lee como aprobado
+        o suspenso aunque no frene nada. Lo que hace falta saber es cuánto se
+        lleva hecho; lo que sobra es que el sistema opine sobre si son muchas.
 
-    @property
-    def indeterminate(self) -> bool:
-        """No agotado por lo confirmado, pero las desconocidas podrían agotarlo.
-
-        Esta propiedad existe porque el conteo era ciego a su propio agujero.
-        `used` solo suma las salidas con `level == "intensa"`, y una salida que
-        Garmin no pudo clasificar -sin zonas de FC y sin Training Effect- sale
-        'desconocida' y NO gastaba presupuesto. No es que se contase mal: es
-        que se contaba como si se supiera, y no se sabía.
-
-        El resultado, con `weekly_limit: 3`: cuatro salidas fuertes en la
-        semana, una de ellas sin clasificar, y el sistema informa "2/3, te
-        queda una". El presupuesto semanal existe justamente para que la cuarta
-        no ocurra, y era la salida sin datos la que abría la puerta.
-
-        Se separa de `exhausted` en vez de mezclarse porque son cosas distintas
-        y quien decide tiene que poder distinguirlas: "agotado" es un hecho y
-        "puede que agotado" es una falta de datos. Mezclarlas volvería a
-        producir un número que no se puede discutir, que es de lo que se venía.
-
-        El mismo criterio que ya usa `weekend_summary`: si lo confirmado ya
-        basta para concluir, el dato que falta no cambia nada y esto es False.
+        Y se concuerda el plural en vez de escribir "sesion(es)". La frase la
+        lee una persona a las siete de la mañana, no un log: los paréntesis de
+        plural son la marca de un texto generado, y un texto que parece
+        generado se lee como relleno. Cuesta dos líneas.
         """
-        return not self.exhausted and (self.used + self.unknown) >= self.limit
+        if self.used == 0 and not self.unknown:
+            return "ninguna sesión intensa esta semana todavía"
+        cuantas = (
+            "1 sesión intensa" if self.used == 1 else f"{self.used} sesiones intensas"
+        )
+        base = f"llevas {cuantas} esta semana"
+        if self.unknown:
+            sueltas = (
+                "1 salida sin clasificar que pudo serlo"
+                if self.unknown == 1
+                else f"{self.unknown} salidas sin clasificar que pudieron serlo"
+            )
+            base += f", y {sueltas}"
+        return base
+
+    def to_dict(self) -> dict[str, Any]:
+        """Para `inputs_snapshot_json`, o sea para las métricas de dentro de un año.
+
+        Antes esto no se guardaba en ninguna parte: del recuento solo
+        sobrevivía la frase del recorte de bici, dentro de `bike.downgrades`,
+        y solo los días en que hubiera recorte. Al dejar de recortar, el dato
+        habría desaparecido del histórico por completo justo cuando pasa a ser
+        su única razón de existir.
+        """
+        return {
+            "used": self.used,
+            "unknown": self.unknown,
+            "week_start": self.week_start.isoformat(),
+            "detail": list(self.detail),
+        }
 
 
-def intensity_budget(
+# Las claves de cuando esto era un presupuesto. Si reaparecen en el YAML hay
+# que parar: quien las escriba estará creyendo que pone un tope.
+CLAVES_DE_CUANDO_LIMITABA = (
+    "weekly_limit",
+    "on_budget_exhausted",
+    "max_intense_rides_per_weekend",
+    "require_green_for_intense",
+)
+
+
+def intensity_count(
     rides: Sequence[ClassifiedRide],
     sessions: Sequence[StrengthSession],
     day: date,
     cycling_cfg: dict[str, Any],
-) -> IntensityBudget:
-    """Sesiones intensas consumidas en la semana en curso, hasta `day` incluido.
+) -> IntensityCount:
+    """Sesiones intensas HECHAS en la semana en curso, hasta `day` incluido.
 
-    Cuenta lo EJECUTADO: un HIIT programado que no se hizo no gasta presupuesto.
+    Cuenta lo EJECUTADO: un HIIT programado que no se hizo no cuenta. Y no
+    limita nada: el número sale en el mensaje y se guarda, y eso es todo lo
+    que hace.
     """
-    cfg = ((cycling_cfg.get("recommendation", {}) or {}).get("intensity_budget", {})) or {}
+    cfg = ((cycling_cfg.get("recommendation", {}) or {}).get("intensity_count", {})) or {}
 
-    # El 3 de antes era `cfg.get("weekly_limit", 3)`, y ese 3 no es un número
-    # cualquiera: es el valor ANTERIOR del YAML, el que dejaba 5 de cada 25
-    # sábados sin salida fuerte porque los dos HIIT del plan no cabían debajo
-    # del techo. O sea que un despiste en el YAML -borrar la línea, escribir
-    # `weekly_limt`- no daba error: revertía el cambio en silencio y el sistema
-    # seguía recomendando con el número viejo mientras el fichero enseñaba el
-    # nuevo. El valor que se lee no es el valor que se usa, otra vez.
-    #
-    # Sin el bloque entero no se exige nada: no tener presupuesto es una
-    # decisión legítima y `used` sale igual. Lo que no puede pasar es tener el
-    # bloque puesto y que el límite venga de aquí dentro.
-    if cfg and "weekly_limit" not in cfg:
-        raise BudgetConfigError(
-            "cycling.recommendation.intensity_budget existe pero no trae "
-            "`weekly_limit`. Antes se usaba 3 por defecto, que es justo el valor "
-            "que se subió a 4: el olvido revertía el cambio sin decirlo."
+    # La guarda vive aquí y no solo en `config_loader` porque `config_loader`
+    # protege el YAML del repositorio, y esta función la llaman además scripts
+    # y tests con diccionarios de configuración escritos a mano que no pasan
+    # por el validador. Una clave muerta tiene que doler en los dos caminos.
+    muertas = [k for k in CLAVES_DE_CUANDO_LIMITABA if k in cfg]
+    if muertas:
+        raise IntensityCountConfigError(
+            f"cycling.recommendation.intensity_count trae {muertas}, que son "
+            f"claves de cuando esto recortaba la salida del fin de semana. Ya no "
+            f"lo hace: el recuento informa y quien decide es el usuario. Si lo "
+            f"que se busca es frenar por carga acumulada, el camino es el "
+            f"semáforo (HRV, sueño, pulso de reposo, carga de Garmin), no un cupo."
         )
-    limit = int(cfg.get("weekly_limit", 0))
     counts = cfg.get("counts_as_intense", {}) or {}
     start = week_start(day, str(cfg.get("week_starts_on", "monday")))
 
@@ -657,8 +710,7 @@ def intensity_budget(
                 used += 1
                 detail.append(f"{s.date.isoformat()}: fuerza ({s.routine_key})")
 
-    return IntensityBudget(
-        limit=limit,
+    return IntensityCount(
         used=used,
         detail=sorted(detail),
         week_start=start,
@@ -838,19 +890,28 @@ def build_signals(
             "el fin de semana; la regla del lunes se salta en vez de asumir que fue suave"
         )
 
-    budget = intensity_budget(classified, sessions, day, cycling_cfg)
-    sig.values["week_intense_count"] = budget.used
-    sig.values["week_intense_remaining"] = budget.remaining
-    if budget.unknown:
-        # Va a `notes` y no solo al motivo del recorte de bici porque
-        # `week_intense_count` se enseña como un número redondo -"2/3 intensas
-        # esta semana"- y ese número es un MÍNIMO, no el dato. Enseñar un
-        # mínimo con cara de dato es la forma más limpia que hay de que alguien
-        # se fíe de él.
+    conteo = intensity_count(classified, sessions, day, cycling_cfg)
+    sig.values["week_intense_count"] = conteo.used
+    # `week_intense_remaining` se ha quitado de aquí junto con el límite. Era
+    # `limit - used`, y sin límite no queda nada de lo que quedar. Se borra en
+    # vez de dejarse a cero: una señal que vale siempre cero es una señal que
+    # una regla puede leer y comparar, y entonces el cupo vuelve por la puerta
+    # de atrás sin que nadie lo haya decidido.
+    if conteo.unknown:
+        # Va a `notes` y no solo a la nota de la bici porque
+        # `week_intense_count` se enseña como un número redondo -"llevas 2
+        # sesiones intensas esta semana"- y ese número es un MÍNIMO, no el
+        # dato. Enseñar un mínimo con cara de dato es la forma más limpia que
+        # hay de que alguien se fíe de él, y ahora se enseña todos los días.
+        cuantas = (
+            "1 salida de esta semana sin clasificar que pudo ser intensa"
+            if conteo.unknown == 1
+            else f"{conteo.unknown} salidas de esta semana sin clasificar y "
+            f"cualquiera pudo ser intensa"
+        )
         notes.append(
-            f"week_intense_count: {budget.used}/{budget.limit} es un MÍNIMO, no "
-            f"el número: hay {budget.unknown} salida(s) de esta semana sin "
-            f"clasificar y cualquiera pudo ser intensa"
+            f"week_intense_count: {conteo.used} es un MÍNIMO, no el número: "
+            f"hay {cuantas}"
         )
 
     lookback = int(
@@ -911,6 +972,6 @@ def build_signals(
 
     sig.rides = classified
     sig.weekend = weekend
-    sig.budget = budget
+    sig.intense_count = conteo
 
     return sig

@@ -1173,39 +1173,102 @@ def test_las_caidas_de_sueno_tienen_que_ser_positivas(cfg_copia, clave):
 
 
 # ---------------------------------------------------------------------------
-# El interruptor del presupuesto: el validador y el motor miraban a lados
-# distintos
+# El interruptor del recuento: el validador y el motor miraban a lados distintos
 # ---------------------------------------------------------------------------
 #
-# La validación del bloque colgaba de `budget.get("enabled")` y quien lo aplica
-# -`bike_advisor`- lee `budget_cfg.get("enabled", True)`. Sin la clave, el
-# validador se salta el bloque entero y el motor lo aplica igual con los valores
-# que se invente: el sábado decidido con un límite que no está escrito en
-# ninguna parte y un config.yaml que pasa la validación.
+# La validación del bloque colgaba de `budget.get("enabled")` y quien lo aplicaba
+# -`bike_advisor`- leía `budget_cfg.get("enabled", True)`. Sin la clave, el
+# validador se saltaba el bloque entero y el motor lo aplicaba igual con los
+# valores que se inventara: el sábado decidido con un límite que no estaba
+# escrito en ninguna parte y un config.yaml que pasaba la validación.
+#
+# El bloque ya no recorta nada, así que el precio de perderlo en silencio ha
+# cambiado: no es un sábado decidido a ciegas, es el número que desaparece del
+# mensaje sin una sola queja. Menos grave y exactamente igual de callado, o sea
+# que las guardas se quedan donde estaban.
 
 
-def test_un_presupuesto_sin_la_clave_enabled_no_pasa(cfg_copia):
-    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+def test_un_recuento_sin_la_clave_enabled_no_pasa(cfg_copia):
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
     del b["enabled"]
-    assert "intensity_budget.enabled" in errores(cfg_copia.raw)
+    assert "intensity_count.enabled" in errores(cfg_copia.raw)
 
 
 def test_enabled_mal_escrito_se_caza_por_la_clave_que_falta(cfg_copia):
     """`enable:` por `enabled:` es el error real, no el hipotético."""
-    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
     b["enable"] = b.pop("enabled")
-    assert "intensity_budget.enabled" in errores(cfg_copia.raw)
+    assert "intensity_count.enabled" in errores(cfg_copia.raw)
 
 
 def test_un_enabled_que_no_es_booleano_tampoco_pasa(cfg_copia):
     """`enabled: "true"` entre comillas es verdadero para Python y no para YAML."""
-    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
     b["enabled"] = "true"
-    assert "intensity_budget.enabled" in errores(cfg_copia.raw)
+    assert "intensity_count.enabled" in errores(cfg_copia.raw)
 
 
-def test_apagar_el_presupuesto_a_proposito_sigue_siendo_valido(cfg_copia):
+def test_apagar_el_recuento_a_proposito_sigue_siendo_valido(cfg_copia):
     """La guarda exige que la decisión esté escrita, no que sea una en concreto."""
-    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
     b["enabled"] = False
-    assert "intensity_budget" not in errores(cfg_copia.raw)
+    assert "intensity_count" not in errores(cfg_copia.raw)
+
+
+def test_quitar_el_bloque_entero_tampoco_pasa(cfg_copia):
+    """Ausente y desactivado se parecen mucho en el YAML y nada en el log.
+
+    `intensity_cout:` mal tecleado deja el bloque ausente y el diccionario
+    vacío, y el recuento -la única razón por la que el bloque sigue existiendo-
+    desaparecería del mensaje sin ruido. Apagarlo se hace con `enabled: false`,
+    que es una decisión escrita y se lee en el fichero un año después.
+    """
+    del cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
+    assert "intensity_count" in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# Las claves de cuando el recuento recortaba: lista negra
+# ---------------------------------------------------------------------------
+#
+# Una clave BORRADA que se ignora en silencio es peor que una mal escrita. Quien
+# escriba `weekly_limit: 2` va a creer que se ha puesto un tope, el fichero va a
+# validar, y no va a pasar nada: el silencio cae del lado de sentirse protegido
+# sin estarlo.
+
+
+@pytest.mark.parametrize(
+    "muerta",
+    [
+        "weekly_limit",
+        "on_budget_exhausted",
+        "max_intense_rides_per_weekend",
+        "require_green_for_intense",
+    ],
+)
+def test_las_claves_del_presupuesto_muerto_no_pasan(cfg_copia, muerta):
+    cfg_copia.raw["cycling"]["recommendation"]["intensity_count"][muerta] = 2
+    assert muerta in errores(cfg_copia.raw)
+
+
+def test_el_bloque_con_el_nombre_viejo_tampoco_pasa(cfg_copia):
+    """Renombrar `intensity_budget` a `intensity_count` deja huérfano el viejo.
+
+    Un fichero que traiga los dos -el nuevo porque se copió de aquí y el viejo
+    porque estaba antes- valida perfectamente y aplica solo uno. El nombre viejo
+    tiene que doler.
+    """
+    rec = cfg_copia.raw["cycling"]["recommendation"]
+    rec["intensity_budget"] = {"enabled": True, "weekly_limit": 4}
+    assert "intensity_budget" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("muerta", ["no_consecutive_intense", "after_intense_downgrade_to"])
+def test_los_recortes_por_intensa_de_ayer_ya_no_existen(cfg_copia, muerta):
+    """Los dos que bajaban el nivel por haber apretado ayer.
+
+    Ahora eso es una nota. Dejar la clave puesta y que no haga nada sería
+    exactamente el fallo que estas listas negras existen para evitar.
+    """
+    cfg_copia.raw["cycling"]["recommendation"][muerta] = "suave"
+    assert muerta in errores(cfg_copia.raw)

@@ -20,7 +20,7 @@ from app.engine.signals import (
     build_signals,
     classify_all,
     classify_ride,
-    intensity_budget,
+    intensity_count,
     last_ride_level,
     load_series,
     mean_excluding_outliers,
@@ -57,8 +57,8 @@ CYCLING = {
     "weekend": {"days": ["saturday", "sunday"]},
     "recommendation": {
         "lookback_days": 1,
-        "intensity_budget": {
-            "weekly_limit": 3,
+        "intensity_count": {
+            "enabled": True,
             "week_starts_on": "monday",
             "counts_as_intense": {"ride_intensa": True, "hiit_executed": True},
         },
@@ -394,28 +394,98 @@ def test_una_intensa_confirmada_manda_aunque_falte_clasificar_otra():
     assert res.intense_rides == 1
 
 
-def test_el_presupuesto_cuenta_lo_ejecutado_no_lo_programado():
+def test_el_recuento_cuenta_lo_ejecutado_no_lo_programado():
     rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
     hecho = [StrengthSession(date=LUNES, routine_key="dia_1", is_hiit=True)]
-    b = intensity_budget(rides, hecho, LUNES, CYCLING)
-    assert b.used == 2
-    assert b.remaining == 1
-    assert not b.exhausted
+    c = intensity_count(rides, hecho, LUNES, CYCLING)
+    assert c.used == 2
 
-    b2 = intensity_budget(rides, hecho + [
+    c2 = intensity_count(rides, hecho + [
         StrengthSession(date=LUNES, routine_key="dia_2", is_hiit=True)
     ], LUNES, CYCLING)
-    assert b2.exhausted
+    assert c2.used == 3
+
+
+def test_el_recuento_no_tiene_techo_por_alto_que_suba():
+    """La prueba de que esto ya no es un presupuesto.
+
+    Siete días de bici intensa seguidos es exactamente el caso que el usuario
+    puso: una semana de viaje. Antes eso era "presupuesto agotado" desde la
+    cuarta salida y recorte en las tres siguientes. Ahora es un 7, y el 7 se
+    enseña. Si esa semana deja al cuerpo hecho polvo, quien lo dirá es el
+    semáforo por HRV, sueño, pulso de reposo y carga de Garmin, no una cuenta.
+    """
+    rides = classify_all(
+        [
+            ride(LUNES + timedelta(days=i), zones=(0, 0, 0, 900, 900), activity_id=i)
+            for i in range(7)
+        ],
+        CYCLING,
+    )
+    c = intensity_count(rides, [], LUNES + timedelta(days=6), CYCLING)
+    assert c.used == 7
+    assert not hasattr(c, "limit")
+    assert not hasattr(c, "exhausted")
+    assert "7" in c.linea()
+
+
+def test_la_linea_del_recuento_no_lleva_denominador():
+    """Un "de 4" detrás convierte un dato en un aprobado o un suspenso.
+
+    La frase la lee el usuario en el móvil cada mañana. Mientras diga "llevas
+    3", es información. En cuanto diga "3 de 4", es un marcador, y un marcador
+    prescribe aunque el código no recorte nada.
+    """
+    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
+    linea = intensity_count(rides, [], LUNES, CYCLING).linea()
+    assert "de 4" not in linea and "/" not in linea
+    assert "llevas 1 sesion intensa esta semana" in linea.replace("ó", "o")
+
+
+def test_sin_nada_hecho_la_linea_lo_dice_en_positivo():
+    """Cero no es un hueco: es el dato de que la semana está entera por delante."""
+    linea = intensity_count([], [], LUNES, CYCLING).linea()
+    assert "ninguna" in linea
+    assert "0" not in linea
+
+
+def test_la_linea_concuerda_el_plural_en_vez_de_escribir_parentesis():
+    """"sesion(es)" delata un texto de máquina, y esto lo lee una persona.
+
+    No es cosmética suelta: el recuento existe solo para que alguien lo lea a
+    las siete de la mañana. Un texto que parece generado se salta con la vista,
+    y un dato que se salta con la vista es exactamente igual de útil que uno que
+    no se calcula.
+    """
+    from app.engine.signals import IntensityCount
+
+    def linea(used, unknown=0):
+        return IntensityCount(
+            used=used, detail=[], week_start=LUNES, unknown=unknown
+        ).linea()
+
+    assert "(s)" not in linea(1) and "(es)" not in linea(1)
+    assert "1 sesión intensa esta semana" in linea(1)
+    assert "3 sesiones intensas esta semana" in linea(3)
+    assert "1 salida sin clasificar que pudo serlo" in linea(2, unknown=1)
+    assert "2 salidas sin clasificar que pudieron serlo" in linea(2, unknown=2)
+    for u in range(0, 6):
+        for k in range(0, 3):
+            assert "(s)" not in linea(u, k), (u, k)
 
 
 def test_una_salida_sin_clasificar_no_se_cuenta_como_paseo():
     """El agujero: `used` solo sumaba `level == "intensa"`.
 
     Una salida que Garmin no pudo clasificar -sin zonas de FC y sin Training
-    Effect- salía 'desconocida' y no gastaba presupuesto. No es que se contara
-    mal: se contaba como si se supiera, y no se sabía. Ignorarla es afirmar que
-    fue un paseo, que está tan inventado como decir que fue intensa y además
-    cae del lado que quita el freno.
+    Effect- salía 'desconocida' y no se contaba. No es que se contara mal: se
+    contaba como si se supiera, y no se sabía. Ignorarla es afirmar que fue un
+    paseo, que está tan inventado como decir que fue intensa.
+
+    Cuando esto era un presupuesto, el sesgo caía del lado de quitar el freno.
+    Ahora no hay freno que quitar y el daño es otro, más pequeño y más tonto:
+    el número que sale en el mensaje sería falso por abajo. Por eso `used` se
+    declara como un MÍNIMO y `unknown` viaja al lado.
     """
     rides = classify_all(
         [
@@ -424,68 +494,17 @@ def test_una_salida_sin_clasificar_no_se_cuenta_como_paseo():
         ],
         CYCLING,
     )
-    b = intensity_budget(rides, [], LUNES, CYCLING)
-    assert b.used == 1, "la desconocida no puede sumar como intensa"
-    assert b.unknown == 1, "pero tampoco puede desaparecer"
-    assert any("SIN CLASIFICAR" in d for d in b.detail)
-
-
-def test_el_presupuesto_que_puede_estar_agotado_se_distingue_del_que_lo_esta():
-    """Con `weekly_limit: 3`: dos confirmadas y una sin clasificar.
-
-    El sistema informaba "2/3, te queda una" y dejaba pasar la cuarta salida
-    fuerte de la semana. El presupuesto existe justamente para que esa cuarta
-    no ocurra, y era la salida sin datos la que abría la puerta.
-
-    `exhausted` sigue siendo un hecho y `indeterminate` una falta de datos: no
-    se mezclan, porque quien decide tiene que poder distinguirlas.
-    """
-    rides = classify_all(
-        [
-            ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=1),
-            ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=2),
-            Ride(date=LUNES, duration_s=3600, activity_id=3),
-        ],
-        CYCLING,
-    )
-    b = intensity_budget(rides, [], LUNES, CYCLING)
-    assert b.used == 2 and b.unknown == 1
-    assert not b.exhausted, "dos de tres confirmadas no agotan nada"
-    assert b.indeterminate, "pero la tercera podría haberlo agotado"
-
-
-def test_si_lo_confirmado_ya_agota_el_presupuesto_lo_desconocido_no_cambia_nada():
-    """Mismo criterio que `weekend_summary`.
-
-    Si el dato que falta no puede cambiar la conclusión, no hay indecisión que
-    declarar: el presupuesto está agotado y punto.
-    """
-    rides = classify_all(
-        [ride(LUNES, zones=(0, 0, 0, 900, 900), activity_id=i) for i in (1, 2, 3)]
-        + [Ride(date=LUNES, duration_s=3600, activity_id=4)],
-        CYCLING,
-    )
-    b = intensity_budget(rides, [], LUNES, CYCLING)
-    assert b.exhausted
-    assert not b.indeterminate
-
-
-def test_sin_salidas_sin_clasificar_no_hay_indecision():
-    """La guarda de que esto no frena por defecto.
-
-    Un presupuesto que se declarase indeterminado sin motivo recortaría todas
-    las semanas y dejaría de ser un presupuesto.
-    """
-    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
-    b = intensity_budget(rides, [], LUNES, CYCLING)
-    assert b.unknown == 0
-    assert not b.indeterminate
+    c = intensity_count(rides, [], LUNES, CYCLING)
+    assert c.used == 1, "la desconocida no puede sumar como intensa"
+    assert c.unknown == 1, "pero tampoco puede desaparecer"
+    assert any("SIN CLASIFICAR" in d for d in c.detail)
+    assert "sin clasificar" in c.linea()
 
 
 def test_la_intensidad_de_la_semana_pasada_no_cuenta():
     anterior = LUNES - timedelta(days=1)  # domingo
     rides = classify_all([ride(anterior, zones=(0, 0, 0, 900, 900))], CYCLING)
-    assert intensity_budget(rides, [], LUNES, CYCLING).used == 0
+    assert intensity_count(rides, [], LUNES, CYCLING).used == 0
 
 
 def test_manda_la_salida_mas_intensa_del_dia_anterior():
@@ -721,40 +740,77 @@ def test_los_umbrales_de_carga_siguen_saliendo_despues_de_bajar_el_bloque(cfg):
 
 
 # ---------------------------------------------------------------------------
-# El techo del presupuesto no puede venir de un defecto del código
+# Las claves de cuando esto recortaba tienen que reventar, no ignorarse
 # ---------------------------------------------------------------------------
 #
-# `weekly_limit` se leía con `cfg.get("weekly_limit", 3)`, y ese 3 es el valor
+# `weekly_limit` se leía con `cfg.get("weekly_limit", 3)`, y ese 3 era el valor
 # ANTERIOR del YAML: el que dejaba 5 de cada 25 sábados sin salida fuerte porque
-# los dos HIIT del plan no cabían debajo del techo. Borrar la línea o escribirla
-# mal no daba error, revertía el cambio en silencio, y el fichero seguía
-# enseñando un 4 que no se usaba.
+# los dos HIIT del plan no cabían debajo del techo. Ese defecto es el que empezó
+# toda esta revisión.
+#
+# Ahora el límite no existe, y aparece un modo de fallo peor que el defecto
+# escondido: una clave BORRADA que se ignora en silencio. Quien escriba
+# `weekly_limit: 2` en el bloque nuevo se va a quedar convencido de que se ha
+# puesto un tope de dos sesiones, el fichero va a validar, y no va a pasar
+# absolutamente nada. El silencio, esta vez, cae del lado de sentirse protegido
+# sin estarlo, que es el peor sitio donde puede caer.
 
 
-def test_un_presupuesto_declarado_sin_limite_revienta():
-    from app.engine.signals import BudgetConfigError
+@pytest.mark.parametrize(
+    "muerta",
+    [
+        "weekly_limit",
+        "on_budget_exhausted",
+        "max_intense_rides_per_weekend",
+        "require_green_for_intense",
+    ],
+)
+def test_las_claves_del_presupuesto_muerto_revientan(muerta):
+    from app.engine.signals import IntensityCountConfigError
 
     cyc = dict(CYCLING)
     cyc["recommendation"] = {
         "lookback_days": 1,
-        "intensity_budget": {"week_starts_on": "monday"},
+        "intensity_count": {
+            "enabled": True,
+            "week_starts_on": "monday",
+            muerta: 2,
+        },
     }
-    with pytest.raises(BudgetConfigError, match="weekly_limit"):
-        intensity_budget([], [], LUNES, cyc)
+    with pytest.raises(IntensityCountConfigError, match=muerta):
+        intensity_count([], [], LUNES, cyc)
 
 
-def test_sin_bloque_de_presupuesto_no_se_exige_nada():
-    """No tener presupuesto es una decisión legítima; tenerlo a medias no."""
+def test_el_error_de_clave_muerta_dice_por_donde_se_frena_de_verdad():
+    """Un error que solo prohíbe deja a quien lo lee sin salida.
+
+    Si alguien pone `weekly_limit` es porque quiere frenar por carga acumulada.
+    Eso es una necesidad legítima y tiene sitio: el semáforo. El mensaje de
+    error tiene que llevarle ahí, no limitarse a decirle que no.
+    """
+    from app.engine.signals import IntensityCountConfigError
+
+    cyc = dict(CYCLING)
+    cyc["recommendation"] = {
+        "lookback_days": 1,
+        "intensity_count": {"enabled": True, "week_starts_on": "monday", "weekly_limit": 2},
+    }
+    with pytest.raises(IntensityCountConfigError) as e:
+        intensity_count([], [], LUNES, cyc)
+    texto = str(e.value)
+    assert "semáforo" in texto
+    assert "carga de Garmin" in texto
+
+
+def test_sin_bloque_de_recuento_no_se_exige_nada():
+    """No contar es una decisión legítima; contar a medias no.
+
+    Que el bloque ESTÉ es cosa de `config_loader`, que lo exige en el YAML real.
+    Aquí abajo, con un diccionario cualquiera, la función se limita a devolver
+    un recuento vacío en vez de reventar: es una función de cálculo, no la
+    aduana del fichero.
+    """
     cyc = dict(CYCLING)
     cyc["recommendation"] = {"lookback_days": 1}
-    b = intensity_budget([], [], LUNES, cyc)
-    assert b.used == 0
-
-
-def test_el_limite_sale_del_config_real_y_no_de_un_numero_del_codigo(cfg):
-    """Si alguien vuelve a poner un defecto, este test dice cuál era el precio."""
-    b = intensity_budget([], [], LUNES, cfg.raw["cycling"])
-    assert b.limit == 4, (
-        f"el presupuesto trabaja con {b.limit} y el YAML dice 4. Con 3, medido "
-        "sobre 25 semanas reales, se recortaban 5 sábados que no tocaba recortar."
-    )
+    c = intensity_count([], [], LUNES, cyc)
+    assert c.used == 0

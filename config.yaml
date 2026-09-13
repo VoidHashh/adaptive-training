@@ -1134,10 +1134,20 @@ cycling:
   # ---------------------------------------------------------------------------
   # Pipeline determinista, en este orden:
   #   1. `baseline_by_weekday` da el tipo de partida
-  #   2. se recorta al techo `actions.<semáforo>.bike_max`
-  #   3. `no_consecutive_intense` lo recorta otra vez si AYER hiciste una salida
-  #      clasificada como intensa (lo realmente hecho, no lo recomendado)
-  # El resultado y cada recorte se registran para poder explicarlos en Telegram.
+  #   2. se recorta al techo `actions.<semáforo>.bike_max`   <- ÚNICO RECORTE
+  #   3. se añaden hechos de contexto que NO recortan: la intensa de ayer, las
+  #      intensas ya hechas este fin de semana y el recuento de la semana
+  # El resultado, el recorte y las notas se registran y salen en Telegram.
+  #
+  # QUIÉN DECIDE
+  # ------------
+  # El sistema no decide lo que se puede hacer: lo decide el usuario. El
+  # sistema registra lo hecho y ajusta el resto. Por eso solo queda un recorte,
+  # y es el del semáforo, que sale de HRV, sueño, pulso de reposo, carga de
+  # Garmin y el check-in. Si una semana de siete días de bici deja el cuerpo
+  # roto, eso se ve ahí y el semáforo da ámbar por el camino honesto. Frenar
+  # porque una cuenta diga que se ha gastado un cupo es la cuenta decidiendo en
+  # lugar del cuerpo, y se ha quitado entero.
   recommendation:
     enabled: true
     recommend_on: [saturday, sunday]
@@ -1146,66 +1156,45 @@ cycling:
       saturday: intensa
       sunday: media
 
-    no_consecutive_intense: true
-    after_intense_downgrade_to: suave
-    # También cuenta una salida intensa del viernes de cara al sábado.
+    # Ventana de `yesterday_ride_level`, que hoy solo alimenta una NOTA («ayer
+    # hiciste una salida intensa»). Con 1, también cuenta el viernes de cara al
+    # sábado. `no_consecutive_intense` y `after_intense_downgrade_to` vivían
+    # aquí y recortaban; se han borrado, no desactivado.
     lookback_days: 1
 
-    # --- Presupuesto semanal de sesiones intensas --------------------------
-    # Cuenta como sesión intensa cualquier HIIT EJECUTADO (no solo programado)
-    # y cualquier salida de bici clasificada como INTENSA.
+    # --- Recuento semanal de sesiones intensas -----------------------------
+    # ESTO YA NO ES UN PRESUPUESTO. Cuenta y se enseña; no limita nada.
     #
-    # Por qué 4 y no 3. El reparto que describe la regla es «hasta 2 HIIT
-    # (lunes día 1 y jueves día 2) + 1 salida intensa el fin de semana», y para
-    # eso el número 3 parecía justo. No lo era: los dos HIIT caen ANTES del fin
-    # de semana, así que el sábado llegaba con 2/3 y cualquier otra intensidad
-    # de entre semana lo dejaba en 3/3 y recortaba la salida. Medido sobre 25
-    # semanas reales (58 salidas, 2026-03-07 → 2026-09-06), hubo una salida
-    # intensa entre lunes y viernes en 5 de ellas: uno de cada cinco fines de
-    # semana perdía la salida fuerte no por acumulación, sino porque el
-    # presupuesto no tenía sitio para el reparto que él mismo describe.
+    # Cuenta como intensa cualquier HIIT EJECUTADO (no solo programado) y
+    # cualquier salida clasificada como INTENSA. El número sale en el mensaje
+    # todos los días y se guarda en `inputs_snapshot_json` para las métricas.
     #
-    # Con 4 el reparto cabe entero: 2 HIIT + 1 intensa suelta + 1 del fin de
-    # semana. Lo que se pierde es que el presupuesto deja de ser el freno
-    # habitual del sábado y pasa a ser un tope de seguridad: en el histórico
-    # solo 3 de 25 semanas llegaron a 2 salidas intensas, así que 4/4 se
-    # alcanzará pocas veces. El sábado sigue frenado por otras tres cosas que
-    # no dependen de este número -semáforo verde obligatorio, máximo una
-    # intensa por fin de semana, y nunca dos intensas seguidas-, y esas son las
-    # que de verdad sostienen el fin de semana.
+    # POR QUÉ SE FUE EL LÍMITE, Y CON ÉL EL BLOQUE ENTERO
+    # ---------------------------------------------------
+    # Se llamaba `intensity_budget`, tenía `weekly_limit: 4`, y con eso bajaba
+    # la salida del sábado de intensa a suave. Medido sobre las 25 semanas
+    # reales del histórico: con el límite en 3 recortaba 5 sábados de 25; al
+    # subirlo a 4, cero. O sea que el número no estaba calibrado, estaba
+    # buscando un sitio donde no molestar, que es la señal de que el freno
+    # sobraba y no de que hiciera falta otro número.
     #
-    # Efecto lateral bueno: con el suelo de 2 HIIT, el límite de 3 hacía que una
-    # sola salida sin clasificar disparase el recorte por duda (2+1 >= 3). Con 4
-    # hacen falta dos... si no hubo ninguna intensa entre semana. Si la hubo,
-    # sigue bastando una: 2 HIIT + 1 intensa + 1 duda = 4. O sea que la duda
-    # escala con lo demás en vez de dispararse sola, que es lo que se quería.
-    # Hoy no cambia nada -0 de 58 salidas sin clasificar- pero deja de ser un
-    # cable pelado. Medido en `scripts/sensibilidad_sin_clasificar.py`.
+    # Con él se han ido `on_budget_exhausted`, `max_intense_rides_per_weekend`
+    # y `require_green_for_intense`. Las cuatro claves están ahora en una lista
+    # negra: si alguna reaparece en este fichero, el sistema no arranca. No es
+    # celo: escribir `weekly_limit: 2` creyendo que se pone un tope y que no
+    # pase nada es exactamente el fallo que este proyecto lleva meses pagando.
     #
-    # Lo que hay que saber del otro lado, porque el precio de subir el techo es
-    # real: con 4, NINGUNA de las 25 semanas del histórico llega a agotarlo
-    # antes del sábado, y solo 3 lo agotan contando la semana entera. Como freno
-    # del sábado el presupuesto ha quedado en cero; era 5 de 25. Eso es lo que
-    # significa «tope de seguridad» y hay que leerlo así: el fin de semana lo
-    # sostienen los otros tres frenos de aquí abajo, no este número. Si alguna
-    # vez hubiera que volver a frenar por acumulación, el sitio es
-    # `max_intense_rides_per_weekend`, no bajar esto otra vez a 3.
-    intensity_budget:
+    # Si alguna vez hace falta frenar por carga acumulada, el sitio es
+    # `thresholds.amber.carga_acumulada`, que compara la carga de Garmin de 3
+    # días contra el percentil 90 del propio histórico. Eso es el cuerpo
+    # hablando. Un cupo semanal es una hoja de cálculo hablando.
+    intensity_count:
       enabled: true
-      weekly_limit: 4
       week_starts_on: monday
       counts_as_intense:
         hiit_executed: true       # HIIT realmente hecho, leído de Hevy
         ride_intensa: true        # salida clasificada INTENSA
         strength_session: false   # la fuerza normal no cuenta
-
-      # Al llegar al fin de semana:
-      #   - si ya se alcanzó el límite -> las dos salidas se recomiendan SUAVES
-      #   - si queda margen -> se puede recomendar UNA intensa, nunca las dos,
-      #     y solo si el semáforo de ese día está en VERDE
-      max_intense_rides_per_weekend: 1
-      require_green_for_intense: true
-      on_budget_exhausted: suave
 
     # Textos y duraciones orientativas que van al mensaje de Telegram.
     types:

@@ -109,7 +109,20 @@ def replay(cfg, metricas, salidas, desde: date, hasta: date) -> list[dict]:
     dias = []
     d = desde
     while d <= hasta:
-        sig = build_signals(cfg, d, metrics=metricas, rides=salidas, checkin=None)
+        # `sessions` y `checkin_history` van vacíos A PROPÓSITO y por eso se
+        # escriben: en el pasado que se está releyendo no hay ni sesiones de
+        # fuerza registradas ni check-ins, así que la lista vacía es el dato
+        # verdadero y no un hueco. Desde que los dos dejaron de tener valor por
+        # defecto, esto es una afirmación de quien llama en vez de un silencio.
+        sig = build_signals(
+            cfg,
+            d,
+            metrics=metricas,
+            rides=salidas,
+            sessions=[],
+            checkin_history=[],
+            checkin=None,
+        )
         luz = evaluate_light(cfg, sig)
         dias.append(
             {

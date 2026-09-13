@@ -370,6 +370,39 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     if decision.bike is not None and decision.bike.applies:
         L.append("")
         L.append(f"🚴 {escapar_html(decision.bike.text())}")
+        # Los hechos de contexto van con viñeta y DEBAJO, separados del nivel
+        # recomendado. Pegados a la misma línea se leerían como el motivo del
+        # nivel, y no lo son: ninguno ha entrado en la decisión. Es la misma
+        # distinción que hay en el código entre `downgrades` y `notas`, y tiene
+        # que sobrevivir hasta la pantalla del móvil o no sirve de nada.
+        for nota in decision.bike.texto_notas():
+            L.append(f"   · {escapar_html(nota)}")
+
+    # --- lo que llevas hecho esta semana ------------------------------------
+    # TODOS los días, no solo los de bici, y sin denominador.
+    #
+    # Este bloque es lo que queda del presupuesto semanal de intensas. Antes el
+    # número solo aparecía cuando además servía para recortar la salida del
+    # sábado, así que de lunes a viernes el sistema lo sabía y no lo decía. Un
+    # dato que solo se enseña cuando te frena no es información, es la
+    # justificación del frenazo; y justamente ahora que no frena nada es cuando
+    # tiene que estar todos los días.
+    #
+    # Se salta los fines de semana porque ahí ya sale como nota de la bici y
+    # repetirlo ocho palabras más abajo solo gasta pantalla.
+    #
+    # Se lee con punto y no con `getattr(..., None)` a propósito. `signals` es
+    # un campo obligatorio de `DayDecision` e `intense_count` es un campo de
+    # `Signals`: si alguno de los dos deja de existir, eso es un fallo y tiene
+    # que sonar. Un `getattr` con defecto aquí convertiría el día que se rompa
+    # la señal en un mensaje sin la línea, o sea exactamente lo que este bloque
+    # existe para que no pase. El None legítimo -una ruta que no construye
+    # señales- sigue teniendo su sitio: es el valor por defecto del campo.
+    conteo = decision.signals.intense_count
+    ya_en_la_bici = decision.bike is not None and decision.bike.applies
+    if conteo is not None and not ya_en_la_bici:
+        L.append("")
+        L.append(f"🔥 {escapar_html(conteo.linea().capitalize())}")
 
     # --- lo que no se ve mirando un solo día --------------------------------
     # FUERA de `include_reasoning`, y es el bloque donde más claro está por qué.
