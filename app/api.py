@@ -238,9 +238,28 @@ def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
 
     Devuelve `secrets_missing` en vez de esconderlo: un sistema arrancado a
     medias que contesta "ok" es peor que uno caído, porque nadie va a mirar.
+
+    Y `status` SE CALCULA DE LOS BLOQUES, NO SE ESCRIBE. Estaba puesto a mano a
+    `"ok"` y no lo movía nada: el 13 de septiembre este endpoint devolvía a la
+    vez `"status": "ok"` y un `config_file` diciendo que el `config.yaml` del
+    disco ni siquiera se podía cargar con el código que estaba corriendo. Las
+    dos cosas eran ciertas y la primera tapaba a la segunda, porque `status` es
+    lo que se mira primero y a veces lo único que se mira.
+
+    Es el mismo fallo que este propio bloque vino a denunciar -«el valor que se
+    lee no es el valor que se usa»- cometido por el que avisa. Un resumen que no
+    puede salir mal no resume: tranquiliza.
+
+    NO ROMPE EL HEALTHCHECK DE DOCKER, y conviene saber por qué antes de tocar
+    esto. Los dos compose comprueban `urlopen(...).status == 200`, o sea el
+    código HTTP, no este campo. Así que un `status: "revisar"` se ve desde el
+    móvil sin marcar el contenedor como enfermo ni disparar reinicios. Es
+    deliberado: un contenedor con el config desincronizado sigue decidiendo bien
+    con el que tiene cargado, y reiniciarlo por eso cambiaría una degradación
+    avisada por una avería total -precisamente porque el código viejo rechaza el
+    YAML nuevo, así que no volvería a levantarse-.
     """
-    return {
-        "status": "ok",
+    salida = {
         "config_hash": cfg.hash,
         "timezone": cfg.timezone,
         "secrets_missing": settings.missing_secrets(),
@@ -276,6 +295,64 @@ def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
         # levantó con el compose equivocado- y no cuesta nada mirarlo.
         "auth_front": settings.auth_front or "sin_declarar",
     }
+    problemas = _problemas_de_salud(salida)
+    # El orden importa: `status` primero, y los problemas justo detrás, para que
+    # quien abra esto en el móvil lea el veredicto y la razón sin desplazarse.
+    return {"status": "revisar" if problemas else "ok",
+            "problemas": problemas, **salida}
+
+
+def _problemas_de_salud(s: dict[str, Any]) -> list[str]:
+    """Una frase por cosa que hay que mirar, leyendo los bloques ya calculados.
+
+    NO VUELVE A PREGUNTAR NADA. Lee el diccionario que se acaba de construir, y
+    eso es a propósito: si esto hiciera sus propias comprobaciones podrían decir
+    una cosa distinta de la que devuelve el endpoint, y entonces habría dos
+    verdades sobre el mismo sistema en la misma respuesta.
+
+    LO QUE CUENTA COMO PROBLEMA es lo que hace que el sistema decida mal o no
+    decida, no lo que resulta incómodo. Un `dry_run` activo no entra: es un modo
+    que se elige. Un `auth_front` sin declarar tampoco: dice cómo se levantó
+    esto, no si funciona.
+    """
+    p: list[str] = []
+
+    faltan = s.get("secrets_missing") or []
+    if faltan:
+        # Lo más traicionero de la lista, porque el check-in se envía y se
+        # guarda igual: sin la clave de Hevy no se escribe la rutina y sin la de
+        # Telegram no llega el mensaje, y desde el móvil eso es idéntico a un
+        # día de descanso.
+        p.append("faltan credenciales: " + ", ".join(faltan))
+
+    plan = s.get("scheduler") or {}
+    if plan.get("error"):
+        p.append(f"el planificador da error: {plan['error']}")
+    elif not plan.get("running"):
+        p.append("el planificador NO está corriendo: nadie va a decidir por la mañana")
+    elif not plan.get("jobs"):
+        # Un planificador vivo con cero trabajos falla exactamente igual que uno
+        # parado, y desde fuera se ve más sano.
+        p.append("el planificador está corriendo pero sin ningún trabajo puesto")
+
+    reloj = s.get("clock") or {}
+    if reloj.get("error"):
+        p.append(f"el reloj da error: {reloj['error']}")
+    elif reloj.get("matches") is False:
+        p.append("el reloj del proceso y el `timezone` del config no deciden "
+                 "el mismo día")
+
+    conf = s.get("config_file") or {}
+    if conf.get("in_sync") is False:
+        p.append(conf.get("error") or "el config.yaml del disco no es el cargado")
+
+    esc = s.get("writes") or {}
+    if esc.get("pending_write"):
+        # Una escritura marcada y sin cerrar significa que se empezó a tocar
+        # Hevy y no consta que terminara. Hay una copia previa esperando.
+        p.append(f"hay una escritura a medias sin cerrar: {esc['pending_write']}")
+
+    return p
 
 
 def _estado_escrituras(cfg) -> dict[str, Any]:

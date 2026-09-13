@@ -441,6 +441,46 @@ async function comprobarSalud() {
     });
   }
 
+  // El config que está decidiendo contra el que hay escrito en el disco.
+  //
+  // Faltaba, y es el que se cobró la pieza: el 13 de septiembre el contenedor
+  // llevaba 30 horas decidiendo con un `config.yaml` que ya no existía en el
+  // disco -editado esa misma tarde-, y ademas su código viejo rechazaba el
+  // nuevo de plano. El servidor lo sabía y lo decía en `/api/health`; esta
+  // pantalla no lo miraba, así que desde el móvil se veía un sistema perfecto.
+  //
+  // No dice el comando de recrear, y no es pereza: este mismo JS corre contra
+  // dos despliegues con compose distintos, y dictar el comando del otro es peor
+  // que no dictar ninguno -ya pasó una vez, y recreó el contenedor apuntando a
+  // otro directorio de datos-.
+  const conf = s.config_file || {};
+  if (conf.in_sync === false) {
+    avisos.push({
+      clase: "mal",
+      titulo: "El config del disco NO es el que está decidiendo.",
+      cuerpo: conf.error
+        ? `El servidor dice: ${conf.error}`
+        : "Lo que hayas cambiado en config.yaml no se está aplicando. Hace " +
+          "falta recrear el contenedor con el mismo compose con el que está " +
+          "levantado.",
+    });
+  }
+
+  // Una escritura empezada en Hevy y sin cerrar. Hay una copia previa guardada
+  // esperando, y hasta que no se mire nadie sabe si la rutina de allí es la que
+  // debería estar.
+  const esc = s.writes || {};
+  if (esc.pending_write) {
+    avisos.push({
+      clase: "mal",
+      titulo: "Quedó una escritura a medias en Hevy.",
+      cuerpo:
+        `Se empezó a reescribir una rutina y no consta que terminara ` +
+        `(${esc.pending_write}). Conviene mirar la rutina en Hevy antes de ` +
+        `fiarse de ella.`,
+    });
+  }
+
   if (s.dry_run) {
     avisos.push({
       clase: "ojo",

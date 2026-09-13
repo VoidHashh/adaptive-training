@@ -931,3 +931,59 @@ def test_el_informe_de_una_prueba_trae_siempre_las_mismas_claves(cliente):
     assert {"servicio", "ok", "resumen", "pasos"} <= set(d)
     for p in d["pasos"]:
         assert {"nombre", "ok", "detalle", "error"} == set(p)
+
+
+def test_la_pantalla_avisa_de_todo_lo_que_el_servidor_sabe_marcar():
+    """Si el servidor puede ver un problema, la pantalla tiene que pintarlo.
+
+    LA AVERÍA QUE LO TRAJO. El 13 de septiembre `/api/health` decía, con todas
+    las letras y en su propio bloque, que el `config.yaml` cargado no era el del
+    disco y que el del disco ni se podía leer. La pantalla del móvil no miraba
+    ese bloque, así que pintaba un sistema impecable durante treinta horas. El
+    dato estaba servido y publicado; lo que faltaba era que alguien lo leyera.
+
+    Esto es la regla de las opciones muertas mirada del otro lado: allí se
+    prohíbe un botón sin ruta detrás, aquí se prohíbe un aviso calculado en el
+    servidor que no llega a ninguna pantalla. Las dos formas terminan igual -en
+    trabajo que no sirve para nada- pero ésta es peor, porque la primera se nota
+    al pulsar y ésta sólo se nota el día que hacía falta.
+
+    Se cruzan los BLOQUES, no las frases: el texto de cada aviso es cosa de la
+    pantalla y tiene que poder reescribirse sin romper un test.
+    """
+    from app.api import _problemas_de_salud
+
+    # Un estado en el que TODO está mal a la vez. Cada bloque lleva su marca
+    # para poder saber cuál de ellos generó cada frase.
+    todo_mal = {
+        "secrets_missing": ["HEVY_API_KEY"],
+        "dry_run": False,
+        "writes": {"pending_write": "rutina_dia_2"},
+        "scheduler": {"running": False, "jobs": {}, "error": None},
+        "clock": {"matches": False, "error": None},
+        "config_file": {"in_sync": False, "error": "x"},
+    }
+    # Los bloques que el servidor sabe marcar, cada uno con la expresión con la
+    # que la pantalla tiene que estar leyéndolo.
+    bloques = {
+        "secrets_missing": "secrets_missing",
+        "writes": "pending_write",
+        "scheduler": "scheduler",
+        "clock": "clock",
+        "config_file": "config_file",
+    }
+
+    problemas = _problemas_de_salud(todo_mal)
+    assert len(problemas) == len(bloques), (
+        "el servidor marca un número de problemas distinto del de bloques que "
+        f"este test conoce ({problemas}): si se ha añadido uno nuevo, hay que "
+        "añadirlo también a la pantalla y a esta lista"
+    )
+
+    codigo = _sin_comentarios((ESTATICOS / "app.js").read_text(encoding="utf-8"))
+    faltan = [b for b, expr in bloques.items() if expr not in codigo]
+    assert not faltan, (
+        f"el servidor sabe avisar de {faltan} y `comprobarSalud()` en app.js no "
+        "lo mira: el problema se calcula, se sirve por /api/health y no llega "
+        "nunca al móvil, que es el único sitio donde se lee"
+    )

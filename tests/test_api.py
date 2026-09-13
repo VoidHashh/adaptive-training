@@ -453,17 +453,146 @@ def test_el_aviso_distingue_lo_deliberado_de_lo_no_pensado(caplog, monkeypatch):
 
 def test_la_salud_declara_lo_que_falta(cliente):
     """Un sistema arrancado a medias que contesta "ok" es peor que uno caído,
-    porque nadie va a mirar."""
+    porque nadie va a mirar.
+
+    ESTE TEST AFIRMABA `status == "ok"` Y ESO NO PROBABA NADA. El campo estaba
+    escrito a mano con esa constante, así que la única forma de que la
+    aserción fallara era que alguien cambiara la constante. Un test que no
+    puede fallar por la razón que dice vigilar es exactamente lo que su propio
+    docstring denuncia: tranquiliza sin mirar.
+
+    Lo que se comprueba ahora es que el veredicto y el detalle no puedan
+    contradecirse, que es la avería de verdad: el 13 de septiembre esto
+    devolvía `"ok"` a la vez que un `config_file` diciendo que el YAML del
+    disco no se podía ni cargar.
+    """
     r = cliente.get("/api/health")
     assert r.status_code == 200
     cuerpo = r.json()
-    assert cuerpo["status"] == "ok"
+
+    assert cuerpo["status"] in ("ok", "revisar")
+    assert isinstance(cuerpo["problemas"], list)
+    # La única relación que no puede romperse nunca, en los dos sentidos.
+    assert (cuerpo["status"] == "ok") is (cuerpo["problemas"] == []), (
+        "el veredicto y la lista de problemas se contradicen: uno de los dos "
+        "está mintiendo y no se sabe cuál"
+    )
+
     assert "secrets_missing" in cuerpo, (
         "sin esto, un despliegue sin claves parece sano hasta que no llega el "
         "mensaje de la mañana"
     )
     assert cuerpo["config_hash"]
     assert "dry_run" in cuerpo
+
+
+def test_el_config_desincronizado_no_puede_salir_como_sano(cliente, monkeypatch):
+    """La avería concreta que trajo todo esto.
+
+    El contenedor del 13 de septiembre servía un `config.yaml` que ya no era el
+    del disco, y encima su validador rechazaba el del disco de plano. Los dos
+    hechos estaban en la respuesta, en `config_file`, y aun así arriba ponía
+    `"ok"`. Quien mira la salud mira `status`; el bloque de abajo se lee el día
+    que ya se sospecha algo, o sea demasiado tarde.
+    """
+    from app import api as mod
+
+    monkeypatch.setattr(mod, "_estado_del_config", lambda cfg: {
+        "path": "/app/config.yaml",
+        "loaded_hash": "8a0e1e304324a6be",
+        "file_hash": None,
+        "in_sync": False,
+        "error": "el config.yaml del disco no se puede cargar: sección desconocida",
+    })
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["status"] == "revisar"
+    assert any("config.yaml" in p for p in cuerpo["problemas"]), (
+        f"el problema no se nombra arriba: {cuerpo['problemas']}"
+    )
+
+
+def test_las_claves_que_faltan_se_nombran_en_el_veredicto(cliente, monkeypatch):
+    """Faltar una clave no se parece a una avería desde el móvil, y por eso.
+
+    El check-in se envía, se guarda y contesta que todo bien. Lo que no pasa es
+    que se escriba la rutina en Hevy ni que llegue el mensaje. Visto desde la
+    pantalla, un día sin claves es idéntico a un día de descanso.
+    """
+    from app.settings import settings as s
+
+    monkeypatch.setattr(type(s), "missing_secrets", lambda self: ["HEVY_API_KEY"])
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["status"] == "revisar"
+    assert any("HEVY_API_KEY" in p for p in cuerpo["problemas"])
+
+
+def test_un_planificador_vivo_y_sin_trabajos_tampoco_es_sano(cliente, monkeypatch):
+    """Es el que mejor se disfraza: corriendo, sin error, y sin decidir nunca.
+
+    `running: true` es la comprobación que se hace de memoria, y no basta. Un
+    planificador arrancado con cero trabajos sirve la PWA, contesta 200 y deja
+    pasar la mañana entera sin tocar nada.
+    """
+    from app import api as mod
+
+    monkeypatch.setattr(mod, "_estado_planificador",
+                        lambda req: {"running": True, "jobs": {}, "error": None})
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["status"] == "revisar"
+    assert any("sin ningún trabajo" in p for p in cuerpo["problemas"])
+
+
+def test_cuando_el_planificador_dice_por_que_el_veredicto_lo_repite(cliente, monkeypatch):
+    """Que haya un problema no basta: hace falta que diga cuál.
+
+    LO ENCONTRÓ UNA MUTACIÓN QUE SE ESCAPÓ. Quitando la rama que lee
+    `scheduler.error` los tests seguían en verde, porque el recuento de
+    problemas no cambiaba: el caso caía en la rama de al lado y salía «el
+    planificador NO está corriendo». Cierto, pero inútil. `desactivado por
+    SCHEDULER_ENABLED` se arregla tocando una variable de entorno y `no arrancó`
+    se arregla mirando el log del arranque; son dos mañanas distintas buscando
+    en dos sitios distintos, y la frase genérica no distingue cuál.
+
+    O sea que contar problemas no es comprobar que sirvan. Aquí se comprueba que
+    la razón que el servidor YA sabe llega hasta arriba sin perderse.
+    """
+    from app import api as mod
+
+    monkeypatch.setattr(mod, "_estado_planificador", lambda req: {
+        "running": False, "jobs": {},
+        "error": "desactivado por SCHEDULER_ENABLED",
+    })
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["status"] == "revisar"
+    assert any("SCHEDULER_ENABLED" in p for p in cuerpo["problemas"]), (
+        "el servidor sabe por qué no hay planificador y el veredicto se queda "
+        f"en una frase genérica: {cuerpo['problemas']}"
+    )
+
+
+def test_lo_que_es_una_eleccion_y_no_una_averia_no_ensucia_el_veredicto(monkeypatch):
+    """`dry_run` y `auth_front` no cuentan, y el criterio importa.
+
+    Si el veredicto se pusiera en rojo por cosas que se eligen a propósito,
+    estaría en rojo siempre, y un aviso que está siempre encendido deja de
+    leerse justo antes del día en que hacía falta.
+    """
+    from app.api import _problemas_de_salud
+
+    sano = {
+        "secrets_missing": [],
+        "dry_run": True,
+        "auth_front": "sin_declarar",
+        "writes": {"pending_write": None},
+        "scheduler": {"running": True, "jobs": {"reconcile": "x"}, "error": None},
+        "clock": {"matches": True, "error": None},
+        "config_file": {"in_sync": True},
+    }
+    assert _problemas_de_salud(sano) == []
 
 
 # ---------------------------------------------------------------------------
