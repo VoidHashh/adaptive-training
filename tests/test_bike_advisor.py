@@ -162,3 +162,112 @@ def test_sin_salidas_sin_clasificar_la_intensa_del_sabado_sigue_saliendo(cfg):
     rec = recommend_bike(cfg, _con_presupuesto(SABADO, used=1, unknown=0), "green")
     assert rec.level == "intensa"
     assert not rec.downgrades
+
+
+# ---------------------------------------------------------------------------
+# El reparto que describe la regla tiene que caber en el número
+# ---------------------------------------------------------------------------
+#
+# Los tests de arriba fijan el MECANISMO y se fabrican su propio `limit=3`, así
+# que ninguno mira el `weekly_limit` de verdad. El número del YAML se quedaba
+# sin nadie que lo defendiera, y no es un número cualquiera: describe un reparto
+# concreto -hasta 2 HIIT entre semana, 1 intensa suelta y 1 salida fuerte el fin
+# de semana- que con el límite en 3 no cabía. Los dos HIIT caen lunes y jueves,
+# o sea ANTES del fin de semana, así que el sábado llegaba a 2/3 y cualquier
+# intensidad de entre semana lo dejaba sin salida. Medido sobre 25 semanas
+# reales, uno de cada cinco fines de semana.
+#
+# Estos tests leen el config del repositorio a propósito. Volver a 3 los rompe,
+# que es justo lo que tienen que hacer.
+
+
+def _presupuesto_real(
+    cfg, day, *, hiit: int, intensas_entre_semana: int, sabado_intenso: bool = False
+):
+    """Gasta el presupuesto con el `weekly_limit` DE VERDAD, no con uno de test."""
+    from datetime import timedelta as _td
+
+    from app.engine.signals import (
+        ClassifiedRide,
+        Ride,
+        StrengthSession,
+        intensity_budget,
+    )
+
+    lunes = day - _td(days=day.weekday())
+
+    def _salida(d):
+        return ClassifiedRide(
+            ride=Ride(date=d, duration_s=7200),
+            level="intensa",
+            source="test",
+            load=100.0,
+            load_estimated=False,
+        )
+
+    sesiones = [
+        StrengthSession(date=lunes + _td(days=d), routine_key=k, is_hiit=True)
+        for d, k in list(enumerate(("hiit_dia_1", "hiit_dia_2")))[:hiit]
+    ]
+    rides = [_salida(lunes + _td(days=1 + i)) for i in range(intensas_entre_semana)]
+    if sabado_intenso:
+        rides.append(_salida(lunes + _td(days=5)))
+    s = Signals(day=day)
+    s.rides = rides
+    s.budget = intensity_budget(rides, sesiones, day, cfg.raw["cycling"])
+    return s
+
+
+def test_los_dos_hiit_de_la_semana_no_se_comen_la_salida_del_sabado(cfg):
+    """Lo que motivó subir el límite: hacer el plan entero no puede castigarte.
+
+    Dos HIIT hechos -exactamente lo que el plan pide- más una salida intensa
+    suelta entre semana. Con el límite en 3 esto daba 3/3 y el sábado salía
+    'suave': el sistema recortaba la salida por haber cumplido.
+    """
+    sig = _presupuesto_real(cfg, SABADO, hiit=2, intensas_entre_semana=1)
+    assert not sig.budget.exhausted, (
+        f"{sig.budget.used}/{sig.budget.limit}: el reparto que describe la "
+        "regla no cabe en el presupuesto"
+    )
+    rec = recommend_bike(cfg, sig, "green")
+    assert rec.level == "intensa", [d[2] for d in rec.downgrades]
+
+
+def test_el_presupuesto_sigue_frenando_cuando_de_verdad_hay_de_mas(cfg):
+    """Subir el límite no puede equivaler a quitar el freno.
+
+    Dos HIIT y DOS intensas entre semana ya son cuatro sesiones fuertes antes
+    del sábado. Ahí el presupuesto tiene que cortar, o no es un presupuesto.
+    """
+    sig = _presupuesto_real(cfg, SABADO, hiit=2, intensas_entre_semana=2)
+    assert sig.budget.exhausted, f"{sig.budget.used}/{sig.budget.limit}"
+    rec = recommend_bike(cfg, sig, "green")
+    assert rec.level == "suave"
+    assert "agotado" in rec.downgrades[-1][2]
+
+
+def test_el_domingo_no_depende_del_presupuesto_para_frenar(cfg):
+    """El freno del domingo no puede ser el número que acabamos de subir.
+
+    Con el límite en 3 el domingo posterior a un sábado intenso salía agotado y
+    eso tapaba que ya había otros dos frenos puestos. Al subirlo a 4 el
+    presupuesto deja de cortar ahí -3/4- y queda a la vista quién sostiene de
+    verdad el domingo. Con una hernia L4-L5 eso no puede quedar sin comprobar.
+
+    El sábado intenso tiene que estar en las salidas y no solo en
+    `yesterday_ride_level`: sin él el presupuesto se queda en 2/4, nunca llega a
+    estar cerca de agotarse y el test aprobaría sin haber probado nada.
+    """
+    sig = _presupuesto_real(
+        cfg, DOMINGO, hiit=2, intensas_entre_semana=0, sabado_intenso=True
+    )
+    sig.values["yesterday_ride_level"] = "intensa"
+    assert not sig.budget.exhausted, (
+        f"{sig.budget.used}/{sig.budget.limit}: si el presupuesto ya corta "
+        "aquí, este test no comprueba que los otros frenos existan"
+    )
+
+    rec = recommend_bike(cfg, sig, "green")
+    assert rec.level == "suave"
+    assert "intensa" in rec.downgrades[-1][2]

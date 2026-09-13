@@ -1155,14 +1155,32 @@ cycling:
     # Cuenta como sesión intensa cualquier HIIT EJECUTADO (no solo programado)
     # y cualquier salida de bici clasificada como INTENSA.
     #
-    # Nota sobre el ajuste del clasificador: con INTENSA en >30% de Z4-5 solo
-    # tuviste 4 salidas intensas en 90 días. El presupuesto de 3 lo consumirán
-    # sobre todo los HIIT (hasta 2 por semana, día 1 y día 2), dejando hueco
-    # para 1 salida intensa el fin de semana. Que es justo el reparto que
-    # describe la regla.
+    # Por qué 4 y no 3. El reparto que describe la regla es «hasta 2 HIIT
+    # (lunes día 1 y jueves día 2) + 1 salida intensa el fin de semana», y para
+    # eso el número 3 parecía justo. No lo era: los dos HIIT caen ANTES del fin
+    # de semana, así que el sábado llegaba con 2/3 y cualquier otra intensidad
+    # de entre semana lo dejaba en 3/3 y recortaba la salida. Medido sobre 25
+    # semanas reales (58 salidas, 2026-03-07 → 2026-09-06), hubo una salida
+    # intensa entre lunes y viernes en 5 de ellas: uno de cada cinco fines de
+    # semana perdía la salida fuerte no por acumulación, sino porque el
+    # presupuesto no tenía sitio para el reparto que él mismo describe.
+    #
+    # Con 4 el reparto cabe entero: 2 HIIT + 1 intensa suelta + 1 del fin de
+    # semana. Lo que se pierde es que el presupuesto deja de ser el freno
+    # habitual del sábado y pasa a ser un tope de seguridad: en el histórico
+    # solo 3 de 25 semanas llegaron a 2 salidas intensas, así que 4/4 se
+    # alcanzará pocas veces. El sábado sigue frenado por otras tres cosas que
+    # no dependen de este número -semáforo verde obligatorio, máximo una
+    # intensa por fin de semana, y nunca dos intensas seguidas-, y esas son las
+    # que de verdad sostienen el fin de semana.
+    #
+    # Efecto lateral bueno: con el suelo de 2 HIIT, el límite de 3 hacía que una
+    # sola salida sin clasificar disparase el recorte por duda (2+1 >= 3). Con 4
+    # hacen falta dos. Hoy no cambia nada -0 de 58 salidas sin clasificar- pero
+    # deja de ser un cable pelado.
     intensity_budget:
       enabled: true
-      weekly_limit: 3
+      weekly_limit: 4
       week_starts_on: monday
       counts_as_intense:
         hiit_executed: true       # HIIT realmente hecho, leído de Hevy
