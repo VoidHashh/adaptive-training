@@ -63,6 +63,40 @@
   <p class="cargando" id="cargando">Cargando…</p>
 
   <section id="resultado" hidden></section>
+
+  <!--
+    Los tres cables, comprobables a mano.
+
+    Van AL FINAL y plegados a propósito. Lo que se hace todos los días es
+    rellenar el formulario; esto se toca el día que algo huele mal, o la víspera
+    de un día que importa. Ponerlos arriba convertiría la pantalla de todos los
+    días en un panel de mantenimiento.
+
+    El de Telegram manda un mensaje de VERDAD, y por eso lo dice el botón antes
+    de pulsarlo. Un "probar" que no avisa de que tiene efecto es el tipo de
+    botón que se pulsa dos veces por curiosidad.
+  -->
+  <section id="comprobaciones" class="comprobaciones">
+    <details>
+      <summary>Comprobar las conexiones</summary>
+      <p class="nota">
+        Sirven para el día que algo no llega. Garmin limita los intentos de
+        entrada: si dice «login nuevo», conviene no insistir seguido.
+      </p>
+      <div class="botones-prueba">
+        <button type="button" data-prueba="telegram">
+          Mandarme un Telegram de prueba
+        </button>
+        <button type="button" data-prueba="hevy">
+          Comprobar Hevy (solo lee)
+        </button>
+        <button type="button" data-prueba="garmin">
+          Comprobar Garmin
+        </button>
+      </div>
+      <div id="resultado-prueba" hidden></div>
+    </details>
+  </section>
 </main>
 
 <!--

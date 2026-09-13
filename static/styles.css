@@ -53,8 +53,67 @@ body {
 .aviso.tenue { color: var(--tenue); }
 .aviso.ojo { border-color: var(--ambar); color: #f3d9a4; }
 .aviso.mal { border-color: var(--rojo); color: #f5c2c0; }
+.aviso.bien { border-color: var(--verde); color: #bfe6cd; }
 .aviso strong { display: block; margin-bottom: 0.2rem; }
 .aviso ul { margin: 0.35rem 0 0; padding-left: 1.1rem; }
+
+/* --- comprobaciones de las conexiones ----------------------------------- */
+/* Plegadas y al final: se tocan el día que algo huele mal, no todos los días.
+   El color NO es lo único que distingue los estados -hay una marca ✓ ✗ ·
+   delante-, porque un semáforo que solo es color deja fuera a quien no
+   distingue el rojo del verde y se lee fatal con sol en la pantalla. */
+
+.comprobaciones { margin-top: 2rem; }
+.comprobaciones summary {
+  cursor: pointer;
+  color: var(--tenue);
+  padding: 0.5rem 0;
+}
+.comprobaciones .nota {
+  color: var(--tenue);
+  font-size: 0.88rem;
+  margin: 0.2rem 0 0.8rem;
+}
+.botones-prueba {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.botones-prueba button {
+  flex: 1 1 auto;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.botones-prueba button:disabled { opacity: 0.5; cursor: default; }
+
+#resultado-prueba { margin-top: 0.9rem; }
+#resultado-prueba .pasos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.9rem;
+}
+#resultado-prueba .pasos li {
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--borde);
+}
+#resultado-prueba .marca { font-weight: 700; }
+#resultado-prueba .bien .marca { color: var(--verde); }
+#resultado-prueba .mal .marca { color: var(--rojo); }
+/* "No se intentó" va en gris y no en rojo: es una consecuencia, no una avería. */
+#resultado-prueba .sin-hacer { color: var(--tenue); }
+#resultado-prueba code {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--tenue);
+  font-size: 0.82rem;
+  word-break: break-word;
+}
 
 /* --- deslizadores ------------------------------------------------------- */
 

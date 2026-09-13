@@ -868,3 +868,66 @@ def test_no_hay_dos_copias_del_escape_de_html():
         f"`escapar` está definida en {definiciones}; tiene que estar solo en "
         f"comun.js"
     )
+
+
+# ---------------------------------------------------------------------------
+# Los tres botones de comprobación
+# ---------------------------------------------------------------------------
+
+
+def test_cada_boton_de_prueba_llama_a_una_ruta_que_existe(cliente):
+    """Los tres botones, comprobados en las DOS direcciones.
+
+    Es el mismo criterio que con las opciones muertas del panel: conéctalas o
+    bórralas, pero que no quede ninguna. Un botón sin ruta es un botón que no
+    hace nada y que además tranquiliza; una ruta sin botón es código que nadie
+    puede llamar y que nadie va a borrar porque no se sabe si sobra.
+
+    Y se comprueba que son POST. Que contesten a GET sería el fallo silencioso
+    de verdad: mandar un Telegram porque a un precargador de enlaces le apeteció
+    seguir una URL.
+    """
+    app_js = (ESTATICOS / "app.js").read_text(encoding="utf-8")
+    index = (ESTATICOS / "index.html").read_text(encoding="utf-8")
+
+    bloque = re.search(r"probar: \{(.*?)^  \},", app_js, re.S | re.M)
+    assert bloque is not None, "no encuentro `probar:` en el mapa API de app.js"
+    declaradas = dict(re.findall(r'(\w+): "(/api/probar/[^"]+)"', bloque.group(1)))
+    assert declaradas, "el mapa `probar` está vacío"
+
+    en_html = set(re.findall(r'data-prueba="(\w+)"', index))
+
+    assert en_html == set(declaradas), (
+        f"botones en el HTML: {sorted(en_html)}; rutas en app.js: "
+        f"{sorted(declaradas)}. Sobra o falta en un lado."
+    )
+
+    for cual, url in declaradas.items():
+        r = cliente.post(url)
+        assert r.status_code != 404, f"{cual}: {url} no existe en la API"
+        # Con las credenciales de los tests el servicio fallará, y da igual: lo
+        # que se comprueba aquí es que la ruta EXISTE y que contesta el informe,
+        # no que Telegram esté configurado en la máquina que corre los tests.
+        assert r.status_code in (200, 503), f"{cual}: {url} → {r.status_code}"
+
+        # 405 sería la respuesta de libro, pero aquí sale 404: los estáticos van
+        # montados en `/`, así que un GET que no casa con ninguna ruta de la API
+        # cae en el montaje y se lleva el 404 de ahí. Lo que importa no es cuál
+        # de los dos números salga, sino que el GET NO ejecute la prueba, y los
+        # dos lo demuestran igual. Lo que no puede salir es un 200.
+        get = cliente.get(url)
+        assert get.status_code in (404, 405), (
+            f"{url} contesta a GET ({get.status_code}): esto tiene efecto en el "
+            "mundo y no puede colgar de un verbo que se dispara solo"
+        )
+
+
+def test_el_informe_de_una_prueba_trae_siempre_las_mismas_claves(cliente):
+    """El renderizador lee `resumen`, `ok` y `pasos`. Si cambian, pinta vacío."""
+    r = cliente.post("/api/probar/hevy")
+    if r.status_code != 200:
+        pytest.skip("sin cliente de Hevy en este entorno")
+    d = r.json()
+    assert {"servicio", "ok", "resumen", "pasos"} <= set(d)
+    for p in d["pasos"]:
+        assert {"nombre", "ok", "detalle", "error"} == set(p)

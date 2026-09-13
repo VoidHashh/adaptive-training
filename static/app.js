@@ -25,6 +25,14 @@ const API = {
   hoy: "/api/checkin/today",
   enviar: "/api/checkin",
   salud: "/api/health",
+  // Son POST, no GET, aunque "probar" suene a consulta: mandar un Telegram
+  // tiene efecto en el mundo, y las cosas con efecto no se ponen detrás de un
+  // verbo que cualquier precargador de enlaces puede disparar solo.
+  probar: {
+    telegram: "/api/probar/telegram",
+    hevy: "/api/probar/hevy",
+    garmin: "/api/probar/garmin",
+  },
 };
 
 // Lo último que se escribió, por si el envío no llega. No es una cola: no se
@@ -457,6 +465,82 @@ async function comprobarSalud() {
   )).join("");
   caja.hidden = false;
 }
+
+/* --------------------------------------------------------------------------
+ * Los tres botones de comprobación
+ * --------------------------------------------------------------------------
+ * LO QUE SE PINTA ES LA CADENA ENTERA, NO UN SEMÁFORO. Un "Garmin: bien" no
+ * sirve de nada el día que Garmin no está bien, porque lo siguiente que hace
+ * falta saber es en qué eslabón se rompió, y eso el servidor ya lo manda paso a
+ * paso. Reducirlo aquí a un color obligaría a entrar por SSH a buscar lo que ya
+ * estaba en la respuesta.
+ *
+ * Los tres estados de cada paso son tres, no dos: bien, mal, y NO SE INTENTÓ.
+ * El tercero existe porque una cadena que se corta en el primer eslabón deja
+ * cuatro pasos sin hacer, y pintarlos en rojo haría pensar en cinco averías
+ * cuando hay una avería y cuatro consecuencias.
+ */
+
+const ICONO = { true: "✓", false: "✗", null: "·" };
+
+function pintarPrueba(d) {
+  const caja = $("resultado-prueba");
+  const pasos = (d.pasos || []).map((p) => {
+    // `p.ok` puede ser `null`, y `String(null)` es "null": la tabla de arriba
+    // tiene esa clave a propósito, para no acabar en `undefined`.
+    const estado = p.ok === true ? "bien" : p.ok === false ? "mal" : "sin-hacer";
+    return (
+      `<li class="${estado}">` +
+        `<span class="marca">${ICONO[String(p.ok)]}</span> ` +
+        `<strong>${escapar(p.nombre)}</strong>: ${escapar(p.detalle)}` +
+        (p.error ? `<code>${escapar(p.error)}</code>` : "") +
+      `</li>`
+    );
+  }).join("");
+
+  caja.innerHTML =
+    `<p class="aviso ${d.ok ? "bien" : "mal"}">` +
+      `<strong>${escapar(d.resumen || "")}</strong>` +
+    `</p>` +
+    `<ul class="pasos">${pasos}</ul>`;
+  caja.hidden = false;
+}
+
+async function lanzarPrueba(boton) {
+  const cual = boton.dataset.prueba;
+  const url = API.probar[cual];
+  if (!url) return;
+
+  const antes = boton.textContent;
+  // Se desactivan LOS TRES mientras tanto. Garmin limita los intentos, así que
+  // dejar los otros pulsables invitaría justo a la ráfaga que provoca el 429.
+  const todos = document.querySelectorAll("[data-prueba]");
+  todos.forEach((b) => { b.disabled = true; });
+  boton.textContent = "Comprobando…";
+
+  try {
+    const r = await fetch(url, { method: "POST" });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || String(r.status));
+    pintarPrueba(d);
+  } catch (e) {
+    // Que no conteste el servidor no es lo mismo que que conteste "mal", y se
+    // dice cuál de las dos, porque llevan a mirar sitios distintos.
+    const caja = $("resultado-prueba");
+    caja.innerHTML =
+      `<p class="aviso mal"><strong>No se pudo hacer la comprobación.</strong>` +
+      `Esto no dice que ${escapar(cual)} esté mal: dice que no se ha podido ` +
+      `preguntar. ${escapar(e.message || e)}</p>`;
+    caja.hidden = false;
+  } finally {
+    todos.forEach((b) => { b.disabled = false; });
+    boton.textContent = antes;
+  }
+}
+
+document.querySelectorAll("[data-prueba]").forEach((b) => {
+  b.addEventListener("click", () => lanzarPrueba(b));
+});
 
 $("formulario").addEventListener("submit", enviar);
 $("comentarios").addEventListener("input", guardarBorrador);
