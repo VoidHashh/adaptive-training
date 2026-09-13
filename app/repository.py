@@ -42,6 +42,7 @@ from app.models import (
     ProgramState,
     RoutineState,
     RuleState,
+    WorkoutLog,
 )
 from app.models import Checkin as CheckinRow
 from app.models import Decision as DecisionRow
@@ -656,6 +657,104 @@ def marcar_adopciones_contadas(session: Session, ids: Any) -> int:
     n = 0
     for fila in session.scalars(
         select(LoadAdoption).where(LoadAdoption.id.in_(quedan))
+    ).all():
+        fila.reported_at = ahora
+        n += 1
+    session.flush()
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Lo que se entrenó de verdad, de vuelta al motor
+# ---------------------------------------------------------------------------
+
+
+def sesiones_ejecutadas(
+    session: Session, cfg: Any, *, desde: date, hasta: date
+) -> list[Any]:
+    """Las sesiones de Hevy ya registradas, como `StrengthSession` del motor.
+
+    ESTO FALTABA ENTERO, Y ERA UN PARÁMETRO MUERTO.
+    ----------------------------------------------
+    `build_signals` acepta `sessions=` desde el primer día y NADIE se lo pasaba
+    nunca: ni `runner.run_daily` ni `cli.py`. El único sitio del proyecto donde
+    se construía un `StrengthSession` era `tests/test_signals.py`. El efecto es
+    que `intensity_budget` -que sí sabe contar HIIT y fuerza, y tiene el
+    interruptor `counts_as_intense.hiit_executed: true` puesto- llevaba toda la
+    vida recibiendo una lista vacía.
+
+    Consecuencia concreta, que es la que importa: el presupuesto semanal de
+    sesiones intensas solo contaba las salidas de bici. Un HIIT hecho el martes
+    no gastaba nada, así que el sábado el sistema creía tener margen para
+    recomendar una salida intensa que en realidad ya no cabía. El límite
+    existía y se aplicaba sobre un numerador incompleto, que es peor que no
+    tener límite: parece que alguien lo está vigilando.
+
+    `is_hiit` sale de `hiit.blocks` del config y no de una lista aparte, para
+    que añadir un tercer bloque no exija acordarse de tocar esto también.
+    """
+    from app.engine.signals import StrengthSession
+    from app.integrations.hevy import claves_hiit
+
+    hiit = claves_hiit(cfg)
+    return [
+        StrengthSession(
+            date=f.date,
+            routine_key=f.routine_key,
+            is_hiit=bool(f.routine_key) and f.routine_key in hiit,
+        )
+        for f in session.scalars(
+            select(WorkoutLog)
+            .where(WorkoutLog.date >= desde, WorkoutLog.date <= hasta)
+            .order_by(WorkoutLog.date, WorkoutLog.id)
+        ).all()
+    ]
+
+
+def entrenos_sin_contar(session: Session) -> list[dict[str, Any]]:
+    """Los entrenamientos fuera de plan que ningún mensaje ha contado todavía.
+
+    Mismo patrón que `adopciones_sin_contar`, y por el mismo motivo: leer y
+    marcar van separados porque el envío de Telegram se traga sus propios
+    fallos. Si se sellaran al leerlos, un Telegram caído dejaría el aviso
+    consumido por un mensaje que nunca llegó al móvil, y un entrenamiento que
+    el sistema no esperaba se quedaría sin contar para siempre. Sella
+    `marcar_entrenos_contados`, y solo cuando hay mensaje.
+
+    Sin límite de antigüedad, también por lo mismo: si el sistema pasó tres
+    días sin mandar nada, esos entrenamientos siguen sin comentarse.
+    """
+    return [
+        {
+            "id": f.id,
+            "day": f.date.isoformat(),
+            "routine": f.routine_key,
+            "title": f.title,
+            "duration_s": f.duration_s,
+            "total_sets": f.total_sets,
+            "total_volume_kg": f.total_volume_kg,
+            "motivo": f.motivo_suelto,
+        }
+        for f in session.scalars(
+            select(WorkoutLog)
+            .where(
+                WorkoutLog.unplanned.is_(True),
+                WorkoutLog.reported_at.is_(None),
+            )
+            .order_by(WorkoutLog.date, WorkoutLog.id)
+        ).all()
+    ]
+
+
+def marcar_entrenos_contados(session: Session, ids: Any) -> int:
+    """Sella como contados los entrenamientos cuyo id se pasa. Devuelve cuántos."""
+    quedan = [int(i) for i in ids if i is not None]
+    if not quedan:
+        return 0
+    ahora = datetime.now(UTC).replace(tzinfo=None)
+    n = 0
+    for fila in session.scalars(
+        select(WorkoutLog).where(WorkoutLog.id.in_(quedan))
     ).all():
         fila.reported_at = ahora
         n += 1

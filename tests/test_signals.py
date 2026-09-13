@@ -509,7 +509,7 @@ def test_sin_salidas_ayer_no_hay_nivel():
 
 
 def test_build_signals_no_inventa_lineas_base_sin_datos(cfg):
-    s = build_signals(cfg, LUNES, metrics=[], rides=[])
+    s = build_signals(cfg, LUNES, metrics=[], rides=[], sessions=[])
     assert s.values["hrv_baseline"] is None
     assert s.values["hrv_ratio"] is None
     assert any("sin línea base" in n for n in s.notes)
@@ -519,13 +519,13 @@ def test_la_linea_base_excluye_el_dia_de_hoy(cfg):
     """Meter el valor de hoy en su propia media lo amortiguaría."""
     metrics = [DayMetrics(date=LUNES - timedelta(days=i), hrv=100.0) for i in range(1, 8)]
     metrics.append(DayMetrics(date=LUNES, hrv=50.0))  # hoy, muy bajo
-    s = build_signals(cfg, LUNES, metrics=metrics, rides=[])
+    s = build_signals(cfg, LUNES, metrics=metrics, rides=[], sessions=[])
     assert s.values["hrv_baseline"] == pytest.approx(100.0)
     assert s.values["hrv_ratio"] == pytest.approx(0.5)
 
 
 def test_sin_checkin_se_dice_en_las_notas(cfg):
-    s = build_signals(cfg, LUNES, metrics=[], rides=[])
+    s = build_signals(cfg, LUNES, metrics=[], rides=[], sessions=[])
     assert any("sin check-in" in n for n in s.notes)
     for key in cfg.slider_keys():
         assert s.values[key] is None
@@ -533,13 +533,13 @@ def test_sin_checkin_se_dice_en_las_notas(cfg):
 
 def test_el_checkin_llega_a_las_señales(cfg):
     c = Checkin(date=LUNES, values={"lower_discomfort": 4})
-    s = build_signals(cfg, LUNES, metrics=[], rides=[], checkin=c)
+    s = build_signals(cfg, LUNES, metrics=[], rides=[], sessions=[], checkin=c)
     assert s.values["lower_discomfort"] == 4
     assert s.history["lower_discomfort"][LUNES] == 4
 
 
 def test_una_señal_a_none_cuenta_como_ausente(cfg):
-    s = build_signals(cfg, LUNES, metrics=[], rides=[])
+    s = build_signals(cfg, LUNES, metrics=[], rides=[], sessions=[])
     assert not s.has("hrv")
     assert s.get("hrv") is None
 
@@ -547,7 +547,7 @@ def test_una_señal_a_none_cuenta_como_ausente(cfg):
 def test_el_snapshot_es_serializable(cfg):
     import json
 
-    s = build_signals(cfg, LUNES, metrics=[], rides=[])
+    s = build_signals(cfg, LUNES, metrics=[], rides=[], sessions=[])
     blob = json.dumps(s.snapshot(), ensure_ascii=False, default=str)
     assert json.loads(blob)["day"] == LUNES.isoformat()
 
@@ -564,8 +564,8 @@ def test_el_historico_largo_de_salidas_da_umbrales_adaptativos(cfg):
     pocas = [ride(LUNES - timedelta(days=i), load=100) for i in (0, 3)]
     muchas = [ride(LUNES - timedelta(days=i), load=100) for i in range(90)]
 
-    s_pocas = build_signals(cfg, LUNES, metrics=[], rides=pocas)
-    s_muchas = build_signals(cfg, LUNES, metrics=[], rides=muchas)
+    s_pocas = build_signals(cfg, LUNES, metrics=[], rides=pocas, sessions=[])
+    s_muchas = build_signals(cfg, LUNES, metrics=[], rides=muchas, sessions=[])
 
     assert s_pocas.adaptive.get("load_3d_p90") is None
     assert s_muchas.adaptive.get("load_3d_p90") is not None

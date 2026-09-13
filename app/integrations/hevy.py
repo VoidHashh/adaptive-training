@@ -91,6 +91,58 @@ def _fecha_workout(w: dict[str, Any]) -> date | None:
         return None
 
 
+def routine_key_de(workout: dict[str, Any], config: Any = None) -> str | None:
+    """De qué rutina del config salió un entrenamiento, leyendo `routine_id`.
+
+    SE MIRA EL ID Y NUNCA EL TÍTULO, y no es una precaución teórica. Medido el
+    2026-09-13 contra los 14 entrenamientos reales de la cuenta: CUATRO llevan
+    un título que nombra una rutina distinta de la que dice su `routine_id`. El
+    2026-08-14 hay uno titulado «Día 3» cuyo id es el de `dia_1`, y el
+    2026-08-17 otro titulado «Día 1» con el id de `dia_3`. El título se congela
+    en el momento de ejecutar y las rutinas se renombraron después; el id no
+    cambia. Clasificar por nombre habría errado el 29% del histórico, y en el
+    sentido peor: contando como fuerza lo que fue HIIT y al revés.
+
+    `None` significa que el entrenamiento no sale de ninguna rutina conocida
+    -uno suelto, o una rutina que no está en `config.yaml`-. Es un dato, no un
+    fallo: es exactamente lo que hay que poder contar en vez de perder.
+    """
+    rid = workout.get("routine_id") or workout.get("routineId")
+    if not rid:
+        return None
+    raw = (config.raw if hasattr(config, "raw") else config) or {}
+    for key, rutina in (raw.get("routines") or {}).items():
+        if str((rutina or {}).get("hevy_routine_id") or "") == str(rid):
+            return str(key)
+    return None
+
+
+def _es_ultima_pagina(datos: Any, pagina: int) -> bool:
+    """¿La respuesta dice que esta es la última página que existe?
+
+    `False` cuando no lo dice: no se adivina. Equivocarse aquí en el sentido
+    optimista sería dar por completa una lista truncada, que es justo lo que el
+    guardián de `get_workouts` existe para impedir.
+    """
+    if not isinstance(datos, dict):
+        return False
+    total = datos.get("page_count", datos.get("pageCount"))
+    try:
+        return pagina >= int(total)
+    except (TypeError, ValueError):
+        return False
+
+
+def claves_hiit(config: Any = None) -> set[str]:
+    """Las claves de rutina que son bloques HIIT, según `hiit.blocks`.
+
+    Sale del config y no de una lista aparte para que no haya dos verdades: el
+    día que se añada un tercer bloque, esto lo sabe sin tocarlo.
+    """
+    raw = (config.raw if hasattr(config, "raw") else config) or {}
+    return {str(v) for v in ((raw.get("hiit") or {}).get("blocks") or {}).values()}
+
+
 @dataclass(frozen=True)
 class WorkoutTotals:
     """Los tres números de un entrenamiento que van a `workout_log`."""
@@ -849,6 +901,25 @@ class HevyClient:
         Se pagina hacia atrás y se corta en cuanto se pasa de `since`: la API
         devuelve lo más reciente primero y no hace falta traerse el histórico
         entero cada mañana.
+
+        POR QUÉ SE MIRA `page_count`
+        ----------------------------
+        Hevy NO devuelve una página vacía cuando se piden más páginas de las que
+        hay: devuelve **404 «Page not found»**. Y como aquí cualquier respuesta
+        distinta de 200 es un error duro, pedir una ventana más larga que el
+        histórico de la cuenta reventaba. Medido el 2026-09-13 contra la cuenta
+        real: 14 entrenamientos, `page_count: 2`, y `POST /api/reconcile?dias=30`
+        moría con «página 3 devolvió 404». El trabajo nocturno se libraba de
+        casualidad, porque con `dias_atras=3` la primera página ya cubre la
+        ventana entera.
+
+        La respuesta trae `page_count` desde siempre y este código lo ignoraba.
+        Ahora se usa: al llegar a la última página la búsqueda está COMPLETA -no
+        existe nada más antiguo que traer, así que no falta ninguna sesión por
+        reconciliar- y no se pide una página que ya se sabe que no está. Si
+        algún día la respuesta no lo trajera, se sigue como antes: página vacía
+        = fin, y quedarse sin páginas = error. Los dos caminos avisan a gritos y
+        ninguno devuelve una lista a medias haciéndola pasar por entera.
         """
         salida: list[dict[str, Any]] = []
         completo = False
@@ -886,6 +957,12 @@ class HevyClient:
                         break
                     salida.append(w)
                 if completo:
+                    break
+                if _es_ultima_pagina(datos, pagina):
+                    # Se ha leído la cuenta entera. No se llega a `since` porque
+                    # no hay nada tan antiguo, que es lo contrario de un
+                    # truncamiento: no falta nada.
+                    completo = True
                     break
 
         if not completo:

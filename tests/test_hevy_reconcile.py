@@ -20,7 +20,9 @@ from app.integrations.hevy import (
     HevyError,
     _alcanza,
     _fecha_workout,
+    claves_hiit,
     pesos_ejecutados,
+    routine_key_de,
     workout_compliance,
 )
 from tests.conftest import FakeHTTP, FakeResponse
@@ -353,6 +355,48 @@ def test_el_peso_y_el_cumplimiento_ven_exactamente_lo_mismo():
 
 
 # ---------------------------------------------------------------------------
+# routine_key_de: de qué rutina salió lo que se hizo
+# ---------------------------------------------------------------------------
+
+CFG_RUTINAS = {
+    "routines": {
+        "dia_1": {"hevy_routine_id": "ID-1"},
+        "dia_3": {"hevy_routine_id": "ID-3"},
+        "hiit_dia_1": {"hevy_routine_id": "ID-H1"},
+    },
+    "hiit": {"blocks": {"dia_1": "hiit_dia_1"}},
+}
+
+
+def test_la_rutina_se_lee_del_id_y_jamas_del_titulo():
+    """El fallo que esto impide está medido, no supuesto.
+
+    De los 14 entrenamientos reales de la cuenta el 2026-09-13, CUATRO llevan un
+    título que nombra una rutina distinta de la que dice su `routine_id`: el
+    título se congela al ejecutar y las rutinas se renombraron después. Clasificar
+    por nombre habría errado el 29% del histórico, y en el sentido peor -contando
+    como fuerza lo que fue HIIT y al revés-.
+    """
+    w = {"id": "x", "routine_id": "ID-1", "title": "Día 3"}
+    assert routine_key_de(w, CFG_RUTINAS) == "dia_1"
+
+
+def test_una_rutina_desconocida_no_se_confunde_con_otra():
+    """`None` es un dato -«esto no sale del plan»-, no un fallo. Lo que no puede
+    es acabar asignado a una rutina cualquiera."""
+    assert routine_key_de({"id": "x", "routine_id": "ID-QUE-NO-ESTA"}, CFG_RUTINAS) is None
+    assert routine_key_de({"id": "x"}, CFG_RUTINAS) is None
+
+
+def test_las_claves_hiit_salen_del_config_y_no_de_una_lista_aparte():
+    """Dos verdades sobre qué es HIIT acabarían discrepando el día que se añada
+    un tercer bloque, y nadie lo notaría hasta que el presupuesto de intensas
+    dejara de contarlo."""
+    assert claves_hiit(CFG_RUTINAS) == {"hiit_dia_1"}
+    assert claves_hiit({}) == set()
+
+
+# ---------------------------------------------------------------------------
 # _fecha_workout
 # ---------------------------------------------------------------------------
 
@@ -440,6 +484,43 @@ def test_una_respuesta_vacia_termina_la_busqueda():
     http = FakeHTTP([pagina(workout(day=DIA, wid="hoy")), pagina()])
     ws = cliente(http).get_workouts(since=DIA - timedelta(days=2))
     assert [w["id"] for w in ws] == ["hoy"]
+
+
+def test_la_ultima_pagina_de_la_cuenta_no_es_un_truncamiento():
+    """Pedir más atrás de lo que existe no puede ser un error.
+
+    La cuenta real tiene dos páginas. Con `since` a treinta días no se llega
+    nunca a la ventana -no hay nada tan antiguo-, así que el guardián daba por
+    truncada la lista y `get_workouts` reventaba; y si no reventaba ahí, la
+    página siguiente devolvía 404 y reventaba igual. `POST /api/reconcile?
+    dias=30` estaba muerto por esto, y el job de cada noche se salvaba solo
+    porque con `dias_atras=3` no pasaba de la primera página.
+
+    Leer el histórico entero es lo contrario de que falte algo: es que ya está
+    todo.
+    """
+    http = FakeHTTP(
+        [
+            FakeResponse(200, {"workouts": [workout(day=DIA, wid="hoy")], "page_count": 2}),
+            FakeResponse(
+                200,
+                {"workouts": [workout(day=DIA - timedelta(days=40), wid="viejo")],
+                 "page_count": 2},
+            ),
+        ]
+    )
+    ws = cliente(http).get_workouts(since=DIA - timedelta(days=90))
+    assert [w["id"] for w in ws] == ["hoy", "viejo"]
+    assert len(http.llamadas) == 2, "se pidió una página que la propia API dice que no existe"
+
+
+def test_sin_page_count_se_sigue_exigiendo_llegar_a_la_ventana():
+    """No se adivina. Si la respuesta no dice cuántas páginas hay, el guardián
+    sigue en pie: equivocarse aquí en el sentido optimista sería dar por
+    completa una lista a medias, que es justo lo que se quiere impedir."""
+    lote = [pagina(workout(day=DIA, wid=f"w{i}")) for i in range(3)]
+    with pytest.raises(HevyError, match="páginas no bastan"):
+        cliente(FakeHTTP(lote)).get_workouts(since=DIA - timedelta(days=30), max_pages=3)
 
 
 def test_un_error_http_revienta_en_vez_de_devolver_lo_que_haya():

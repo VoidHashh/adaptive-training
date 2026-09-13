@@ -231,6 +231,12 @@ class DayDecision:
     # la mañana: es el que dice "hip thrust: 3x8 a 62,5" y tiene que poder
     # explicar por qué 62,5 y no lo de ayer.
     load_adoptions: list[dict[str, Any]] = field(default_factory=list)
+    # Los entrenamientos que están en Hevy y no emparejaban con el plan de su
+    # día: un HIIT, una rutina que no está en el config, algo hecho un sábado.
+    # Mismo mecanismo y mismo motivo que `load_adoptions`: los cuelga
+    # `run_daily` leyendo de la base, y se sellan como contados solo si el
+    # mensaje llega a salir.
+    entrenos_sueltos: list[dict[str, Any]] = field(default_factory=list)
     # La lectura de segundo orden del día: rachas, motivo dominante y el último
     # mes contra el trimestre. Un `Tendencia` de `app/engine/tendencia.py`.
     #
@@ -283,6 +289,7 @@ class DayDecision:
                 else None
             ),
             "load_adoptions": list(self.load_adoptions),
+            "entrenos_sueltos": list(self.entrenos_sueltos),
             "tendencia": self.tendencia.to_dict() if self.tendencia else None,
             "recalibracion": (
                 self.recalibracion.to_dict() if self.recalibracion else None

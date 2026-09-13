@@ -693,7 +693,7 @@ def build_signals(
     day: date,
     metrics: Sequence[DayMetrics],
     rides: Sequence[Ride],
-    sessions: Sequence[StrengthSession] = (),
+    sessions: Sequence[StrengthSession],
     checkin: Checkin | None = None,
     checkin_history: Sequence[Checkin] = (),
     history_days: int = 14,
@@ -701,6 +701,22 @@ def build_signals(
     """Construye el `Signals` de un día a partir de los datos crudos.
 
     `config` puede ser un `Config` o un dict; solo se le piden secciones.
+
+    POR QUÉ `sessions` NO TIENE VALOR POR DEFECTO
+    ---------------------------------------------
+    Lo tuvo -`= ()`- y por eso este parámetro estuvo MUERTO desde el primer día.
+    Ningún caller de producción se lo pasaba: ni `runner.run_daily` ni
+    `cli.py`. El único sitio del proyecto donde se construía un
+    `StrengthSession` era su propio test. `intensity_budget` recibía siempre
+    una lista vacía, así que el presupuesto semanal de sesiones intensas contó
+    durante toda la vida del sistema únicamente las salidas de bici: un HIIT
+    hecho el martes no gastaba nada y el sábado quedaba margen para una salida
+    intensa que en realidad ya no cabía.
+
+    Un defecto vacío convierte "se me olvidó pasarlo" en "esa semana no
+    entrenaste", que son cosas opuestas y se leen igual. Sin defecto, olvidarlo
+    es un `TypeError` en el arranque en vez de un presupuesto optimista que no
+    se nota hasta que la espalda lo nota.
     """
     raw = config.raw if hasattr(config, "raw") else config
     baseline_cfg = raw.get("baseline", {}) or {}

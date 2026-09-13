@@ -274,6 +274,72 @@ def test_el_ensayo_no_se_inventa_una_base_de_datos_que_no_existe(tmp_path, cfg, 
     assert not ruta.exists(), "el ensayo ha creado una base de datos"
 
 
+@pytest.fixture
+def base_sin_columnas_de_sueltos(tmp_path, monkeypatch):
+    """Una base real anterior a las columnas de entrenamientos fuera del plan."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import db as appdb
+    from app.models import Base
+    from app.settings import settings
+
+    ruta = tmp_path / "antes_de_los_sueltos.db"
+    eng = create_engine(f"sqlite:///{ruta}", future=True)
+    Base.metadata.create_all(eng)
+
+    with eng.begin() as c:
+        c.exec_driver_sql("ALTER TABLE workout_log RENAME TO viejo")
+        c.exec_driver_sql(
+            "CREATE TABLE workout_log ("
+            "id INTEGER PRIMARY KEY, hevy_workout_id VARCHAR, date DATE, "
+            "routine_key VARCHAR, title VARCHAR, all_sets_at_target BOOLEAN)"
+        )
+        c.exec_driver_sql("DROP TABLE viejo")
+
+    monkeypatch.setattr(appdb, "engine", eng)
+    monkeypatch.setattr(appdb, "SessionLocal", sessionmaker(bind=eng, future=True))
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{ruta}")
+    return ruta
+
+
+def test_el_ensayo_lee_lo_entrenado_sin_depender_de_quien_migre_antes(
+    base_sin_columnas_de_sueltos, cfg
+):
+    """El presupuesto de intensas no puede salir a cero por el orden de dos líneas.
+
+    `sesiones_para_el_ensayo` se apoyaba en que `estado_para_el_ensayo` hubiera
+    puesto el esquema al día, y `main` la llama DESPUÉS. Con las columnas nuevas
+    de `workout_log` el primer ensayo sobre la base antigua reventaba la lectura,
+    la cazaba y anunciaba el presupuesto a cero: margen para una salida intensa
+    que en producción ya estaba gastado. La segunda ejecución salía bien, que es
+    la peor manera posible de fallar.
+    """
+    from app.cli import sesiones_para_el_ensayo
+
+    _sesiones, nota = sesiones_para_el_ensayo(cfg, date(2026, 9, 14))
+    assert "NO SE PUDO LEER" not in nota, (
+        "una columna que la aplicación añade al arrancar no puede dejar el "
+        f"presupuesto de intensas a cero: {nota}"
+    )
+    assert "sesión(es) en 14 días" in nota
+
+
+def test_el_ensayo_no_se_inventa_una_base_para_mirar_lo_entrenado(
+    tmp_path, cfg, monkeypatch
+):
+    from app.cli import sesiones_para_el_ensayo
+    from app.settings import settings
+
+    ruta = tmp_path / "no_existe.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{ruta}")
+
+    sesiones, nota = sesiones_para_el_ensayo(cfg, date(2026, 9, 14))
+    assert sesiones == []
+    assert "sin base de datos" in nota
+    assert not ruta.exists(), "el ensayo ha creado una base de datos"
+
+
 # ---------------------------------------------------------------------------
 # La orden manual pide la misma ventana de salidas que el trabajo de madrugada
 # ---------------------------------------------------------------------------

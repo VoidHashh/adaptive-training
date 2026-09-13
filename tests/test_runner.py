@@ -587,10 +587,24 @@ def test_reconciliar_no_borra_las_reglas_activas(db, cfg):
 
 
 def test_un_dia_sin_decision_guardada_no_reconcilia_nada(db, cfg):
-    """Sin plan no hay contra qué comparar, y no se inventa uno."""
-    res = run_reconcile(db, cfg, LUNES, workouts=[])
-    assert not res.avanzado
-    assert "no hay decisión guardada" in res.motivo
+    """Sin plan no hay contra qué comparar, y no se inventa uno.
+
+    Pero tampoco se tira el entrenamiento. Esto antes salía por una puerta
+    temprana que devolvía sin escribir una fila, así que entrenar un día del que
+    el sistema no tenía decisión guardada equivalía a no haber entrenado: ni en
+    las métricas, ni en el volumen, ni en el presupuesto de intensas. Queda
+    registrado y marcado como fuera del plan, con el motivo escrito.
+    """
+    w = _entrenamiento_completo({"exercises": []}, wid="sin_plan")
+    res = run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    assert not res.avanzado, "sin plan no hay nada que progresar"
+    assert [s["hevy_workout_id"] for s in res.sueltos] == ["sin_plan"]
+
+    fila = db.scalars(select(WorkoutLog)).one()
+    assert fila.unplanned is True
+    assert fila.all_sets_at_target is None, "no había plan contra el que juzgarlo"
+    assert "no había decisión guardada" in fila.motivo_suelto
 
 
 def test_un_entrenamiento_de_otro_dia_no_cuenta(db, cfg):
@@ -608,6 +622,208 @@ def test_los_entrenamientos_contados_quedan_registrados(db, cfg):
     run_reconcile(db, cfg, LUNES, workouts=[_entrenamiento_completo(_plan_guardado(db))])
     filas = db.scalars(select(WorkoutLog)).all()
     assert [f.hevy_workout_id for f in filas] == ["w1"]
+
+
+# ---------------------------------------------------------------------------
+# Nada de lo que se hace en Hevy se pierde
+# ---------------------------------------------------------------------------
+#
+# El principio es del usuario y es literal: "si registro un entreno, el sistema
+# tiene que verlo, aunque no progrese cargas". Lo que se vigila aquí es que
+# REGISTRAR y RECONCILIAR sean dos cosas distintas. Estaban pegadas: si no había
+# nada contra lo que comparar -sin decisión guardada, día sin fuerza, rutina
+# desconocida- la función salía por una puerta temprana sin escribir una sola
+# fila, y el entrenamiento desaparecía de las métricas, del volumen y del
+# presupuesto de sesiones intensas.
+
+
+@pytest.fixture
+def cfg_lunes(cfg_copia):
+    """El config real con el programa empezando el lunes de los tests.
+
+    `hiit_applies` cuenta semanas desde `program.start`; con la fecha real del
+    YAML -el 2026-09-14- el lunes de los tests cae antes del arranque y el
+    bloque no entra nunca. Esto no enciende el HIIT: ya está encendido.
+    """
+    cfg_copia.raw["program"]["start"] = LUNES
+    return cfg_copia
+
+
+def _rid(cfg, rkey: str) -> str:
+    return cfg.raw["routines"][rkey]["hevy_routine_id"]
+
+
+def _parte(plan: dict, claves: set[str], *, dentro: bool, wid: str, rid: str) -> dict:
+    """Media sesión: solo los ejercicios de `claves`, o solo los demás."""
+    w = _entrenamiento_completo(
+        {"exercises": [e for e in plan["exercises"] if (e["key"] in claves) is dentro]},
+        wid=wid,
+    )
+    w["routine_id"] = rid
+    return w
+
+
+def test_el_hiit_previsto_para_hoy_no_sale_como_fuera_del_plan(db, cfg_lunes):
+    """El motor añade el HIIT a la rutina de fuerza, pero en Hevy los bloques
+    existen sueltos y se ejecutan como un entrenamiento propio: así están los del
+    8 y el 9 de septiembre en la cuenta. Sin reconocerlos, hacer exactamente lo
+    que el plan pedía saldría cada noche como "visto fuera del plan", que es la
+    clase de aviso que enseña a no leer los avisos.
+    """
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    assert plan["hiit_block"] == "hiit_dia_1", (
+        f"el escenario ya no lleva HIIT; el test hay que rehacerlo: {plan.get('hiit_block')}"
+    )
+
+    bloque = {e["key"] for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]}
+    fuerza = _parte(plan, bloque, dentro=False, wid="fuerza", rid=_rid(cfg_lunes, "dia_1"))
+    hiit = _parte(plan, bloque, dentro=True, wid="hiit", rid=_rid(cfg_lunes, "hiit_dia_1"))
+
+    res = run_reconcile(db, cfg_lunes, LUNES, workouts=[fuerza, hiit])
+
+    assert res.sueltos == [], f"lo que el plan pedía sale como fuera del plan: {res.sueltos}"
+    filas = {f.hevy_workout_id: f for f in db.scalars(select(WorkoutLog)).all()}
+    assert set(filas) == {"fuerza", "hiit"}
+    assert filas["hiit"].routine_key == "hiit_dia_1"
+    assert filas["hiit"].unplanned is False
+    assert filas["hiit"].all_sets_at_target is None, (
+        "el veredicto del día es el de la fuerza; el HIIT no se juzga y no lo hereda"
+    )
+    assert filas["fuerza"].all_sets_at_target is True
+
+
+def test_un_hiit_que_el_plan_no_pedia_queda_visible_con_su_motivo(db, cfg):
+    """"Si un día hago algo que el sistema no esperaba, quiero saberlo, no que
+    desaparezca". Y el motivo va escrito en la fila porque lo lee el mensaje de
+    la mañana: avisar de que pasó algo sin decir el qué obliga a abrir la base
+    de datos, y a las nueve desde el móvil eso es no avisar.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert _plan_guardado(db).get("hiit_block") is None
+
+    w = _entrenamiento_completo({"exercises": []}, wid="hiit_suelto")
+    w["routine_id"] = _rid(cfg, "hiit_dia_1")
+
+    res = run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    assert [s["routine"] for s in res.sueltos] == ["hiit_dia_1"]
+    fila = db.scalars(select(WorkoutLog)).one()
+    assert fila.unplanned is True
+    assert "HIIT por libre" in fila.motivo_suelto, fila.motivo_suelto
+
+
+def test_un_entrenamiento_de_un_dia_sin_fuerza_se_registra_igual(db, cfg_summer):
+    """Un sábado, una rutina que no está en el plan, cualquier cosa. Antes esto
+    devolvía sin escribir nada y el entrenamiento no había existido: ni volumen,
+    ni series, ni presupuesto de intensas."""
+    domingo = LUNES + timedelta(days=6)
+    corre(db, cfg_summer, day=domingo, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db, domingo)
+    assert plan.get("kind") not in {"full", "reduced"}, (
+        f"el domingo ya entrena fuerza; el test hay que rehacerlo: {plan.get('kind')}"
+    )
+
+    w = _entrenamiento_completo({"exercises": []}, wid="domingo", day=domingo)
+    res = run_reconcile(db, cfg_summer, domingo, workouts=[w])
+
+    assert not res.avanzado
+    assert res.workouts_nuevos == 1
+    fila = db.scalars(select(WorkoutLog)).one()
+    assert fila.unplanned is True
+    assert fila.date == domingo
+
+
+def test_lo_registrado_lleva_duracion_series_y_volumen(db, cfg):
+    """Las tres columnas llevaban desde el principio declaradas y nadie las
+    llenaba. `docs/analisis.md` daba por hecho que la vista de volumen salía de
+    aquí, y salía de NULL."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    w = _entrenamiento_completo(plan)
+    w["start_time"] = f"{LUNES.isoformat()}T18:00:00Z"
+    w["end_time"] = f"{LUNES.isoformat()}T19:00:00Z"
+
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    fila = db.scalars(select(WorkoutLog)).one()
+    assert fila.total_sets and fila.total_sets > 0
+    assert fila.total_volume_kg and fila.total_volume_kg > 0
+    assert fila.raw_json, "sin el crudo no se puede arreglar nada hacia atrás"
+
+
+def test_el_hiit_del_plan_no_puede_cerrar_la_puerta_de_la_fuerza(db, cfg_lunes):
+    """LA comprobación que justifica encender el HIIT, y la única cuyo fallo se
+    paga en una espalda con hernia.
+
+    El bloque HIIT se AÑADE a los ejercicios de la rutina, así que `executed`
+    pasa a llevar claves de HIIT y el veredicto del día se vuelve False en cuanto
+    falte una de ellas. Si esas claves contaran para la progresión de fuerza,
+    saltarse el HIIT congelaría la carga de la sesión de fuerza para siempre, o
+    -peor, si el signo estuviera al revés- haría subir con una sesión a medias.
+    Aquí se hace la fuerza ENTERA y nada del HIIT, y la racha de fuerza tiene que
+    avanzar exactamente igual.
+    """
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    assert plan["hiit_block"] == "hiit_dia_1", "el escenario ya no lleva HIIT"
+
+    bloque = {e["key"] for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]}
+    solo_fuerza = _parte(
+        plan, bloque, dentro=False, wid="fuerza", rid=_rid(cfg_lunes, "dia_1")
+    )
+
+    res = run_reconcile(db, cfg_lunes, LUNES, workouts=[solo_fuerza])
+    assert res.avanzado
+
+    estado = load_state(db, program_start=cfg_lunes.program_start)
+    base = [e["key"] for e in cfg_lunes.raw["routines"]["dia_1"]["exercises"]]
+    assert all(estado.clean_sessions.get(("dia_1", k), 0) == 1 for k in base), (
+        "saltarse el HIIT ha roto la racha de la fuerza: "
+        f"{[(k, estado.clean_sessions.get(('dia_1', k), 0)) for k in base]}"
+    )
+
+
+def test_un_hiit_registrado_el_martes_gasta_presupuesto_el_sabado(db, cfg):
+    """El agujero que el usuario diagnosticó: "si el HIIT no suma, ese
+    presupuesto va corto y me está dejando margen que no tengo".
+
+    ERA UN PARÁMETRO MUERTO. `build_signals` acepta `sessions=` desde el primer
+    día y nadie se lo pasaba nunca -ni `run_daily` ni `cli.py`-; el único sitio
+    del proyecto donde se construía un `StrengthSession` era `test_signals.py`.
+    Así que `counts_as_intense.hiit_executed: true` llevaba toda la vida puesto
+    y sin efecto, y el presupuesto semanal de intensas solo contaba salidas de
+    bici. Un límite que se aplica sobre un numerador incompleto es peor que no
+    tener límite: parece que alguien lo está vigilando.
+
+    El test va por `run_daily` a propósito. El fallo no estaba en el cálculo
+    -`intensity_budget` siempre supo contar HIIT- sino en el cable, y un test
+    que llamara a `intensity_budget` directamente habría pasado desde el
+    principio sin enterarse de nada.
+    """
+    martes = LUNES + timedelta(days=1)
+    db.add(WorkoutLog(hevy_workout_id="h", date=martes, routine_key="hiit_dia_1"))
+    db.flush()
+
+    sabado = LUNES + timedelta(days=5)
+    res = corre(db, cfg, day=sabado, hevy=HevyFalso(), tg=TelegramFalso())
+
+    budget = res.decision.signals.budget
+    assert budget is not None
+    assert budget.used == 1, f"el HIIT del martes no ha gastado nada: {budget.detail}"
+    assert any("HIIT" in d for d in budget.detail), budget.detail
+
+
+def test_la_fuerza_registrada_no_gasta_presupuesto_de_intensas(db, cfg):
+    """`counts_as_intense.strength_session` está en false y tiene que seguir
+    mandando ahora que las sesiones sí llegan. Contar la fuerza como intensa
+    agotaría el presupuesto cada semana solo por entrenar el programa."""
+    martes = LUNES + timedelta(days=1)
+    db.add(WorkoutLog(hevy_workout_id="f", date=martes, routine_key="dia_1"))
+    db.flush()
+
+    res = corre(db, cfg, day=LUNES + timedelta(days=5), hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.signals.budget.used == 0, res.decision.signals.budget.detail
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +989,66 @@ def test_una_adopcion_contada_no_se_repite_al_dia_siguiente(db, cfg):
     tg2 = TelegramFalso()
     corre(db, cfg, day=LUNES + timedelta(days=2), hevy=HevyFalso(), tg=tg2)
     assert "Ajustado a lo que levantaste" not in tg2.enviados[-1]
+
+
+def test_el_entreno_fuera_del_plan_se_cuenta_en_el_mensaje_de_la_manana(db, cfg):
+    """"Si un día hago algo que el sistema no esperaba, quiero saberlo."
+
+    Registrarlo en la base de datos no es enterarse: enterarse es que lo diga el
+    mensaje. Y con el motivo, porque un aviso que obliga a abrir la base de datos
+    para entenderlo, a las nueve de la mañana y desde el móvil, es no avisar.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    w = _entrenamiento_completo({"exercises": []}, wid="hiit_suelto")
+    w["routine_id"] = _rid(cfg, "hiit_dia_1")
+    w["title"] = "HIIT Día 1"
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    tg = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=1), hevy=HevyFalso(), tg=tg)
+
+    texto = tg.enviados[-1]
+    assert "Visto en Hevy, fuera del plan" in texto, texto
+    assert "HIIT Día 1" in texto
+    assert "HIIT por libre" in texto, "se avisa de que pasó algo sin decir el qué"
+
+
+def test_si_telegram_falla_el_entreno_suelto_se_cuenta_al_dia_siguiente(db, cfg):
+    """Mismo motivo que con las adopciones, y por eso leer y sellar van
+    separados: `_mandar_telegram` se traga los fallos de envío para que un
+    Telegram caído no tumbe la mañana, así que sellar al leer daría por contado
+    un entrenamiento que nadie llegó a ver nunca."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    w = _entrenamiento_completo({"exercises": []}, wid="suelto")
+    w["routine_id"] = _rid(cfg, "hiit_dia_1")
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    roto = TelegramFalso(revienta=True)
+    r1 = corre(db, cfg, day=LUNES + timedelta(days=1), hevy=HevyFalso(), tg=roto)
+    assert r1.telegram_status not in {"sent", "dry_run"}, r1.telegram_status
+
+    tg = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=2), hevy=HevyFalso(), tg=tg)
+    assert "Visto en Hevy, fuera del plan" in tg.enviados[-1], (
+        "se selló con un mensaje que nunca llegó: el entrenamiento se queda sin contar"
+    )
+
+
+def test_un_entreno_suelto_ya_contado_no_se_repite_cada_manana(db, cfg):
+    """Una línea que sale todos los días se aprende a saltar, y con ella se
+    saltan las que sí cambian."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    w = _entrenamiento_completo({"exercises": []}, wid="suelto")
+    w["routine_id"] = _rid(cfg, "hiit_dia_1")
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    tg1 = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=1), hevy=HevyFalso(), tg=tg1)
+    assert "Visto en Hevy, fuera del plan" in tg1.enviados[-1]
+
+    tg2 = TelegramFalso()
+    corre(db, cfg, day=LUNES + timedelta(days=2), hevy=HevyFalso(), tg=tg2)
+    assert "Visto en Hevy, fuera del plan" not in tg2.enviados[-1]
 
 
 # ---------------------------------------------------------------------------

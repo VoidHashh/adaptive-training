@@ -194,6 +194,44 @@ def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> l
     return L
 
 
+def _lineas_sueltos(sueltos: list[dict[str, Any]]) -> list[str]:
+    """Los entrenamientos registrados en Hevy que no emparejaban con ningún plan.
+
+    Hasta ahora esto no existía porque el dato tampoco: `run_reconcile` volvía
+    sin escribir nada en cuanto el día no era de fuerza o el entrenamiento no
+    salía de la rutina prevista, y el entrenamiento desaparecía entero. El
+    sistema decidía cada mañana sin saber que el sábado hubo una sesión.
+
+    No es un reproche ni un aviso de fallo: es un acuse de recibo. Lo que
+    contesta es "esto lo he visto y lo he contado", que es lo contrario de lo
+    único que sabía hacer antes.
+
+    EL MOTIVO VA EN LA LÍNEA, y por eso se escribe al reconciliar y se guarda en
+    `workout_log.motivo_suelto` en vez de deducirse aquí: decir que pasó algo sin
+    decir el qué obliga a abrir la base de datos para entenderlo, y a las nueve
+    de la mañana desde el móvil eso equivale a no avisar.
+    """
+    if not sueltos:
+        return []
+
+    L = ["", "👀 <b>Visto en Hevy, fuera del plan</b>"]
+    for s in sueltos:
+        nombre = escapar_html(
+            str(s.get("title") or s.get("routine") or "entrenamiento sin título")
+        )
+        dia = escapar_html(str(s.get("day") or ""))
+        detalle = []
+        if s.get("total_sets"):
+            detalle.append(f"{s['total_sets']} series")
+        dur = s.get("duration_s")
+        if dur:
+            detalle.append(f"{int(dur) // 60} min")
+        cola = f" ({', '.join(escapar_html(d) for d in detalle)})" if detalle else ""
+        porque = f" — {escapar_html(str(s['motivo']))}" if s.get("motivo") else ""
+        L.append(f"• {dia}: {nombre}{cola}{porque}")
+    return L
+
+
 def render_telegram(decision: Any, config: Any = None) -> str:
     """El mensaje completo del día."""
     raw = (config.raw if hasattr(config, "raw") else config) or {}
@@ -277,6 +315,10 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # importa: un tope que actúa en silencio deja un ejercicio quieto sin que
     # nadie pueda saber por qué.
     L.extend(_lineas_adopcion(getattr(decision, "load_adoptions", None) or [], raw))
+
+    # FUERA de `include_reasoning`, por lo mismo que las adopciones: no es "por
+    # qué he decidido esto", es "esto que hiciste lo he visto y lo he contado".
+    L.extend(_lineas_sueltos(getattr(decision, "entrenos_sueltos", None) or []))
 
     # --- lo que ha cambiado hoy --------------------------------------------
     cambios = decision.progression.changes if decision.progression else []

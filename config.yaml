@@ -1208,8 +1208,15 @@ cycling:
 # 8. HIIT
 # -----------------------------------------------------------------------------
 hiit:
-  enabled: false            # <-- ponlo en true cuando quieras empezar
-  start_week: 5             # semanas contadas desde `program_start_date`
+  # Activado el 2026-09-13. La espera hasta la semana 5 estaba pensada para
+  # quien empieza de cero, y no es el caso: en la cuenta de Hevy constan
+  # `hiit_dia_1` y `hiit_dia_2` ya ejecutados el 8 y el 9 de septiembre. El
+  # HIIT ya se está haciendo, así que retrasarlo en el plan solo conseguía que
+  # el sistema no lo viera -y sobre todo, que no lo descontara del presupuesto
+  # semanal de sesiones intensas, dejando margen para la bici del fin de semana
+  # que en realidad no existe-.
+  enabled: true
+  start_week: 1             # semanas contadas desde `program_start_date`
   program_start_date: null  # AAAA-MM-DD; si es null se usa la fecha del primer
                             # check-in registrado
   allowed_routines: [dia_1, dia_2]
@@ -1749,12 +1756,19 @@ routines:
       - key: suitcase_carry
         template_id: "7593855D"
         name: "Paseo del granjero a una mano"
-        # Sin carga ni distancia definidas en Hevy (0 kg / 0 m).
+        # La carga sigue sin prescribirse -se coge lo que haya y no progresa-,
+        # pero la DURACIÓN sí, y no es un adorno: una serie que no pide ni reps
+        # ni segundos no se puede juzgar, y `_alcanza` revienta al intentarlo.
+        # Con `hiit.enabled` en false nadie lo notaba porque el bloque no
+        # entraba en el plan; al activarlo se llevaba por delante la
+        # reconciliación entera de ese día. 30 s es lo que dura cada estación
+        # del resto del circuito (remo, air bike, plancha), así que no cambia
+        # el entrenamiento: lo escribe.
         progression_type: none
         sets:
-          - {weight_kg: null, distance_m: null}
-          - {weight_kg: null, distance_m: null}
-          - {weight_kg: null, distance_m: null}
+          - {duration_s: 30}
+          - {duration_s: 30}
+          - {duration_s: 30}
 
       - key: air_bike
         template_id: "43573BB8"

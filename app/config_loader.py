@@ -1029,6 +1029,31 @@ def _validate(data: dict[str, Any]) -> list[str]:
                     f"rutina '{rkey}' / '{k}': serie {i} tiene type='{stype}', "
                     f"que no es uno de {sorted(VALID_SET_TYPES)}",
                 )
+                # Una serie efectiva TIENE que pedir reps o segundos. Es lo
+                # mismo que exige `_alcanza` al reconciliar, dicho aquí en vez
+                # de allí, y la diferencia entre las dos es toda la que hay
+                # entre un arranque que se niega y un `HevyError` a las 22:30
+                # en un hilo de APScheduler.
+                #
+                # No es hipotético: `hiit_dia_1` / `suitcase_carry` llevaba tres
+                # series `{weight_kg: null, distance_m: null}`, que no prescriben
+                # NADA medible. Mientras `hiit.enabled` estuvo en false nadie lo
+                # notó, porque el bloque no entraba en el plan. Al activarlo, la
+                # reconciliación de la noche reventaba entera -y con ella el
+                # cumplimiento, las rachas y la progresión de la sesión de
+                # fuerza de ese día-, por un ejercicio que ni siquiera progresa.
+                #
+                # El peso no cuenta como magnitud medible: "60 kg" no dice si la
+                # serie se terminó. Lo dice `_alcanza` y aquí se respeta el mismo
+                # criterio, porque tener dos sería peor que no tener ninguno.
+                if str(stype or "").lower() != "warmup":
+                    require(
+                        s.get("reps") is not None or s.get("duration_s") is not None,
+                        f"rutina '{rkey}' / '{k}': la serie {i} no pide ni reps "
+                        f"ni duration_s, así que no hay forma de saber si se "
+                        f"completó. La reconciliación no puede juzgarla y "
+                        f"revienta al intentarlo. Ponle una de las dos.",
+                    )
 
     # --- series de calentamiento --------------------------------------------
     st = data.get("set_types") or {}

@@ -500,11 +500,30 @@ class WorkoutLog(Base):
     total_sets: Mapped[int | None] = mapped_column(Integer)
     total_volume_kg: Mapped[float | None] = mapped_column(Float)
     # ¿Se completaron todas las series con las reps objetivo? Es la puerta (b)
-    # de la progresión.
+    # de la progresión. NULL cuando la fila no se pudo reconciliar contra un
+    # plan -un HIIT, un entrenamiento suelto, un día sin decisión guardada-,
+    # que es lo que esta columna ya significaba: no hay dato, no "falló".
     all_sets_at_target: Mapped[bool | None] = mapped_column(Boolean)
+
+    # Se entrenó, pero no era lo que el plan decía. Un HIIT, una rutina que no
+    # está en `config.yaml`, algo hecho un día que no tocaba fuerza. Antes esto
+    # ni siquiera llegaba a la tabla: `run_reconcile` volvía sin escribir nada
+    # y el entrenamiento se perdía entero. Se marca aquí, y no se deduce al
+    # leer, porque quien lo sabe es la reconciliación: al día siguiente ya no
+    # queda rastro de qué plan había cuando pasó.
+    unplanned: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    motivo_suelto: Mapped[str | None] = mapped_column(String(255))
+    # Cuándo lo contó un mensaje de Telegram. NULL = todavía no se ha avisado.
+    # Mismo patrón que `LoadAdoption.reported_at`: leer y sellar van separados
+    # para que un envío fallido no consuma el aviso.
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     raw_json: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        Index("ix_workout_log_sueltos", "unplanned", "reported_at", "date"),
+    )
 
 
 class HevyWrite(Base):

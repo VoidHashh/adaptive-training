@@ -488,6 +488,52 @@ def estado_para_el_ensayo(cfg) -> tuple[EngineState, str]:
     )
 
 
+def sesiones_para_el_ensayo(cfg, day: date) -> tuple[list, str]:
+    """Lo que se entrenó de verdad, para que el ensayo gaste el mismo presupuesto.
+
+    Va aparte de `estado_para_el_ensayo` porque esto depende del DÍA y el estado
+    no, pero el motivo de que exista es el mismo que el de aquella: si el ensayo
+    no lee esto, `intensity_budget` recibe una lista vacía y el ensayo cree que
+    queda margen para una salida intensa que en producción ya está gastado. Otra
+    vez un error en una sola dirección -predecir de más-, que es el que nunca
+    sorprende a nadie y por eso no se detecta.
+
+    Cuando no se puede leer, se dice. Devolver [] callando sería indistinguible
+    de una semana sin entrenar.
+
+    Y pone el esquema al día por su cuenta, sin dar por hecho que alguien lo ha
+    hecho antes. `estado_para_el_ensayo` también llama a `ensure_schema`, pero se
+    llama DESPUÉS que esta función, así que apoyarse en aquella era apoyarse en
+    el orden de dos líneas de `main`. Eso ya falló: al añadir las columnas de
+    entrenamientos sueltos a `workout_log`, el primer ensayo sobre la base
+    antigua cazaba el `OperationalError` aquí abajo y anunciaba el presupuesto de
+    intensas a cero. Error en una sola dirección otra vez -predecir MÁS margen
+    del que hay- y encima solo en la primera ejecución, que es cuando uno mira el
+    informe para comprobar que el cambio ha ido bien. `ensure_schema` es
+    idempotente, así que llamarla dos veces no cuesta nada y elimina la
+    dependencia de orden.
+    """
+    ruta = str(settings.database_url).split("///")[-1]
+    if "///" in str(settings.database_url) and not Path(ruta).is_file():
+        return [], "sin base de datos (el presupuesto de intensas sale a cero)"
+    try:
+        from app import repository as repo
+        from app.db import SessionLocal, ensure_schema
+
+        ensure_schema()
+        with SessionLocal() as s:
+            sesiones = repo.sesiones_ejecutadas(
+                s, cfg, desde=day - timedelta(days=14), hasta=day
+            )
+    except Exception as exc:  # noqa: BLE001
+        return [], f"NO SE PUDO LEER lo entrenado ({exc}); presupuesto a cero"
+
+    hiit = sum(1 for s in sesiones if s.is_hiit)
+    return sesiones, (
+        f"{len(sesiones)} sesión(es) en 14 días, {hiit} de ellas HIIT"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="adaptive",
@@ -566,7 +612,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         origen_ci = "sin check-in"
 
-    signals = build_signals(cfg, day, metrics=metrics, rides=rides, checkin=checkin)
+    sesiones, origen_sesiones = sesiones_para_el_ensayo(cfg, day)
+    signals = build_signals(
+        cfg, day, metrics=metrics, rides=rides, checkin=checkin, sessions=sesiones
+    )
 
     state, origen_estado = estado_para_el_ensayo(cfg)
     decision = decide(cfg, day, signals, state, source="dry_run")
@@ -584,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
           f"{'ACTIVA' if decision.deload.active else 'no'} "
           f"({decision.deload.reason})")
     print(f"  estado       : {origen_estado}")
+    print(f"  entrenado    : {origen_sesiones}")
     print("=" * ANCHO)
     for linea in proc.banner():
         print(linea)

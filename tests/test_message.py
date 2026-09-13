@@ -251,14 +251,20 @@ def test_lo_que_el_motor_apunta_de_la_sesion_llega_al_mensaje(cfg_hiit, estado_h
     assert "sin HIIT" in txt and "hoy es amber" in txt
 
 
-def test_el_hiit_apagado_en_el_config_no_se_repite_cada_dia(cfg):
+def test_el_hiit_apagado_en_el_config_no_se_repite_cada_dia(cfg_copia):
     """Con `hiit.enabled: false` el motivo es el mismo hoy y dentro de seis
     meses. Una línea que sale todos los días no se lee: se aprende a saltarla,
-    y con ella se saltan las que sí cambian."""
-    assert cfg.raw["hiit"]["enabled"] is False
-    d = decision(cfg)
+    y con ella se saltan las que sí cambian.
+
+    El apagado se monta aquí en vez de leerlo del `config.yaml` real. Cuando el
+    HIIT se encendió de verdad -el 13 de septiembre de 2026- este test se cayó
+    sin que la propiedad que vigila hubiera cambiado en nada: estaba atado al
+    valor del flag y no a la regla.
+    """
+    cfg_copia.raw["hiit"]["enabled"] = False
+    d = decision(cfg_copia)
     assert not any(n.startswith("sin HIIT") for n in d.session.notes)
-    assert "sin HIIT" not in render_plain(d, cfg)
+    assert "sin HIIT" not in render_plain(d, cfg_copia)
 
 
 def test_una_regla_que_quita_el_hiit_no_dice_el_motivo_al_reves(cfg_hiit, estado_hiit):

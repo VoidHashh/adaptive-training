@@ -91,6 +91,12 @@ class ReconcileResult:
     # se puede comprobar hoy, cuando se está ensayando el sistema a mano.
     pesos: dict[str, float | None] = field(default_factory=dict)
     adopciones: list[dict[str, Any]] = field(default_factory=list)
+    # Los entrenamientos que se registraron pero no emparejan con el plan del
+    # día: un HIIT, una rutina que no está en `config.yaml`, algo hecho un día
+    # que no tocaba. Antes ni siquiera llegaban a `workout_log`; ahora se
+    # guardan igual que el resto y además salen por aquí para que el mensaje de
+    # la mañana pueda decirlo.
+    sueltos: list[dict[str, Any]] = field(default_factory=list)
     avanzado: bool = False
     motivo: str = ""
 
@@ -149,8 +155,20 @@ def run_daily(
     valores = repo.checkin_values(checkin_row)
     checkin = Checkin(date=day, values=valores) if valores else None
 
+    # `sessions` es lo que se entrenó DE VERDAD, leído de `workout_log`. Se
+    # pasa aquí porque sin ello `intensity_budget` contaba solo las salidas de
+    # bici: un HIIT hecho el martes no gastaba presupuesto y el sábado quedaba
+    # un margen que no existía. La ventana son 14 días porque el presupuesto es
+    # semanal y la semana puede haber empezado hace seis; sobra de propósito.
     signals = build_signals(
-        cfg, day, metrics=metrics, rides=rides, checkin=checkin
+        cfg,
+        day,
+        metrics=metrics,
+        rides=rides,
+        checkin=checkin,
+        sessions=repo.sesiones_ejecutadas(
+            session, cfg, desde=day - timedelta(days=14), hasta=day
+        ),
     )
 
     # El estado sale de la base de datos, no de cero. Es la diferencia entre un
@@ -164,6 +182,11 @@ def run_daily(
     # sale a 62,5 y no a lo de ayer, y dentro de tres meses no habrá otro sitio
     # donde mirarlo. Se sellan como contadas más abajo, y solo si hay mensaje.
     decision.load_adoptions = repo.adopciones_sin_contar(session)
+
+    # Y lo que se entrenó sin que el plan lo previera, por lo mismo: es lo único
+    # que contesta "¿se ha enterado el sistema de que ayer hice un HIIT?". Se
+    # sella igual que las adopciones, más abajo y solo si hay mensaje.
+    decision.entrenos_sueltos = repo.entrenos_sin_contar(session)
 
     # La lectura de segundo orden. Se le pasa el histórico hasta AYER más la
     # decisión de hoy que acaba de salir del motor, todavía en memoria: a estas
@@ -224,6 +247,9 @@ def run_daily(
     if res.telegram_status in {"sent", "dry_run"}:
         repo.marcar_adopciones_contadas(
             session, [a.get("id") for a in decision.load_adoptions]
+        )
+        repo.marcar_entrenos_contados(
+            session, [e.get("id") for e in decision.entrenos_sueltos]
         )
 
     # El estado se guarda al final y SIN `executed`: a estas horas la sesión no
@@ -490,24 +516,29 @@ def run_reconcile(
     from app.engine.adoption import adoptar_cargas
     from app.integrations.hevy import (
         _fecha_workout,
+        claves_hiit,
         pesos_ejecutados,
+        routine_key_de,
         workout_compliance,
         workout_totals,
     )
 
     res = ReconcileResult(day=day)
 
-    fila = repo.current_decision(session, day)
-    if fila is None:
-        res.motivo = f"no hay decisión guardada del {day}: no hay plan contra el que comparar"
-        return res
-
-    plan = repo.planned_session(fila)
-    rkey = plan.get("routine")
-    if not rkey or plan.get("kind") not in {"full", "reduced"}:
-        res.motivo = f"el {day} no tocaba fuerza ({plan.get('kind')}): nada que reconciliar"
-        return res
-
+    # LO PRIMERO ES REGISTRAR, Y ES DELIBERADO QUE VAYA ANTES QUE NADA.
+    #
+    # Esto empezaba al revés: buscaba la decisión del día, comprobaba que
+    # tocaba fuerza, y solo entonces miraba los entrenamientos. Las tres
+    # salidas tempranas -sin decisión, día que no era de fuerza, rutina
+    # desconocida- devolvían sin escribir una sola fila en `workout_log`, así
+    # que un entrenamiento hecho en sábado, o un HIIT suelto, o cualquier cosa
+    # que no estuviera en el plan, DESAPARECÍA. No quedaba ni el registro de
+    # que hubo un entrenamiento: ni en las vistas de métricas, ni en el volumen
+    # de fuerza, ni en el presupuesto de sesiones intensas.
+    #
+    # Registrar y reconciliar son dos cosas distintas y ahora están separadas.
+    # Que el sistema no supiera prever algo no es motivo para no anotarlo: es
+    # justo el motivo para anotarlo.
     del_dia = [w for w in workouts if _fecha_workout(w) == day]
     if not del_dia:
         res.motivo = "no hay ningún entrenamiento registrado ese día"
@@ -530,25 +561,109 @@ def run_reconcile(
         )
         return res
 
-    # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos del día
-    # lo completó: partir la sesión en dos ratos es normal y no debería romper
-    # la racha.
-    plan_obj = _PlanLeido(plan)
+    # De qué rutina salió cada uno, por `routine_id` y jamás por el título.
+    # `None` = no sale de ninguna rutina conocida: un entrenamiento suelto.
+    rutinas = {str(w.get("id")): routine_key_de(w, cfg) for w in nuevos}
+
+    fila = repo.current_decision(session, day)
+    plan = repo.planned_session(fila) if fila is not None else {}
+    rkey = plan.get("routine")
+    es_fuerza = bool(rkey) and plan.get("kind") in {"full", "reduced"}
+
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
-    for w in nuevos:
-        for key, ok in workout_compliance(w, plan_obj, cfg).items():
-            executed[key] = executed.get(key, False) or ok
-        # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
-        # une con un OR: partir la sesión en dos ratos es normal, y la serie
-        # más pesada del día es la más pesada de los dos ratos.
-        for key, kg in pesos_ejecutados(w, plan_obj, cfg).items():
-            if kg is None:
-                continue
-            previo = pesos.get(key)
-            pesos[key] = kg if previo is None else max(previo, kg)
+    if es_fuerza:
+        # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos del
+        # día lo completó: partir la sesión en dos ratos es normal y no debería
+        # romper la racha.
+        plan_obj = _PlanLeido(plan)
+        for w in nuevos:
+            for key, ok in workout_compliance(w, plan_obj, cfg).items():
+                executed[key] = executed.get(key, False) or ok
+            # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
+            # une con un OR: partir la sesión en dos ratos es normal, y la serie
+            # más pesada del día es la más pesada de los dos ratos.
+            for key, kg in pesos_ejecutados(w, plan_obj, cfg).items():
+                if kg is None:
+                    continue
+                previo = pesos.get(key)
+                pesos[key] = kg if previo is None else max(previo, kg)
     res.executed = executed
     res.pesos = pesos
+
+    # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
+    # que solo se le pone a las filas que salen de esa rutina. Antes se le
+    # estampaba a todas las del día, y eso convertía el HIIT de después en una
+    # sesión de fuerza «con todas las series al objetivo» que nadie había
+    # evaluado. Para lo demás -HIIT, entreno suelto, día sin plan- queda a
+    # NULL, que es lo que esa columna ya significaba: no hay dato.
+    veredicto = all(executed.values()) if (es_fuerza and executed) else None
+
+    # El bloque HIIT del día también estaba previsto, aunque se registre aparte.
+    # El motor lo añade a la rutina de fuerza, pero en Hevy las rutinas HIIT
+    # existen sueltas y se ejecutan como un entrenamiento propio: así es como
+    # están los del 8 y el 9 de septiembre en la cuenta. Sin esta línea, hacer
+    # exactamente lo que el plan pedía salía cada noche en el mensaje como
+    # «visto fuera del plan», que es la clase de aviso que enseña a no leer los
+    # avisos.
+    bloque_hiit = plan.get("hiit_block")
+    hiit = claves_hiit(cfg)
+
+    sueltos: list[dict[str, Any]] = []
+    for w in nuevos:
+        wid = str(w.get("id"))
+        rk = rutinas.get(wid)
+        es_la_de_fuerza = bool(rk) and es_fuerza and rk == rkey
+        previsto = es_la_de_fuerza or (bool(rk) and rk == bloque_hiit)
+        motivo = (
+            None
+            if previsto
+            else _motivo_suelto(rk, rkey, plan, es_fuerza, fila, hiit)
+        )
+        totales = workout_totals(w)
+        fuera = WorkoutLog(
+            hevy_workout_id=wid,
+            date=day,
+            routine_key=rk,
+            title=w.get("title"),
+            all_sets_at_target=veredicto if es_la_de_fuerza else None,
+            unplanned=not previsto,
+            motivo_suelto=motivo,
+            duration_s=totales.duration_s,
+            total_sets=totales.total_sets,
+            total_volume_kg=totales.total_volume_kg,
+            # El entrenamiento entero, que hasta ahora se leía, se usaba para
+            # decidir si la sesión fue limpia y se tiraba. Es el único sitio
+            # donde queda el peso y las reps de CADA serie: ni la decisión ni
+            # el estado del motor guardan lo que de verdad se levantó, solo si
+            # alcanzó el objetivo. Sin esto no se puede responder nunca a
+            # "¿cuánto subió el hip thrust en tres meses?" y no se puede
+            # arreglar hacia atrás.
+            raw_json=repo.crudo_para_guardar(w, etiqueta="entrenamiento Hevy"),
+        )
+        session.add(fuera)
+        if not previsto:
+            sueltos.append(
+                {
+                    "hevy_workout_id": wid,
+                    "date": day.isoformat(),
+                    "routine": rk,
+                    "title": w.get("title"),
+                    "duration_s": totales.duration_s,
+                    "total_sets": totales.total_sets,
+                    "motivo": motivo,
+                }
+            )
+    session.flush()
+    res.sueltos = sueltos
+
+    if not es_fuerza:
+        res.motivo = (
+            f"{len(nuevos)} entrenamiento(s) registrados; el {day} no tocaba "
+            f"fuerza ({plan.get('kind') if fila is not None else 'sin decisión guardada'}): "
+            f"nada que reconciliar contra el plan"
+        )
+        return res
 
     state = repo.load_state(session, program_start=cfg.program_start)
     apply_execution(
@@ -586,34 +701,46 @@ def run_reconcile(
     repo.save_state(session, state, day=day)
     repo.guardar_adopciones(session, day, adopciones)
 
-    for w in nuevos:
-        totales = workout_totals(w)
-        session.add(
-            WorkoutLog(
-                hevy_workout_id=str(w.get("id")),
-                date=day,
-                routine_key=str(rkey),
-                title=w.get("title"),
-                all_sets_at_target=all(executed.values()) if executed else None,
-                duration_s=totales.duration_s,
-                total_sets=totales.total_sets,
-                total_volume_kg=totales.total_volume_kg,
-                # El entrenamiento entero, que hasta ahora se leía, se usaba
-                # para decidir si la sesión fue limpia y se tiraba. Es el único
-                # sitio donde queda el peso y las reps de CADA serie: ni la
-                # decisión ni el estado del motor guardan lo que de verdad se
-                # levantó, solo si alcanzó el objetivo. Sin esto no se puede
-                # responder nunca a "¿cuánto subió el hip thrust en tres meses?"
-                # y no se puede arreglar hacia atrás.
-                raw_json=repo.crudo_para_guardar(w, etiqueta="entrenamiento Hevy"),
-            )
-        )
-    session.flush()
-
     res.avanzado = True
     limpios = sum(1 for v in executed.values() if v)
     res.motivo = f"{limpios}/{len(executed)} ejercicios completos"
+    if sueltos:
+        res.motivo += f"; {len(sueltos)} entrenamiento(s) fuera del plan"
     return res
+
+
+def _motivo_suelto(
+    rk: str | None,
+    rkey: Any,
+    plan: dict[str, Any],
+    es_fuerza: bool,
+    fila: Any,
+    hiit: set[str] = frozenset(),  # type: ignore[assignment]
+) -> str:
+    """Por qué este entrenamiento no se reconcilia contra ningún plan.
+
+    Se escribe aquí y se guarda con la fila porque el mensaje de la mañana lo
+    va a leer tal cual. «Hiciste algo que no esperaba» sin decir el qué obliga
+    a abrir la base de datos para entenderlo, y a las nueve de la mañana desde
+    el móvil eso equivale a no avisar.
+    """
+    if fila is None:
+        return "no había decisión guardada de ese día"
+    if rk is not None and rk in hiit:
+        # Que el HIIT se haga por su cuenta no es un error, y decir «es
+        # hiit_dia_1 y ese día tocaba dia_1» daría a entender que era una
+        # alternativa a la fuerza cuando es un añadido. Lo que hay que contar
+        # es que el plan de ese día no lo pedía: cuenta igual para el
+        # presupuesto de intensas, pero no lo decidió el motor.
+        previsto = plan.get("hiit_block")
+        if previsto:
+            return f"HIIT por libre: ese día el plan pedía {previsto}"
+        return "HIIT por libre: el plan de ese día no llevaba HIIT"
+    if not es_fuerza:
+        return f"ese día no tocaba fuerza ({plan.get('kind')})"
+    if rk is None:
+        return "no sale de ninguna rutina del plan"
+    return f"es {rk} y ese día tocaba {rkey}"
 
 
 class _PlanLeido:
