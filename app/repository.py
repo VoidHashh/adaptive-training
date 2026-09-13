@@ -407,6 +407,45 @@ def get_checkin(session: Session, day: date) -> CheckinRow | None:
     return session.scalars(select(CheckinRow).where(CheckinRow.date == day)).first()
 
 
+def historial_checkins(session: Session, *, desde: date, hasta: date) -> list[Any]:
+    """Los check-ins de una ventana, como `Checkin` del motor.
+
+    EL OTRO PARÁMETRO MUERTO, Y EL MÁS CARO DE LOS DOS.
+    ---------------------------------------------------
+    `build_signals` acepta `checkin_history=` desde el primer día y tampoco se
+    lo pasaba nadie: ni `run_daily` ni el ensayo en seco. Con el defecto `()`,
+    `sig.history[clave]` acababa conteniendo COMO MUCHO un punto -el del propio
+    día- y eso es justo lo que leen los umbrales adaptativos:
+    `series = sig.history.get(metric, {})`.
+
+    Hoy no se nota porque los dos únicos umbrales adaptativos del config miran
+    métricas derivadas de las salidas (`load_3d_p90`, `load_7d_p90`), que se
+    construyen por otro camino. Ninguna regla usa todavía un deslizador del
+    formulario a lo largo de varios días. O sea que la mina está armada y
+    dormida: el día que se defina un umbral adaptativo sobre la lumbar o el
+    cansancio, `resolve_adaptive_threshold` recibiría una serie de un punto y
+    devolvería un percentil de sí mismo -un umbral que siempre se cumple o
+    nunca- con cara de estadística sobre el histórico propio.
+
+    Ese día es octubre, en la recalibración. Preferimos que reviente ahora, con
+    el sistema mirándose, a que calcule percentiles sobre un punto dentro de
+    seis semanas sin que nada lo diga.
+
+    Los nulos ya los quita `checkin_values`, así que un deslizador sin contestar
+    no entra en la serie en vez de entrar como cero. Un día que no se contestó y
+    un día contestado con el mínimo son cosas opuestas, y para un percentil se
+    leerían igual.
+    """
+    from app.engine.signals import Checkin
+
+    filas = session.scalars(
+        select(CheckinRow)
+        .where(CheckinRow.date >= desde, CheckinRow.date <= hasta)
+        .order_by(CheckinRow.date)
+    ).all()
+    return [Checkin(date=f.date, values=checkin_values(f)) for f in filas]
+
+
 def checkin_values(fila: CheckinRow | None) -> dict[str, Any]:
     """La fila en el formato de diccionario que espera el motor.
 

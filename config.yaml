@@ -1176,8 +1176,20 @@ cycling:
     #
     # Efecto lateral bueno: con el suelo de 2 HIIT, el límite de 3 hacía que una
     # sola salida sin clasificar disparase el recorte por duda (2+1 >= 3). Con 4
-    # hacen falta dos. Hoy no cambia nada -0 de 58 salidas sin clasificar- pero
-    # deja de ser un cable pelado.
+    # hacen falta dos... si no hubo ninguna intensa entre semana. Si la hubo,
+    # sigue bastando una: 2 HIIT + 1 intensa + 1 duda = 4. O sea que la duda
+    # escala con lo demás en vez de dispararse sola, que es lo que se quería.
+    # Hoy no cambia nada -0 de 58 salidas sin clasificar- pero deja de ser un
+    # cable pelado. Medido en `scripts/sensibilidad_sin_clasificar.py`.
+    #
+    # Lo que hay que saber del otro lado, porque el precio de subir el techo es
+    # real: con 4, NINGUNA de las 25 semanas del histórico llega a agotarlo
+    # antes del sábado, y solo 3 lo agotan contando la semana entera. Como freno
+    # del sábado el presupuesto ha quedado en cero; era 5 de 25. Eso es lo que
+    # significa «tope de seguridad» y hay que leerlo así: el fin de semana lo
+    # sostienen los otros tres frenos de aquí abajo, no este número. Si alguna
+    # vez hubiera que volver a frenar por acumulación, el sitio es
+    # `max_intense_rides_per_weekend`, no bajar esto otra vez a 3.
     intensity_budget:
       enabled: true
       weekly_limit: 4

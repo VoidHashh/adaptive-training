@@ -534,6 +534,45 @@ def sesiones_para_el_ensayo(cfg, day: date) -> tuple[list, str]:
     )
 
 
+def historial_para_el_ensayo(day: date) -> tuple[list, str]:
+    """Los check-ins anteriores, para que el ensayo tenga la misma serie.
+
+    Tercera vez el mismo párrafo, y no es pereza: el ensayo en seco es lo único
+    que se mira antes de dejar que el sistema escriba solo, y cada dato que el
+    ensayo NO lee es un sitio donde el ensayo dice una cosa y la mañana hace
+    otra. `sig.history` alimenta los umbrales adaptativos; un ensayo sin
+    histórico de formulario los calcularía sobre un punto y saldrían distintos
+    de los de producción, que sí lo tiene.
+
+    Hoy la diferencia es cero porque ningún umbral adaptativo mira un
+    deslizador. Se conecta ahora precisamente por eso: conectarlo cuando ya
+    importa significa descubrir el desajuste con las reglas nuevas puestas, y
+    entonces no se sabe cuál de las dos cosas está mal.
+
+    Devuelve [] con motivo cuando no se puede leer, igual que
+    `sesiones_para_el_ensayo`, y por lo mismo: [] callando es indistinguible de
+    "nunca has rellenado el formulario".
+    """
+    ruta = str(settings.database_url).split("///")[-1]
+    if "///" in str(settings.database_url) and not Path(ruta).is_file():
+        return [], "sin base de datos (sin serie para umbrales adaptativos)"
+    try:
+        from app import repository as repo
+        from app.db import SessionLocal, ensure_schema
+
+        ensure_schema()
+        with SessionLocal() as s:
+            historial = repo.historial_checkins(
+                s, desde=day - timedelta(days=90), hasta=day - timedelta(days=1)
+            )
+    except Exception as exc:  # noqa: BLE001
+        return [], f"NO SE PUDO LEER el histórico de check-ins ({exc}); serie vacía"
+
+    if not historial:
+        return [], "sin check-ins anteriores en 90 días"
+    return historial, f"{len(historial)} check-in(s) en 90 días"
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="adaptive",
@@ -613,8 +652,15 @@ def main(argv: list[str] | None = None) -> int:
         origen_ci = "sin check-in"
 
     sesiones, origen_sesiones = sesiones_para_el_ensayo(cfg, day)
+    historial, origen_historial = historial_para_el_ensayo(day)
     signals = build_signals(
-        cfg, day, metrics=metrics, rides=rides, checkin=checkin, sessions=sesiones
+        cfg,
+        day,
+        metrics=metrics,
+        rides=rides,
+        checkin=checkin,
+        sessions=sesiones,
+        checkin_history=historial,
     )
 
     state, origen_estado = estado_para_el_ensayo(cfg)
@@ -634,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
           f"({decision.deload.reason})")
     print(f"  estado       : {origen_estado}")
     print(f"  entrenado    : {origen_sesiones}")
+    print(f"  histórico CI : {origen_historial}")
     print("=" * ANCHO)
     for linea in proc.banner():
         print(linea)

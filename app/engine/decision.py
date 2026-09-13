@@ -781,8 +781,8 @@ def apply_execution(
     routine_key: str,
     exercises: Sequence[dict[str, Any]],
     executed: dict[str, bool],
+    progressed: Sequence[str],
     light: str | None = None,
-    progressed: Sequence[str] = (),
 ) -> EngineState:
     """Aplica al estado lo que REALMENTE se ejecutó. Muta y devuelve `state`.
 
@@ -803,6 +803,14 @@ def apply_execution(
     subidas seguidas sin las sesiones limpias que las justifican. Es el motivo
     de que la progresión se guarde con la decisión: por la noche ya no se puede
     deducir.
+
+    Y por eso es obligatorio y no `= ()`. Los dos callers lo pasan, así que el
+    defecto no servía a nadie; lo único que hacía era dejar preparado el día en
+    que un tercer caller se olvidase. Ese olvido no fallaría: adelantaría una
+    subida de carga, en silencio y en la dirección de siempre -de más-, sobre
+    una espalda que no admite dos subidas seguidas. Cuando de verdad no hay
+    nada que hubiera subido hoy se pasa `()` a mano, y entonces es una
+    afirmación en vez de un hueco.
     """
     if light is not None:
         state.last_routine_light[routine_key] = light

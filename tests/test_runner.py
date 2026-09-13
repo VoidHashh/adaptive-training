@@ -1133,6 +1133,7 @@ def test_la_racha_se_rompe_entera_no_se_decrementa():
     apply_execution(
         st, routine_key="dia_1", exercises=EJS,
         executed={"hip_thrust": False, "remo": True},
+        progressed=(),
     )
     assert st.clean_sessions[("dia_1", "hip_thrust")] == 0
     assert st.clean_sessions[("dia_1", "remo")] == 1
@@ -1159,7 +1160,8 @@ def test_la_racha_es_por_rutina_y_ejercicio():
     """La plancha del Día 1 y la del Día 3 no comparten mérito."""
     st = EngineState(clean_sessions={("dia_3", "hip_thrust"): 4})
     apply_execution(
-        st, routine_key="dia_1", exercises=EJS, executed={"hip_thrust": True}
+        st, routine_key="dia_1", exercises=EJS, executed={"hip_thrust": True},
+        progressed=(),
     )
     assert st.clean_sessions[("dia_1", "hip_thrust")] == 1
     assert st.clean_sessions[("dia_3", "hip_thrust")] == 4
@@ -1218,3 +1220,58 @@ def test_una_racha_larga_llega_al_mensaje(db, cfg):
     )
     assert res.decision.light == "amber", "el montaje tenía que dar un día no verde"
     assert "9 días seguidos sin un verde" in tg.enviados[0]
+
+
+# ---------------------------------------------------------------------------
+# Que la mañana LEA el histórico de check-ins, no solo que pueda
+# ---------------------------------------------------------------------------
+#
+# Quitarle el defecto a `checkin_history` obliga a pasarlo, pero no obliga a
+# pasarlo BIEN: `run_daily` podía cumplir el tipo con un `[]` fijo y el
+# parámetro seguiría muerto con una firma más estricta. Es literalmente lo que
+# pasó con `sessions` durante toda la vida del sistema. Esto lo comprueba desde
+# fuera, contra la base de datos.
+
+
+def test_la_mañana_lee_el_historico_de_checkins_de_la_base(db, cfg):
+    from app.repository import upsert_checkin
+
+    for i in range(1, 11):
+        upsert_checkin(db, LUNES - timedelta(days=i), {"fatigue": 3}, config=cfg)
+    db.flush()
+
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    serie = res.decision.signals.history["fatigue"]
+    assert len(serie) == 10, (
+        f"la serie llega con {len(serie)} punto(s): el histórico no se lee. "
+        "Un percentil sobre esto sería un percentil de sí mismo."
+    )
+
+
+def test_la_mañana_no_mete_el_checkin_de_hoy_dos_veces(db, cfg):
+    """Hoy lo añade `build_signals` por su cuenta, desde `checkin`.
+
+    Si `run_daily` pidiera el histórico hasta HOY inclusive, el valor del día
+    entraría por los dos caminos. Da la misma clave de diccionario, así que no
+    se duplicaría el punto -pero dejaría el día de hoy dentro de la ventana que
+    `resolve_adaptive_threshold` cierra AYER a propósito, que es el error que
+    esa precaución existe para evitar.
+    """
+    from app.repository import upsert_checkin
+
+    upsert_checkin(db, LUNES, {"fatigue": 9}, config=cfg)
+    upsert_checkin(db, LUNES - timedelta(days=1), {"fatigue": 2}, config=cfg)
+    db.flush()
+
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    serie = res.decision.signals.history["fatigue"]
+    assert serie[LUNES] == 9
+    assert serie[LUNES - timedelta(days=1)] == 2
+    assert len(serie) == 2
+
+
+def test_sin_checkins_anteriores_la_mañana_sigue_funcionando(db, cfg):
+    """El arranque del sistema: la serie vacía es un estado válido, no un fallo."""
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision is not None
+    assert res.decision.signals.history["fatigue"] == {}

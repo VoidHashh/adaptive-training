@@ -74,6 +74,15 @@ ARRIBA = "up"
 ABAJO = "down"
 
 
+class AdoptionError(ValueError):
+    """Se ha pedido mover una carga con la explicación mal formada.
+
+    Revienta en vez de adoptar callando. La carga se movería igual de bien; lo
+    que quedaría mal es el motivo que se lee en el móvil, y un motivo que se
+    contradice solo junto a un cambio de peso real vale menos que ningún motivo.
+    """
+
+
 @dataclass
 class Adopcion:
     """Un cambio de objetivo propuesto por lo que se hizo. Aplicado o no."""
@@ -249,7 +258,7 @@ def adoptar_cargas(
                 continue
             salida.append(
                 _aplicar(state, clave, ex, objetivo_series, objetivo, hecho,
-                         prescrito, ARRIBA, cfg)
+                         prescrito, ARRIBA, cfg, racha=None)
             )
             continue
 
@@ -301,8 +310,43 @@ def _aplicar(
     prescrito: float,
     direccion: str,
     cfg: dict[str, Any],
-    racha: int = 0,
+    racha: int | None,
 ) -> Adopcion:
+    """Mueve la carga vigente y redacta lo que se va a leer en el mensaje.
+
+    POR QUÉ `racha` ES OBLIGATORIO Y ADEMÁS ESTÁ ATADO A `direccion`
+    ----------------------------------------------------------------
+    Tenía `= 0`, y era el caso más disimulado de los cuatro que se barrieron:
+    no dejaba de calcular nada. `racha` solo se usa para redactar el motivo de
+    la rama ABAJO, así que un olvido no habría cambiado ni una carga ni un
+    estado. Habría cambiado la FRASE, y la frase dice por qué el sistema te ha
+    bajado un peso.
+
+    Con el defecto puesto, ese olvido produce «0 sesiones seguidas por debajo
+    de lo pedido; se adopta la mejor de ellas»: una afirmación que se
+    contradice sola -si fueran cero, no habría nada que adoptar- y que aun así
+    viaja al móvil junto a una bajada de carga real y verdadera. Es peor que un
+    número equivocado: es una explicación que invita a desconfiar de la bajada
+    correcta que la acompaña.
+
+    Se pide `None` explícito en ARRIBA en vez de dejar que cada caller invente
+    un cero. Así el tipo dice lo que la función necesita saber -«esta dirección
+    no tiene racha»- y añadir una tercera dirección obliga a decidir a qué lado
+    cae, en vez de heredar un cero por descuido.
+    """
+    if direccion == ABAJO and not racha:
+        raise AdoptionError(
+            f"_aplicar({clave}, ABAJO) sin racha: la bajada se aplicaría igual "
+            f"pero el motivo diría '0 sesiones seguidas por debajo', que se "
+            f"contradice solo. La racha la cuenta quien decide bajar."
+        )
+    if direccion == ARRIBA and racha is not None:
+        raise AdoptionError(
+            f"_aplicar({clave}, ARRIBA, racha={racha}): subir no tiene racha de "
+            f"sesiones por debajo. Si ha llegado un número aquí, o la dirección "
+            f"o el número están mal."
+        )
+
     routine_key, key = clave
     nombre = str(ex.get("name", key))
     delta = hecho - objetivo

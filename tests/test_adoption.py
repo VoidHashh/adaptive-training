@@ -558,3 +558,78 @@ def test_el_ruido_de_coma_flotante_no_inventa_adopciones(hecho):
     assert adopciones == [] or adopciones[0].objetivo_despues_kg == pytest.approx(
         hecho, abs=1e-6
     )
+
+
+# ---------------------------------------------------------------------------
+# La guarda de `_aplicar`: la explicación tiene que poder ser verdad
+# ---------------------------------------------------------------------------
+#
+# `racha` tenía `= 0`. Era el más disimulado de los cuatro defectos que se
+# barrieron porque NO dejaba de calcular nada: la carga se movía igual y el
+# estado quedaba igual. Lo único que cambiaba era la frase, y la frase es lo que
+# explica por qué el sistema te ha bajado un peso. Con el defecto puesto, un
+# caller que se olvidara producía «0 sesiones seguidas por debajo de lo pedido;
+# se adopta la mejor de ellas»: una afirmación que se contradice sola viajando
+# al móvil pegada a una bajada de carga real.
+
+
+def _aplicar_directo(direccion, racha):
+    from app.engine.adoption import _aplicar
+
+    e = estado_en(60)
+    return _aplicar(
+        e, CLAVE, ejercicio(60), e.current_sets[CLAVE], 60.0, 55.0, 60.0,
+        direccion, PROG["adopt_executed_load"], racha=racha,
+    )
+
+
+def test_bajar_sin_racha_revienta_en_vez_de_escribir_un_motivo_falso():
+    from app.engine.adoption import AdoptionError
+
+    with pytest.raises(AdoptionError, match="0 sesiones seguidas"):
+        _aplicar_directo(ABAJO, None)
+
+
+def test_bajar_con_racha_cero_es_el_mismo_error():
+    """`0` y `None` fallan igual: ninguno de los dos puede haber bajado nada."""
+    from app.engine.adoption import AdoptionError
+
+    with pytest.raises(AdoptionError):
+        _aplicar_directo(ABAJO, 0)
+
+
+def test_subir_con_racha_revienta_porque_subir_no_tiene_racha():
+    """La otra mitad de la atadura.
+
+    Sin ella, `racha` sería un parámetro obligatorio que la rama ARRIBA rellena
+    con cualquier cosa, y el tipo dejaría de decir nada. Un número aquí
+    significa que la dirección o el número están mal, y las dos cosas importan.
+    """
+    from app.engine.adoption import AdoptionError
+
+    with pytest.raises(AdoptionError, match="subir no tiene racha"):
+        _aplicar_directo(ARRIBA, 3)
+
+
+def test_el_motivo_de_la_bajada_dice_cuantas_sesiones_fueron():
+    """Lo que la guarda protege, por el camino normal.
+
+    Tres sesiones por debajo es lo que `down_after_sessions` pide, y el mensaje
+    tiene que decir el número: «se adopta la mejor de ellas» sin decir de
+    cuántas no se puede contrastar con lo que uno recuerda haber hecho.
+    """
+    e = estado_en(60)
+    for _ in range(3):
+        adopciones = adoptar(e, [ejercicio(60)], {"hip_thrust": 50})
+    (a,) = adopciones
+    assert a.direccion == ABAJO
+    assert "3 sesiones seguidas" in a.motivo
+
+
+def test_la_subida_normal_sigue_funcionando_con_la_guarda_puesta():
+    """Que atar `racha` a `direccion` no rompa el camino de todos los días."""
+    e = estado_en(60)
+    (a,) = adoptar(e, [ejercicio(60)], {"hip_thrust": 62.5})
+    assert a.aplicada is True
+    assert a.direccion == ARRIBA
+    assert "0 sesiones" not in a.motivo

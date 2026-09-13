@@ -47,6 +47,14 @@ WEEKDAY_NAMES = [
 UNKNOWN = "desconocida"
 
 
+class BudgetConfigError(ValueError):
+    """El presupuesto de intensas está declarado a medias en el YAML.
+
+    Se para en vez de completar el hueco con un número razonable, porque el
+    número razonable resultó ser el valor viejo del propio fichero.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Entradas
 # ---------------------------------------------------------------------------
@@ -596,7 +604,25 @@ def intensity_budget(
     Cuenta lo EJECUTADO: un HIIT programado que no se hizo no gasta presupuesto.
     """
     cfg = ((cycling_cfg.get("recommendation", {}) or {}).get("intensity_budget", {})) or {}
-    limit = int(cfg.get("weekly_limit", 3))
+
+    # El 3 de antes era `cfg.get("weekly_limit", 3)`, y ese 3 no es un número
+    # cualquiera: es el valor ANTERIOR del YAML, el que dejaba 5 de cada 25
+    # sábados sin salida fuerte porque los dos HIIT del plan no cabían debajo
+    # del techo. O sea que un despiste en el YAML -borrar la línea, escribir
+    # `weekly_limt`- no daba error: revertía el cambio en silencio y el sistema
+    # seguía recomendando con el número viejo mientras el fichero enseñaba el
+    # nuevo. El valor que se lee no es el valor que se usa, otra vez.
+    #
+    # Sin el bloque entero no se exige nada: no tener presupuesto es una
+    # decisión legítima y `used` sale igual. Lo que no puede pasar es tener el
+    # bloque puesto y que el límite venga de aquí dentro.
+    if cfg and "weekly_limit" not in cfg:
+        raise BudgetConfigError(
+            "cycling.recommendation.intensity_budget existe pero no trae "
+            "`weekly_limit`. Antes se usaba 3 por defecto, que es justo el valor "
+            "que se subió a 4: el olvido revertía el cambio sin decirlo."
+        )
+    limit = int(cfg.get("weekly_limit", 0))
     counts = cfg.get("counts_as_intense", {}) or {}
     start = week_start(day, str(cfg.get("week_starts_on", "monday")))
 
@@ -694,29 +720,44 @@ def build_signals(
     metrics: Sequence[DayMetrics],
     rides: Sequence[Ride],
     sessions: Sequence[StrengthSession],
+    checkin_history: Sequence[Checkin],
     checkin: Checkin | None = None,
-    checkin_history: Sequence[Checkin] = (),
     history_days: int = 14,
 ) -> Signals:
     """Construye el `Signals` de un día a partir de los datos crudos.
 
     `config` puede ser un `Config` o un dict; solo se le piden secciones.
 
-    POR QUÉ `sessions` NO TIENE VALOR POR DEFECTO
-    ---------------------------------------------
-    Lo tuvo -`= ()`- y por eso este parámetro estuvo MUERTO desde el primer día.
-    Ningún caller de producción se lo pasaba: ni `runner.run_daily` ni
-    `cli.py`. El único sitio del proyecto donde se construía un
-    `StrengthSession` era su propio test. `intensity_budget` recibía siempre
-    una lista vacía, así que el presupuesto semanal de sesiones intensas contó
-    durante toda la vida del sistema únicamente las salidas de bici: un HIIT
-    hecho el martes no gastaba nada y el sábado quedaba margen para una salida
-    intensa que en realidad ya no cabía.
+    POR QUÉ NI `sessions` NI `checkin_history` TIENEN VALOR POR DEFECTO
+    -------------------------------------------------------------------
+    Son el mismo fallo dos veces, y el segundo todavía no ha explotado.
 
-    Un defecto vacío convierte "se me olvidó pasarlo" en "esa semana no
-    entrenaste", que son cosas opuestas y se leen igual. Sin defecto, olvidarlo
-    es un `TypeError` en el arranque en vez de un presupuesto optimista que no
-    se nota hasta que la espalda lo nota.
+    `sessions` lo tuvo -`= ()`- y por eso estuvo MUERTO desde el primer día.
+    Ningún caller de producción se lo pasaba: ni `runner.run_daily` ni `cli.py`.
+    El único sitio del proyecto donde se construía un `StrengthSession` era su
+    propio test. `intensity_budget` recibía siempre una lista vacía, así que el
+    presupuesto semanal de sesiones intensas contó durante toda la vida del
+    sistema únicamente las salidas de bici: un HIIT hecho el martes no gastaba
+    nada y el sábado quedaba margen para una salida intensa que en realidad ya
+    no cabía.
+
+    `checkin_history` estaba exactamente igual, y sigue sin haber explotado solo
+    por casualidad. Con `= ()`, `sig.history[clave]` termina con como mucho un
+    punto -el de hoy- y eso es justo lo que leen los umbrales adaptativos unas
+    líneas más abajo: `series = sig.history.get(metric, {})`. Hoy los dos únicos
+    umbrales adaptativos del config miran carga derivada de las salidas, que se
+    construye por otro camino, así que el agujero está tapado por que nadie ha
+    pasado por encima todavía. En cuanto se defina un umbral adaptativo sobre la
+    lumbar o el cansancio -la recalibración de octubre-, sería un percentil
+    calculado sobre un solo punto: un umbral que siempre se cumple o nunca, con
+    aspecto de estadística sobre el histórico propio.
+
+    Un defecto vacío convierte "se me olvidó pasarlo" en "no hay histórico", que
+    son cosas opuestas y se leen igual. Sin defecto, olvidarlo es un `TypeError`
+    en el arranque -ruidoso, inmediato, delante de quien acaba de tocar el
+    código- en vez de un número plausible que no se nota hasta que la espalda lo
+    nota. Se pasa una lista vacía cuando DE VERDAD no hay histórico, y entonces
+    es una afirmación de quien llama, no un olvido.
     """
     raw = config.raw if hasattr(config, "raw") else config
     baseline_cfg = raw.get("baseline", {}) or {}
@@ -787,19 +828,6 @@ def build_signals(
                 f"Se prefiere no dar el número a darlo por lo bajo."
             )
 
-    # --- umbrales adaptativos ---------------------------------------------
-    for name, spec in adaptive_cfg.items():
-        metric = spec.get("metric")
-        series = sig.history.get(metric, {})
-        if not series:
-            sig.adaptive[name] = None
-            notes.append(f"{name}: no hay serie para la métrica '{metric}'")
-            continue
-        value, why = resolve_adaptive_threshold(spec, series, day)
-        sig.adaptive[name] = value
-        if why:
-            notes.append(f"{name}: {why}")
-
     # --- ciclismo ----------------------------------------------------------
     weekend = weekend_summary(classified, day, cycling_cfg)
     sig.values["weekend_total_hours"] = round(weekend.total_hours, 3)
@@ -849,6 +877,37 @@ def build_signals(
 
     if checkin is None:
         notes.append("sin check-in: solo se evalúan las reglas objetivas")
+
+    # --- umbrales adaptativos ---------------------------------------------
+    #
+    # VA AL FINAL, Y ESO ES EL ARREGLO, NO EL ORDEN DE SIEMPRE.
+    #
+    # Estaba arriba, antes del bloque del formulario, y ahí leía
+    # `sig.history[metrica]` de deslizadores que este mismo cuerpo todavía no
+    # había rellenado. Efecto: cualquier umbral adaptativo definido sobre un
+    # campo del check-in salía None SIEMPRE, con la nota "no hay serie para la
+    # métrica X" -que es verdad en ese instante y mentira tres líneas después- y
+    # la regla que dependiera de él se saltaba entera para siempre.
+    #
+    # No se había notado porque los dos únicos umbrales del config miran
+    # `load_3d` y `load_7d`, que sí están construidos a estas alturas: el
+    # segundo fusible de la misma mina que `checkin_history`. Arreglar solo el
+    # parámetro habría dejado la serie llegando bien a un sitio que se leía
+    # antes de que existiera, o sea el mismo None con una causa distinta.
+    #
+    # Las series de carga no dependen de nada de aquí abajo, así que bajarlo no
+    # le quita nada a lo que ya funcionaba.
+    for name, spec in adaptive_cfg.items():
+        metric = spec.get("metric")
+        series = sig.history.get(metric, {})
+        if not series:
+            sig.adaptive[name] = None
+            notes.append(f"{name}: no hay serie para la métrica '{metric}'")
+            continue
+        value, why = resolve_adaptive_threshold(spec, series, day)
+        sig.adaptive[name] = value
+        if why:
+            notes.append(f"{name}: {why}")
 
     sig.rides = classified
     sig.weekend = weekend

@@ -160,6 +160,13 @@ def run_daily(
     # bici: un HIIT hecho el martes no gastaba presupuesto y el sábado quedaba
     # un margen que no existía. La ventana son 14 días porque el presupuesto es
     # semanal y la semana puede haber empezado hace seis; sobra de propósito.
+    #
+    # `checkin_history` es el mismo arreglo para el otro parámetro que nadie
+    # pasaba nunca: sin él, la serie de cada deslizador tenía un punto y los
+    # umbrales adaptativos sobre el formulario habrían sacado percentiles de un
+    # solo dato. 90 días y no 14 porque un percentil sobre dos semanas de
+    # respuestas no es un percentil, y porque estos datos son diez filas: leer
+    # tres meses no cuesta nada.
     signals = build_signals(
         cfg,
         day,
@@ -168,6 +175,9 @@ def run_daily(
         checkin=checkin,
         sessions=repo.sesiones_ejecutadas(
             session, cfg, desde=day - timedelta(days=14), hasta=day
+        ),
+        checkin_history=repo.historial_checkins(
+            session, desde=day - timedelta(days=90), hasta=day - timedelta(days=1)
         ),
     )
 
@@ -715,7 +725,7 @@ def _motivo_suelto(
     plan: dict[str, Any],
     es_fuerza: bool,
     fila: Any,
-    hiit: set[str] = frozenset(),  # type: ignore[assignment]
+    hiit: set[str],
 ) -> str:
     """Por qué este entrenamiento no se reconcilia contra ningún plan.
 
@@ -723,6 +733,13 @@ def _motivo_suelto(
     va a leer tal cual. «Hiciste algo que no esperaba» sin decir el qué obliga
     a abrir la base de datos para entenderlo, y a las nueve de la mañana desde
     el móvil eso equivale a no avisar.
+
+    `hiit` no tiene defecto -lo tuvo mientras se escribía esto- porque un
+    conjunto vacío no da error: da una FRASE DISTINTA. Un HIIT hecho por libre
+    se explicaría como «es hiit_dia_1 y ese día tocaba dia_1», que sugiere
+    haberse equivocado de rutina cuando lo que pasó es que se añadió trabajo.
+    El aviso de la mañana es lo único que se lee, así que un defecto que cambia
+    lo que dice el aviso es un defecto que cambia lo que yo entiendo que hice.
     """
     if fila is None:
         return "no había decisión guardada de ese día"

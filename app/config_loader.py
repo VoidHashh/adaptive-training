@@ -930,6 +930,21 @@ def _validate(data: dict[str, Any]) -> list[str]:
     budget = (
         data["cycling"].get("recommendation", {}).get("intensity_budget", {})
     )
+    # `enabled` se exige EXPLÍCITO, y no basta con que sea verdadero.
+    #
+    # La validación de aquí abajo estaba colgada de `budget.get("enabled")`,
+    # mientras que quien aplica el presupuesto -`bike_advisor`- lee
+    # `budget_cfg.get("enabled", True)`. Los dos defectos apuntan a lados
+    # contrarios: sin la clave, el validador se salta el bloque entero y el
+    # motor lo aplica igualmente con los valores que se invente. Un `enable:`
+    # por `enabled:` dejaba el fichero pasando la validación y el sábado
+    # decidido con un límite que no está escrito en ninguna parte.
+    if budget:
+        require(
+            isinstance(budget.get("enabled"), bool),
+            "intensity_budget.enabled tiene que estar y ser true o false. Sin "
+            "ella el validador se salta el bloque y el motor lo aplica igual.",
+        )
     if budget.get("enabled"):
         require(
             isinstance(budget.get("weekly_limit"), int) and budget["weekly_limit"] > 0,

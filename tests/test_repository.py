@@ -814,6 +814,68 @@ def test_un_cero_de_verdad_si_se_guarda(db, cfg):
     assert checkin_values(get_checkin(db, LUNES))["lower_discomfort"] == 0
 
 
+# --- el histórico, que hasta ahora no leía nadie ---------------------------
+#
+# `build_signals` acepta `checkin_history=` desde el primer día y ningún caller
+# de producción se lo pasaba, igual que pasó con `sessions`. La diferencia es
+# que este no había explotado todavía: los dos umbrales adaptativos del config
+# miran carga derivada de las salidas. En cuanto haya uno sobre la lumbar o el
+# cansancio -octubre-, sin esta función la serie sería de un punto y el
+# percentil se calcularía contra sí mismo.
+
+
+def test_el_historial_de_checkins_sale_en_orden_y_como_checkin_del_motor(db, cfg):
+    from app.repository import historial_checkins
+
+    for i in range(5):
+        upsert_checkin(
+            db, LUNES - timedelta(days=i), {"fatigue": i + 1}, config=cfg
+        )
+
+    hist = historial_checkins(db, desde=LUNES - timedelta(days=4), hasta=LUNES)
+    assert [c.date for c in hist] == [
+        LUNES - timedelta(days=i) for i in (4, 3, 2, 1, 0)
+    ]
+    assert hist[0].values["fatigue"] == 5
+    assert hist[-1].values["fatigue"] == 1
+
+
+def test_la_ventana_del_historial_no_se_pasa_por_los_extremos(db, cfg):
+    """Un percentil sobre días de fuera de la ventana no es el de la ventana."""
+    from app.repository import historial_checkins
+
+    for i in range(10):
+        upsert_checkin(db, LUNES - timedelta(days=i), {"fatigue": 3}, config=cfg)
+
+    hist = historial_checkins(
+        db, desde=LUNES - timedelta(days=3), hasta=LUNES - timedelta(days=1)
+    )
+    assert len(hist) == 3
+    assert LUNES not in {c.date for c in hist}
+
+
+def test_un_deslizador_sin_contestar_no_entra_en_la_serie_como_cero(db, cfg):
+    """La diferencia entre «no contesté» y «contesté el mínimo».
+
+    Para un percentil las dos cosas se leerían igual y una de ellas es falsa. Lo
+    quita `checkin_values`, y esto lo fija para que siga siendo así cuando
+    alguien decida «rellenar los huecos» de la serie.
+    """
+    from app.repository import historial_checkins
+
+    upsert_checkin(db, LUNES, {"fatigue": 4}, config=cfg)
+    (c,) = historial_checkins(db, desde=LUNES, hasta=LUNES)
+    assert c.values["fatigue"] == 4
+    assert "lower_discomfort" not in c.values
+
+
+def test_sin_checkins_el_historial_es_una_lista_vacia_y_no_un_fallo(db, cfg):
+    """Los primeros días del sistema son exactamente este caso."""
+    from app.repository import historial_checkins
+
+    assert historial_checkins(db, desde=LUNES - timedelta(days=30), hasta=LUNES) == []
+
+
 def test_un_deslizador_mal_escrito_es_un_error_y_no_un_campo_ignorado(db, cfg):
     """`fatiga` por `fatigue` desde la PWA se guardaría en ninguna parte y el
     sistema decidiría sin ese dato creyendo el check-in completo."""

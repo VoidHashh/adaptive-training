@@ -9,7 +9,7 @@ uno que no se escribe.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -336,6 +336,64 @@ def test_el_ensayo_no_se_inventa_una_base_para_mirar_lo_entrenado(
 
     sesiones, nota = sesiones_para_el_ensayo(cfg, date(2026, 9, 14))
     assert sesiones == []
+    assert "sin base de datos" in nota
+    assert not ruta.exists(), "el ensayo ha creado una base de datos"
+
+
+# --- el histórico de check-ins del ensayo ----------------------------------
+#
+# Tercera vez la misma historia. El ensayo en seco es lo único que se mira antes
+# de dejar que el sistema escriba solo, así que cada dato que el ensayo no lee
+# es un sitio donde el ensayo dice una cosa y la mañana hace otra. Hoy la
+# diferencia es cero porque ningún umbral adaptativo mira un deslizador; se
+# conecta ahora precisamente por eso, porque conectarlo cuando ya importa
+# significa descubrir el desajuste con las reglas nuevas puestas y no saber cuál
+# de las dos cosas está mal.
+
+
+def test_el_ensayo_lee_el_historico_de_checkins(base_sin_columnas_de_sueltos, cfg):
+    from app.cli import historial_para_el_ensayo
+    from app.db import SessionLocal
+    from app.repository import upsert_checkin
+
+    dia = date(2026, 9, 14)
+    with SessionLocal() as s:
+        for i in range(1, 6):
+            upsert_checkin(s, dia - timedelta(days=i), {"fatigue": 3}, config=cfg)
+        s.commit()
+
+    hist, nota = historial_para_el_ensayo(dia)
+    assert len(hist) == 5, nota
+    assert "5 check-in(s)" in nota
+
+
+def test_el_ensayo_no_mete_el_dia_de_hoy_en_el_historico(
+    base_sin_columnas_de_sueltos, cfg
+):
+    """Igual que la mañana: hoy entra por `checkin`, no por la serie."""
+    from app.cli import historial_para_el_ensayo
+    from app.db import SessionLocal
+    from app.repository import upsert_checkin
+
+    dia = date(2026, 9, 14)
+    with SessionLocal() as s:
+        upsert_checkin(s, dia, {"fatigue": 9}, config=cfg)
+        s.commit()
+
+    hist, nota = historial_para_el_ensayo(dia)
+    assert hist == []
+    assert "sin check-ins anteriores" in nota
+
+
+def test_el_ensayo_no_se_inventa_una_base_para_el_historico(tmp_path, monkeypatch):
+    from app.cli import historial_para_el_ensayo
+    from app.settings import settings
+
+    ruta = tmp_path / "no_existe.db"
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{ruta}")
+
+    hist, nota = historial_para_el_ensayo(date(2026, 9, 14))
+    assert hist == []
     assert "sin base de datos" in nota
     assert not ruta.exists(), "el ensayo ha creado una base de datos"
 

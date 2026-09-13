@@ -1170,3 +1170,42 @@ def test_las_caidas_de_sueno_tienen_que_ser_positivas(cfg_copia, clave):
     """Una caída de 0 dispararía el veredicto con cualquier ruido de medición."""
     cfg_copia.raw["trend"]["sueno"][clave] = 0
     assert clave in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# El interruptor del presupuesto: el validador y el motor miraban a lados
+# distintos
+# ---------------------------------------------------------------------------
+#
+# La validación del bloque colgaba de `budget.get("enabled")` y quien lo aplica
+# -`bike_advisor`- lee `budget_cfg.get("enabled", True)`. Sin la clave, el
+# validador se salta el bloque entero y el motor lo aplica igual con los valores
+# que se invente: el sábado decidido con un límite que no está escrito en
+# ninguna parte y un config.yaml que pasa la validación.
+
+
+def test_un_presupuesto_sin_la_clave_enabled_no_pasa(cfg_copia):
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    del b["enabled"]
+    assert "intensity_budget.enabled" in errores(cfg_copia.raw)
+
+
+def test_enabled_mal_escrito_se_caza_por_la_clave_que_falta(cfg_copia):
+    """`enable:` por `enabled:` es el error real, no el hipotético."""
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    b["enable"] = b.pop("enabled")
+    assert "intensity_budget.enabled" in errores(cfg_copia.raw)
+
+
+def test_un_enabled_que_no_es_booleano_tampoco_pasa(cfg_copia):
+    """`enabled: "true"` entre comillas es verdadero para Python y no para YAML."""
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    b["enabled"] = "true"
+    assert "intensity_budget.enabled" in errores(cfg_copia.raw)
+
+
+def test_apagar_el_presupuesto_a_proposito_sigue_siendo_valido(cfg_copia):
+    """La guarda exige que la decisión esté escrita, no que sea una en concreto."""
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_budget"]
+    b["enabled"] = False
+    assert "intensity_budget" not in errores(cfg_copia.raw)
