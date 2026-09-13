@@ -690,10 +690,13 @@ def metrics_concordancia(
 ) -> dict[str, Any]:
     """Vista 1: lo que nota frente a lo que mide el reloj, el mismo día."""
     from app.analysis.concordancia import vista_concordancia
+    from app.analysis.encabezados import poner
     from app.analysis.series import comprobar_sliders
 
     comprobar_sliders(cfg)
-    return vista_concordancia(s, dias=dias, metodo=_metodo(metodo))
+    return poner(
+        "concordancia", vista_concordancia(s, dias=dias, metodo=_metodo(metodo))
+    )
 
 
 @app.get("/api/metrics/desfase")
@@ -705,10 +708,11 @@ def metrics_desfase(
 ) -> dict[str, Any]:
     """Vista 2: la misma pregunta corriendo la ventana de -3 a +3 días."""
     from app.analysis.concordancia import vista_desfase
+    from app.analysis.encabezados import poner
     from app.analysis.series import comprobar_sliders
 
     comprobar_sliders(cfg)
-    return vista_desfase(s, dias=dias, metodo=_metodo(metodo))
+    return poner("desfase", vista_desfase(s, dias=dias, metodo=_metodo(metodo)))
 
 
 @app.get("/api/metrics/impacto")
@@ -719,11 +723,12 @@ def metrics_impacto(
     cfg=Depends(get_config),
 ) -> dict[str, Any]:
     """Vista 3: qué le hace al cuerpo cada cosa, uno, dos y tres días después."""
+    from app.analysis.encabezados import poner
     from app.analysis.impacto import vista_impacto
     from app.analysis.series import comprobar_sliders
 
     comprobar_sliders(cfg)
-    return vista_impacto(s, dias=dias, metodo=_metodo(metodo))
+    return poner("impacto", vista_impacto(s, dias=dias, metodo=_metodo(metodo)))
 
 
 @app.get("/api/metrics/ranking-ejercicios")
@@ -745,13 +750,17 @@ def metrics_ranking_ejercicios(
     ha pedido algo que no existe; y devolver un ranking vacío sería peor que las
     dos cosas, porque parecería la respuesta.
     """
+    from app.analysis.encabezados import poner
     from app.analysis.impacto import ranking_ejercicios
     from app.analysis.series import comprobar_sliders
 
     comprobar_sliders(cfg)
     try:
-        return ranking_ejercicios(
-            s, cfg, respuesta=respuesta, dias=dias, metodo=_metodo(metodo)
+        return poner(
+            "ranking-ejercicios",
+            ranking_ejercicios(
+                s, cfg, respuesta=respuesta, dias=dias, metodo=_metodo(metodo)
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -776,10 +785,11 @@ def metrics_auditoria(
     teniendo las dos cosas delante a la vez.
     """
     from app.analysis.auditoria import vista_auditoria
+    from app.analysis.encabezados import poner
     from app.analysis.series import comprobar_sliders
 
     comprobar_sliders(cfg)
-    return vista_auditoria(s, cfg, dias=dias)
+    return poner("auditoria", vista_auditoria(s, cfg, dias=dias))
 
 
 @app.get("/api/metrics/percepcion")
@@ -806,11 +816,12 @@ def metrics_percepcion(
     del índice de percepción sin dar un solo error. Es la defensa de siempre
     contra el interruptor conectado a nada.
     """
+    from app.analysis.encabezados import poner
     from app.analysis.rendimiento import vista_percepcion
     from app.analysis.series import comprobar_sliders
 
     comprobar_sliders(cfg)
-    return vista_percepcion(s, dias=dias)
+    return poner("percepcion", vista_percepcion(s, dias=dias))
 
 
 @app.post("/api/reconcile")

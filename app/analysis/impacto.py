@@ -645,6 +645,7 @@ def vista_impacto(
 
     corregir_tanda([fila["por_dia"] for fila in rejilla])
 
+    catalogo = catalogo_de_respuestas(rejilla)
     return {
         "vista": "impacto",
         "metodo": metodo,
@@ -652,8 +653,69 @@ def vista_impacto(
         "ventana": {"desde": desde.isoformat(), "hasta": hasta.isoformat(), "dias": dias},
         "cobertura": cob.como_dict(),
         "advertencia": ADVERTENCIA_CONFUSION,
+        "respuestas": catalogo,
+        "respuesta_por_defecto": por_defecto(catalogo),
         "rejilla": rejilla,
     }
+
+
+def catalogo_de_respuestas(rejilla: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Cuántas casillas vivas tiene CADA respuesta, para que el desplegable lo sepe.
+
+    Un desplegable donde las doce opciones se pintan iguales obliga a elegirlas
+    una por una para descubrir que ocho no tienen nada dentro. El usuario acaba
+    aprendiendo cuáles están vacías a base de decepciones, y ese aprendizaje se
+    le queda viejo el día que empiece a haber check-ins.
+
+    Esto va en el SERVIDOR y no en el JS a propósito: el cliente no tiene que
+    recorrer la rejilla para averiguar qué puede enseñar, porque entonces habría
+    dos sitios contando lo mismo y el día que discrepen ganará el que no se
+    pueda probar.
+    """
+    orden: list[str] = []
+    vivas: dict[str, int] = {}
+    totales: dict[str, int] = {}
+    etiquetas: dict[str, dict[str, Any]] = {}
+    for fila in rejilla:
+        r = fila["respuesta"]
+        clave = r["clave"]
+        if clave not in etiquetas:
+            orden.append(clave)
+            etiquetas[clave] = r
+            vivas[clave] = 0
+            totales[clave] = 0
+        for c in fila["por_dia"]:
+            totales[clave] += 1
+            if c.get("r") is not None:
+                vivas[clave] += 1
+    return [
+        {
+            **etiquetas[clave],
+            "n": vivas[clave],
+            "de": totales[clave],
+            "vacia": vivas[clave] == 0,
+        }
+        for clave in orden
+    ]
+
+
+def por_defecto(catalogo: list[dict[str, Any]]) -> str | None:
+    """La respuesta con la que abrir la vista: la primera que tenga algo dentro.
+
+    Abrir en la primera de la lista es lo que hacía el cliente, y la primera de
+    la lista es el cansancio, que hoy tiene cero de treinta y tres. La vista se
+    estrenaba vacía teniendo ciento treinta y cinco casillas calculadas a dos
+    clics de distancia.
+
+    Si NINGUNA tiene datos se devuelve `None` en vez de la primera: que no haya
+    con qué abrir es una situación real -el sistema acaba de arrancar- y decirlo
+    deja al cliente enseñar el vacío explicado en vez de un desplegable que
+    promete doce vistas y no tiene ninguna.
+    """
+    for r in catalogo:
+        if not r["vacia"]:
+            return str(r["clave"])
+    return None
 
 
 ADVERTENCIA_CONFUSION = (

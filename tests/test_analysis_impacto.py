@@ -34,8 +34,10 @@ from sqlalchemy.orm import Session
 from app.analysis.impacto import (
     ADVERTENCIA_CONFUSION,
     _binaria,
+    catalogo_de_respuestas,
     ejercicios_por_dia,
     exposiciones_de_bici,
+    por_defecto,
     ranking_ejercicios,
     vista_impacto,
 )
@@ -689,3 +691,125 @@ def test_las_exposiciones_continuas_no_traen_medias_de_grupo(db):
     lectura = fila_de(v, "volumen_fuerza", "fatigue")["lectura"]
     assert lectura is not None
     assert lectura.startswith("cuanto más acumulas")
+
+
+# ---------------------------------------------------------------------------
+# El catálogo de respuestas: que el desplegable sepa qué hay dentro de cada
+# opción ANTES de que haya que elegirla para averiguarlo.
+# ---------------------------------------------------------------------------
+
+
+def test_el_catalogo_cuenta_las_casillas_vivas_de_cada_respuesta(db):
+    """Cada opción del desplegable declara cuánto tiene dentro.
+
+    Se siembra la bici contra el reloj -que sí deja correlacionar- y NO se
+    siembra ningún check-in, que es exactamente el estado del sistema el día que
+    esto se escribió: doce respuestas ofrecidas, cinco con datos.
+    """
+    for i in range(N):
+        salida(db, i, minutos=60.0 + i, carga=100.0 + i)
+    wellness(db, lambda i: {"hrv": 50.0 + (i % 7)})
+    db.commit()
+
+    v = vista_impacto(db, dias=N, hoy=HOY)
+    por_clave = {r["clave"]: r for r in v["respuestas"]}
+
+    assert por_clave["hrv"]["n"] > 0
+    assert por_clave["hrv"]["vacia"] is False
+    assert por_clave["fatigue"]["n"] == 0
+    assert por_clave["fatigue"]["vacia"] is True
+
+
+def test_el_catalogo_trae_todas_las_respuestas_de_la_rejilla_sin_repetir(db):
+    for i in range(N):
+        salida(db, i, minutos=60.0 + i)
+    wellness(db, lambda i: {"hrv": 50.0 + (i % 7)})
+    db.commit()
+
+    v = vista_impacto(db, dias=N, hoy=HOY)
+    del_catalogo = [r["clave"] for r in v["respuestas"]]
+    de_la_rejilla = {f["respuesta"]["clave"] for f in v["rejilla"]}
+
+    assert len(del_catalogo) == len(set(del_catalogo)), "hay respuestas repetidas"
+    assert set(del_catalogo) == de_la_rejilla
+
+
+def test_el_denominador_del_catalogo_cuenta_TODAS_las_casillas_de_esa_respuesta(db):
+    for i in range(N):
+        salida(db, i, minutos=60.0 + i)
+    wellness(db, lambda i: {"hrv": 50.0 + (i % 7)})
+    db.commit()
+
+    v = vista_impacto(db, dias=N, hoy=HOY)
+    hrv = next(r for r in v["respuestas"] if r["clave"] == "hrv")
+    esperadas = sum(
+        len(f["por_dia"]) for f in v["rejilla"] if f["respuesta"]["clave"] == "hrv"
+    )
+    assert hrv["de"] == esperadas
+    assert hrv["n"] <= hrv["de"]
+
+
+def test_la_vista_no_se_estrena_en_una_respuesta_vacia(db):
+    """El fallo concreto que esto arregla.
+
+    El cliente abría en la primera opción de la rejilla, que es el cansancio.
+    Con el sistema recién arrancado el cansancio tiene cero casillas, así que la
+    vista de Impacto se estrenaba vacía teniendo las de la bici calculadas a dos
+    clics de distancia.
+    """
+    for i in range(N):
+        salida(db, i, minutos=60.0 + i)
+    wellness(db, lambda i: {"hrv": 50.0 + (i % 7)})
+    db.commit()
+
+    v = vista_impacto(db, dias=N, hoy=HOY)
+    elegida = v["respuesta_por_defecto"]
+
+    assert elegida is not None
+    escogida = next(r for r in v["respuestas"] if r["clave"] == elegida)
+    assert escogida["vacia"] is False
+    assert escogida["n"] > 0
+
+
+def test_sin_ningun_dato_no_se_finge_una_respuesta_por_defecto(db):
+    """Que no haya con qué abrir es un estado real y hay que poder decirlo.
+
+    Devolver la primera de la lista aquí daría un desplegable que promete doce
+    vistas y abre en una vacía sin explicar por qué, que es justo el fallo
+    silencioso de interfaz que este rediseño viene a quitar.
+    """
+    v = vista_impacto(db, dias=N, hoy=HOY)
+
+    assert v["respuesta_por_defecto"] is None
+    assert all(r["vacia"] for r in v["respuestas"])
+
+
+def test_una_correlacion_de_cero_clavado_cuenta_como_calculada():
+    """r = 0.0 es un RESULTADO, no un hueco.
+
+    Significa "no se parecen en nada", que es una respuesta perfectamente
+    buena a la pregunta de la vista. Un filtro por verdad-falsedad -`if
+    c.get("r")`- lo tiraría junto a los `None`, y entonces la opción del
+    desplegable se marcaría vacía teniendo dentro justamente el hallazgo más
+    rotundo: que ahí no hay nada que ver.
+
+    Va con una rejilla montada a mano en vez de sembrando la base porque
+    ninguna siembra razonable da un cero clavado, y una mutación que solo se
+    ve con un cero clavado no se caza sembrando.
+    """
+    rejilla = [
+        {
+            "respuesta": {"clave": "hrv", "etiqueta": "Variabilidad (HRV)"},
+            "por_dia": [
+                {"dias_despues": 1, "r": 0.0},
+                {"dias_despues": 2, "r": None},
+            ],
+        }
+    ]
+    cat = catalogo_de_respuestas(rejilla)
+
+    assert cat[0]["n"] == 1, "el cero clavado se ha perdido por falsy"
+    assert cat[0]["de"] == 2
+    assert cat[0]["vacia"] is False
+    # Y por lo tanto sirve para abrir la vista.
+    assert por_defecto(cat) == "hrv"
