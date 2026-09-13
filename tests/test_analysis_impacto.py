@@ -674,4 +674,18 @@ def test_las_exposiciones_continuas_no_traen_medias_de_grupo(db):
     assert "media_expuesto" not in c
     assert "n_expuesto" not in c
     assert c["n"] > 0
-    assert fila_de(v, "volumen_fuerza", "fatigue")["lectura"] is None
+
+    # Pero SÍ trae frase, y en la forma de dosis. Hasta el 2026-09-13 aquí se
+    # comprobaba que `lectura` fuese `None`, porque la capa de lenguaje solo
+    # cubría las exposiciones de sí-o-no. El efecto era que las cuatro
+    # relaciones más fuertes de todo el histórico -carga, minutos y desnivel
+    # contra la HRV y el Body Battery, las cuatro continuas- eran justo las
+    # únicas que llegaban al navegador sin una sola palabra que las explicara.
+    #
+    # No hay medias de grupo porque no hay grupos, y eso sigue igual. Lo que no
+    # se sostiene es que de "no hay dos grupos" se siga "no hay nada que
+    # contar": una continua se cuenta como dosis -cuanto más, más- en vez de
+    # como contraste.
+    lectura = fila_de(v, "volumen_fuerza", "fatigue")["lectura"]
+    assert lectura is not None
+    assert lectura.startswith("cuanto más acumulas")

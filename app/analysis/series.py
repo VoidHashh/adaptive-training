@@ -40,7 +40,7 @@ pueda olvidar hacerlo.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
@@ -75,6 +75,18 @@ class Definicion:
     # Días que hay que RESTAR a la fecha de la fila para colocar el valor en el
     # día del que habla. Hoy solo `yesterday_rpe` lo usa; ver la cabecera.
     desplazamiento: int = 0
+    # Cómo se llama esta serie DENTRO DE UNA FRASE, con su artículo puesto.
+    #
+    # "Variabilidad (HRV)" es un buen encabezado de columna y una frase
+    # imposible: "salir en bici te baja Variabilidad (HRV) al día siguiente" no
+    # lo dice nadie. La portada escribe en castellano, y para escribir en
+    # castellano hace falta saber el género y el número de cada cosa.
+    #
+    # Es OBLIGATORIA y de palabra clave a propósito. Si tuviera un defecto -la
+    # etiqueta, por ejemplo- añadir una serie nueva daría frases rotas sin un
+    # solo error, y el fallo aparecería en la portada del usuario y en ningún
+    # log. Sin defecto, una serie sin frase no llega ni a importarse.
+    en_frase: str = field(kw_only=True)
 
     def como_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +97,7 @@ class Definicion:
             "sentido": self.sentido,
             "rango": list(self.rango) if self.rango else None,
             "desplazamiento_dias": self.desplazamiento,
+            "en_frase": self.en_frase,
         }
 
 
@@ -95,8 +108,14 @@ class Definicion:
 SLIDERS: dict[str, Definicion] = {
     d.clave: d
     for d in (
-        Definicion("fatigue", "Cansancio general", "checkin", "1-5", "alto_peor", (1, 5)),
-        Definicion("mood", "Ánimo", "checkin", "1-5", "alto_mejor", (1, 5)),
+        Definicion(
+            "fatigue", "Cansancio general", "checkin", "1-5", "alto_peor", (1, 5),
+            en_frase="el cansancio",
+        ),
+        Definicion(
+            "mood", "Ánimo", "checkin", "1-5", "alto_mejor", (1, 5),
+            en_frase="el ánimo",
+        ),
         Definicion(
             "upper_discomfort",
             "Molestias tronco superior",
@@ -104,6 +123,7 @@ SLIDERS: dict[str, Definicion] = {
             "1-5",
             "alto_peor",
             (1, 5),
+            en_frase="las molestias del tronco superior",
         ),
         Definicion(
             "lower_discomfort",
@@ -112,6 +132,7 @@ SLIDERS: dict[str, Definicion] = {
             "1-5",
             "alto_peor",
             (1, 5),
+            en_frase="las molestias lumbares",
         ),
         Definicion(
             "sleep_quality",
@@ -120,9 +141,11 @@ SLIDERS: dict[str, Definicion] = {
             "1-5",
             "alto_mejor",
             (1, 5),
+            en_frase="lo bien que sientes que has dormido",
         ),
         Definicion(
-            "training_desire", "Ganas de entrenar", "checkin", "1-5", "alto_mejor", (1, 5)
+            "training_desire", "Ganas de entrenar", "checkin", "1-5", "alto_mejor", (1, 5),
+            en_frase="las ganas de entrenar",
         ),
         # Neutro a propósito: entrenar duro no es ni bueno ni malo, depende de lo
         # que tocara ese día. Y desplazado uno, que es lo importante.
@@ -134,6 +157,7 @@ SLIDERS: dict[str, Definicion] = {
             "neutro",
             (1, 5),
             desplazamiento=1,
+            en_frase="lo duro que se te hizo el entreno",
         ),
     )
 }
@@ -141,26 +165,83 @@ SLIDERS: dict[str, Definicion] = {
 GARMIN: dict[str, Definicion] = {
     d.clave: d
     for d in (
-        Definicion("hrv", "Variabilidad (HRV)", "garmin", "ms", "alto_mejor"),
-        Definicion("rhr", "FC en reposo", "garmin", "ppm", "alto_peor"),
-        Definicion("sleep_min", "Sueño medido", "garmin", "min", "alto_mejor"),
-        Definicion("sleep_score", "Nota de sueño", "garmin", "0-100", "alto_mejor", (0, 100)),
-        Definicion("body_battery", "Body Battery", "garmin", "0-100", "alto_mejor", (0, 100)),
+        Definicion(
+            "hrv", "Variabilidad (HRV)", "garmin", "ms", "alto_mejor",
+            en_frase="la variabilidad",
+        ),
+        Definicion(
+            "rhr", "FC en reposo", "garmin", "ppm", "alto_peor",
+            en_frase="el pulso en reposo",
+        ),
+        Definicion(
+            "sleep_min", "Sueño medido", "garmin", "min", "alto_mejor",
+            en_frase="lo que duermes",
+        ),
+        Definicion(
+            "sleep_score", "Nota de sueño", "garmin", "0-100", "alto_mejor", (0, 100),
+            en_frase="la nota de sueño",
+        ),
+        Definicion(
+            "body_battery", "Body Battery", "garmin", "0-100", "alto_mejor", (0, 100),
+            en_frase="el Body Battery",
+        ),
     )
 }
 
 ENTRENO: dict[str, Definicion] = {
     d.clave: d
     for d in (
-        Definicion("carga_bici", "Carga de la bici", "entreno", "carga", "neutro"),
-        Definicion("minutos_bici", "Minutos de bici", "entreno", "min", "neutro"),
-        Definicion("desnivel_bici", "Desnivel acumulado", "entreno", "m", "neutro"),
-        Definicion("volumen_fuerza", "Volumen de fuerza", "entreno", "kg", "neutro"),
-        Definicion("series_fuerza", "Series de fuerza", "entreno", "series", "neutro"),
+        Definicion(
+            "carga_bici", "Carga de la bici", "entreno", "carga", "neutro",
+            en_frase="la carga de la bici",
+        ),
+        Definicion(
+            "minutos_bici", "Minutos de bici", "entreno", "min", "neutro",
+            en_frase="los minutos de bici",
+        ),
+        Definicion(
+            "desnivel_bici", "Desnivel acumulado", "entreno", "m", "neutro",
+            en_frase="el desnivel",
+        ),
+        Definicion(
+            "volumen_fuerza", "Volumen de fuerza", "entreno", "kg", "neutro",
+            en_frase="el volumen de fuerza",
+        ),
+        Definicion(
+            "series_fuerza", "Series de fuerza", "entreno", "series", "neutro",
+            en_frase="las series de fuerza",
+        ),
     )
 }
 
 DEFINICIONES: dict[str, Definicion] = {**SLIDERS, **GARMIN, **ENTRENO}
+
+# Las cinco de `ENTRENO` hacen doble papel: son RESPUESTA -"¿qué pasa con el
+# desnivel?"- y son EXPOSICIÓN -"¿qué te hace acumular desnivel?"-, y en cada
+# papel se nombran distinto. Como respuesta es "el desnivel"; como exposición
+# tiene que ser un infinitivo, porque la frase es "acumular desnivel te baja la
+# variabilidad" y no "el desnivel te baja la variabilidad", que suena a que el
+# desnivel actúa solo.
+COMO_EXPOSICION: dict[str, str] = {
+    "carga_bici": "acumular carga en la bici",
+    "minutos_bici": "acumular minutos de bici",
+    "desnivel_bici": "acumular desnivel",
+    "volumen_fuerza": "acumular volumen de fuerza",
+    "series_fuerza": "acumular series",
+}
+
+# Sin defecto y comprobado al importar. Una serie de entreno nueva sin su
+# infinitivo no daría un error: daría una frase con la etiqueta de tabla metida
+# a la fuerza -"Desnivel acumulado te baja la variabilidad"- o, peor, un hueco
+# donde tendría que ir el sujeto. Y eso solo se vería en la pantalla del
+# usuario, nunca en un log.
+if set(COMO_EXPOSICION) != set(ENTRENO):
+    raise ValueError(
+        "`COMO_EXPOSICION` y `ENTRENO` han dejado de coincidir "
+        f"(sobran: {sorted(set(COMO_EXPOSICION) - set(ENTRENO))}; "
+        f"faltan: {sorted(set(ENTRENO) - set(COMO_EXPOSICION))}). Toda serie de "
+        "entreno necesita cómo se nombra cuando es la causa y no el efecto."
+    )
 
 # Las columnas reales detrás de cada serie de entreno, y de qué tabla salen.
 _COLUMNAS_ENTRENO: dict[str, tuple[Any, Any]] = {

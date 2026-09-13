@@ -1,0 +1,905 @@
+"""La portada del panel: lo que ya se sabe, antes del formulario de elegir.
+
+POR QUÉ EXISTE ESTE MÓDULO
+--------------------------
+El panel de métricas tenía cinco vistas y las cinco eran el volcado fiel de un
+módulo de `app/analysis/`. Abrirlo te enseñaba el APARATO DE MEDIR -un
+desplegable de variables, una tabla de coeficientes- y no la medida. La primera
+pantalla pedía elegir antes de contar nada, porque el formulario era en realidad
+el índice del código.
+
+Medido el 2026-09-13 sobre los datos reales: había 27 relaciones fiables
+calculadas, serializadas y enviadas al navegador, y la pantalla de entrada no
+enseñaba ninguna. Las cuatro más fuertes -carga, minutos y desnivel contra la
+variabilidad y el Body Battery- ni siquiera tenían frase, porque la capa de
+lenguaje solo cubría las exposiciones de sí-o-no.
+
+Este módulo invierte quién pregunta. En vez de "elige dos variables y te digo su
+correlación", dice "esto es lo que sé de ti, y esto es lo que todavía no puedo
+saber y por qué".
+
+LAS DOS MITADES, Y LA SEGUNDA NO ES DE RELLENO
+----------------------------------------------
+`lo_que_se_sabe` y `lo_que_no_se_puede_saber` tienen el mismo rango a propósito.
+Una vista vacía que no explica su vacío es un fallo silencioso de interfaz:
+quien la abre no puede distinguir "aquí no pasa nada" de "aquí falta un dato que
+nadie está trayendo", y las dos cosas se leen igual de bien. Es exactamente el
+criterio que ya gobierna el motor -`sin_muestra`, `skipped` frente a
+`not_fired`, el `na` de cada casilla- aplicado por fin a la pantalla.
+
+El día que se escribe esto, dos de los tres bloques de la portada están vacíos y
+lo dicen con todas las letras. Eso es el comportamiento correcto, no un estado
+transitorio que haya que disimular.
+
+DÓNDE VIVE LA PROSA
+-------------------
+Aquí, en el servidor, y nunca en `static/`. Las bandas de |r| y la agrupación de
+exposiciones salen de `config.yaml`; las frases de cada serie salen de
+`Definicion.en_frase`. Si esto estuviera en JavaScript, añadir una exposición
+nueva al análisis la dejaría fuera de la portada sin un solo error -se
+calcularía, se enviaría por la red y no la vería nadie-, que es palabra por
+palabra el fallo del desplegable de Impacto que dio origen a este rediseño.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, timedelta
+from statistics import fmean
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.analysis import series as S
+from app.analysis.impacto import vista_impacto
+from app.analysis.stats import percentil_de
+from app.models import Activity, Checkin, Decision, WorkoutLog
+
+# Cuántos días mira "cómo voy". Una semana: es el tramo más corto que tiene
+# sentido comparar contra un histórico -un día suelto es ruido- y el más largo
+# que todavía describe CÓMO VAS y no cómo ibas.
+DIAS_RECIENTES = 7
+
+# Días con dato que hacen falta en esa semana para decir algo. Con tres de siete
+# la media ya no es de la semana: es de tres días que resultaron tener reloj.
+MINIMO_RECIENTES = 4
+
+# Cuántas ventanas de referencia hacen falta para situar la semana. Por debajo
+# de esto el percentil no significa nada: "estás en el percentil 30" sobre seis
+# ventanas es "hay dos peores que esta".
+MINIMO_REFERENCIA = 20
+
+
+# ---------------------------------------------------------------------------
+# La configuración del lenguaje
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Grupo:
+    """Un grupo de exposiciones que son la misma DECISIÓN.
+
+    No agrupa por parecido temático sino por lo que el usuario puede mover. Y no
+    es una comodidad de presentación: medido sobre sus 173 días, `minutos_bici`
+    y `desnivel_bici` correlacionan a 0,9986 entre ellas. Enseñar "los minutos
+    te bajan la variabilidad" y "el desnivel te baja la variabilidad" como dos
+    hallazgos sugiere dos pruebas independientes donde hay una sola, y eso no es
+    repetitivo: es una exageración de la evidencia.
+    """
+
+    clave: str
+    titulo: str
+    decision: str
+    exposiciones: frozenset[str]
+    familias: frozenset[str]
+
+
+@dataclass(frozen=True)
+class Lenguaje:
+    """Lo que hace falta para contar un cálculo en castellano, sacado del YAML."""
+
+    hallazgos_en_portada: int
+    se_nota_poco: float
+    se_nota: float
+    se_nota_mucho: float
+    grupos: tuple[Grupo, ...]
+
+    def banda(self, r: float) -> str | None:
+        """La palabra que sustituye al coeficiente. `None` si no llega a contar.
+
+        El número no desaparece: viaja al lado, en el mismo hallazgo. Lo que
+        hace la banda es PRECEDERLO, para que la primera lectura sea una frase y
+        no una cifra que hay que saber interpretar.
+        """
+        a = abs(r)
+        if a >= self.se_nota_mucho:
+            return "se nota mucho"
+        if a >= self.se_nota:
+            return "se nota"
+        if a >= self.se_nota_poco:
+            return "se nota poco"
+        return None
+
+
+def lenguaje_de(cfg: Any) -> Lenguaje | None:
+    """Lee `metrics` del config. `None` si la sección no está.
+
+    Que sea opcional no es dejadez: el panel funcionaba antes de existir la
+    portada y tiene que poder seguir funcionando sin ella. Lo que NO se admite
+    es una sección a medias, y de eso se encarga el validador de
+    `config_loader.py`, que la revisa entera si está.
+    """
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    m = (raw or {}).get("metrics")
+    if not m:
+        return None
+    bandas = m.get("fuerza_relacion") or {}
+    grupos = tuple(
+        Grupo(
+            clave=str(g.get("clave")),
+            titulo=str(g.get("titulo")),
+            decision=str(g.get("decision")),
+            exposiciones=frozenset(str(v) for v in (g.get("exposiciones") or [])),
+            familias=frozenset(str(v) for v in (g.get("familias") or [])),
+        )
+        for g in (m.get("grupos_exposicion") or [])
+    )
+    return Lenguaje(
+        hallazgos_en_portada=int(m.get("hallazgos_en_portada")),
+        se_nota_poco=float(bandas.get("se_nota_poco")),
+        se_nota=float(bandas.get("se_nota")),
+        se_nota_mucho=float(bandas.get("se_nota_mucho")),
+        grupos=grupos,
+    )
+
+
+def grupo_de(exposicion: dict[str, Any], lenguaje: Lenguaje) -> Grupo:
+    """A qué grupo pertenece una exposición. REVIENTA si no pertenece a ninguno.
+
+    El error duro es el punto entero de la función. Una exposición huérfana no
+    daría ningún fallo: se calcularía como siempre, viajaría en la rejilla como
+    siempre, y sencillamente no aparecería nunca en la portada. Nadie echa de
+    menos un hallazgo que no sabe que existe.
+
+    Es literalmente el fallo que originó este rediseño -45 correlaciones
+    calculadas y descartadas en la última línea del JavaScript- así que la
+    pieza que lo sustituye no puede poder repetirlo.
+
+    Nombrarla explícitamente gana a reclamar su familia. Así `bici_intensa` cae
+    en "apretar" aunque "salir en bici" también sea de familia `bici`.
+    """
+    clave = str(exposicion.get("clave"))
+    for g in lenguaje.grupos:
+        if clave in g.exposiciones:
+            return g
+    familia = str(exposicion.get("familia"))
+    for g in lenguaje.grupos:
+        if familia in g.familias:
+            return g
+    raise ValueError(
+        f"la exposición '{clave}' (familia '{familia}') no cae en ningún grupo de "
+        f"`metrics.grupos_exposicion`. Sin grupo no puede salir en la portada, y "
+        f"quedarse fuera en silencio es justo lo que esta portada existe para "
+        f"impedir: añádela a un grupo existente o crea uno nuevo en config.yaml"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bloque 3: lo que ya se sabe
+# ---------------------------------------------------------------------------
+
+
+def _mejor_casilla(fila: dict[str, Any]) -> dict[str, Any] | None:
+    """De los tres retardos de una celda, el que más dice. Solo si es fiable.
+
+    "Fiable" es las dos cosas a la vez: que haya pasado el filtro de azar de
+    Benjamini-Hochberg Y que el efecto sea de un tamaño que se pueda notar. Con
+    173 días, un |r| de 0,15 sale significativo sin despeinarse y no significa
+    nada que cambie ninguna decisión. Contarlo sería verdad estadística y
+    mentira práctica, y la portada se lee como si fuera práctica.
+
+    El corte de tamaño lo pone el que llama, con la banda del config.
+    """
+    candidatas = [
+        c
+        for c in fila.get("por_dia") or []
+        if c.get("r") is not None and c.get("significativa")
+    ]
+    if not candidatas:
+        return None
+    return max(candidatas, key=lambda c: abs(c["r"]))
+
+
+def _mayuscula(frase: str) -> str:
+    """La primera en mayúscula y el resto INTACTO.
+
+    `str.capitalize()` no vale: baja todo lo demás, y «hacer el Día 1» se
+    convertía en «Hacer el día 1». La clave del config es `dia_1` y la
+    ortografía se la pone `_rutina_en_frase`; deshacerla aquí sería tirar ese
+    trabajo en la última línea.
+    """
+    return frase[:1].upper() + frase[1:] if frase else frase
+
+
+def _verbo(sube: bool, plural: bool) -> str:
+    raiz = "sube" if sube else "baja"
+    return raiz + "n" if plural else raiz
+
+
+def hallazgos(
+    rejilla: list[dict[str, Any]], lenguaje: Lenguaje
+) -> list[dict[str, Any]]:
+    """Lo que se sabe, en frases, agrupado por decisión y ordenado por fuerza.
+
+    La unidad de un hallazgo es (GRUPO x RESPUESTA), no (exposición x
+    respuesta). Dentro del par se coge la relación más fuerte y las demás del
+    mismo grupo se reparten según SU SIGNO.
+
+    Y ese `confirmada_por` NO es una nota al pie de cortesía: es la diferencia
+    entre "lo mismo sale por otros tres caminos" -información- y cuatro
+    hallazgos separados que parecen cuatro pruebas -exageración-. Con r = 0,9986
+    entre los minutos y el desnivel, los otros caminos no son independientes, y
+    la portada tiene que poder decir eso sin esconderlo ni inflarlo.
+
+    EL SIGNO SE COMPRUEBA, y esto costó un fallo real el 2026-09-13. La primera
+    versión metía en `confirmada_por` a toda compañera del grupo sin mirar hacia
+    dónde apuntaba, y la portada salió diciendo que «las salidas medias»
+    confirmaban que las intensas bajan la variabilidad. Era falso: la casilla
+    más fuerte de las medias es un +0,25 a tres días, del signo contrario. Una
+    frase inventada en la pantalla de entrada, construida a partir de números
+    todos correctos, sin un solo error por ningún lado.
+
+    Las del signo contrario no se tiran: van en `discrepa`. Tirarlas sería
+    volver a hacer lo mismo de siempre -calcular algo, no enseñarlo y que nadie
+    pueda echarlo de menos- solo que ahora con la excusa de que estropea el
+    titular. Que dos caras de la misma decisión apunten al revés es de las cosas
+    más informativas que puede haber en esta pantalla.
+    """
+    # Primero se juntan TODAS las candidatas de cada par, y solo después se
+    # elige. Ordenar mientras se acumula -ir arrastrando la mejor y empujando la
+    # perdedora a una lista de compañeras- da el mismo resultado con el doble de
+    # estados intermedios que comprobar, y este es el sitio donde una compañera
+    # perdida se convierte en un hallazgo que aparenta más solidez de la que
+    # tiene. Se prefiere la versión aburrida.
+    por_par: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for fila in rejilla:
+        casilla = _mejor_casilla(fila)
+        if casilla is None:
+            continue
+        if lenguaje.banda(casilla["r"]) is None:
+            continue
+        grupo = grupo_de(fila["exposicion"], lenguaje)
+        llave = (grupo.clave, fila["respuesta"]["clave"])
+        por_par.setdefault(llave, []).append(
+            {"fila": fila, "casilla": casilla, "grupo": grupo}
+        )
+
+    salida = []
+    for candidatas in por_par.values():
+        candidatas.sort(key=lambda c: -abs(c["casilla"]["r"]))
+        m, resto = candidatas[0], candidatas[1:]
+        fila, casilla, grupo = m["fila"], m["casilla"], m["grupo"]
+        exp, resp = fila["exposicion"], fila["respuesta"]
+        sube = casilla["r"] > 0
+        # El signo del coeficiente dice si suben juntos; `sentido` dice si eso
+        # es bueno o malo. Sin las dos cosas no hay frase posible: un -0,4 entre
+        # salir y la variabilidad es malo, y entre salir y el pulso en reposo
+        # sería bueno.
+        if resp.get("sentido") == "alto_peor":
+            valencia = "peor" if sube else "mejor"
+        elif resp.get("sentido") == "alto_mejor":
+            valencia = "mejor" if sube else "peor"
+        else:
+            valencia = "neutro"
+
+        companeras = [
+            c["fila"]["exposicion"]["en_frase"]
+            for c in resto
+            if c["fila"]["exposicion"].get("en_frase")
+            and (c["casilla"]["r"] > 0) == sube
+        ]
+        discrepan = [
+            {
+                "en_frase": c["fila"]["exposicion"]["en_frase"],
+                "plural": bool(c["fila"]["exposicion"].get("plural")),
+                "r": c["casilla"]["r"],
+                "dias_despues": c["casilla"]["dias_despues"],
+            }
+            for c in resto
+            if c["fila"]["exposicion"].get("en_frase")
+            and (c["casilla"]["r"] > 0) != sube
+        ]
+        salida.append(
+            {
+                "grupo": {
+                    "clave": grupo.clave,
+                    "titulo": grupo.titulo,
+                    "decision": grupo.decision,
+                },
+                # El verbo concuerda con la exposición porque es el sujeto:
+                # «salir en bici te BAJA la variabilidad», «las salidas largas
+                # te SUBEN el pulso». Con `.capitalize()` a secas se comía las
+                # mayúsculas de dentro -«el Día 1» acababa en «el día 1»- así
+                # que solo se toca la primera letra.
+                "frase": (
+                    f"{_mayuscula(exp['en_frase'])} te "
+                    f"{_verbo(sube, exp.get('plural', False))} {resp['en_frase']} "
+                    f"al día siguiente"
+                ),
+                "valencia": valencia,
+                "matiz": fila.get("lectura"),
+                "fuerza": lenguaje.banda(casilla["r"]),
+                "confirmada_por": companeras,
+                "nota_confirmacion": (
+                    _nota_confirmacion(companeras) if companeras else None
+                ),
+                "discrepa": discrepan,
+                "nota_discrepancia": (
+                    _nota_discrepancia(discrepan, resp) if discrepan else None
+                ),
+                "exposicion": exp,
+                "respuesta": resp,
+                # La ficha. El número no se esconde, se subordina: va aquí
+                # entero -con su p, su p corregida y su n- para que la banda de
+                # arriba lo PRECEDA en vez de sustituirlo.
+                "ficha": {
+                    "dias_despues": casilla["dias_despues"],
+                    "r": casilla["r"],
+                    "p": casilla.get("p"),
+                    "p_corregida": casilla.get("p_corregida"),
+                    "n": casilla.get("n"),
+                    "metodo": casilla.get("metodo"),
+                    "desde": casilla.get("desde"),
+                    "hasta": casilla.get("hasta"),
+                    "descartados": casilla.get("descartados"),
+                },
+                "dias_de_datos": casilla.get("n"),
+            }
+        )
+
+    salida.sort(key=lambda h: -abs(h["ficha"]["r"]))
+    return salida
+
+
+def _nota_confirmacion(companeras: list[str]) -> str:
+    """Qué significa que lo mismo salga por varios caminos del mismo grupo.
+
+    Se dice que son "la misma cosa medida de otra manera" y no "otras pruebas",
+    porque en este histórico lo primero es literalmente cierto y lo segundo
+    sería falso. Ver la medida en el comentario de `grupos_exposicion`.
+    """
+    if len(companeras) == 1:
+        return f"Lo mismo sale con {companeras[0]}, que aquí es la misma cosa medida de otra manera."
+    return (
+        "Lo mismo sale con "
+        + ", ".join(companeras[:-1])
+        + f" y {companeras[-1]}, que aquí son la misma cosa medida de otras maneras."
+    )
+
+
+def _nota_discrepancia(
+    discrepan: list[dict[str, Any]], resp: dict[str, Any]
+) -> str:
+    """Que otra cara de la misma decisión apunte al revés. Se dice, no se tapa.
+
+    Se dice SIN resolverla, que es lo honesto: con estos datos no se puede saber
+    si las salidas medias de verdad hacen algo distinto de las intensas o si es
+    que hay pocas y el número baila. Lo que sí se puede saber es que el titular
+    no es toda la historia, y eso cabe en una línea.
+    """
+    nombres = [d["en_frase"] for d in discrepan]
+    quien = (
+        nombres[0]
+        if len(nombres) == 1
+        else ", ".join(nombres[:-1]) + f" y {nombres[-1]}"
+    )
+    # Dos cosas hacen plural el verbo: que haya más de una compañera, o que la
+    # única que hay YA sea plural. Contar solo lo primero daba «las salidas
+    # medias apunta al revés», que es el mismo despiste de concordancia que
+    # `Exposicion.plural` existe para impedir, colado por la puerta de al lado.
+    varios = len(discrepan) > 1 or discrepan[0]["plural"]
+    verbo = "apuntan" if varios else "apunta"
+    return (
+        f"Ojo: dentro de esta misma decisión, {quien} {verbo} al revés sobre "
+        f"{resp['en_frase']}. No es bastante para saber por qué."
+    )
+
+
+NOTA_AZAR = (
+    "Miro más de cien relaciones a la vez. Con tantas, unas cuantas salen "
+    "fuertes por puro azar. Lo que se cuenta aquí ya tiene descontado ese azar."
+)
+
+
+# ---------------------------------------------------------------------------
+# Bloque 1: cómo voy
+# ---------------------------------------------------------------------------
+
+
+def _ventanas(valores: list[float], ancho: int) -> list[float]:
+    """Todas las medias de `ancho` valores consecutivos de la lista."""
+    if len(valores) < ancho:
+        return []
+    return [fmean(valores[i : i + ancho]) for i in range(len(valores) - ancho + 1)]
+
+
+def _nivel(pct: float) -> tuple[str, str]:
+    """Del percentil a una palabra. Devuelve (nivel, frase sin valencia).
+
+    Cinco escalones y no tres porque el de en medio tiene que ser ancho: la
+    mayoría de las semanas son normales, y una portada que llama "por debajo de
+    lo tuyo" a cualquier cosa bajo la mediana estaría avisando siempre. Un aviso
+    que salta siempre no se lee.
+    """
+    if pct < 15:
+        return "bajo", "por debajo de lo tuyo"
+    if pct < 35:
+        return "algo_bajo", "un poco por debajo de lo tuyo"
+    if pct <= 65:
+        return "normal", "en tu rango de siempre"
+    if pct <= 85:
+        return "algo_alto", "un poco por encima de lo tuyo"
+    return "alto", "por encima de lo tuyo"
+
+
+def como_voy(
+    session: Session, *, hoy: date, dias: int, cob: S.Cobertura
+) -> dict[str, Any]:
+    """La última semana frente al propio histórico, nunca frente a constantes.
+
+    LAS DOS POBLACIONES SON DISJUNTAS, y eso ya costó caro una vez en
+    `engine/tendencia.py`: la semana reciente NO entra en su propia referencia.
+    Metida dentro, una mala semana se sube ella sola el listón y se tapa; medido
+    allí, el solapamiento amortiguaba la señal alrededor de un tercio.
+
+    Y se compara una media de siete días contra OTRAS MEDIAS de siete días, no
+    contra los días sueltos. Una media es menos variable que un dato aislado:
+    situarla en la distribución de días sueltos la mandaría siempre al centro y
+    la portada diría "normal" pasara lo que pasara.
+    """
+    desde = hoy - timedelta(days=dias - 1)
+    corte = hoy - timedelta(days=DIAS_RECIENTES - 1)
+    lineas: list[dict[str, Any]] = []
+
+    for clave, d in S.GARMIN.items():
+        serie = S.serie(session, clave, desde, hoy, cob=cob)
+        recientes = [
+            v for f, v in sorted(serie.items()) if f >= corte and v is not None
+        ]
+        previos = [v for f, v in sorted(serie.items()) if f < corte and v is not None]
+
+        if len(recientes) < MINIMO_RECIENTES:
+            lineas.append(
+                {
+                    "clave": clave,
+                    "etiqueta": d.etiqueta,
+                    "nivel": None,
+                    "valencia": None,
+                    "lectura": None,
+                    "na": (
+                        f"solo {len(recientes)} de los últimos {DIAS_RECIENTES} días "
+                        f"traen este dato; hacen falta {MINIMO_RECIENTES} para que la "
+                        f"media sea de la semana y no de los días sueltos que hubo"
+                    ),
+                    "n_reciente": len(recientes),
+                    "n_referencia": len(previos),
+                }
+            )
+            continue
+
+        referencia = _ventanas(previos, min(DIAS_RECIENTES, len(recientes)))
+        if len(referencia) < MINIMO_REFERENCIA:
+            lineas.append(
+                {
+                    "clave": clave,
+                    "etiqueta": d.etiqueta,
+                    "nivel": None,
+                    "valencia": None,
+                    "lectura": None,
+                    "na": (
+                        f"hay {len(referencia)} semanas anteriores con las que "
+                        f"comparar y hacen falta {MINIMO_REFERENCIA}: con menos, "
+                        f"decir si esta semana es alta o baja sería inventárselo"
+                    ),
+                    "n_reciente": len(recientes),
+                    "n_referencia": len(referencia),
+                }
+            )
+            continue
+
+        media = fmean(recientes)
+        pct = percentil_de(media, referencia)
+        nivel, frase = _nivel(pct or 0.0)
+        if nivel == "normal":
+            valencia = "normal"
+        elif d.sentido == "alto_mejor":
+            valencia = "peor" if nivel.endswith("bajo") else "mejor"
+        elif d.sentido == "alto_peor":
+            valencia = "mejor" if nivel.endswith("bajo") else "peor"
+        else:
+            valencia = "neutro"
+
+        lineas.append(
+            {
+                "clave": clave,
+                "etiqueta": d.etiqueta,
+                "nivel": nivel,
+                "valencia": valencia,
+                "lectura": frase,
+                "na": None,
+                "media": round(media, 1),
+                "unidad": d.unidad,
+                "percentil": round(pct, 0) if pct is not None else None,
+                "n_reciente": len(recientes),
+                "n_referencia": len(referencia),
+            }
+        )
+
+    lineas.append(_linea_bici(session, hoy=hoy))
+    lineas.append(_linea_fuerza(session, hoy=hoy))
+
+    con_algo = [ln for ln in lineas if ln.get("lectura")]
+    return {
+        "titulo": "Cómo voy",
+        "subtitulo": (
+            f"Los últimos {DIAS_RECIENTES} días frente a tus últimos {dias}."
+        ),
+        "estado": "con_datos" if con_algo else "vacio",
+        "na": (
+            None
+            if con_algo
+            else (
+                "todavía no hay bastante histórico para situar esta semana dentro "
+                "de lo tuyo; hacen falta unas semanas más de reloj"
+            )
+        ),
+        "lineas": lineas,
+    }
+
+
+def _hace(dias: int) -> str:
+    """Cuánto hace, en castellano. Una sola copia para bici y para fuerza."""
+    if dias == 0:
+        return "hoy"
+    if dias == 1:
+        return "ayer"
+    if dias == 2:
+        return "anteayer"
+    return f"hace {dias} días"
+
+
+def _linea_bici(session: Session, *, hoy: date) -> dict[str, Any]:
+    """Salidas de la semana y cuánto hace de la última."""
+    desde = hoy - timedelta(days=DIAS_RECIENTES - 1)
+    dias_con_salida = set(
+        session.scalars(
+            select(Activity.date).where(Activity.date >= desde, Activity.date <= hoy)
+        )
+    )
+    ultima = session.scalar(select(func.max(Activity.date)))
+    if ultima is None:
+        return {
+            "clave": "bici",
+            "etiqueta": "Bici",
+            "nivel": None,
+            "valencia": None,
+            "lectura": None,
+            "na": "no hay ninguna salida registrada todavía",
+        }
+    ultima = S.a_fecha(ultima)
+    hace = (hoy - ultima).days
+    n = len({S.a_fecha(d) for d in dias_con_salida})
+    cuando = _hace(hace)
+    return {
+        "clave": "bici",
+        "etiqueta": "Bici",
+        "nivel": None,
+        "valencia": "neutro",
+        "lectura": (
+            f"{n} salida{'s' if n != 1 else ''} esta semana, la última {cuando}"
+            if n
+            else f"ninguna salida esta semana, la última {cuando}"
+        ),
+        "na": None,
+        "n_reciente": n,
+    }
+
+
+def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
+    """Sesiones de fuerza de la semana, según lo que el sistema haya APUNTADO.
+
+    Distingue dos vacíos que no son el mismo y que sin esto se leerían igual:
+    "no has entrenado esta semana" y "el sistema no ha apuntado nunca nada". El
+    segundo no habla del usuario, habla del sistema, y confundirlos sería
+    exactamente el reproche sin fundamento que esta portada no puede permitirse.
+    """
+    desde = hoy - timedelta(days=DIAS_RECIENTES - 1)
+    total = session.scalar(select(func.count()).select_from(WorkoutLog)) or 0
+    if not total:
+        return {
+            "clave": "fuerza",
+            "etiqueta": "Fuerza",
+            "nivel": None,
+            "valencia": None,
+            "lectura": None,
+            "na": "el sistema todavía no ha apuntado ninguna sesión de fuerza",
+        }
+    n = (
+        session.scalar(
+            select(func.count())
+            .select_from(WorkoutLog)
+            .where(WorkoutLog.date >= desde, WorkoutLog.date <= hoy)
+        )
+        or 0
+    )
+    ultima = session.scalar(select(func.max(WorkoutLog.date)))
+    hace = (hoy - S.a_fecha(ultima)).days if ultima is not None else None
+    cola = "" if hace is None else f", la última {_hace(hace)}"
+    # «sesión» + «es» da «sesiónes». En castellano el plural se lleva la tilde
+    # por delante -sesión/sesiones- así que pegar el sufijo a la forma singular
+    # no vale, y las dos formas se escriben enteras. Lo cazó un test; a ojo se
+    # lee cuatro veces sin verlo.
+    cuantas = "1 sesión" if n == 1 else f"{n} sesiones"
+    return {
+        "clave": "fuerza",
+        "etiqueta": "Fuerza",
+        "nivel": None,
+        "valencia": "neutro",
+        "lectura": f"{cuantas} esta semana{cola}",
+        "na": None,
+        "n_reciente": n,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Bloque 2: qué ha cambiado
+# ---------------------------------------------------------------------------
+
+
+def que_ha_cambiado(session: Session, *, hoy: date) -> dict[str, Any]:
+    """Esta semana contra la anterior. Dos ventanas DISJUNTAS, otra vez.
+
+    Hoy está vacío entero y dice por qué. No es un placeholder: es la respuesta
+    correcta mientras el motor no lleve dos semanas guardando decisiones. Un
+    bloque que se inventara un "sin cambios" con cero datos estaría diciendo que
+    ha mirado, y no ha mirado.
+    """
+    ini_esta = hoy - timedelta(days=DIAS_RECIENTES - 1)
+    ini_previa = ini_esta - timedelta(days=DIAS_RECIENTES)
+    fin_previa = ini_esta - timedelta(days=1)
+    lineas: list[dict[str, Any]] = []
+
+    colores_esta = _colores(session, ini_esta, hoy)
+    colores_previa = _colores(session, ini_previa, fin_previa)
+    if sum(colores_esta.values()) or sum(colores_previa.values()):
+        lineas.append(
+            {
+                "clave": "semaforo",
+                "etiqueta": "El semáforo",
+                "lectura": _lectura_semaforo(colores_esta, colores_previa),
+                "esta_semana": colores_esta,
+                "semana_anterior": colores_previa,
+            }
+        )
+
+    for clave, etiqueta, modelo, columna in (
+        ("fuerza", "Sesiones de fuerza", WorkoutLog, WorkoutLog.date),
+        ("bici", "Salidas de bici", Activity, Activity.date),
+    ):
+        a = _cuenta_dias(session, modelo, columna, ini_esta, hoy)
+        b = _cuenta_dias(session, modelo, columna, ini_previa, fin_previa)
+        if not a and not b:
+            continue
+        lineas.append(
+            {
+                "clave": clave,
+                "etiqueta": etiqueta,
+                "lectura": _lectura_conteo(a, b),
+                "esta_semana": a,
+                "semana_anterior": b,
+            }
+        )
+
+    if lineas:
+        return {
+            "titulo": "Qué ha cambiado",
+            "subtitulo": "Esta semana frente a la anterior.",
+            "estado": "con_datos",
+            "na": None,
+            "lineas": lineas,
+        }
+    return {
+        "titulo": "Qué ha cambiado",
+        "subtitulo": "Esta semana frente a la anterior.",
+        "estado": "vacio",
+        "na": (
+            "todavía no hay nada que comparar. Este bloque mira la semana contra "
+            "la anterior, y para eso el sistema tiene que llevar al menos dos "
+            "semanas guardando decisiones y apuntando entrenos"
+        ),
+        "lineas": [],
+    }
+
+
+def _colores(session: Session, desde: date, hasta: date) -> dict[str, int]:
+    filas = session.execute(
+        select(Decision.light, func.count())
+        .where(
+            Decision.date >= desde,
+            Decision.date <= hasta,
+            Decision.is_current.is_(True),
+        )
+        .group_by(Decision.light)
+    ).all()
+    cuenta = {"green": 0, "amber": 0, "red": 0}
+    for luz, n in filas:
+        if luz in cuenta:
+            cuenta[luz] = int(n)
+    return cuenta
+
+
+def _cuenta_dias(
+    session: Session, modelo: Any, columna: Any, desde: date, hasta: date
+) -> int:
+    return int(
+        session.scalar(
+            select(func.count(func.distinct(columna)))
+            .select_from(modelo)
+            .where(columna >= desde, columna <= hasta)
+        )
+        or 0
+    )
+
+
+NOMBRE_LUZ = {"green": "verdes", "amber": "ámbares", "red": "rojos"}
+
+
+def _lectura_semaforo(esta: dict[str, int], previa: dict[str, int]) -> str:
+    partes = [f"{n} {NOMBRE_LUZ[c]}" for c, n in esta.items() if n]
+    ahora = ", ".join(partes) if partes else "ningún día con decisión"
+    antes = sum(previa.values())
+    if not antes:
+        return f"{ahora} esta semana. La anterior no hay con qué compararlo."
+    verdes_a, verdes_b = esta.get("green", 0), previa.get("green", 0)
+    if verdes_a > verdes_b:
+        return f"{ahora} esta semana: más verdes que la anterior."
+    if verdes_a < verdes_b:
+        return f"{ahora} esta semana: menos verdes que la anterior."
+    return f"{ahora} esta semana, los mismos verdes que la anterior."
+
+
+def _lectura_conteo(a: int, b: int) -> str:
+    if a == b:
+        return f"{a} esta semana, igual que la anterior"
+    if a > b:
+        return f"{a} esta semana, {a - b} más que la anterior"
+    return f"{a} esta semana, {b - a} menos que la anterior"
+
+
+# ---------------------------------------------------------------------------
+# La otra mitad del bloque 3: lo que todavía no se puede saber
+# ---------------------------------------------------------------------------
+
+
+def lo_que_falta(session: Session) -> list[dict[str, Any]]:
+    """Qué preguntas no tienen respuesta todavía, y qué dato exacto las abriría.
+
+    Es la pieza que convierte "el panel está vacío" en "el panel te está
+    diciendo por qué está vacío y qué lo llenaría". Sin esto, las cuatro vistas
+    sin datos son indistinguibles de cuatro vistas rotas.
+
+    Se calcula CONTANDO FILAS, no escribiendo el estado a mano. Escrito a mano
+    seguiría diciendo "hacen falta check-ins" el día que haya doscientos, que es
+    la forma que tiene un texto de envejecer hacia falso en vez de hacia viejo.
+    """
+    n_checkin = session.scalar(select(func.count()).select_from(Checkin)) or 0
+    n_decision = session.scalar(select(func.count()).select_from(Decision)) or 0
+    n_fuerza = session.scalar(select(func.count()).select_from(WorkoutLog)) or 0
+
+    faltan: list[dict[str, Any]] = []
+    if not n_checkin:
+        faltan.append(
+            {
+                "que": "Cómo se relaciona lo que NOTAS con lo que mide el reloj",
+                "falta": "que empieces a hacer check-ins por la mañana",
+                "vistas": ["concordancia", "desfase"],
+            }
+        )
+    if not n_fuerza:
+        faltan.append(
+            {
+                "que": "Qué te hace cada rutina de fuerza",
+                "falta": "que el sistema apunte sesiones de Hevy",
+                "vistas": ["impacto"],
+            }
+        )
+    if not n_decision:
+        faltan.append(
+            {
+                "que": "Si el motor acierta con el color del día",
+                "falta": "que el motor guarde decisiones, una por mañana",
+                "vistas": ["auditoria"],
+            }
+        )
+    if not n_checkin or not n_fuerza:
+        faltan.append(
+            {
+                "que": "Si lo que la mañana prometía se parece a lo que sale",
+                "falta": "check-ins y sesiones apuntadas: hacen falta las dos cosas",
+                "vistas": ["percepcion"],
+            }
+        )
+    return faltan
+
+
+# ---------------------------------------------------------------------------
+# La vista
+# ---------------------------------------------------------------------------
+
+
+def vista_portada(
+    session: Session,
+    cfg: Any = None,
+    *,
+    dias: int = 180,
+    hoy: date | None = None,
+    metodo: str = "spearman",
+) -> dict[str, Any]:
+    """Los tres bloques, en el orden en que se leen."""
+    hoy = hoy or date.today()
+    cob = S.cobertura(session)
+    lenguaje = lenguaje_de(cfg)
+
+    impacto = vista_impacto(session, dias=dias, hoy=hoy, metodo=metodo)
+    if lenguaje is None:
+        # Sin la sección `metrics` no hay bandas ni grupos, y sin ellos no se
+        # puede contar un hallazgo sin inventarse los cortes. Se dice, no se
+        # rellena con un defecto: un corte inventado decide qué se le enseña al
+        # usuario y qué no, y eso no puede salir de un `.get(clave, 0.3)`.
+        encontrados: list[dict[str, Any]] = []
+        na_hallazgos = (
+            "falta la sección `metrics` en config.yaml, que es donde se declara "
+            "cuándo una relación se puede contar y cómo se agrupan las "
+            "exposiciones. Sin eso no se puede redactar ningún hallazgo"
+        )
+        tope = 0
+    else:
+        encontrados = hallazgos(impacto["rejilla"], lenguaje)
+        na_hallazgos = None
+        tope = lenguaje.hallazgos_en_portada
+
+    calculadas = sum(
+        1
+        for fila in impacto["rejilla"]
+        for c in fila["por_dia"]
+        if c.get("r") is not None
+    )
+
+    return {
+        "vista": "portada",
+        "ventana": impacto["ventana"],
+        "cobertura": cob.como_dict(),
+        "como_voy": como_voy(session, hoy=hoy, dias=dias, cob=cob),
+        "que_ha_cambiado": que_ha_cambiado(session, hoy=hoy),
+        "lo_que_se_sabe": {
+            "titulo": "Lo que ya sé de ti",
+            "estado": "con_datos" if encontrados else "vacio",
+            "na": na_hallazgos
+            or (
+                None
+                if encontrados
+                else (
+                    "de las relaciones que se pueden calcular hoy, ninguna es lo "
+                    "bastante fuerte ni lo bastante fiable para contarla. No es un "
+                    "fallo: es que todavía no hay señal que destaque del ruido"
+                )
+            ),
+            "portada": encontrados[:tope],
+            "resto": max(0, len(encontrados) - tope),
+            "total": len(encontrados),
+            "relaciones_calculadas": calculadas,
+            "nota_azar": NOTA_AZAR,
+        },
+        "lo_que_no_se_puede_saber": lo_que_falta(session),
+    }

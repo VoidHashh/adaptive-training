@@ -655,6 +655,32 @@ def _metodo(metodo: str) -> str:
     return metodo
 
 
+@app.get("/api/metrics/portada")
+def metrics_portada(
+    dias: int = Query(180, ge=7, le=730),
+    metodo: str = Query("spearman"),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """La portada: lo que ya se sabe, antes de pedirle a nadie que elija nada.
+
+    Va primera porque es lo primero que se lee, y existe porque las otras cinco
+    vistas empezaban por el APARATO DE MEDIR -un desplegable de variables- en
+    vez de por la medida. El 2026-09-13 había 27 relaciones fiables calculadas y
+    enviadas al navegador, y la pantalla de entrada no enseñaba ninguna.
+
+    Se monta entera aquí y no pegando seis respuestas en el móvil. Ensamblarla
+    en el navegador sería lento y frágil, pero sobre todo volvería a meter en el
+    JavaScript las reglas de qué se cuenta y cómo, que es de donde este rediseño
+    las está sacando.
+    """
+    from app.analysis.portada import vista_portada
+    from app.analysis.series import comprobar_sliders
+
+    comprobar_sliders(cfg)
+    return vista_portada(s, cfg, dias=dias, metodo=_metodo(metodo))
+
+
 @app.get("/api/metrics/concordancia")
 def metrics_concordancia(
     dias: int = Query(180, ge=7, le=730),

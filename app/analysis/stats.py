@@ -58,6 +58,34 @@ N_MINIMO_CALCULABLE = 3
 # explícitamente es lo contrario -verla, con la advertencia al lado-.
 N_MINIMO_FIABLE = 20
 
+# Decimales con los que viaja una p. Cinco son de sobra para leerla: por debajo
+# de 0,00001 ya no hay decisión que dependa del dígito siguiente.
+DECIMALES_P = 5
+P_MINIMA = 10.0**-DECIMALES_P
+
+
+def redondear_p(p: float | None) -> float | None:
+    """Redondea una p SIN dejar que llegue nunca a cero exacto.
+
+    `round(p, 5)` sobre un 3e-12 -que es lo que sale de un Spearman de 173 días
+    con r = 0,4- da `0.0`, y eso viaja al navegador como «p = 0», que se lee
+    como «esto es imposible por azar». Ningún contraste dice eso jamás: dice
+    «más improbable de lo que sé medir con la precisión con la que lo cuento».
+
+    Es el mismo fallo de siempre con otro disfraz: el valor que se lee no es el
+    valor que se calculó, y la diferencia entre los dos la introduce la
+    presentación sin avisar. Aquí el suelo es `P_MINIMA`, y quien lo vea sabe
+    que significa «esto o menos», no «esto exactamente». Cero se reserva para lo
+    que de verdad es cero, que no existe.
+    """
+    if p is None:
+        return None
+    if p <= 0.0:
+        # Una p negativa o nula no la produce ningún contraste de aquí; si
+        # aparece es un error de cálculo aguas arriba y no se disimula.
+        return 0.0 if p == 0.0 else p
+    return max(round(p, DECIMALES_P), P_MINIMA)
+
 
 @dataclass(frozen=True)
 class Resultado:
@@ -97,7 +125,7 @@ class Resultado:
             "n": self.n,
             "metodo": self.metodo,
             "r": None if self.r is None else round(self.r, 4),
-            "p": None if self.p is None else round(self.p, 5),
+            "p": redondear_p(self.p),
             "na": self.na,
             "aviso": self.aviso,
             "suficiente": self.suficiente,
@@ -578,5 +606,5 @@ def corregir_tanda(grupos: Sequence[Sequence[dict]]) -> None:
     """
     plano = [c for grupo in grupos for c in grupo]
     for c, pc in zip(plano, benjamini_hochberg([c.get("p") for c in plano])):
-        c["p_corregida"] = None if pc is None else round(pc, 5)
+        c["p_corregida"] = redondear_p(pc)
         c["significativa"] = bool(pc is not None and pc < 0.05)

@@ -103,6 +103,25 @@ def routine_key_de(workout: dict[str, Any], config: Any = None) -> str | None:
     cambia. Clasificar por nombre habría errado el 29% del histórico, y en el
     sentido peor: contando como fuerza lo que fue HIIT y al revés.
 
+    Y LA REGLA ES MÁS ANCHA QUE ESTA FUNCIÓN: el título tampoco vale como prueba
+    de lo que el usuario QUERÍA hacer. El mismo 2026-09-13, después de haber
+    establecido aquí arriba que 4 de 14 títulos nombran una rutina que no es la
+    suya, se usaron dos entrenamientos titulados «Día 2 y 3 HIIT» como prueba de
+    que el HIIT del Día 3 seguía formando parte de su práctica, y se propuso
+    tocar `hiit.never_routines` en el `config.yaml` por ello. Era falso: esos
+    dos títulos son del 14 y el 19 de agosto, de cuatro semanas que ya
+    terminaron, y lo de septiembre es «Día 1 HIIT» y «Día 2 HIIT», que es
+    exactamente lo que el config ya declaraba. El error no fue leer mal el dato,
+    fue tratar como dato una cadena de texto de la que se acababa de demostrar
+    que miente el 29% de las veces -y proponer un cambio de configuración
+    encima-.
+
+    Dicho de una vez, para que no haya que volver a descubrirlo: el título es
+    una etiqueta congelada en el momento de ejecutar, editable a mano, y que no
+    se vuelve a tocar cuando la rutina cambia de nombre. NO CLASIFICA, NO DATA Y
+    NO PRUEBA INTENCIÓN. Lo que se hizo se lee del `routine_id` y de los
+    ejercicios; lo que se quiere hacer se lee del `config.yaml`, o se pregunta.
+
     `None` significa que el entrenamiento no sale de ninguna rutina conocida
     -uno suelto, o una rutina que no está en `config.yaml`-. Es un dato, no un
     fallo: es exactamente lo que hay que poder contar en vez de perder.

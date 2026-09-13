@@ -2122,3 +2122,130 @@ trend:
   sueno:
     caida_score_min: 2
     caida_min_min: 25
+
+
+# =============================================================================
+# metrics — cómo se cuenta EN CASTELLANO lo que sale del cálculo
+# =============================================================================
+# Esta sección no cambia ningún número: cambia cómo se cuentan. Existe porque el
+# panel venía escrito en el lenguaje del cálculo -"correlación significativa
+# tras Benjamini-Hochberg", "r = -0.3558", "n = 173"- y eso no es información
+# para quien lo lee cada mañana: es la factura del método.
+#
+# Vive aquí y no en el JavaScript por el mismo motivo que todo lo demás. El
+# front no escribe a mano ni un deslizador ni una regla; si estas bandas y estos
+# grupos estuvieran en `static/`, añadir una exposición nueva al análisis la
+# dejaría fuera de la portada sin un solo error, que es exactamente la familia
+# de fallos que este proyecto lleva meses cazando.
+metrics:
+
+  # --- Cuántos hallazgos caben en la portada --------------------------------
+  # Cinco. No es un límite técnico: es que una portada con veintisiete cosas no
+  # es una portada, es la vista de Impacto con otro nombre. El resto no se
+  # esconde -está entero en la vista, a un toque-, pero lo que se ve al entrar
+  # tiene que caber en una pantalla y leerse sin decidir nada.
+  hallazgos_en_portada: 5
+
+  # --- Las bandas de |r|, que es lo que sustituye al coeficiente -------------
+  # El número NO desaparece: sigue en la ficha de cada hallazgo, con su p, su p
+  # corregida y su n. Lo que hace la banda es PRECEDERLO, para que la primera
+  # lectura sea una frase y no una cifra que hay que saber interpretar.
+  #
+  # Los cortes son los convencionales de Cohen (0,1 / 0,3 / 0,5) movidos un poco
+  # arriba en el primero. Motivo medido: con 173 días, un |r| de 0,15 sale
+  # significativo sin problema y no significa nada que se pueda notar montando
+  # en bici. Llamarlo "se nota" sería verdad estadística y mentira práctica.
+  #
+  # Por debajo de `se_nota_poco` la relación no se cuenta como hallazgo aunque
+  # el filtro de azar la deje pasar. Queda en la vista con su número.
+  fuerza_relacion:
+    se_nota_poco: 0.20
+    se_nota: 0.35
+    se_nota_mucho: 0.50
+
+  # --- Los grupos de exposición, que son GRUPOS DE DECISIONES ----------------
+  # POR QUÉ SE AGRUPA, CON EL NÚMERO DELANTE
+  # ----------------------------------------
+  # Medido el 2026-09-13 sobre los 173 días de histórico real, las exposiciones
+  # de bici no son variables distintas:
+  #
+  #     minutos_bici    vs desnivel_bici     r = 0,9986
+  #     carga_bici      vs desnivel_bici     r = 0,9721
+  #     carga_bici      vs minutos_bici      r = 0,9695
+  #     bici_cualquiera vs minutos_bici      r = 0,9772
+  #
+  # Un 0,9986 no es "difícil de separar": es la misma columna medida en otra
+  # unidad. Las cuatro suben y bajan juntas porque los días que no sale valen
+  # cero las cuatro, y los días que sale, más rato es más metros y más carga.
+  #
+  # Sin agrupar, la portada enseñaría cuatro hallazgos que parecen cuatro
+  # descubrimientos independientes -"los minutos te bajan la HRV", "la carga te
+  # baja la HRV", "el desnivel te baja la HRV", "salir te baja la HRV"- y no lo
+  # son: es UNO, contado cuatro veces. Eso no es solo repetitivo, es engañoso:
+  # cuatro pruebas convencen más que una, y aquí no hay cuatro pruebas.
+  #
+  # Así que la unidad de la portada es el GRUPO, no la exposición. Dentro del
+  # grupo se coge la relación más fuerte y las demás se citan como lo que son:
+  # la misma señal confirmada por otro camino.
+  #
+  # CÓMO SE REPARTEN
+  # ----------------
+  # Una exposición cae en el grupo que la nombra en `exposiciones`. Si ninguno
+  # la nombra, en el que reclame su `familia`. Si no cae en ninguno, el endpoint
+  # REVIENTA en vez de dejarla fuera en silencio: una exposición huérfana es una
+  # que se calcula, se manda por la red y no la ve nadie, que es el fallo del
+  # desplegable de Impacto otra vez.
+  #
+  # `familias` existe porque las rutinas de fuerza se generan solas a partir de
+  # lo que aparezca en `workout_log`: listarlas a mano aquí haría que una rutina
+  # nueva quedase huérfana el día que se cree.
+  grupos_exposicion:
+
+    # Salir, y cuánto. Los cuatro colineales de arriba más los dos cortes por
+    # duración, que son el mismo eje partido por un umbral.
+    - clave: salir_en_bici
+      titulo: Salir en bici
+      decision: si sales y cuánto ruedas
+      exposiciones:
+        - bici_cualquiera
+        - bici_larga
+        - bici_corta
+        - minutos_bici
+        - carga_bici
+        - desnivel_bici
+
+    # Apretar. Este SÍ es un eje aparte: las tres intensidades van a ~0,5 con
+    # los minutos, no a 0,99. Se puede salir mucho rato suave o poco rato duro,
+    # y el histórico lo distingue.
+    - clave: apretar_en_bici
+      titulo: Apretar en la bici
+      decision: cómo de fuerte vas cuando sales
+      exposiciones:
+        - bici_suave
+        - bici_media
+        - bici_intensa
+
+    # Qué rutina toca. Por familia: `rutina_dia_1`, `rutina_dia_2` y las que
+    # vengan. Hoy está vacío porque `workout_log` no tiene ni una fila.
+    - clave: rutina_de_fuerza
+      titulo: Qué rutina de fuerza haces
+      decision: qué día de fuerza te toca
+      familias:
+        - rutina
+
+    # Cuánto levantas. Volumen y series, que serán colineales entre ellas por el
+    # mismo motivo que los minutos y el desnivel, pero eso todavía no se puede
+    # medir: hacen falta semanas de sesiones apuntadas.
+    - clave: volumen_de_fuerza
+      titulo: Cuánto levantas
+      decision: cuánto volumen metes en la sesión
+      familias:
+        - fuerza
+
+    # Ejercicios sueltos. Van aparte y con la advertencia de confusión de
+    # siempre: un ejercicio no se hace solo, se hace dentro de un día.
+    - clave: ejercicio_suelto
+      titulo: Ejercicios concretos
+      decision: qué ejercicios metes
+      familias:
+        - ejercicio

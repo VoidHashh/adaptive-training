@@ -41,7 +41,7 @@ persona editando el `config.yaml`.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from statistics import fmean, median
 from typing import Any
@@ -83,6 +83,24 @@ class Exposicion:
     etiqueta: str
     tipo: str  # binaria | continua
     familia: str  # rutina | bici | fuerza | ejercicio
+    # El sujeto de la frase de la portada: "salir en bici", "las salidas
+    # largas", "acumular desnivel". La etiqueta no vale -"Salida larga (tu
+    # cuarto superior, 166 min o más)" es un encabezado de tabla, no un sujeto-
+    # y por eso va aparte y sin defecto. Ver `Definicion.en_frase`.
+    en_frase: str = field(kw_only=True)
+    # Si `en_frase` va en plural, porque la exposición es el SUJETO de la frase
+    # de la portada y el verbo tiene que concordar con ella: «salir en bici te
+    # baja la variabilidad», pero «las salidas largas te SUBEN el pulso». Sin
+    # este campo salía «las salidas largas te sube», que es exactamente la clase
+    # de detalle que hace que un texto se lea como generado por una máquina y no
+    # como escrito por alguien.
+    #
+    # Es obligatorio y no se deduce del artículo. Mirar si empieza por «las »
+    # acertaría con las seis de hoy y fallaría EN SILENCIO -con una frase mal
+    # conjugada, no con un error- el día que alguien escriba una que no empiece
+    # por artículo. Un campo sin defecto no se puede olvidar: el módulo no
+    # importa.
+    plural: bool = field(kw_only=True)
 
     def como_dict(self) -> dict[str, Any]:
         return {
@@ -90,12 +108,29 @@ class Exposicion:
             "etiqueta": self.etiqueta,
             "tipo": self.tipo,
             "familia": self.familia,
+            "en_frase": self.en_frase,
+            "plural": self.plural,
         }
 
 
 # ---------------------------------------------------------------------------
 # De la base a series de exposición
 # ---------------------------------------------------------------------------
+
+
+def _rutina_en_frase(clave: str) -> str:
+    """`dia_1` -> `el Día 1`, para que la frase de la portada se pueda leer.
+
+    Las claves del `config.yaml` están escritas para el código -minúsculas, sin
+    acentos, con guion bajo- y meterlas crudas en una frase da "hacer dia_1 te
+    sube las molestias lumbares", que se lee como un error de programa. No es un
+    diccionario de nombres bonitos: es la misma clave con la ortografía puesta,
+    así que una rutina nueva sale bien sin tocar nada.
+    """
+    partes = clave.split("_")
+    if len(partes) == 2 and partes[0] == "dia" and partes[1].isdigit():
+        return f"el Día {partes[1]}"
+    return f"la rutina {clave.replace('_', ' ')}"
 
 
 def _dias_con_fuerza(session: Session, desde: date, hasta: date) -> list[WorkoutLog]:
@@ -292,10 +327,26 @@ def exposiciones_de_bici(
                 marcas.add("bici_corta")
 
     defs = [
-        Exposicion("bici_cualquiera", "Cualquier salida", "binaria", "bici"),
-        Exposicion("bici_suave", "Salida suave (Garmin)", "binaria", "bici"),
-        Exposicion("bici_media", "Salida media (Garmin)", "binaria", "bici"),
-        Exposicion("bici_intensa", "Salida intensa (Garmin)", "binaria", "bici"),
+        Exposicion(
+            "bici_cualquiera", "Cualquier salida", "binaria", "bici",
+            en_frase="salir en bici",
+            plural=False,
+        ),
+        Exposicion(
+            "bici_suave", "Salida suave (Garmin)", "binaria", "bici",
+            en_frase="las salidas suaves",
+            plural=True,
+        ),
+        Exposicion(
+            "bici_media", "Salida media (Garmin)", "binaria", "bici",
+            en_frase="las salidas medias",
+            plural=True,
+        ),
+        Exposicion(
+            "bici_intensa", "Salida intensa (Garmin)", "binaria", "bici",
+            en_frase="las salidas intensas",
+            plural=True,
+        ),
     ]
     if p_alto is not None:
         defs.append(
@@ -304,6 +355,12 @@ def exposiciones_de_bici(
                 f"Salida larga (tu cuarto superior, {p_alto:.0f} min o más)",
                 "binaria",
                 "bici",
+                # El umbral entra en la frase porque "salida larga" no significa
+                # nada sin él: son SUS minutos, no noventa de manual, y dentro de
+                # un año serán otros. Decirlo aquí evita que el usuario tenga que
+                # ir a buscar de qué le están hablando.
+                en_frase=f"las salidas largas (de {p_alto:.0f} min o más)",
+                plural=True,
             )
         )
     if p_bajo is not None:
@@ -313,6 +370,8 @@ def exposiciones_de_bici(
                 f"Salida corta (tu cuarto inferior, {p_bajo:.0f} min o menos)",
                 "binaria",
                 "bici",
+                en_frase=f"las salidas cortas (de {p_bajo:.0f} min o menos)",
+                plural=True,
             )
         )
 
@@ -395,7 +454,29 @@ def contraste(
     return salida
 
 
-def _lectura_recuperacion(casillas: list[dict[str, Any]], sentido: str) -> str | None:
+def _efecto(casilla: dict[str, Any], *, binaria: bool) -> float | None:
+    """El tamaño del efecto de una casilla, que NO es el mismo número según el tipo.
+
+    En una exposición de sí-o-no el efecto es `diferencia`: cuánto se separan
+    las dos medias. Pero una exposición continua no tiene dos grupos que
+    comparar -no hay "los días con minutos" y "los días sin"-, así que ahí el
+    único tamaño de efecto que existe es `r`.
+
+    Se miran los dos en las binarias, y no por adorno: `contraste` ANULA `r`
+    cuando hay menos de `N_MINIMO_EXPUESTOS` días en alguno de los dos grupos,
+    pero deja la `diferencia` puesta. Leer solo la diferencia daría una frase
+    redonda construida sobre dos días expuestos.
+    """
+    if binaria:
+        if casilla.get("r") is None:
+            return None
+        return casilla.get("diferencia")
+    return casilla.get("r")
+
+
+def _lectura_recuperacion(
+    casillas: list[dict[str, Any]], sentido: str, *, binaria: bool = True
+) -> str | None:
     """"A los dos días ya no se nota", que es la pregunta de la salida intensa.
 
     "¿Cuántos días de HRV cuesta una salida INTENSA?" no se contesta con tres
@@ -406,21 +487,32 @@ def _lectura_recuperacion(casillas: list[dict[str, Any]], sentido: str) -> str |
     Si al final de la ventana todavía se nota, lo dice tal cual. No se extrapola
     un "se recupera en cuatro días" que no se ha medido: la ventana llega hasta
     donde llega, y decir hasta dónde se ha mirado es parte de la respuesta.
+
+    LAS CONTINUAS TAMBIÉN, Y ESO ES NUEVO
+    -------------------------------------
+    Durante un tiempo esta frase solo se escribía para las exposiciones
+    binarias, y las continuas viajaban con `lectura: null`. El resultado, medido
+    el 2026-09-13 sobre los datos reales: de las 27 relaciones fiables que había,
+    las CUATRO MÁS FUERTES eran continuas -carga, minutos y desnivel contra HRV y
+    Body Battery- y ninguna tenía frase. El panel calculaba lo más importante que
+    sabía del usuario y era justo lo único que no sabía contarle.
+
+    La única diferencia es el arranque de la frase: en una binaria se puede decir
+    "al día siguiente baja" porque hay un día con y un día sin; en una continua
+    hay que decir "cuanto más acumulas", porque la comparación es de dosis y no
+    de presencia. El resto -dirección, valencia y día de vuelta a la normalidad-
+    es idéntico, y por eso es la misma función y no dos parecidas.
     """
-    utiles = [
-        c
-        for c in casillas
-        if c.get("diferencia") is not None and c.get("r") is not None
-    ]
+    utiles = [c for c in casillas if _efecto(c, binaria=binaria) is not None]
     if not utiles or utiles[0]["dias_despues"] != casillas[0]["dias_despues"]:
         # Si el retardo más corto no se pudo calcular, no hay "al día siguiente"
         # con el que empezar la frase, y empezarla en el +2 diría otra cosa.
         return None
 
-    primero = utiles[0]
-    if abs(primero["diferencia"]) < 1e-9:
+    base = _efecto(utiles[0], binaria=binaria)
+    if base is None or abs(base) < 1e-9:
         return None
-    sube = primero["diferencia"] > 0
+    sube = base > 0
 
     direccion = "sube" if sube else "baja"
     if sentido == "alto_peor":
@@ -430,19 +522,32 @@ def _lectura_recuperacion(casillas: list[dict[str, Any]], sentido: str) -> str |
     else:
         valencia = ""
 
+    # "Cuanto más acumulas" y no "cuantos más minutos" porque esta función no
+    # conoce la etiqueta de la exposición, y pasársela solo para conjugar el
+    # adjetivo obligaría a que el que llama supiera el género de cada una.
+    dosis = "" if binaria else "cuanto más acumulas, "
+
     for c in utiles[1:]:
-        se_da_la_vuelta = (c["diferencia"] > 0) != sube
-        se_apaga = abs(c["diferencia"]) < abs(primero["diferencia"]) * 0.25
+        efecto = _efecto(c, binaria=binaria)
+        if efecto is None:
+            continue
+        se_da_la_vuelta = (efecto > 0) != sube
+        se_apaga = abs(efecto) < abs(base) * 0.25
         if se_da_la_vuelta or se_apaga:
             return (
-                f"al día siguiente {direccion}{valencia}, y al día "
+                f"{dosis}al día siguiente {direccion}{valencia}, y al día "
                 f"+{c['dias_despues']} ya está como siempre"
             )
 
     ultimo = utiles[-1]["dias_despues"]
+    if binaria:
+        return (
+            f"{direccion}{valencia} al día siguiente, y al día +{ultimo} -hasta "
+            f"donde llega esta ventana- todavía se nota"
+        )
     return (
-        f"{direccion}{valencia} al día siguiente, y al día +{ultimo} -hasta donde "
-        f"llega esta ventana- todavía se nota"
+        f"cuanto más acumulas más {direccion}{valencia} al día siguiente, y al día "
+        f"+{ultimo} -hasta donde llega esta ventana- todavía se nota"
     )
 
 
@@ -484,7 +589,14 @@ def vista_impacto(
     # Rutinas de fuerza.
     rutinas = rutinas_por_dia(session, desde, hasta)
     for clave in sorted({r for v in rutinas.values() for r in v}):
-        e = Exposicion(f"rutina_{clave}", f"Rutina {clave}", "binaria", "rutina")
+        e = Exposicion(
+            f"rutina_{clave}",
+            f"Rutina {clave}",
+            "binaria",
+            "rutina",
+            en_frase=f"hacer {_rutina_en_frase(clave)}",
+            plural=False,
+        )
         exposiciones.append(e)
         sers[e.clave] = _binaria(rutinas, clave, desde, hasta, cob.fuerza)
 
@@ -501,6 +613,8 @@ def vista_impacto(
             d.etiqueta,
             "continua",
             "fuerza" if clave.endswith("fuerza") else "bici",
+            en_frase=S.COMO_EXPOSICION[clave],
+            plural=False,
         )
         exposiciones.append(e)
         sers[clave] = S.serie(session, clave, desde, hasta, cob=cob)
@@ -523,10 +637,8 @@ def vista_impacto(
                     "exposicion": exp.como_dict(),
                     "respuesta": {"clave": clave_r, **d_r.como_dict()},
                     "por_dia": casillas,
-                    "lectura": (
-                        _lectura_recuperacion(casillas, d_r.sentido)
-                        if exp.tipo == "binaria"
-                        else None
+                    "lectura": _lectura_recuperacion(
+                        casillas, d_r.sentido, binaria=exp.tipo == "binaria"
                     ),
                 }
             )

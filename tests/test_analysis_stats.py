@@ -471,3 +471,47 @@ def test_percentiles_conocidos():
 def test_el_percentil_se_sujeta_al_rango():
     assert percentil([1, 2, 3], 150) == 3.0
     assert percentil([1, 2, 3], -10) == 1.0
+
+
+def test_una_p_positiva_no_viaja_nunca_como_cero_exacto():
+    """`round(3e-12, 5)` da `0.0`, y `p = 0` se lee como "imposible por azar".
+
+    Ningún contraste dice eso jamás. Dice "más improbable de lo que sé medir con
+    la precisión con la que lo cuento", que no es lo mismo ni de lejos. Es el
+    fallo de siempre con otro disfraz: el valor que se lee no es el que se
+    calculó, y la diferencia la mete la presentación sin avisar.
+
+    Sale de verdad: un Spearman de 173 días con r = 0,4 -que es lo que tiene
+    este histórico contra la HRV- da p del orden de 1e-12.
+    """
+    from app.analysis.stats import P_MINIMA, redondear_p
+
+    assert redondear_p(3e-12) == P_MINIMA
+    assert redondear_p(1e-300) == P_MINIMA
+    assert redondear_p(None) is None
+
+    # Lo que ya se ve con cinco decimales pasa tal cual.
+    assert redondear_p(0.04321) == 0.04321
+    assert redondear_p(0.5) == 0.5
+    # Y el suelo no sube nada que ya estuviera por encima.
+    assert redondear_p(0.000123) == 0.00012
+
+
+def test_el_suelo_de_la_p_no_toca_la_significacion(db_no_hace_falta=None):
+    """El suelo es de PRESENTACIÓN: no puede cambiar quién pasa el corte.
+
+    `corregir_tanda` decide con la p que le llega y redondea después. Si el
+    orden de las casillas dependiera del redondeo, el suelo estaría moviendo
+    resultados en vez de escribirlos.
+    """
+    from app.analysis.stats import corregir_tanda
+
+    casillas = [
+        {"p": 3e-12},
+        {"p": 0.0004},
+        {"p": 0.5},
+        {"p": 0.9},
+    ]
+    corregir_tanda([casillas])
+    assert [c["significativa"] for c in casillas] == [True, True, False, False]
+    assert casillas[0]["p_corregida"] > 0.0

@@ -280,6 +280,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "integrations",
         "notifications",
         "trend",
+        "metrics",
     }
     for k in data:
         require(
@@ -2028,6 +2029,132 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"cualificador diría que el sueño ha empeorado todos los días en que "
             f"la media se mueva un decimal",
         )
+
+    # --- el lenguaje del panel ----------------------------------------------
+    #
+    # Sección OPCIONAL: sin ella el panel sigue funcionando, solo que sin
+    # portada. Pero si está, se valida entera, porque cada cosa que hay dentro
+    # decide qué se le enseña al usuario y qué no, y las dos formas de
+    # equivocarse aquí son calladas: una banda mal puesta hace que un hallazgo
+    # real no se cuente, y un grupo mal escrito hace que una exposición entera
+    # desaparezca de la portada sin que salte nada.
+    if "metrics" in data:
+        metrics = data.get("metrics") or {}
+        check_keys(
+            metrics,
+            {"hallazgos_en_portada", "fuerza_relacion", "grupos_exposicion"},
+            "metrics",
+        )
+
+        n_portada = metrics.get("hallazgos_en_portada")
+        require(
+            isinstance(n_portada, int)
+            and not isinstance(n_portada, bool)
+            and n_portada >= 1,
+            f"metrics.hallazgos_en_portada: '{n_portada}' tiene que ser un entero "
+            f">= 1. Con 0 la portada se quedaría sin su mitad útil y parecería "
+            f"que no hay nada que contar, que es distinto de no querer contarlo",
+        )
+
+        bandas = metrics.get("fuerza_relacion") or {}
+        check_keys(
+            bandas,
+            {"se_nota_poco", "se_nota", "se_nota_mucho"},
+            "metrics.fuerza_relacion",
+        )
+        for clave in ("se_nota_poco", "se_nota", "se_nota_mucho"):
+            v = bandas.get(clave)
+            require(
+                _es_num(v) and 0 < v < 1,
+                f"metrics.fuerza_relacion.{clave}: '{v}' tiene que ser un número "
+                f"entre 0 y 1 sin incluirlos. Son cortes sobre |r|, que vive "
+                f"justo en ese intervalo",
+            )
+        poco, medio, mucho = (
+            bandas.get("se_nota_poco"),
+            bandas.get("se_nota"),
+            bandas.get("se_nota_mucho"),
+        )
+        if all(_es_num(v) for v in (poco, medio, mucho)):
+            require(
+                poco < medio < mucho,
+                f"metrics.fuerza_relacion tiene que ir de menos a más "
+                f"({poco} < {medio} < {mucho}). Desordenadas no fallan: se "
+                f"aplican en orden y la banda de en medio no se usaría nunca, "
+                f"así que todo saldría o flojo o fortísimo",
+            )
+
+        grupos = metrics.get("grupos_exposicion")
+        require(
+            isinstance(grupos, list) and bool(grupos),
+            f"metrics.grupos_exposicion: '{grupos}' tiene que ser una lista con "
+            f"al menos un grupo. Vacía, TODAS las exposiciones quedarían "
+            f"huérfanas y la portada no podría contar nada",
+        )
+        if isinstance(grupos, list):
+            vistas_claves: set[str] = set()
+            vistas_exp: dict[str, str] = {}
+            vistas_fam: dict[str, str] = {}
+            for i, g in enumerate(grupos):
+                donde = f"metrics.grupos_exposicion[{i}]"
+                if not isinstance(g, dict):
+                    require(False, f"{donde}: '{g}' tiene que ser un mapa")
+                    continue
+                check_keys(
+                    g,
+                    {"clave", "titulo", "decision", "exposiciones", "familias"},
+                    donde,
+                )
+                for obligatoria in ("clave", "titulo", "decision"):
+                    require(
+                        isinstance(g.get(obligatoria), str) and g[obligatoria].strip(),
+                        f"{donde}.{obligatoria}: hace falta un texto. `decision` "
+                        f"es lo que se le enseña al usuario como el eje que "
+                        f"puede mover, y sin ella el grupo no se puede titular",
+                    )
+                clave = g.get("clave")
+                if isinstance(clave, str):
+                    require(
+                        clave not in vistas_claves,
+                        f"{donde}.clave: '{clave}' está repetida. Dos grupos con "
+                        f"la misma clave se pisan y uno de los dos desaparece",
+                    )
+                    vistas_claves.add(clave)
+
+                exps = g.get("exposiciones") or []
+                fams = g.get("familias") or []
+                require(
+                    bool(exps) or bool(fams),
+                    f"{donde}: un grupo sin `exposiciones` ni `familias` no "
+                    f"reclama nada y no puede recibir ningún hallazgo",
+                )
+                for nombre, lista in (("exposiciones", exps), ("familias", fams)):
+                    require(
+                        isinstance(lista, list),
+                        f"{donde}.{nombre}: '{lista}' tiene que ser una lista",
+                    )
+                    if not isinstance(lista, list):
+                        continue
+                    # Reclamar dos veces la misma cosa no da error al repartir
+                    # -gana el primero- pero deja al segundo grupo esperando
+                    # unos hallazgos que nunca le van a llegar, y eso se lee
+                    # como "de esto no se sabe nada" cuando sí se sabe.
+                    registro = vistas_exp if nombre == "exposiciones" else vistas_fam
+                    for v in lista:
+                        require(
+                            isinstance(v, str) and v.strip(),
+                            f"{donde}.{nombre}: '{v}' tiene que ser un texto",
+                        )
+                        if not isinstance(v, str):
+                            continue
+                        require(
+                            v not in registro,
+                            f"{donde}.{nombre}: '{v}' ya lo reclama el grupo "
+                            f"'{registro.get(v)}'. Repartido dos veces, el "
+                            f"segundo grupo se queda mudo sin dar ningún error",
+                        )
+                        if isinstance(clave, str):
+                            registro[v] = clave
 
     return errors
 

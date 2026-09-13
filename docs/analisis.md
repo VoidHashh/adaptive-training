@@ -22,11 +22,12 @@ existe en Garmin Connect y hacerlo otra vez peor no ayuda a nadie.
 
 ## Estado
 
-Implementada. Cinco vistas, seis endpoints, todos **solo de lectura** bajo
-`/api/metrics/`:
+Implementada. Una portada y cinco vistas, siete endpoints, todos **solo de
+lectura** bajo `/api/metrics/`:
 
 | Vista | Endpoint | Módulo |
 |-------|----------|--------|
+| 0. Portada | `/api/metrics/portada` | `analysis/portada.py` |
 | 1. Concordancia | `/api/metrics/concordancia` | `analysis/concordancia.py` |
 | 2. Desfase | `/api/metrics/desfase` | `analysis/concordancia.py` |
 | 3. Impacto | `/api/metrics/impacto` | `analysis/impacto.py` |
@@ -40,6 +41,39 @@ manda el servidor. Escrito a mano, añadir una señal al `config.yaml` la dejar�
 fuera de las métricas sin un solo error.
 
 ## Las vistas
+
+### 0. Portada
+
+Lo que YA SE SABE, antes de pedirle a nadie que elija nada. Existe porque las
+cinco vistas de abajo empezaban por el aparato de medir -un desplegable de
+variables y una tabla de coeficientes- en vez de por la medida. Medido el
+2026-09-13: había 27 relaciones fiables calculadas, serializadas y enviadas al
+navegador, y la pantalla de entrada no enseñaba ninguna.
+
+Tres bloques: **cómo voy** (la última semana contra el propio histórico, nunca
+contra constantes), **qué ha cambiado** (esta semana contra la anterior) y **lo
+que ya sé de ti**, que es un hallazgo por decisión y no por variable.
+
+Lo de "por decisión" no es presentación. `minutos_bici` y `desnivel_bici`
+correlacionan **a 0,9986** entre ellas en este histórico: no son dos medidas
+parecidas, son la misma columna en otras unidades. Enseñarlas como dos hallazgos
+sugiere dos pruebas independientes donde hay una, y eso no es repetitivo, es una
+exageración de la evidencia. La agrupación se declara en `metrics.grupos_exposicion`
+del `config.yaml`, y una exposición que no caiga en ningún grupo **revienta**
+(`portada.grupo_de`) en vez de desaparecer sin más.
+
+Del resto del grupo, las que apuntan al mismo lado van en `confirmada_por` -"la
+misma cosa medida de otra manera"- y las que apuntan al contrario van en
+`discrepa`, dichas y sin resolver. Esa separación **se comprueba por el signo**,
+y no es hipotética: la primera versión citaba «las salidas medias» como
+confirmación de que las intensas bajan la HRV, cuando su casilla más fuerte es un
+**+0,25** del signo opuesto. Una frase falsa en la pantalla de entrada, montada
+con números todos correctos y sin un solo error por ningún lado.
+
+La mitad de abajo, **"lo que todavía no puedo saber"**, tiene el mismo rango que
+la de arriba y se calcula contando filas. Una vista vacía que no explica su vacío
+es un fallo silencioso de interfaz: quien la abre no distingue "aquí no pasa
+nada" de "aquí falta un dato que nadie trae".
 
 ### 1. Concordancia
 Deslizadores frente a métricas de Garmin del mismo día, normalizados a una
@@ -81,6 +115,40 @@ no tener la vista.
 Es la misma disciplina que `sin_muestra` en la capa de tendencia y que `skipped`
 frente a `not_fired` en `rules.py`: no poder calcular algo es un resultado, y se
 dice. Callarlo convierte "no lo he mirado" en "no pasa nada".
+
+## Reglas de método
+
+Esto no son notas de implementación: son errores cometidos al ANALIZAR, que no
+dan ningún fallo y no los caza ningún test, así que el único sitio donde pueden
+vivir es aquí.
+
+### Los títulos de Hevy no son dato
+
+Está medido y escrito en `routine_key_de`: de los 14 entrenamientos reales de la
+cuenta, **cuatro llevan un título que nombra una rutina distinta de la que dice
+su `routine_id`**. La clasificación ya sale del id por eso.
+
+Lo que faltaba decir es que **la regla vale también para inferir intención**. El
+2026-09-13, en el mismo análisis en que se había establecido ese 29% de títulos
+mentirosos, se usaron dos entrenamientos titulados «Día 2 y 3 HIIT» como prueba
+de que el usuario quería HIIT en el Día 3, y se propuso cambiarle el
+`config.yaml`. Eran de agosto, de un ciclo terminado, y lo que hace ahora es
+«Día 1 HIIT» y «Día 2 HIIT» -justo lo que el config ya decía-. El fallo no fue
+de lectura: fue usar como evidencia una cadena de texto que ya se sabía poco
+fiable, y usarla además para proponer un cambio de comportamiento del motor.
+
+Lo que se HIZO se lee del `routine_id` y de los ejercicios. Lo que se QUIERE
+hacer se lee del `config.yaml`, o se pregunta. El título no sirve para ninguna
+de las dos cosas.
+
+### El histórico viejo no describe la práctica actual
+
+Corolario del anterior y con la misma víctima. Un ciclo de cuatro semanas que
+terminó hace un mes está en la base de datos exactamente igual de presente que
+lo de esta semana, y una consulta sin ventana los mezcla sin avisar. Antes de
+concluir "esto es lo que hace", hay que mirar CUÁNDO lo hacía. La ventana no es
+un adorno del `WHERE`: es la diferencia entre describir una práctica y describir
+un recuerdo.
 
 ## Qué hace falta guardar (y qué NO se estaba guardando)
 
