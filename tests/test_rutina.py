@@ -35,9 +35,14 @@ from app.integrations.hevy import Backup, HevyError, backup_dir, pending_marker
 class ClienteFalso:
     """Un Hevy que no existe. Apunta si le piden revertir, y qué."""
 
-    def __init__(self, estalla: Exception | None = None):
+    def __init__(self, estalla: Exception | None = None, remoto: dict | None = None):
         self.llamadas: list[tuple[str, Backup | None]] = []
+        self.lecturas: list[str] = []
         self.estalla = estalla
+        # Lo que devuelve el GET. `None` porque la mayoría de los tests de
+        # `revertir` no leen nada, y dejar un diccionario de relleno haría que
+        # pareciera que sí.
+        self.remoto = remoto
 
     def restore(self, routine_id: str, backup: Backup | None = None):
         self.llamadas.append((routine_id, backup))
@@ -48,6 +53,20 @@ class ClienteFalso:
             reason = "revertida al estado de 2026-09-14 07:05:00"
 
         return R()
+
+    def get_routine(self, routine_id: str):
+        """Lo que Hevy contesta AHORA MISMO, para poder cerrar la marca.
+
+        Se apunta la llamada igual que las de `restore`, pero en su propia
+        lista: `cerrar` existe precisamente para NO escribir, así que un test
+        que mire `llamadas` y lo encuentre vacío está comprobando lo que debe.
+        Meter el GET en el mismo sitio que el PUT haría que «no ha tocado
+        nada» y «no ha mirado nada» se leyeran igual, y son cosas distintas.
+        """
+        self.lecturas.append(routine_id)
+        if self.estalla:
+            raise self.estalla
+        return self.remoto
 
 
 def guardar_copia(raiz: Path, rid: str, nombre: str, ejercicios: int = 2) -> Path:
@@ -307,6 +326,227 @@ def test_copias_marca_la_ilegible_en_vez_de_saltarsela(cfg, raiz, capsys):
 def test_copias_sin_ninguna_copia_lo_explica(cfg, raiz, capsys):
     assert rutina.cmd_copias(cfg, _args(rutina="dia_1")) == 0
     assert "no hay ninguna copia" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# cerrar: retirar la marca SIN escribir en Hevy
+# ---------------------------------------------------------------------------
+#
+# POR QUÉ EXISTE ESTE COMANDO Y POR QUÉ SE PRUEBA TANTO
+# ------------------------------------------------------
+# El 2026-09-14 la escritura de las 09:00 falló -Hevy contestó 400 porque el
+# cuerpo llevaba `"notes": []`- y la marca se quedó puesta. La rutina de Hevy
+# estaba INTACTA: su `updated_at` seguía siendo el del día 8. O sea que no había
+# nada roto, solo un aviso en la pantalla que ya no describía nada.
+#
+# Y para quitarlo, las dos únicas salidas eran malas: `revertir`, que manda un
+# PUT para escribir la rutina con exactamente lo que ya tiene -riesgo a cambio
+# de nada, y encima por el mismo camino que acababa de fallar-, o entrar en el
+# contenedor y borrar el fichero a mano, que es saltarse la comprobación entera
+# y decidir de memoria.
+#
+# El riesgo de un comando así es evidente: si se convierte en un botón de «ya lo
+# he mirado», el día que la escritura SÍ haya llegado a medias alguien lo pulsa
+# por costumbre y se queda con una rutina mezclada y sin aviso. Por eso casi
+# todos los tests de abajo comprueban que NO cierra.
+
+
+def _marca(raiz: Path, **campos) -> Path:
+    """Escribe la marca de escritura en curso con la forma que usa `write_routine`."""
+    m = pending_marker(raiz)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    base = {"routine_id": DIA_1, "started_at": "2026-09-14T09:00:18"}
+    base.update(campos)
+    m.write_text(json.dumps(base, ensure_ascii=False), encoding="utf-8")
+    return m
+
+
+def _remoto(ejercicios: int = 2, **extra) -> dict:
+    """Lo que devuelve el GET de Hevy: la rutina más la morralla del formato.
+
+    `id`, `index`, `updated_at` y compañía vienen SIEMPRE en la respuesta y no
+    están en la copia. Van aquí a propósito: si la comparación se hiciera sobre
+    el JSON crudo, estos campos harían que toda rutina pareciese distinta de su
+    copia y el comando mandaría a revertir siempre.
+    """
+    r = {
+        "id": DIA_1,
+        "updated_at": "2026-09-08T06:23:34.137Z",
+        "folder_id": None,
+        "title": "Día 1",
+        "notes": None,
+        "exercises": [
+            {"exercise_template_id": f"E{i}", "index": i, "title": f"Ejercicio {i}"}
+            for i in range(ejercicios)
+        ],
+    }
+    r.update(extra)
+    return r
+
+
+def test_cerrar_sin_marca_no_hace_nada_y_no_llama_a_hevy(cfg, raiz, monkeypatch, capsys):
+    falso = ClienteFalso()
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 0
+    assert falso.lecturas == [], "ha ido a Hevy sin haber nada que comprobar"
+    assert "No hay ninguna marca" in capsys.readouterr().out
+
+
+def test_cerrar_retira_la_marca_cuando_la_rutina_es_la_de_la_copia(
+    cfg, raiz, monkeypatch, capsys
+):
+    """El caso del 2026-09-14: el PUT no llegó a aplicar nada.
+
+    Lo que se comprueba no es solo que la marca desaparezca, sino que NO se haya
+    escrito en Hevy para conseguirlo. Cerrar escribiendo sería `revertir` con
+    otro nombre.
+    """
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json")
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(remoto=_remoto())
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 0
+    assert not pending_marker(raiz).exists(), "la marca sigue puesta"
+    assert falso.llamadas == [], "ha ESCRITO en Hevy para cerrar una marca"
+    assert falso.lecturas == [DIA_1], "ha cerrado sin mirar qué hay en Hevy"
+    salida = capsys.readouterr().out
+    assert "No hay nada que revertir" in salida
+    assert "Marca retirada" in salida
+
+
+def test_cerrar_NO_retira_la_marca_si_la_rutina_ha_cambiado(
+    cfg, raiz, monkeypatch, capsys
+):
+    """Si la escritura sí llegó, el aviso tenía razón y se queda.
+
+    Éste es el test que impide que el comando degenere en un «ya lo he mirado».
+    La rutina de Hevy tiene tres ejercicios y la copia dos: el PUT entró, entero
+    o a medias, y aquí no hay nada que cerrar.
+    """
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json", ejercicios=2)
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(remoto=_remoto(ejercicios=3))
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 1
+    assert pending_marker(raiz).exists(), (
+        "ha retirado la marca con la rutina cambiada: el aviso desaparece y la "
+        "rutina mezclada se queda"
+    )
+    salida = capsys.readouterr().out
+    assert "NO ES LA DE LA COPIA" in salida
+    assert "revertir --rutina dia_1" in salida, "no dice cómo deshacerlo"
+
+
+def test_cerrar_no_confunde_la_morralla_del_GET_con_un_cambio(
+    cfg, raiz, monkeypatch, capsys
+):
+    """La comparación va sobre `cuerpo_para_put`, no sobre el JSON crudo.
+
+    El GET devuelve `id`, `updated_at`, `index` y los títulos de cada ejercicio;
+    la copia guarda lo que se manda en el PUT. Comparando el crudo, una rutina
+    intacta parecería distinta de su propia copia SIEMPRE, y este comando -que
+    existe para no escribir- mandaría a revertir cada vez. Que es el peor
+    desenlace posible: un consejo de escribir en Hevy, con confianza, y sin
+    motivo.
+    """
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json")
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(remoto=_remoto(otro_campo_nuevo_de_hevy="lo que sea"))
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 0, (
+        f"campos que solo trae el GET se han leído como un cambio real: "
+        f"{capsys.readouterr().out}"
+    )
+
+
+def test_cerrar_si_no_se_puede_leer_hevy_la_marca_se_queda(
+    cfg, raiz, monkeypatch, capsys
+):
+    """No saber no es lo mismo que estar bien.
+
+    Un `except` que cerrara la marca aquí convertiría un fallo de red en un
+    certificado de que todo está en orden, que es el patrón que este proyecto
+    lleva persiguiendo desde el principio.
+    """
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json")
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(estalla=HevyError("la API no contesta"))
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 1
+    assert pending_marker(raiz).exists()
+    assert "no saber no es lo mismo que estar bien" in capsys.readouterr().out.lower()
+
+
+def test_cerrar_con_la_copia_ilegible_no_cierra_nada(cfg, raiz, monkeypatch, capsys):
+    """Sin copia no hay con qué comparar, así que no hay nada que concluir."""
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json")
+    copia.write_text("{roto", encoding="utf-8")
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(remoto=_remoto())
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 1
+    assert pending_marker(raiz).exists()
+    assert falso.lecturas == [], "ha ido a Hevy sin tener con qué comparar"
+    assert "no se cierra nada" in capsys.readouterr().out
+
+
+def test_cerrar_con_una_marca_que_no_dice_de_que_rutina_no_cierra_a_ciegas(
+    cfg, raiz, monkeypatch, capsys
+):
+    """`read_pending` devuelve `routine_id: "?"` cuando la marca está corrupta.
+
+    Ese `?` es un valor centinela, no un id, y tratarlo como un id llevaría a
+    pedirle a Hevy la rutina `?`. Se para antes y manda a mirar a mano, que es
+    lo único honesto cuando el fichero que dice qué pasó es ilegible.
+    """
+    m = pending_marker(raiz)
+    m.parent.mkdir(parents=True, exist_ok=True)
+    m.write_text("{esto no es json", encoding="utf-8")
+    falso = ClienteFalso(remoto=_remoto())
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=True)) == 1
+    assert pending_marker(raiz).exists()
+    assert falso.lecturas == []
+    assert "No se cierra a ciegas" in capsys.readouterr().out
+
+
+def test_cerrar_sin_confirmar_deja_la_marca_puesta(cfg, raiz, monkeypatch, capsys):
+    """Aunque todo esté bien, sin escribir CERRAR no se cierra.
+
+    La comprobación sale verde y aun así hace falta la confirmación: lo que se
+    retira es el único rastro de que hubo una escritura indeterminada.
+    """
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json")
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(remoto=_remoto())
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+    monkeypatch.setattr("builtins.input", lambda _: "si")  # no es CERRAR
+
+    assert rutina.cmd_cerrar(cfg, _args(si=False)) == 1
+    assert pending_marker(raiz).exists()
+    assert "cancelado" in capsys.readouterr().out
+
+
+def test_cerrar_cancelado_con_ctrl_c_deja_la_marca_puesta(cfg, raiz, monkeypatch):
+    copia = guardar_copia(raiz, DIA_1, "20260914-090018.json")
+    _marca(raiz, backup=str(copia))
+    falso = ClienteFalso(remoto=_remoto())
+    monkeypatch.setattr("app.integrations.hevy.build_client", lambda *a, **k: falso)
+
+    def corta(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", corta)
+
+    assert rutina.cmd_cerrar(cfg, _args(si=False)) == 1
+    assert pending_marker(raiz).exists()
 
 
 # ---------------------------------------------------------------------------

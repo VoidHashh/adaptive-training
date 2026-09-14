@@ -487,6 +487,95 @@ _SERIE_PUT = frozenset(
 # cualquier OTRA clave desconocida es un cambio de la API y sí se grita.
 _SOLO_RESPUESTA = frozenset({"index", "title"})
 
+# Y LA LISTA BLANCA COMPROBABA NOMBRES, QUE ES LA MITAD DEL CONTRATO
+# ------------------------------------------------------------------
+# La otra mitad son los TIPOS, y por ahí se coló la escritura del 2026-09-14:
+# `notes` viajaba como array JSON en un campo de texto. El nombre estaba en la
+# lista blanca, así que el filtro lo dejó pasar sin una palabra, y el error
+# apareció en el único sitio donde ya no se puede hacer nada: la respuesta de
+# Hevy, un 400 cuyo texto este módulo no llegaba a guardar en ningún sitio.
+#
+# Se comprueba aquí y no más tarde porque aquí todavía es recuperable: la copia
+# ya está hecha, el PUT aún no ha salido y el mensaje de la mañana puede decir
+# exactamente qué campo tiene qué tipo. Un cuerpo mal tipado no se manda para
+# que lo rechacen: se para antes.
+#
+# LO QUE VALIDA HEVY Y LO QUE NO, MEDIDO (`scripts/sondeo_notas_hevy.py`)
+# -----------------------------------------------------------------------
+# Sondeado el 2026-09-14 contra la API real, con un `routine_id` inexistente
+# para no tocar nada. Hevy valida el cuerpo ANTES de buscar la rutina, así que
+# el control -cuerpo bueno- dio 404 y todos los 400 vinieron del cuerpo:
+#
+#     CAMPOS DE TEXTO: se validan de verdad.
+#       notes = []      -> 400 Expected string, received array
+#       notes = 5       -> 400 Expected string, received number
+#       title ausente   -> 400 Required
+#
+#     CAMPOS NUMÉRICOS: NO se validan, se COERCIONAN, que es mucho peor.
+#       weight_kg = []  -> ACEPTADO. `Number([])` es 0: el peso se escribiría
+#                          como CERO KILOS y nadie diría una palabra.
+#       reps = True     -> ACEPTADO. `Number(true)` es 1: una repetición.
+#       reps = "8"      -> ACEPTADO como 8.
+#       reps = "ocho"   -> 400 Expected number, received nan (el único que salta)
+#
+# De ahí que esta comprobación no sobre por el hecho de que Hevy valide. En los
+# campos de texto Hevy avisa pero NO DICE QUÉ CAMPO ES -el 400 entero es
+# «Expected string, received array», sin ruta ni índice-, y en los numéricos no
+# avisa en absoluto: convierte en silencio. Este proyecto tiene un nombre para
+# eso desde hace meses, y es el motivo por el que la comprobación es local,
+# estricta y anterior al envío.
+def _es_escalar(valor: Any) -> bool:
+    """¿Es un valor que puede ir tal cual en un campo simple de la API?
+
+    `bool` se excluye a propósito aunque en Python sea un `int`. Y la razón NO
+    es que Hevy lo rechace: está medido que lo acepta. `reps: true` pasa la
+    validación y se guarda como UNA repetición, porque `Number(true)` es 1 en
+    JavaScript. O sea que un `True` que se cuele en `reps` no da error en
+    ninguna parte: escribe una serie de una repetición y sigue la mañana como si
+    nada. Por eso se para aquí, que es el último sitio donde todavía es un
+    fallo visible en vez de un número plausible.
+    """
+    if isinstance(valor, bool):
+        return False
+    return valor is None or isinstance(valor, (str, int, float))
+
+
+def _exigir_texto(valor: Any, donde: str) -> None:
+    """Un campo de texto NULABLE: texto o nada. Es el caso de `notes`."""
+    if valor is not None and not isinstance(valor, str):
+        raise HevyError(
+            f"{donde} tiene que ser texto o nada, y es {type(valor).__name__} "
+            f"({valor!r}). Hevy contesta 400 y la rutina se queda como estaba."
+        )
+
+
+def _exigir_texto_obligatorio(valor: Any, donde: str) -> None:
+    """Un campo de texto que NO admite nulo. Es el caso de `title`.
+
+    NO ES LA MISMA COMPROBACIÓN, Y TRATARLAS IGUAL ERA UN AGUJERO. Aquí se
+    usaba `_exigir_texto` para los dos campos, o sea «texto o nada», y está
+    medido que en el título el «o nada» no vale:
+
+        title = None        -> 400
+        title ausente       -> 400 Required
+        notes = None        -> aceptado
+        notes ausente       -> aceptado
+
+    Y el camino para llegar a un título nulo existía de verdad, no es teoría:
+    `build_routine_payload` lo resuelve con `session.title or
+    definicion.get("title") or session.routine_key`, y `BuiltSession.routine_key`
+    está declarado `str | None`. Con un título vacío y una clave nula el cuerpo
+    salía con `"title": null`, pasaba el contrato local sin una queja y se comía
+    un 400 en la red. El mismo fallo que las notas, en el campo de al lado y
+    esperando su turno.
+    """
+    if not isinstance(valor, str) or not valor.strip():
+        raise HevyError(
+            f"{donde} tiene que ser un texto con contenido, y es "
+            f"{type(valor).__name__} ({valor!r}). Hevy lo exige (contesta 400 "
+            f"«Required») y la rutina se queda como estaba."
+        )
+
 
 def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
     """El cuerpo exacto que acepta `PUT /v1/routines/{id}`.
@@ -505,8 +594,14 @@ def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
     campo nuevo que importe -un RPE, una nota- y tragárselo escribiría en Hevy
     una rutina a la que le falta algo sin que nadie se entere. Que reviente aquí
     es recuperable: la copia ya está hecha y el PUT todavía no ha salido.
+
+    Y UN VALOR DEL TIPO EQUIVOCADO TAMBIÉN ES ERROR, por lo mismo. Ver el
+    comentario de `_es_escalar` arriba: comprobar solo los nombres dejó salir un
+    `"notes": []` que costó la escritura de una mañana entera.
     """
     r = routine.get("routine", routine)
+    _exigir_texto_obligatorio(r.get("title"), "el título de la rutina")
+    _exigir_texto(r.get("notes"), "las notas de la rutina")
 
     ejercicios: list[dict[str, Any]] = []
     for i, ex in enumerate(r.get("exercises") or []):
@@ -518,6 +613,16 @@ def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
                 f"campo se escribe o se descarta; escribir sin él a ciegas no."
             )
         limpio = {k: v for k, v in ex.items() if k in _EJERCICIO_PUT and k != "sets"}
+        _exigir_texto(limpio.get("notes"), f"las notas del ejercicio {i}")
+        for clave, valor in limpio.items():
+            if not _es_escalar(valor):
+                raise HevyError(
+                    f"el ejercicio {i} manda {clave}={valor!r} "
+                    f"({type(valor).__name__}) donde Hevy espera un valor simple. "
+                    f"El nombre del campo estaba en la lista blanca y el tipo no "
+                    f"lo miraba nadie; ese hueco costó la escritura del "
+                    f"2026-09-14."
+                )
         series: list[dict[str, Any]] = []
         for j, s in enumerate(ex.get("sets") or []):
             sobra_s = set(s) - _SERIE_PUT - _SOLO_RESPUESTA
@@ -526,9 +631,36 @@ def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
                     f"la serie {j} del ejercicio {i} lleva claves que Hevy no "
                     f"reconoce en un PUT: {sorted(sobra_s)}"
                 )
-            series.append({k: v for k, v in s.items() if k in _SERIE_PUT})
+            limpia = {k: v for k, v in s.items() if k in _SERIE_PUT}
+            for clave, valor in limpia.items():
+                if not _es_escalar(valor):
+                    raise HevyError(
+                        f"la serie {j} del ejercicio {i} manda {clave}={valor!r} "
+                        f"({type(valor).__name__}) donde Hevy espera un valor "
+                        f"simple."
+                    )
+            series.append(limpia)
         limpio["sets"] = series
         ejercicios.append(limpio)
+
+    # UNA RUTINA SIN EJERCICIOS NO SE PUEDE ESCRIBIR, Y ESTÁ MEDIDO
+    # -------------------------------------------------------------
+    # `exercises: []` devuelve 400, igual que si el campo falta
+    # (`scripts/sondeo_notas_hevy.py`). Y es alcanzable desde el motor: las
+    # retiradas por regla quitan ejercicios de la sesión, y nada garantiza que
+    # quede alguno. El día que una combinación de reglas los quitara todos, esto
+    # se iría a la red, volvería un 400 que no explica nada -«Required»- y el
+    # mensaje de la mañana diría que la rutina no se escribió, sin más.
+    #
+    # Dicho aquí se sabe qué pasó: no es que Hevy fallara, es que la sesión se
+    # quedó vacía, que es un problema de reglas y no de red.
+    if not ejercicios:
+        raise HevyError(
+            "la rutina se quedaría sin un solo ejercicio y Hevy rechaza eso con "
+            "un 400. Si las reglas de hoy han retirado todos los ejercicios, el "
+            "problema está en las reglas: escribir una rutina vacía en la app no "
+            "es lo que hay que hacer con un día así."
+        )
 
     return {
         "routine": {
@@ -625,11 +757,91 @@ def build_routine_payload(session: Any, config: Any = None) -> dict[str, Any]:
 
     return {
         "routine": {
-            "title": session.title or definicion.get("title") or session.routine_key,
-            "notes": session.notes if hasattr(session, "notes") else None,
+            "title": _titulo_de_rutina(session, definicion),
+            "notes": _notas_de_rutina(session),
             "exercises": ejercicios,
         }
     }
+
+
+def _titulo_de_rutina(session: Any, definicion: dict[str, Any]) -> str:
+    """El título de la rutina, que Hevy EXIGE y no admite nulo.
+
+    Aquí ponía `session.title or definicion.get("title") or session.routine_key`
+    y se devolvía tal cual. Los dos primeros eslabones están bien; el tercero es
+    el problema, porque `BuiltSession.routine_key` está declarado `str | None`.
+    Con el título vacío y la clave nula -un día de recuperación cuyo bloque no
+    trajera título- el cuerpo salía con `"title": null`.
+
+    Y eso NO lo cazaba nadie: el contrato de abajo usaba la comprobación de
+    «texto o nada», que da por bueno el nulo. O sea el gemelo exacto del fallo
+    de `notes`, en el campo de al lado, esperando el día en que la cadena de
+    reservas se agotara. Está medido que Hevy contesta 400 a `title: null` y 400
+    «Required» si falta (`scripts/sondeo_notas_hevy.py`).
+
+    Se levanta aquí en vez de devolver un título inventado del tipo «Rutina»:
+    una rutina que llega sin nombre por ninguna de las tres vías es un fallo de
+    construcción del motor, y taparlo con un nombre de relleno escribiría en
+    Hevy una rutina llamada «Rutina» sin que nadie se enterara nunca.
+    """
+    for candidato in (
+        getattr(session, "title", None),
+        definicion.get("title"),
+        getattr(session, "routine_key", None),
+    ):
+        if isinstance(candidato, str) and candidato.strip():
+            return candidato
+    raise HevyError(
+        f"la sesión no tiene título por ninguna vía: ni `title` "
+        f"({getattr(session, 'title', None)!r}), ni el `title` de la definición "
+        f"en el config, ni `routine_key` "
+        f"({getattr(session, 'routine_key', None)!r}). Hevy exige un título y "
+        f"contesta 400 sin él; poner uno de relleno escribiría en la app una "
+        f"rutina sin nombre de verdad."
+    )
+
+
+def _notas_de_rutina(session: Any) -> str | None:
+    """Las notas de la sesión, como UNA cadena, que es lo que Hevy acepta.
+
+    ESTO ROMPIÓ LA ESCRITURA DEL 2026-09-14 Y NADIE PUDO DECIR POR QUÉ
+    ------------------------------------------------------------------
+    Aquí ponía `session.notes if hasattr(session, "notes") else None`, y
+    `BuiltSession.notes` es una `list[str]`. O sea que el cuerpo del PUT salía
+    con `"notes": []` -un array JSON- en un campo que la propia API devuelve
+    siempre como cadena o `null`. Hevy contestó que no, la rutina se quedó como
+    estaba desde el 8 de septiembre, y el mensaje de la mañana dijo «la rutina
+    NO se ha escrito en Hevy» sin poder añadir una palabra más.
+
+    Y NO ES UNA RECONSTRUCCIÓN, ESTÁ MEDIDO. `scripts/sondeo_notas_hevy.py`
+    manda ese mismo cuerpo a un `routine_id` inexistente y Hevy contesta
+    `400 {"error":"Expected string, received array"}`, mientras que el mismo
+    cuerpo con `notes` bien tipado llega hasta el 404 de «esa rutina no
+    existe». Valida el cuerpo antes de buscar la rutina, así que el 400 es del
+    campo y de nada más.
+
+    Lo peor no es el fallo, es por qué no lo cazó nadie: el doble de pruebas de
+    `tests/test_hevy.py` declara `notes: str | None = None`. La sesión falsa
+    tenía el tipo bueno y la de verdad el malo, así que los tests probaban una
+    forma del cuerpo que el motor no construye nunca. Un doble que no se parece
+    al original no prueba la integración: prueba el doble.
+
+    Se unen con salto de línea y la lista vacía se va a `None` y no a `""`: una
+    cadena vacía en Hevy es una nota vacía puesta a propósito, y no hay ninguna
+    nota. Y se acepta que ya venga una cadena porque los dobles de prueba y
+    cualquier otro llamante la pasan así; lo que no se acepta es un tipo que no
+    sea ninguno de los dos, que se levanta más abajo en el contrato.
+    """
+    notas = getattr(session, "notes", None)
+    if notas is None or isinstance(notas, str):
+        return notas or None
+    if isinstance(notas, (list, tuple)):
+        return "\n".join(str(n) for n in notas if n) or None
+    raise HevyError(
+        f"las notas de la sesión son {type(notas).__name__} y Hevy espera texto "
+        f"({notas!r}). No se convierten a ciegas: un `str()` de cualquier cosa "
+        f"escribiría en la rutina la repr de un objeto."
+    )
 
 
 def payload_diff(antes: dict[str, Any] | None, despues: dict[str, Any]) -> list[str]:
@@ -900,6 +1112,14 @@ class WriteResult:
     diff: list[str] = field(default_factory=list)
     reason: str = ""
     error: str | None = None
+    # El código que contestó Hevy, cuando contestó. `None` significa que no hubo
+    # respuesta -no salió la petición, o se cayó la red-, que es un caso
+    # distinto de un 400 y lleva a una decisión distinta sobre la marca. La
+    # columna `hevy_writes.http_status` existía desde el principio y NADIE la
+    # rellenaba: `_anotar_hevy` no la ponía y `WriteResult` no la traía, así que
+    # se guardaba `NULL` siempre y la auditoría no podía distinguir «Hevy dijo
+    # que no» de «no se pudo preguntar».
+    http_status: int | None = None
 
 
 @dataclass
@@ -1071,7 +1291,31 @@ class HevyClient:
                 reason="--dry-run: copia hecha, PUT no enviado",
             )
 
-        # 3. Marca de escritura en curso. Sobrevive a que el proceso muera.
+        # 3. El cuerpo, ANTES de la marca. `cuerpo_para_put` es el paso que
+        # faltaba: el payload que construye el motor lleva `index` y `title`,
+        # que sirven para el diff y para el mensaje pero que Hevy rechaza.
+        #
+        # EL ORDEN IMPORTA Y ANTES ESTABA AL REVÉS. La marca se escribía primero,
+        # así que un cuerpo mal construido -que no llega a salir del proceso, que
+        # no toca la red y que deja la rutina intacta por definición- dejaba
+        # puesta una marca que significa «hay una rutina en estado desconocido».
+        # Un aviso que grita en un caso en el que se sabe perfectamente lo que
+        # hay es un aviso que se acaba ignorando, y eso es exactamente lo que no
+        # puede pasarle a este.
+        try:
+            cuerpo = cuerpo_para_put(payload)
+        except HevyError as exc:
+            # Con la copia ya hecha y sin haber tocado nada: el mejor sitio
+            # posible para descubrir que el cuerpo no vale.
+            return WriteResult(
+                written=False,
+                routine_id=routine_id,
+                backup=copia,
+                diff=diff,
+                error=f"{exc} Copia en {copia.path}",
+            )
+
+        # 4. Marca de escritura en curso. Sobrevive a que el proceso muera.
         marca = pending_marker(self.data_root)
         marca.parent.mkdir(parents=True, exist_ok=True)
         marca.write_text(
@@ -1087,21 +1331,6 @@ class HevyClient:
             encoding="utf-8",
         )
 
-        # 4. El PUT. `cuerpo_para_put` es el paso que faltaba: el payload que
-        # construye el motor lleva `index` y `title`, que sirven para el diff y
-        # para el mensaje pero que Hevy rechaza con un 400.
-        try:
-            cuerpo = cuerpo_para_put(payload)
-        except HevyError as exc:
-            # Antes de salir por la red y con la copia ya hecha: el mejor sitio
-            # posible para descubrir que el cuerpo no vale.
-            return WriteResult(
-                written=False,
-                routine_id=routine_id,
-                backup=copia,
-                diff=diff,
-                error=f"{exc} Copia en {copia.path}",
-            )
         try:
             with self._client() as c:
                 r = c.put(
@@ -1124,14 +1353,39 @@ class HevyClient:
             )
 
         if r.status_code not in (200, 201):
+            # QUE HEVY DIGA QUE NO ES UNA RESPUESTA, NO UN SILENCIO
+            # -----------------------------------------------------
+            # La marca existe para un caso concreto: no saber en qué estado
+            # quedó la rutina. Un 4xx no es ese caso. Hevy ha mirado el cuerpo,
+            # lo ha rechazado y no ha aplicado nada; el estado remoto es el de
+            # la copia que se acaba de hacer, y eso se sabe. Dejar la marca
+            # puesta convertía «te he dicho que no» en «a saber», y así es como
+            # el 2026-09-14 amaneció un aviso de escritura a medias que en
+            # realidad describía una rutina intacta desde el 8 de septiembre.
+            #
+            # Un 5xx sí se queda marcado: ahí Hevy ha fallado por dentro y no
+            # dice en qué momento, así que la rutina puede haber cambiado.
+            # Igual que un 429 o cualquier otra cosa rara, que se trata como
+            # desconocida por prudencia y no por lo que diga el número.
+            servidor = r.status_code >= 500
+            if not servidor:
+                marca.unlink(missing_ok=True)
             return WriteResult(
                 written=False,
                 routine_id=routine_id,
                 backup=copia,
                 diff=diff,
+                http_status=r.status_code,
                 error=(
-                    f"PUT devolvió {r.status_code}: {r.text[:200]}. Copia en "
-                    f"{copia.path}"
+                    f"PUT devolvió {r.status_code}: {r.text[:200]}. "
+                    + (
+                        f"Hevy no ha aplicado nada: la rutina sigue como en "
+                        f"{copia.path}"
+                        if not servidor
+                        else f"Es un fallo del servidor, así que NO se sabe si "
+                        f"llegó a aplicarse: la marca sigue puesta y la copia "
+                        f"está en {copia.path}"
+                    )
                 ),
             )
 
@@ -1142,6 +1396,7 @@ class HevyClient:
             routine_id=routine_id,
             backup=copia,
             diff=diff,
+            http_status=r.status_code,
             reason="escritura confirmada",
         )
 

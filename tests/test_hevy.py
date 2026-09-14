@@ -46,11 +46,43 @@ from tests.conftest import FakeHTTP, FakeResponse
 
 @dataclass
 class SesionFalsa:
-    """Lo mínimo de `BuiltSession` que mira `build_routine_payload`."""
+    """Lo mínimo de `BuiltSession` que mira `build_routine_payload`.
 
-    routine_key: str = "dia_1"
-    title: str | None = "Día 1"
-    notes: str | None = None
+    `notes` ES UNA LISTA, Y ESA LÍNEA COSTÓ UNA ESCRITURA
+    -----------------------------------------------------
+    Aquí ponía `notes: str | None = None`. En `BuiltSession` -la de verdad- el
+    campo es `list[str]`. Así que este doble tenía el tipo bueno y el original el
+    malo, y todos los tests de construcción del cuerpo probaban una forma que el
+    motor no produce nunca: el `"notes": []` que salía a la red no lo vio nadie
+    hasta que Hevy contestó que no, el 2026-09-14 a las nueve de la mañana.
+
+    Un doble que no se parece al original no prueba la integración, prueba el
+    doble. Por eso ahora el tipo es el mismo que el real, y por eso hay abajo un
+    test que compara las anotaciones de los dos campo por campo: el día que
+    `BuiltSession` cambie, este fichero se pone rojo en vez de quedarse mintiendo
+    en verde.
+
+    Y ESE TEST, NADA MÁS ESCRIBIRLO, ENCONTRÓ OTROS DOS
+    ---------------------------------------------------
+    `notes` era el que había costado la escritura, pero no estaba solo:
+
+        routine_key   el doble decía `str`, el original es `str | None`
+        title         el doble decía `str | None`, el original es `str`
+
+    Los dos al revés, y los dos con consecuencias. El primero escondía que la
+    clave puede ser nula, que es justo el último eslabón de la cadena de
+    reservas del título: con él nulo, el cuerpo salía con `"title": null` y Hevy
+    contesta 400 (medido). El segundo hacía lo contrario -probar un `title=None`
+    que el motor no construye nunca- y así el test de la reserva del config
+    parecía cubrir un camino que en realidad no se recorría por donde él creía.
+
+    Tres campos, tres divergencias, un solo test para encontrarlas. El fallo no
+    era `notes`: era que nada comparaba el doble con el original.
+    """
+
+    routine_key: str | None = "dia_1"
+    title: str = "Día 1"
+    notes: list[str] = field(default_factory=list)
     exercises: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -94,6 +126,31 @@ REMOTO = {
         }
     ],
 }
+
+
+# El cuerpo válido más pequeño que existe. Los tests que no van del CONTENIDO
+# -que si se poda una copia, que si la red se cae a mitad- usan éste.
+#
+# Antes usaban `{"routine": {"exercises": []}}`, que es un cuerpo que Hevy
+# RECHAZA por dos motivos a la vez: sin título contesta 400 «Required» y sin
+# ejercicios otro 400. O sea que media docena de tests de escritura afirmaban
+# cosas sobre el resultado de un PUT que en la realidad nunca habría salido bien.
+# No es que estuvieran mal escritos: es que hasta ahora nada comprobaba el
+# cuerpo, así que daba igual lo que se le pasara. En cuanto el contrato mira,
+# esos tests se caen, que es exactamente para lo que sirve el contrato.
+def cuerpo_valido() -> dict[str, Any]:
+    return {
+        "routine": {
+            "title": "Día 1",
+            "notes": None,
+            "exercises": [
+                {
+                    "exercise_template_id": "AAAA1111",
+                    "sets": [{"type": "normal", "reps": 8, "weight_kg": 60}],
+                }
+            ],
+        }
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +202,37 @@ def test_una_serie_sin_tipo_es_normal():
 
 
 def test_el_titulo_cae_a_la_definicion_del_config_si_la_sesion_no_lo_trae():
-    s = SesionFalsa(title=None, exercises=[])
+    """La reserva se ejercita con un título VACÍO, que es lo que puede pasar.
+
+    Antes se pasaba `title=None`, y `BuiltSession.title` está declarado `str`:
+    o sea que el caso probado no lo produce el motor. La cadena de reservas se
+    recorre igual con la cadena vacía, que sí es alcanzable -`str(routine.get(
+    "title", routine_key))` sobre un YAML con el título en blanco- y además es
+    el tipo bueno.
+    """
+    s = SesionFalsa(title="", exercises=[])
     cfg = {"routines": {"dia_1": {"title": "Día 1 (del YAML)"}}}
     assert build_routine_payload(s, cfg)["routine"]["title"] == "Día 1 (del YAML)"
+
+
+def test_sin_titulo_por_ninguna_via_se_para_en_vez_de_mandar_un_nulo():
+    """El gemelo del fallo de `notes`, en el campo de al lado.
+
+    `BuiltSession.routine_key` es `str | None` y era el último eslabón de la
+    cadena de reservas del título. Con él nulo el cuerpo salía con
+    `"title": null`, que el contrato daba por bueno -comprobaba «texto o nada»-
+    y Hevy rechaza con un 400 (medido). Ahora se para en la construcción, que es
+    donde todavía se puede decir qué sesión venía sin nombre.
+    """
+    s = SesionFalsa(title="", routine_key=None, exercises=[])
+    with pytest.raises(HevyError, match="no tiene título por ninguna vía"):
+        build_routine_payload(s, {})
+
+
+def test_un_titulo_nulo_no_pasa_el_contrato():
+    """`None` vale en `notes` y NO vale en `title`. No son la misma comprobación."""
+    with pytest.raises(HevyError, match="título de la rutina"):
+        cuerpo_para_put({"routine": {"title": None, "notes": None, "exercises": []}})
 
 
 def test_el_cuerpo_es_serializable_a_json():
@@ -170,6 +255,242 @@ def test_el_cuerpo_construido_contra_el_config_real(cfg):
     for ex in body["routine"]["exercises"]:
         assert ex["exercise_template_id"], "Hevy rechaza un ejercicio sin template_id"
         assert ex["sets"], "un ejercicio sin series no es un ejercicio"
+
+
+# ---------------------------------------------------------------------------
+# Las notas de la rutina: el fallo del 2026-09-14
+# ---------------------------------------------------------------------------
+#
+# `BuiltSession.notes` es `list[str]` y `build_routine_payload` la pasaba tal
+# cual, así que el PUT salía con `"notes": []`. Hevy contesta
+# `400 Expected string, received array` -medido, ver
+# `scripts/sondeo_notas_hevy.py`- y la rutina se quedó como estaba desde el 8 de
+# septiembre.
+#
+# Ninguno de los tests de arriba podía verlo, porque el doble declaraba
+# `notes: str | None`. Éstos sí.
+
+
+def test_las_notas_de_la_sesion_viajan_como_texto_y_no_como_lista():
+    """El fallo exacto del 2026-09-14, con el tipo que usa el motor de verdad."""
+    s = SesionFalsa(notes=["cuida la lumbar", "sin prisa"], exercises=[ejercicio()])
+    notas = build_routine_payload(s, {})["routine"]["notes"]
+    assert isinstance(notas, str), (
+        f"las notas salen como {type(notas).__name__}; Hevy contesta "
+        f"400 «Expected string, received array» y no escribe nada"
+    )
+    assert "cuida la lumbar" in notas and "sin prisa" in notas
+
+
+def test_sin_notas_va_none_y_no_una_lista_vacia_ni_una_cadena_vacia():
+    """`[]` es el 400 y `""` es una nota vacía puesta a propósito. Ninguna de las dos."""
+    s = SesionFalsa(notes=[], exercises=[ejercicio()])
+    assert build_routine_payload(s, {})["routine"]["notes"] is None
+
+
+def test_una_nota_que_ya_viene_en_texto_se_respeta():
+    s = SesionFalsa(notes="una sola nota", exercises=[])
+    assert build_routine_payload(s, {})["routine"]["notes"] == "una sola nota"
+
+
+def test_unas_notas_de_un_tipo_imposible_revientan_en_vez_de_str():
+    """Un `str()` a ciegas escribiría en la rutina la repr de un objeto."""
+    s = SesionFalsa(exercises=[])
+    s.notes = {"no": "esto"}  # type: ignore[assignment]
+    with pytest.raises(HevyError, match="notas de la sesión"):
+        build_routine_payload(s, {})
+
+
+def test_el_doble_de_sesion_declara_los_mismos_tipos_que_BuiltSession():
+    """El guardián de todo lo de arriba: que el doble se parezca al original.
+
+    ESTE ES EL TEST QUE FALTABA. El fallo del 2026-09-14 no fue que `notes`
+    tuviera el tipo malo -eso es un descuido de una línea-, fue que la batería no
+    podía enterarse: `SesionFalsa` declaraba `notes: str | None` y `BuiltSession`
+    `list[str]`, así que todos los tests de construcción del cuerpo ejercitaban
+    una forma que el motor no produce nunca. Un doble que no se parece al
+    original no prueba la integración, prueba el doble.
+
+    Se comparan las ANOTACIONES y no los valores: lo que se vigila es que el día
+    que `BuiltSession` cambie un tipo, este fichero se ponga rojo en vez de
+    seguir en verde midiendo otra cosa. Sólo se miran los campos que el doble
+    dice tener -no tiene por qué copiar `BuiltSession` entero, sólo lo que
+    `build_routine_payload` mira- pero los que tiene, con el tipo bueno.
+    """
+    from app.engine.session_builder import BuiltSession
+
+    reales = BuiltSession.__annotations__
+    falsas = SesionFalsa.__annotations__
+
+    desconocidos = set(falsas) - set(reales)
+    assert not desconocidos, (
+        f"el doble declara campos que `BuiltSession` no tiene: {sorted(desconocidos)}. "
+        f"O sobran, o el original los perdió y el doble se quedó con ellos."
+    )
+
+    discrepan = {
+        campo: (reales[campo], falsas[campo])
+        for campo in falsas
+        if str(reales[campo]) != str(falsas[campo])
+    }
+    assert not discrepan, (
+        f"el doble y `BuiltSession` no declaran lo mismo: {discrepan}. "
+        f"Con `notes` esto costó la escritura del 2026-09-14: el doble tenía "
+        f"`str | None`, el original `list[str]`, y los tests probaban un cuerpo "
+        f"que el motor no construye."
+    )
+
+
+# ---------------------------------------------------------------------------
+# El contrato de tipos de `cuerpo_para_put`
+# ---------------------------------------------------------------------------
+#
+# La lista blanca comprobaba NOMBRES, que es la mitad del contrato. Por la otra
+# mitad se fue la mañana del 2026-09-14.
+#
+# Lo que esta sección vigila es la parte estricta -texto donde va texto- y, sobre
+# todo, la parte que Hevy NO protege: los campos numéricos se coercionan con el
+# `Number()` de JavaScript, así que `weight_kg: []` se escribiría como cero kilos
+# sin que nadie diga una palabra. Ahí el único freno es local.
+
+
+def test_unas_notas_en_lista_no_salen_a_la_red():
+    with pytest.raises(HevyError, match="notas de la rutina"):
+        cuerpo_para_put({"routine": {"title": "x", "notes": [], "exercises": []}})
+
+
+def test_un_titulo_que_no_es_texto_no_sale_a_la_red():
+    with pytest.raises(HevyError, match="título de la rutina"):
+        cuerpo_para_put({"routine": {"title": ["x"], "notes": None, "exercises": []}})
+
+
+def test_unas_notas_de_ejercicio_en_lista_tampoco():
+    with pytest.raises(HevyError, match="notas del ejercicio 0"):
+        cuerpo_para_put(
+            {
+                "routine": {
+                    "title": "x",
+                    "notes": None,
+                    "exercises": [{"exercise_template_id": "A", "notes": [],
+                                   "sets": []}],
+                }
+            }
+        )
+
+
+def test_el_error_de_tipo_dice_QUE_CAMPO_es_cosa_que_hevy_no_hace():
+    """La razón de que esta comprobación no sobre aunque Hevy valide.
+
+    Medido contra la API real: el 400 entero es `Expected string, received
+    array`. Ni la ruta, ni el nombre del campo, ni el índice del ejercicio. O
+    sea que el 2026-09-14, incluso con el texto del 400 bien guardado -que
+    tampoco lo estaba-, el mensaje de la mañana habría dicho que algo de tipo
+    array iba donde va texto, sin decir dónde. Aquí se dice.
+    """
+    with pytest.raises(HevyError) as exc:
+        cuerpo_para_put({"routine": {"title": "x", "notes": [], "exercises": []}})
+    texto = str(exc.value)
+    assert "notas de la rutina" in texto
+    assert "list" in texto, "el error tiene que decir qué tipo llegó"
+
+
+@pytest.mark.parametrize(
+    "campo, valor",
+    [
+        ("weight_kg", []),       # Number([]) == 0: se escribiría 0 kg
+        ("reps", True),          # Number(true) == 1: se escribiría 1 repetición
+        ("reps", {"a": 1}),
+        ("duration_seconds", ["30"]),
+    ],
+)
+def test_un_valor_no_escalar_en_una_serie_se_para_aqui(campo, valor):
+    """Hevy NO protege de esto: lo convierte en silencio.
+
+    Está medido (`scripts/sondeo_notas_hevy.py`): `weight_kg: []` no da 400,
+    pasa, y vale CERO. `reps: true` pasa, y vale 1. Son los dos casos peores del
+    contrato entero -no hay error, hay un número plausible escrito en la rutina-
+    y el único sitio donde se pueden parar es éste, antes de enviar.
+    """
+    with pytest.raises(HevyError, match="serie 0 del ejercicio 0"):
+        cuerpo_para_put(
+            {
+                "routine": {
+                    "title": "x",
+                    "notes": None,
+                    "exercises": [
+                        {
+                            "exercise_template_id": "A",
+                            "sets": [{"type": "normal", campo: valor}],
+                        }
+                    ],
+                }
+            }
+        )
+
+
+def test_un_valor_no_escalar_en_un_ejercicio_tambien():
+    with pytest.raises(HevyError, match="ejercicio 0 manda"):
+        cuerpo_para_put(
+            {
+                "routine": {
+                    "title": "x",
+                    "notes": None,
+                    "exercises": [
+                        {"exercise_template_id": "A", "rest_seconds": [90],
+                         "sets": []}
+                    ],
+                }
+            }
+        )
+
+
+def test_un_cuerpo_bien_tipado_pasa_entero():
+    """El contrapeso: los frenos de arriba no pueden morder lo que es correcto."""
+    salida = cuerpo_para_put(
+        {
+            "routine": {
+                "title": "Día 1",
+                "notes": "una nota",
+                "exercises": [
+                    {
+                        "exercise_template_id": "A",
+                        "notes": None,
+                        "superset_id": None,
+                        "rest_seconds": 90,
+                        "sets": [{"type": "normal", "reps": 8, "weight_kg": 62.5,
+                                  "duration_seconds": None}],
+                    }
+                ],
+            }
+        }
+    )
+    assert salida["routine"]["notes"] == "una nota"
+    assert salida["routine"]["exercises"][0]["sets"][0]["weight_kg"] == 62.5
+
+
+def test_el_motor_y_el_contrato_encajan_con_el_config_real(cfg):
+    """El eslabón que no existía: construir con el motor y pasarlo por el contrato.
+
+    Cada mañana se hace exactamente esto -`build_routine_payload` y después
+    `cuerpo_para_put`- y no había un solo test que hiciera los dos pasos
+    seguidos con la sesión del motor. Los de construcción paraban antes del
+    contrato y los del contrato empezaban con diccionarios escritos a mano. El
+    `"notes": []` vivía justo en la costura.
+    """
+    routine = cfg.raw["routines"]["dia_1"]
+    s = SesionFalsa(
+        routine_key="dia_1",
+        title=routine.get("title"),
+        notes=["nota del motor"],
+        exercises=[{**ex, "sets": ex["sets"]} for ex in routine["exercises"]],
+    )
+    cuerpo = cuerpo_para_put(build_routine_payload(s, cfg))
+    assert cuerpo["routine"]["notes"] == "nota del motor"
+    from tests.conftest import _hevy_rechazaria
+
+    assert _hevy_rechazaria(cuerpo) is None, (
+        "el cuerpo que produce el motor con el config real lo rechazaría Hevy"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +854,7 @@ def test_una_marca_ilegible_se_reporta_igualmente(tmp_path):
 def test_el_interruptor_corta_antes_de_tocar_la_red(tmp_path):
     """Un interruptor que hay que acordarse de mirar no es un interruptor."""
     c, doble = cliente(tmp_path, write_enabled=False)
-    r = c.write_routine("r1", {"routine": {}})
+    r = c.write_routine("r1", cuerpo_valido())
     assert not r.written
     assert "write_enabled" in r.reason
     assert doble.llamadas == [], "no debería haberse hecho ni la lectura previa"
@@ -571,12 +892,123 @@ def test_una_escritura_correcta_deja_copia_y_retira_la_marca(tmp_path):
             assert "index" not in s
 
 
-def test_un_put_rechazado_no_borra_la_marca_ni_la_copia(tmp_path):
+def test_un_put_rechazado_conserva_la_copia(tmp_path):
+    """Se llamaba `..._no_borra_la_marca_ni_la_copia`, y era lo que NO hay que hacer.
+
+    Ojo al nombre viejo, porque describía el fallo que amaneció el 2026-09-14:
+    con un 400, la marca de «hay una rutina en estado desconocido» se quedaba
+    puesta. Y el test no lo comprobaba -sólo miraba la copia-, así que el nombre
+    afirmaba un comportamiento que nadie verificaba y que además era el
+    equivocado. Un test cuyo título dice más que sus asertos es un sitio donde
+    esconderse.
+
+    Lo que se conserva es la COPIA, que es lo correcto: sirve para comparar. La
+    marca se retira, y de eso va el test de abajo.
+    """
     c, _ = cliente(tmp_path, [FakeResponse(200, REMOTO), FakeResponse(400, text="mal")])
-    r = c.write_routine("r1", {"routine": {"exercises": []}})
+    r = c.write_routine("r1", cuerpo_valido())
     assert not r.written
     assert "400" in (r.error or "")
     assert r.backup is not None and r.backup.path.is_file()
+
+
+# ---------------------------------------------------------------------------
+# La marca: qué la pone y qué la quita
+# ---------------------------------------------------------------------------
+#
+# La marca significa UNA cosa: no se sabe en qué estado quedó la rutina. Todo lo
+# que se sepa con certeza -que Hevy dijo que no, que el cuerpo ni salió- no puede
+# dejarla puesta, porque un aviso que salta cuando no pasa nada es un aviso que
+# se acaba ignorando. Eso es literalmente lo que pasó: la mañana del 2026-09-14
+# amaneció con un aviso de escritura a medias que describía una rutina intacta
+# desde el 8 de septiembre.
+
+
+def test_un_400_retira_la_marca_porque_hevy_ha_dicho_que_no(tmp_path):
+    """«Te he dicho que no» no es «a saber». Es el fallo del 2026-09-14.
+
+    Hevy valida el cuerpo ANTES de buscar la rutina y antes de tocar nada
+    (medido): un 4xx significa que ha mirado el cuerpo, lo ha rechazado y no ha
+    aplicado NADA. El estado remoto es el de la copia que se acaba de tomar, y
+    eso se sabe. Dejar la marca puesta convertía una certeza en una duda.
+    """
+    c, _ = cliente(
+        tmp_path,
+        [FakeResponse(200, REMOTO),
+         FakeResponse(400, text='{"error":"Expected string, received array"}')],
+    )
+    r = c.write_routine("r1", cuerpo_valido())
+    assert not r.written
+    assert read_pending(tmp_path) is None, (
+        "con un 400 se sabe que la rutina está intacta: la marca de «estado "
+        "desconocido» sobra y encima tapa a la de verdad el día que la haya"
+    )
+    assert "no ha aplicado nada" in (r.error or "")
+    assert r.http_status == 400
+
+
+def test_un_500_deja_la_marca_puesta_porque_ahi_no_se_sabe(tmp_path):
+    """El contrapeso del test de arriba, y el motivo de que no se borre siempre.
+
+    Un fallo del servidor no dice en qué momento se cayó: puede haber aplicado
+    la escritura antes de reventar. Ahí la marca es exactamente lo que hay que
+    dejar puesto.
+    """
+    c, _ = cliente(
+        tmp_path, [FakeResponse(200, REMOTO), FakeResponse(500, text="boom")]
+    )
+    r = c.write_routine("r1", cuerpo_valido())
+    assert not r.written
+    pendiente = read_pending(tmp_path)
+    assert pendiente is not None, "con un 5xx no se sabe si llegó a aplicarse"
+    assert pendiente["routine_id"] == "r1"
+    assert "NO se sabe" in (r.error or "")
+    assert r.http_status == 500
+
+
+def test_un_429_tambien_deja_la_marca_por_prudencia(tmp_path):
+    """No se decide por el número, se decide por si se sabe o no."""
+    c, _ = cliente(
+        tmp_path, [FakeResponse(200, REMOTO), FakeResponse(503, text="mantenimiento")]
+    )
+    c.write_routine("r1", cuerpo_valido())
+    assert read_pending(tmp_path) is not None
+
+
+def test_un_cuerpo_que_no_pasa_el_contrato_no_llega_a_poner_la_marca(tmp_path):
+    """El orden de los pasos, comprobado.
+
+    Un cuerpo mal construido no sale del proceso, no toca la red y deja la
+    rutina intacta por definición. Antes la marca se escribía ANTES de construir
+    el cuerpo, así que ese caso -el más inofensivo de todos- dejaba puesto el
+    aviso más grave que tiene el sistema.
+    """
+    c, doble = cliente(tmp_path, [FakeResponse(200, REMOTO)])
+    malo = cuerpo_valido()
+    malo["routine"]["notes"] = ["una lista donde va texto"]
+
+    r = c.write_routine("r1", malo)
+
+    assert not r.written
+    assert read_pending(tmp_path) is None, (
+        "el PUT ni se intentó: marcar «estado desconocido» aquí es gritar por "
+        "el caso en el que más se sabe lo que hay"
+    )
+    assert "notas de la rutina" in (r.error or "")
+    assert [l["verb"] for l in doble.llamadas] == ["get"], "no debió salir el PUT"
+    assert r.backup is not None and r.backup.path.is_file()
+    assert r.http_status is None, "no hubo respuesta: no hay código que guardar"
+
+
+def test_el_codigo_http_viaja_en_el_resultado(tmp_path):
+    """`hevy_writes.http_status` estuvo declarada y a NULL desde el primer día.
+
+    Sin ella la auditoría no distingue «Hevy contestó 400» de «no se pudo ni
+    preguntar», que es justo la diferencia que decide si hay que ir a mirar la
+    rutina a mano o no.
+    """
+    c, _ = cliente(tmp_path, [FakeResponse(200, REMOTO), FakeResponse(200, {"ok": 1})])
+    assert c.write_routine("r1", cuerpo_valido()).http_status == 200
 
 
 def test_si_la_red_falla_la_marca_se_queda_puesta(tmp_path):
@@ -593,7 +1025,7 @@ def test_si_la_red_falla_la_marca_se_queda_puesta(tmp_path):
         raise ConnectionError("se cayó la red a mitad")
 
     c._client = cliente_que_revienta  # type: ignore[method-assign]
-    r = c.write_routine("r1", {"routine": {"exercises": []}})
+    r = c.write_routine("r1", cuerpo_valido())
 
     assert not r.written
     assert "NO se sabe si Hevy" in (r.error or "")
@@ -606,7 +1038,7 @@ def test_si_la_red_falla_la_marca_se_queda_puesta(tmp_path):
 def test_un_get_que_falla_impide_la_escritura(tmp_path):
     c, _ = cliente(tmp_path, [FakeResponse(500, text="boom")])
     with pytest.raises(HevyError, match="500"):
-        c.write_routine("r1", {"routine": {}})
+        c.write_routine("r1", cuerpo_valido())
     assert read_pending(tmp_path) is None
 
 
@@ -841,7 +1273,7 @@ def test_se_poda_DESPUES_de_guardar_la_copia_nueva(tmp_path):
                    write_enabled=True)
     c.backup_keep_last = 1
 
-    r = c.write_routine("r1", {"routine": {"exercises": []}})
+    r = c.write_routine("r1", cuerpo_valido())
 
     assert r.written
     quedan = sorted((tmp_path / "hevy_backups" / "r1").glob("*.json"))
@@ -857,7 +1289,7 @@ def test_sin_limite_las_copias_se_acumulan(tmp_path):
                    write_enabled=True)
     assert c.backup_keep_last is None
 
-    c.write_routine("r1", {"routine": {"exercises": []}})
+    c.write_routine("r1", cuerpo_valido())
 
     assert len(list((tmp_path / "hevy_backups" / "r1").glob("*.json"))) == 4
 

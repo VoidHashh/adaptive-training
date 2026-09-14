@@ -46,10 +46,29 @@ def db():
 
 
 class HevyFalso:
+    """El doble del cliente de Hevy.
+
+    `rechaza` ES EL CASO QUE FALTABA, Y ES EL QUE OCURRIÓ. Este doble sabía
+    escribir bien (`escribe=True`), no escribir por el interruptor de solo
+    lectura (`escribe=False`) y reventar con una excepción (`revienta=True`).
+    Lo que no sabía hacer era lo único que pasó de verdad el 2026-09-14:
+    CONTESTAR QUE NO. Hevy devolvió un 400, `write_routine` volvió con
+    `written=False`, `reason` VACÍO y el motivo en `error`, y ninguna prueba de
+    esta casa recorría esa rama. Por eso el fallo de ahí -guardar `reason` en
+    vez de `error`, dejando la fila con estado «error» y explicación «»- pudo
+    vivir hasta que hizo falta leer la fila.
+
+    Un doble que solo sabe las dos puntas -todo bien y todo roto- no cubre el
+    medio, que es donde viven las averías reales.
+    """
+
     def __init__(self, *, revienta: bool = False, escribe: bool = True,
-                 con_copia: bool = True):
+                 con_copia: bool = True, rechaza: int | None = None):
         self.revienta = revienta
         self.escribe = escribe
+        # El código con el que Hevy dice que no. `400` significa «el cuerpo
+        # estaba mal y no he aplicado nada»; un 5xx significa «no se sabe».
+        self.rechaza = rechaza
         # Si hay copia del día con la que deshacer lo escrito esta mañana.
         # `False` es el caso feo: había que revertir y no se puede.
         self.con_copia = con_copia
@@ -66,6 +85,22 @@ class HevyFalso:
             raise RuntimeError("la API de Hevy ha devuelto 500")
         from app.integrations.hevy import WriteResult
 
+        if self.rechaza is not None:
+            # Copiado de lo que devuelve `write_routine` de verdad cuando la API
+            # contesta un código que no es 2xx: `reason` se queda VACÍO -ésa es
+            # la trampa- y el texto va en `error`, con el código en
+            # `http_status`. Si este doble rellenara `reason` por comodidad,
+            # el test pasaría con el código viejo y no valdría para nada.
+            return WriteResult(
+                written=False,
+                routine_id=routine_id,
+                reason="",
+                error=(
+                    f"Hevy ha contestado {self.rechaza} y no ha aplicado nada: "
+                    '{"error":"Expected string, received array"}'
+                ),
+                http_status=self.rechaza,
+            )
         if self.escribe:
             self.contenido = (payload.get("routine") or {}).get("title") or "?"
         return WriteResult(
@@ -193,6 +228,86 @@ def test_un_fallo_de_hevy_queda_registrado(db, cfg):
     fila = db.scalars(select(HevyWrite)).first()
     assert fila is not None and fila.status == "error"
     assert fila.error
+
+
+def test_un_rechazo_de_hevy_guarda_EL_MOTIVO_y_no_una_cadena_vacia(db, cfg):
+    """La fila decía «error» y no decía de qué. Es el fallo del 2026-09-14.
+
+    LO QUE PASÓ. El respaldo de las 09:00 mandó el PUT, Hevy contestó 400 -el
+    cuerpo llevaba `"notes": []`, un array en un campo de texto- y la fila que
+    quedó en `hevy_writes` tenía `status='error'` y `error=''`. El porqué vivía
+    en el log del contenedor, que se reconstruyó esa misma tarde y se lo llevó.
+    Reconstruir la causa costó una sesión entera y una sonda contra la API de
+    verdad, cuando la respuesta había estado ahí y se tiró a la basura.
+
+    LA CAUSA ERA UNA LÍNEA: `res.hevy_reason = r.reason`. En el camino bueno
+    `reason` trae el resumen, pero cuando algo va mal `write_routine` lo deja
+    vacío a propósito y pone el texto en `error`. O sea que el runner leía el
+    campo equivocado exactamente en el único caso en el que ese campo importa.
+    Es otra vez la figura de siempre aquí: el valor que se lee no es el valor
+    que se usa.
+
+    Y NO ES LO MISMO QUE EL TEST DE ARRIBA. Aquel usa `revienta=True`, que
+    levanta una excepción y se recoge en el `except`, donde `hevy_reason` sale
+    de `str(exc)` y siempre tuvo texto. Por esa rama el fallo era invisible. La
+    que se rompía es ésta: Hevy CONTESTA, contesta que no, y no hay excepción
+    ninguna.
+    """
+    corre(db, cfg, hevy=HevyFalso(rechaza=400), tg=TelegramFalso())
+    fila = db.scalars(select(HevyWrite)).first()
+
+    assert fila is not None and fila.status == "error"
+    assert fila.error, (
+        "la fila dice que falló y no dice por qué: es exactamente lo que quedó "
+        "guardado el 2026-09-14 y lo que hizo falta un día entero para "
+        "reconstruir"
+    )
+    assert "Expected string, received array" in fila.error, (
+        f"se ha guardado algo, pero no lo que contestó Hevy: {fila.error!r}"
+    )
+
+
+def test_un_rechazo_de_hevy_guarda_EL_CODIGO_que_contesto(db, cfg):
+    """`hevy_writes.http_status` existía, estaba documentada, y era siempre NULL.
+
+    POR QUÉ IMPORTA LA COLUMNA. Es la que separa las dos situaciones que se
+    parecen en el histórico y piden cosas distintas:
+
+      - 4xx: Hevy ha mirado el cuerpo, lo ha rechazado y NO ha aplicado nada.
+        La rutina de allí es la de antes. No hay nada que mirar ni que revertir.
+      - 5xx o sin respuesta: no se sabe qué hay en Hevy. Hay que ir a mirar.
+
+    Con la columna a NULL siempre, las dos filas se leen igual -«error»- y la
+    única salida es ir a mirar a mano todas las veces, que es lo que hubo que
+    hacer. Una columna que nadie rellena no es un dato de menos: es un dato que
+    parece existir.
+    """
+    corre(db, cfg, hevy=HevyFalso(rechaza=400), tg=TelegramFalso())
+    fila = db.scalars(select(HevyWrite)).first()
+
+    assert fila is not None
+    assert fila.http_status == 400, (
+        f"el código con el que Hevy dijo que no se ha perdido: {fila.http_status!r}"
+    )
+
+
+def test_un_rechazo_de_hevy_se_cuenta_en_el_mensaje(db, cfg):
+    """Y el motivo no se queda en la base: sale por Telegram esa misma mañana.
+
+    Guardar bien la fila arregla la auditoría de meses después. Lo que arregla
+    la mañana es que el aviso salga, porque en Hevy hay la rutina de otro día y
+    quien abra la app se la va a encontrar sin saberlo.
+    """
+    tg = TelegramFalso()
+    res = corre(db, cfg, hevy=HevyFalso(rechaza=400), tg=tg)
+
+    assert res.hevy_status == "error"
+    assert res.hevy_http == 400
+    assert tg.enviados, "Hevy dijo que no y nadie se enteró"
+    assert "NO se ha escrito en Hevy" in tg.enviados[0]
+    assert any("Expected string, received array" in p for p in res.problemas), (
+        f"el motivo no ha llegado a los problemas del día: {res.problemas}"
+    )
 
 
 def test_sin_cliente_de_hevy_el_mensaje_no_describe_una_rutina_que_no_esta(db, cfg):

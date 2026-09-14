@@ -69,6 +69,9 @@ class DailyResult:
     # pudo, así que en Hevy hay una rutina que hoy no toca.
     hevy_status: str = "skipped"
     hevy_reason: str = ""
+    # El código HTTP que contestó Hevy, si contestó. Ver `WriteResult.http_status`:
+    # la columna existía y nadie la llenaba nunca.
+    hevy_http: int | None = None
     telegram_status: str = "skipped"  # sent | error | skipped | dry_run
     telegram_reason: str = ""
     # Fallos que NO han impedido terminar. Van aquí en vez de a un log que nadie
@@ -361,12 +364,23 @@ def _escribir_hevy(
     try:
         r = client.write_routine(s.hevy_routine_id, payload, dry_run=dry_run)
         res.hevy_reason = r.reason
+        res.hevy_http = r.http_status
         if r.written:
             res.hevy_status = "ok"
         elif dry_run:
             res.hevy_status = "dry_run"
         elif r.error:
             res.hevy_status = "error"
+            # EL MOTIVO ES `r.error`, NO `r.reason`, y esa línea de más es el
+            # arreglo de un fallo caro. `write_routine` deja `reason` vacío
+            # cuando algo va mal -el texto está en `error`-, así que la fila de
+            # `hevy_writes` se guardaba con estado "error" y explicación "".
+            # El 2026-09-14 la escritura de las 09:00 falló y lo único que quedó
+            # en la base fue la palabra «error»: por qué se cayó vivía en el log
+            # de un contenedor que se reconstruyó esa tarde, y se fue con él.
+            # Una auditoría que registra que algo falló sin registrar qué no es
+            # una auditoría, es un contador.
+            res.hevy_reason = r.error
             res.problemas.append(f"Hevy: {r.error}")
         else:
             # Ni escrita, ni ensayo, ni avería. Solo queda una forma de llegar
@@ -558,6 +572,11 @@ def _anotar_hevy(
                              else decision.session.hevy_routine_id),
             status=res.hevy_status,
             error=res.hevy_reason if res.hevy_status in ("error", "stale") else None,
+            # Estaba declarada, documentada en el modelo, y se guardaba NULL
+            # siempre porque nadie la pasaba. Sin ella la fila no distingue «Hevy
+            # contestó 400» de «no se pudo ni preguntar», que es justo la
+            # diferencia que decide si hay que mirar la rutina o no.
+            http_status=res.hevy_http,
             # El motivo va SIEMPRE, no solo cuando algo falla. Es lo que hace
             # que la secuencia del día se pueda leer entera meses después.
             reason=res.hevy_reason or None,

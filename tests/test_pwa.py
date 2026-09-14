@@ -966,7 +966,15 @@ def test_la_pantalla_avisa_de_todo_lo_que_el_servidor_sabe_marcar():
         "secrets_missing": ["HEVY_API_KEY"],
         "dry_run": False,
         "writes": {
-            "pending_write": "rutina_dia_2",
+            # EL MISMO OBJETO QUE MANDA EL SERVIDOR, NO UNA CADENA. `read_pending`
+            # devuelve el contenido ENTERO de la marca -un diccionario-, y aquí
+            # ponía `"rutina_dia_2"`. Un doble que no se parece al original no
+            # prueba la integración: prueba el doble.
+            "pending_write": {
+                "routine_id": "29ce5818-5442-4a40-9e70-1e74904d5867",
+                "backup": "/app/data/hevy_backups/x/20260914-090018.json",
+                "started_at": "2026-09-14T09:00:18",
+            },
             "pending_error": "no se ha podido leer la marca",
             "stale_write": "en Hevy quedó el Día 1 y hoy toca Recuperación",
             "stale_error": "no se ha podido mirar si quedó una rutina huérfana",
@@ -1034,7 +1042,29 @@ def test_la_pantalla_pinta_de_verdad_cada_aviso_que_el_servidor_sabe_marcar(tmp_
         "secrets_missing": ["CLAVE-QUE-FALTA"],
         "dry_run": True,
         "writes": {
-            "pending_write": "MARCA-A-MEDIAS",
+            # LA MARCA VA COMO LA MANDA EL SERVIDOR: UN OBJETO.
+            #
+            # Aquí ponía `"MARCA-A-MEDIAS"`, una cadena, y por eso este test
+            # -que ejecuta el JavaScript de verdad, que es justo el que se
+            # equivocaba- dio verde mientras el móvil pintaba «([object
+            # Object])» en el aviso más grave de la pantalla. `read_pending`
+            # devuelve el contenido entero del fichero de marca y nunca ha
+            # devuelto una cadena.
+            #
+            # Es el tercer sitio del mismo día donde aparece la misma figura, y
+            # conviene decirlo entero porque es la lección: un doble que no se
+            # parece al original no prueba la integración, prueba el doble. Con
+            # la cadena, el arnés comprobaba que una cadena se interpola bien
+            # dentro de una plantilla de cadena. Eso no falla nunca.
+            #
+            # Los valores son los de la escritura real del 2026-09-14 para que,
+            # si alguien rompe `describirPendiente`, el fallo enseñe un caso que
+            # ocurrió y no un inventado.
+            "pending_write": {
+                "routine_id": "29ce5818-5442-4a40-9e70-1e74904d5867",
+                "backup": "/app/data/hevy_backups/x/20260914-090018.json",
+                "started_at": "2026-09-14T09:00:18",
+            },
             "pending_error": "MARCA-ILEGIBLE",
             "stale_write": "HUERFANA: abre Hevy y NO hagas «Día 1»",
             "stale_error": "HUERFANA-NO-COMPROBABLE",
@@ -1067,7 +1097,11 @@ def test_la_pantalla_pinta_de_verdad_cada_aviso_que_el_servidor_sabe_marcar(tmp_
         "faltan credenciales": "CLAVE-QUE-FALTA",
         "planificador": "PLANIFICADOR-PARADO",
         "config del disco": "CONFIG-VIEJO",
-        "escritura a medias": "MARCA-A-MEDIAS",
+        # De la marca se exigen las DOS cosas que sirven para ir a mirarla: qué
+        # rutina y cuándo se intentó. El id entero porque es lo que se pega en
+        # el comando de revertir.
+        "escritura a medias (que rutina)": "29ce5818-5442-4a40-9e70-1e74904d5867",
+        "escritura a medias (cuando)": "2026-09-14 09:00",
         "marca de escritura ilegible": "MARCA-ILEGIBLE",
         "rutina huerfana": "abre Hevy y NO hagas",
         "huerfana no comprobable": "HUERFANA-NO-COMPROBABLE",
@@ -1088,3 +1122,17 @@ def test_la_pantalla_pinta_de_verdad_cada_aviso_que_el_servidor_sabe_marcar(tmp_
     # Y que no se haya colado un `undefined` en medio de ninguna frase, que es
     # como se lee una clave mal adivinada desde el móvil.
     assert "undefined" not in html, f"hay una clave inventada en un aviso:\n{html}"
+
+    # NI UN `[object Object]`, QUE ES EL OTRO MODO DE PERDER EL DATO Y NO SE
+    # PARECE EN NADA AL PRIMERO. `undefined` sale de leer una clave que no
+    # existe; esto sale de leer la clave BUENA y meter el objeto entero en una
+    # plantilla de texto. El aviso conserva su título, su color rojo y su pinta
+    # de aviso, y donde iba el único dato accionable pone una cadena que no
+    # significa nada. Nadie revienta, nada se pone en la consola: hay que estar
+    # mirando el móvil para enterarse. Se comprueba sobre el HTML ENTERO y no
+    # sobre el bloque de la marca, porque cualquier otro aviso que algún día
+    # reciba un objeto se romperá exactamente igual.
+    assert "[object Object]" not in html, (
+        "un aviso ha metido un objeto entero en una plantilla de texto y el "
+        f"dato se ha perdido por el camino:\n{html}"
+    )

@@ -373,6 +373,39 @@ function aviso(texto, clase) {
 // El estado del sistema
 // ---------------------------------------------------------------------------
 
+/* La marca de escritura a medias, en una línea que se pueda leer.
+ *
+ * `writes.pending_write` es el contenido ENTERO del fichero de marca -un objeto
+ * con la rutina, la copia y la hora-, y aquí se metía tal cual dentro de una
+ * plantilla de cadena. JavaScript convierte un objeto a texto llamando a su
+ * `toString()`, y el de un objeto plano es la cadena literal `[object Object]`.
+ * O sea que el aviso más grave de esta pantalla -«hay una rutina en Hevy en
+ * estado desconocido»- salía sin decir CUÁL rutina ni CUÁNDO, que es todo lo que
+ * uno necesita para ir a mirarla.
+ *
+ * Y el detalle de por qué duele: esto no revienta. No hay excepción, no hay
+ * consola en rojo, no hay nada que se ponga a chillar. Sale un aviso con pinta
+ * de aviso y con el dato sustituido por un texto que no significa nada. El mismo
+ * patrón de siempre aquí: el valor que se lee no es el valor que se usa.
+ *
+ * La hora se recorta a `AAAA-MM-DD HH:MM` porque los segundos del intento no
+ * ayudan a decidir nada, y el id de la rutina se deja entero: es lo que hay que
+ * pegar en el comando de revertir.
+ */
+function describirPendiente(marca) {
+  if (typeof marca === "string") return marca;
+  if (!marca || typeof marca !== "object") return String(marca);
+  const trozos = [];
+  if (marca.routine_id) trozos.push(`rutina ${marca.routine_id}`);
+  if (marca.started_at) {
+    trozos.push(`empezada el ${String(marca.started_at).replace("T", " ").slice(0, 16)}`);
+  }
+  if (marca.note) trozos.push(String(marca.note));
+  // Si la marca no trae ninguno de los campos esperados, se enseña el JSON
+  // antes que una cadena vacía: un aviso sin contenido manda a buscar a ciegas.
+  return trozos.length ? trozos.join(", ") : JSON.stringify(marca);
+}
+
 /* Lo que se avisa aquí NO se nota rellenando el formulario.
  *
  * Sin las claves de Hevy y Telegram el check-in se envía, se guarda y se
@@ -476,8 +509,8 @@ async function comprobarSalud() {
       titulo: "Quedó una escritura a medias en Hevy.",
       cuerpo:
         `Se empezó a reescribir una rutina y no consta que terminara ` +
-        `(${esc.pending_write}). Conviene mirar la rutina en Hevy antes de ` +
-        `fiarse de ella.`,
+        `(${describirPendiente(esc.pending_write)}). Conviene mirar la rutina ` +
+        `en Hevy antes de fiarse de ella.`,
     });
   }
   if (esc.pending_error) {

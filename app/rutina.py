@@ -19,23 +19,30 @@ no emitirla, con el agravante de que parece que sí.
 
 QUÉ HACE Y QUÉ NO
 -----------------
-Hace cuatro cosas, todas de operador y ninguna automática:
+Hace cinco cosas, todas de operador y ninguna automática:
 
     estado      ¿hay alguna escritura sin confirmar? ¿qué rutinas hay?
     copias      las copias guardadas de una rutina, de la más nueva a la vieja
     ver         qué se escribió el último día, y qué había justo antes
+    cerrar      retirar la marca a medias, SI Hevy coincide con la copia
     revertir    devolver una rutina al estado de una copia
 
-`revertir` es la única que toca Hevy, pide confirmación escrita y NO mira
+`revertir` es la única que ESCRIBE en Hevy, pide confirmación escrita y NO mira
 `integrations.hevy.write_enabled`. Eso último es deliberado y viene de
 `restore()`: si el interruptor bloqueara la reversión, el modo seguro impediría
 deshacer justo el desastre que se causó mientras estaba abierto.
+
+`cerrar` lee de Hevy y no escribe. Existe porque faltaba la salida del caso más
+probable: la escritura falló, no llegó a aplicarse nada, y la marca se quedó
+avisando de un estado que sí se conoce. Sin ella la única forma de quitar el
+aviso era revertir -un PUT gratis- o borrar el fichero a mano.
 
 Se ejecuta:
 
     python -m app.rutina estado
     python -m app.rutina copias --rutina dia_1
     python -m app.rutina ver --rutina dia_1
+    python -m app.rutina cerrar
     python -m app.rutina revertir --rutina dia_1 --si
 """
 
@@ -261,6 +268,111 @@ def cmd_ver(cfg: Any, args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# cerrar
+# ---------------------------------------------------------------------------
+
+
+def cmd_cerrar(cfg: Any, args: argparse.Namespace) -> int:
+    """Retira la marca de escritura a medias SI la rutina coincide con la copia.
+
+    POR QUÉ HACÍA FALTA, Y POR QUÉ NO ES UN BOTÓN DE «YA LO HE MIRADO»
+    ------------------------------------------------------------------
+    El 2026-09-14 la escritura de las 09:00 falló, la marca se quedó puesta y la
+    rutina en Hevy resultó estar intacta -Hevy decía `updated_at` del día 8-.
+    O sea: no había nada que revertir y nada que arreglar, solo un aviso que
+    sobraba. Y para quitarlo, las únicas dos opciones que ofrecía esta
+    herramienta eran `revertir` -un PUT que reescribiría la rutina con lo que ya
+    tiene, o sea un riesgo a cambio de nada- o borrar el fichero a mano por
+    dentro del contenedor. Las dos son malas: una toca Hevy sin motivo y la otra
+    se salta la comprobación entera.
+
+    Así que esto COMPRUEBA antes de cerrar. Lee la rutina de Hevy ahora mismo, la
+    compara con la copia que la marca señala, y solo retira la marca si son la
+    misma cosa campo por campo. Si difieren, no cierra nada y dice que hay que
+    revertir: el aviso seguía teniendo razón.
+
+    La comparación se hace sobre `cuerpo_para_put` de las dos y no sobre el JSON
+    crudo, por una razón concreta: la respuesta del GET trae `index`, `title` y
+    lo que Hevy quiera añadir mañana a su formato, y una diferencia ahí no es una
+    diferencia en la rutina. Comparar el crudo daría «han cambiado» el día que
+    Hevy añada un campo, y entonces esta orden mandaría a revertir una rutina que
+    está perfecta.
+    """
+    from app.integrations.hevy import (
+        HevyError,
+        build_client,
+        cuerpo_para_put,
+        leer_backup,
+        pending_marker,
+        read_pending,
+    )
+
+    raiz = data_root()
+    pendiente = read_pending(raiz)
+    if pendiente is None:
+        print("No hay ninguna marca de escritura a medias. Nada que cerrar.")
+        return 0
+
+    rid = str(pendiente.get("routine_id") or "")
+    ruta_copia = pendiente.get("backup")
+    if not rid or rid == "?" or not ruta_copia:
+        print("La marca existe pero no dice de qué rutina ni con qué copia:")
+        print(f"   {pendiente}")
+        print("\nNo se cierra a ciegas. Mira la rutina en Hevy y, si está bien,")
+        print(f"borra el fichero {pending_marker(raiz)}.")
+        return 1
+
+    copia = leer_backup(ruta_copia, rid)
+    if copia is None:
+        print(f"La copia que señala la marca no se puede leer: {ruta_copia}")
+        print("Sin ella no hay con qué comparar, así que no se cierra nada.")
+        return 1
+
+    try:
+        cliente = build_client(settings, cfg)
+        remoto = cliente.get_routine(rid)
+    except HevyError as exc:
+        print(f"No se ha podido leer la rutina de Hevy: {exc}")
+        print("No se cierra la marca: no saber no es lo mismo que estar bien.")
+        return 1
+
+    try:
+        iguales = cuerpo_para_put(remoto) == cuerpo_para_put(copia.payload)
+    except HevyError as exc:
+        print(f"No se han podido comparar: {exc}")
+        return 1
+
+    clave = next(
+        (k for k, v in routine_map(cfg).items() if v == rid), rid
+    )
+    print(f"rutina : {clave} ({rid})")
+    print(f"copia  : {copia.describe()}")
+    print()
+
+    if not iguales:
+        print("LA RUTINA DE HEVY NO ES LA DE LA COPIA.")
+        print("La escritura llegó, entera o a medias. La marca NO se retira.")
+        print(f"\nPara deshacerlo:  python -m app.rutina revertir --rutina {clave}")
+        return 1
+
+    print("La rutina de Hevy es exactamente la de la copia: el PUT no llegó a")
+    print("aplicar nada. No hay nada que revertir.")
+    if not args.si:
+        try:
+            respuesta = input("Escribe CERRAR para retirar la marca: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\ncancelado. La marca sigue puesta.")
+            return 1
+        if respuesta != "CERRAR":
+            print("cancelado. La marca sigue puesta.")
+            return 1
+
+    pending_marker(raiz).unlink(missing_ok=True)
+    print("\nMarca retirada. `/api/health` y la pantalla dejan de avisar.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # revertir
 # ---------------------------------------------------------------------------
 
@@ -363,6 +475,12 @@ def main(argv: list[str] | None = None) -> int:
     v.add_argument("--rutina", required=True, help="clave del config (dia_1) o id")
     v.add_argument("-n", type=int, default=5, help="cuántas escrituras listar (5)")
 
+    k = sub.add_parser(
+        "cerrar", help="retirar la marca a medias si Hevy coincide con la copia"
+    )
+    k.add_argument("--si", action="store_true",
+                   help="no preguntar (para guiones; a mano, mejor sin esto)")
+
     r = sub.add_parser("revertir", help="devolver una rutina a una copia")
     r.add_argument("--rutina", required=True, help="clave del config (dia_1) o id")
     r.add_argument("--copia", default=None,
@@ -380,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         "estado": cmd_estado,
         "copias": cmd_copias,
         "ver": cmd_ver,
+        "cerrar": cmd_cerrar,
         "revertir": cmd_revertir,
     }[args.cmd](cfg, args)
 

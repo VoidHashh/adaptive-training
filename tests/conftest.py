@@ -299,6 +299,68 @@ _PROHIBIDAS_EJERCICIO = {"index", "title"}
 _PROHIBIDAS_SERIE = {"index"}
 
 
+def _tipo_json(valor: Any) -> str:
+    """El nombre que le da Hevy al tipo recibido, que es el de JavaScript.
+
+    `[]` es "array" y no "list", `None` es "null" y no "NoneType". Importa
+    porque el texto del 400 se compara en algún test, y un doble que invente el
+    vocabulario del error vuelve a ser un doble que se prueba a sí mismo.
+    """
+    if valor is None:
+        return "null"
+    if isinstance(valor, bool):
+        return "boolean"
+    if isinstance(valor, (list, tuple)):
+        return "array"
+    if isinstance(valor, dict):
+        return "object"
+    if isinstance(valor, (int, float)):
+        return "number"
+    return "string"
+
+
+def _texto_o_400(valor: Any, presente: bool) -> FakeResponse | None:
+    """La validación de un campo de texto, tal y como la hace Hevy."""
+    if not presente:
+        return FakeResponse(400, text=json.dumps({"error": "Required"}))
+    if valor is None or isinstance(valor, str):
+        return None
+    return FakeResponse(
+        400,
+        text=json.dumps(
+            {"error": f"Expected string, received {_tipo_json(valor)}"}
+        ),
+    )
+
+
+def _numero_rechazado(valor: Any) -> bool:
+    """¿Este valor da «received nan»? Ojo: casi ninguno.
+
+    Hevy NO valida los campos numéricos, los COERCIONA con el `Number()` de
+    JavaScript y solo se queja cuando el resultado es `NaN`. Medido:
+    `"8"` pasa, `true` pasa, `[]` pasa (y vale 0). Lo único que salta es un
+    texto no numérico. Esto se modela tal cual -permisivo- a propósito: si el
+    doble fuera más estricto que la API, un test podría pasar por un 400 que en
+    la realidad no existe, y el código real escribiría ceros en la rutina
+    creyéndose protegido por un rechazo que nadie va a mandar.
+    """
+    if valor is None or isinstance(valor, (bool, int, float)):
+        return False
+    if isinstance(valor, str):
+        try:
+            float(valor.strip() or "0")
+        except ValueError:
+            return True
+        return False
+    if isinstance(valor, (list, tuple)):
+        # `Number([])` es 0 y `Number([7])` es 7; con dos o más elementos es NaN.
+        return len(valor) > 1
+    return True
+
+
+_CAMPOS_NUMERICOS_SERIE = ("weight_kg", "reps", "distance_meters", "duration_seconds")
+
+
 def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
     """El 400 de verdad de Hevy, reproducido aquí.
 
@@ -316,6 +378,41 @@ def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
     Así que el doble ya no acepta cualquier cosa: rechaza exactamente lo que
     rechaza Hevy. Si alguien vuelve a mandar la forma del GET en un PUT, se
     entera aquí y no en la primera escritura real.
+
+    Y VOLVIÓ A PASAR EL 2026-09-14, POR EL HUECO DE AL LADO
+    -------------------------------------------------------
+    Aquí solo se miraban NOMBRES de clave. Los tipos no los miraba nadie, ni
+    aquí ni en el código, y por ahí se fue una mañana entera: el motor mandó
+    `"notes": []` -porque `BuiltSession.notes` es una `list[str]`- en un campo
+    de texto, Hevy contestó 400 y la rutina se quedó como estaba desde el 8 de
+    septiembre. Una lista blanca de nombres es la mitad de un contrato.
+
+    LO QUE HAY AQUÍ ESTÁ MEDIDO, NO RECORDADO, igual que en el doble de
+    Telegram y por la misma razón. `scripts/sondeo_notas_hevy.py` lo sondea
+    contra la API real usando un `routine_id` inexistente -Hevy valida el
+    cuerpo ANTES de buscar la rutina, así que un cuerpo bueno llega al 404 y uno
+    malo se queda en el 400, sin tocar nada-. El 2026-09-14:
+
+        notes = []              -> 400 Expected string, received array
+        notes = 5               -> 400 Expected string, received number
+        title = ['x']           -> 400 Expected string, received array
+        title ausente           -> 400 Required
+        notes del ejercicio=[]  -> 400 Expected string, received array
+        index en el ejercicio   -> 400 Unrecognized key(s) in object: 'index'
+        reps = 'ocho'           -> 400 Expected number, received nan
+        reps = True             -> ACEPTADO (vale 1)
+        reps = '8'              -> ACEPTADO (vale 8)
+        rest_seconds = '90'     -> ACEPTADO (vale 90)
+        weight_kg = []          -> ACEPTADO (vale 0)
+
+    Las cuatro últimas son las importantes y el doble las ACEPTA, aunque duela:
+    los campos numéricos no se validan, se coercionan con el `Number()` de
+    JavaScript. Un `weight_kg` mal tipado no da error, se escribe como CERO
+    KILOS. Fingir aquí un rechazo que la API no manda sería el mismo pecado que
+    aceptarlo todo, solo que en la otra dirección: haría creer que la red
+    protege de algo de lo que no protege, y quien lea estos tests sacaría la
+    conclusión contraria a la verdadera. De eso protege `_es_escalar`, que es
+    local y se ejecuta antes de enviar; y hay un test que lo dice en voz alta.
     """
     if not isinstance(cuerpo, dict):
         return None
@@ -324,6 +421,12 @@ def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
         return FakeResponse(
             400, text='{"error":"Expected object at routine, received undefined"}'
         )
+
+    # Los campos de texto de la rutina, que sí se validan.
+    for campo in ("title", "notes"):
+        fallo = _texto_o_400(r.get(campo), campo in r)
+        if fallo is not None:
+            return fallo
 
     malas: set[str] = set()
     for ex in r.get("exercises") or []:
@@ -338,6 +441,29 @@ def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
             f"Unrecognized key(s) in object: {k!r}" for k in sorted(malas)
         )
         return FakeResponse(400, text=json.dumps({"error": detalle}))
+
+    # Las claves prohibidas van ANTES que los tipos del ejercicio porque es el
+    # orden en el que contesta Hevy: con `index` puesto y `notes` mal a la vez,
+    # el 400 que llega es el de `index`. Un doble que los ordenara al revés
+    # haría pasar un test que afirma qué mensaje concreto se recibe.
+    for ex in r.get("exercises") or []:
+        if not isinstance(ex, dict):
+            continue
+        if "notes" in ex:
+            fallo = _texto_o_400(ex.get("notes"), True)
+            if fallo is not None:
+                return fallo
+        for s in ex.get("sets") or []:
+            if not isinstance(s, dict):
+                continue
+            for campo in _CAMPOS_NUMERICOS_SERIE:
+                if campo in s and _numero_rechazado(s[campo]):
+                    return FakeResponse(
+                        400,
+                        text=json.dumps(
+                            {"error": "Expected number, received nan"}
+                        ),
+                    )
     return None
 
 

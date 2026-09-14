@@ -354,7 +354,28 @@ def _problemas_de_salud(s: dict[str, Any]) -> list[str]:
     if esc.get("pending_write"):
         # Una escritura marcada y sin cerrar significa que se empezó a tocar
         # Hevy y no consta que terminara. Hay una copia previa esperando.
-        p.append(f"hay una escritura a medias sin cerrar: {esc['pending_write']}")
+        #
+        # Se sacan los dos campos que hacen falta para ir a mirarlo en vez de
+        # volcar el diccionario entero. En Python el volcado se lee -mal, pero se
+        # lee-; el mismo valor viajaba por JSON hasta la PWA, que lo metía en una
+        # plantilla de cadena y escribía «[object Object]». Que las dos pantallas
+        # digan lo mismo empieza por que el dato salga ya redactado de aquí.
+        marca = esc["pending_write"]
+        if isinstance(marca, dict):
+            detalle = ", ".join(
+                trozo
+                for trozo in (
+                    f"rutina {marca['routine_id']}" if marca.get("routine_id") else "",
+                    f"empezada a las {marca['started_at']}"
+                    if marca.get("started_at")
+                    else "",
+                    str(marca.get("note") or ""),
+                )
+                if trozo
+            ) or str(marca)
+        else:
+            detalle = str(marca)
+        p.append(f"hay una escritura a medias sin cerrar: {detalle}")
     if esc.get("pending_error"):
         # Estaba calculándose y no lo leía nadie. `_estado_escrituras` se toma
         # la molestia de distinguir «no hay marca» de «no se ha podido mirar si
