@@ -17,6 +17,8 @@ from app.cli import CHECKIN_ALIAS, _completitud, checkin_help, parse_checkin
 from app.engine.signals import DayMetrics
 
 from tests.conftest import LUNES, dias
+from tests.dobles import doble_de
+from app.integrations.garmin import GarminClient
 
 
 @pytest.fixture
@@ -417,15 +419,23 @@ def garmin_espiado(monkeypatch):
 
     visto: dict = {}
 
+    @doble_de(GarminClient)
     class ClienteFalso:
+        # `rate_limit_events` y `fetch_errors` estaban aquí como listas DE
+        # CLASE, compartidas por todas las instancias. `GarminClient` las
+        # declara con `field(default_factory=list)`, o sea una por instancia.
+        # Van en `__init__` por eso y porque una lista de clase en un doble
+        # arrastra lo que hizo un test al siguiente.
         session_resumed = False
-        rate_limit_events: list = []
-        fetch_errors: list = []
+
+        def __init__(self):
+            self.rate_limit_events: list = []
+            self.fetch_errors: list = []
 
         def connect(self):
             return None
 
-        def window(self, day, days, *, ride_days):
+        def window(self, day, days=7, ride_days=None):
             visto.update(days=days, ride_days=ride_days)
             return dias(day, days, hrv=100.0, rhr=50.0), []
 

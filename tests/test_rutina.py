@@ -25,6 +25,8 @@ import pytest
 
 from app import rutina
 from app.integrations.hevy import Backup, HevyError, backup_dir, pending_marker
+from tests.dobles import doble_de
+from app.integrations.hevy import HevyClient, WriteResult
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,7 @@ from app.integrations.hevy import Backup, HevyError, backup_dir, pending_marker
 # ---------------------------------------------------------------------------
 
 
+@doble_de(HevyClient)
 class ClienteFalso:
     """Un Hevy que no existe. Apunta si le piden revertir, y qué."""
 
@@ -49,6 +52,7 @@ class ClienteFalso:
         if self.estalla:
             raise self.estalla
 
+        @doble_de(WriteResult)
         class R:
             reason = "revertida al estado de 2026-09-14 07:05:00"
 

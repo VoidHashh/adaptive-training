@@ -43,6 +43,8 @@ from app.analysis.impacto import (
 )
 from app.analysis.series import cobertura
 from app.models import Activity, Base, Checkin, DailyMetrics, WorkoutLog
+from tests.dobles import doble_de
+from app.config_loader import Config
 
 HOY = date(2026, 9, 11)
 N = 60
@@ -355,16 +357,18 @@ def test_el_nombre_del_yaml_le_gana_al_de_hevy(db):
     fila para saber de qué le están hablando.
     """
 
+    @doble_de(Config)
     class Cfg:
-        raw = {
-            "routines": {
-                "dia_1": {
-                    "exercises": [
-                        {"template_id": "abc", "name": "Peso muerto rumano (el mío)"}
-                    ]
+        def __init__(self):
+            self.raw = {
+                "routines": {
+                    "dia_1": {
+                        "exercises": [
+                            {"template_id": "abc", "name": "Peso muerto rumano (el mío)"}
+                        ]
+                    }
                 }
             }
-        }
 
     for i in range(N):
         entreno(db, i, rutina="dia_1", ejercicios=[("abc", "Barbell Romanian Deadlift")])

@@ -37,6 +37,8 @@ from app.integrations.hevy import (
     pesos_ejecutados,
     workout_compliance,
 )
+from tests.dobles import doble_de
+from app.engine.session_builder import BuiltSession
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hevy_workout_dia_3.json"
 RUTINA = "dia_3"
@@ -47,6 +49,7 @@ def entreno() -> dict:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
+@doble_de(BuiltSession)
 class _Plan:
     """`_emparejar` pide un objeto con `.exercises`; el YAML da una lista."""
 

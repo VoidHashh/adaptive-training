@@ -34,6 +34,10 @@ from app.engine.message import (
 )
 
 from tests.conftest import LUNES, sig, sig_completa
+from tests.dobles import doble_de
+from app.engine.bike_advisor import BikeRecommendation
+from app.engine.decision import ActiveRule
+from app.engine.tendencia import Tendencia
 
 
 DEGRADACIONES = [
@@ -1116,6 +1120,7 @@ def _envenenar_config(cfg):
     return c
 
 
+@doble_de(BikeRecommendation)
 class _Texto:
     """Un objeto con `.text()` y `.texto_notas()`, que es lo que `message.py` pide.
 
@@ -1152,6 +1157,7 @@ class _Texto:
         return list(self._notas)
 
 
+@doble_de(Tendencia)
 class _Lineas:
     def __init__(self, *l: str):
         self._l = list(l)
@@ -1218,6 +1224,7 @@ def _envenenar_decision(d, cfg=None):
         d.progression.gate_reason = f"el semáforo está en ámbar{VENENO}"
 
     # Reglas activas, con y sin fecha de caducidad.
+    @doble_de(ActiveRule)
     class _Regla:
         def __init__(self, name, hasta=None, detail=None):
             self.name, self.active_until = name, hasta

@@ -49,6 +49,9 @@ from app.integrations.activity_cache import RUTA_CACHE_SALIDAS
 from app.integrations.garmin import GarminRateLimited
 from app.models import Activity, Base, DailyMetrics
 from app.repository import upsert_daily_metrics
+from tests.dobles import doble_de
+from app.config_loader import Config
+from app.integrations.garmin import GarminClient
 
 HOY = date(2026, 9, 11)
 
@@ -82,6 +85,7 @@ def metrics(dia: date, **campos) -> DayMetrics:
     return DayMetrics(date=dia, **base)
 
 
+@doble_de(GarminClient)
 class ClienteFalso:
     """Un Garmin de mentira que contesta lo que se le diga, día a día.
 
@@ -95,7 +99,8 @@ class ClienteFalso:
         self.fetch_errors: list[str] = []
         self.pedidos: list[date] = []
 
-    def day_metrics(self, dia: date) -> DayMetrics:
+    def day_metrics(self, day: date) -> DayMetrics:
+        dia = day
         self.pedidos.append(dia)
         r = self.respuestas.get(dia)
         if isinstance(r, Exception):
@@ -405,10 +410,12 @@ def test_el_resumen_dice_lo_que_paso(db):
 
 
 def cfg_backfill(recovery_days=45, pause_seconds=0.0):
+    @doble_de(Config)
     class Cfg:
-        raw = {"wellness": {"backfill": {
-            "recovery_days": recovery_days, "pause_seconds": pause_seconds,
-        }}}
+        def __init__(self):
+            self.raw = {"wellness": {"backfill": {
+                "recovery_days": recovery_days, "pause_seconds": pause_seconds,
+            }}}
 
     return Cfg()
 

@@ -40,6 +40,8 @@ from app.models import Base
 from app.repository import dias_con_decision, save_decision
 from app.runner import run_daily
 from tests.conftest import LUNES, dias, sig_completa
+from tests.dobles import doble_de
+from app.integrations.telegram import TelegramClient
 
 
 @pytest.fixture
@@ -424,14 +426,15 @@ def test_la_cuenta_viaja_en_el_json_de_la_decision(cfg):
 # ---------------------------------------------------------------------------
 
 
+@doble_de(TelegramClient)
 class TelegramFalso:
     def __init__(self):
         self.enviados: list[str] = []
 
-    def send(self, texto, *, dry_run=False):
+    def send(self, text, *, dry_run=False):
         from app.integrations.telegram import SendResult
 
-        self.enviados.append(texto)
+        self.enviados.append(text)
         return SendResult(sent=True, parts=1, reason="")
 
 

@@ -26,6 +26,9 @@ from app.models import Base, Decision, HevyWrite, Notification, WorkoutLog
 from app.repository import load_state, save_decision, save_state
 from app.runner import run_daily, run_reconcile
 from tests.conftest import LUNES, dias, sig_completa
+from tests.dobles import doble_de, no_es_doble
+from app.integrations.hevy import HevyClient
+from app.integrations.telegram import TelegramClient
 
 # Con la rotación ya no hay días sin fuerza: cualquier día, si vas, te toca la
 # siguiente del ciclo. Lo que decide CUÁL es `EngineState.last_strength`, no el
@@ -46,6 +49,7 @@ def db():
 # ---------------------------------------------------------------------------
 
 
+@doble_de(HevyClient)
 class HevyFalso:
     """El doble del cliente de Hevy.
 
@@ -122,13 +126,14 @@ class HevyFalso:
                            reason="revertida al estado de 2026-09-07 08:59:00")
 
 
+@doble_de(TelegramClient)
 class TelegramFalso:
     def __init__(self, *, revienta: bool = False):
         self.revienta = revienta
         self.enviados: list[str] = []
 
-    def send(self, texto, *, dry_run=False):
-        self.enviados.append(texto)
+    def send(self, text, *, dry_run=False):
+        self.enviados.append(text)
         if self.revienta:
             raise RuntimeError("Telegram no contesta")
         from app.integrations.telegram import SendResult
@@ -1246,6 +1251,7 @@ CHECKIN_TRANQUILO = {
 }
 
 
+@no_es_doble("el resultado de la simulacion de este modulo")
 @dataclass
 class _Simulacion:
     """Lo que pasó en las seis semanas, no solo lo que se quería mirar.

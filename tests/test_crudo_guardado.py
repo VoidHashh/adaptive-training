@@ -77,6 +77,8 @@ from tests.test_runner import (
     _plan_guardado,
     corre,
 )
+from tests.dobles import doble_de
+from garminconnect import Garmin
 
 DIA = date(2026, 9, 7)
 
@@ -89,6 +91,7 @@ def db():
         yield session
 
 
+@doble_de(Garmin)
 class ApiConDetalle:
     """Garmin contestando de verdad: seis números útiles y un montón más.
 

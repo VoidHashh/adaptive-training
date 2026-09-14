@@ -27,6 +27,8 @@ from app.engine.adoption import (
     adoptar_cargas,
     tope_efectivo,
 )
+from tests.dobles import doble_de
+from app.engine.decision import EngineState
 
 RUTINA = "dia_1"
 CLAVE = (RUTINA, "hip_thrust")
@@ -50,6 +52,7 @@ SETS_CFG = {"source": "api"}
 # ---------------------------------------------------------------------------
 
 
+@doble_de(EngineState)
 @dataclass
 class EstadoFalso:
     """Solo los tres diccionarios que `adoptar_cargas` toca.

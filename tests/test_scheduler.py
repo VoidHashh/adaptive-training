@@ -1,4 +1,4 @@
-﻿"""Los trabajos automáticos y, sobre todo, cómo fallan.
+"""Los trabajos automáticos y, sobre todo, cómo fallan.
 
 Este módulo es el único del sistema que se ejecuta sin nadie delante. Eso hace
 que lo que hay que probar no sean los caminos felices sino los silencios:
@@ -34,6 +34,9 @@ from app.scheduler import (
 )
 from tests.conftest import LUNES, dias
 from tests.test_runner import HevyFalso, TelegramFalso
+from tests.dobles import doble_de, no_es_doble
+from app.integrations.garmin import GarminClient
+from app.integrations.hevy import HevyClient
 
 
 @pytest.fixture
@@ -178,6 +181,7 @@ def _avisar_de(excepcion, monkeypatch, *respuestas):
 
     doble = FakeHTTP(list(respuestas) or [FakeResponse(200, {"ok": True})])
 
+    @no_es_doble("suplanta al MODULO httpx, no a una clase de app/")
     class ModuloFalso:
         @staticmethod
         def Client(*a, **k):  # noqa: N802 - imita la API de httpx
@@ -257,8 +261,9 @@ def test_reconciliar_mira_hacia_atras_y_no_solo_hoy(en_memoria, cfg):
     """
     pedido = {}
 
+    @doble_de(HevyClient)
     class Hevy:
-        def get_workouts(self, *, since):
+        def get_workouts(self, since, *, max_pages=5):
             pedido["since"] = since
             return []
 
@@ -275,8 +280,9 @@ def test_reconciliar_pide_los_entrenamientos_una_sola_vez(en_memoria, cfg):
     """Cuatro días no son cuatro peticiones: Hevy limita por IP."""
     llamadas = []
 
+    @doble_de(HevyClient)
     class Hevy:
-        def get_workouts(self, *, since):
+        def get_workouts(self, since, *, max_pages=5):
             llamadas.append(since)
             return []
 
@@ -516,19 +522,30 @@ def test_la_recuperacion_no_tiene_hora_sino_retraso(cfg):
 # ---------------------------------------------------------------------------
 
 
+@doble_de(GarminClient)
 class ClienteWellness:
-    """Garmin de mentira para el repaso del arranque."""
+    """Garmin de mentira para el repaso del arranque.
 
-    fetch_errors: list[str] = []
+    `fetch_errors` ESTABA EN LA CLASE, Y EL ORIGINAL LO DA POR INSTANCIA
+    -------------------------------------------------------------------
+    Era `fetch_errors: list[str] = []` a nivel de clase, o sea UNA sola lista
+    para todas las instancias de toda la batería. `GarminClient` lo declara con
+    `field(default_factory=list)`, que da una por instancia. Así que el doble
+    modelaba una cosa distinta de la que dice modelar, y además arrastraba los
+    fallos de un test al siguiente: un test que pasa solo podía fallar en la
+    batería entera, o al revés, sin que nada lo explicara.
+    """
 
     def __init__(self, revienta_desde: int | None = None) -> None:
         self.revienta_desde = revienta_desde
         self.pedidos = []
+        self.fetch_errors: list[str] = []
 
-    def day_metrics(self, dia):
+    def day_metrics(self, day):
         from app.engine.signals import DayMetrics
         from app.integrations.garmin import GarminRateLimited
 
+        dia = day
         self.pedidos.append(dia)
         if self.revienta_desde is not None and len(self.pedidos) > self.revienta_desde:
             raise GarminRateLimited("429")
@@ -747,11 +764,12 @@ def test_la_decision_lee_la_cache_antes_de_decidir_cuanto_pedir(monkeypatch, cfg
 
     visto = {}
 
+    @doble_de(GarminClient)
     class ClienteFalso:
         def connect(self):
             pass
 
-        def window(self, day, days, *, ride_days):
+        def window(self, day, days=7, ride_days=None):
             visto.update(days=days, ride_days=ride_days)
             return [], []
 
@@ -774,11 +792,12 @@ def test_sin_cache_la_decision_se_trae_el_historico_entero(monkeypatch, cfg):
 
     visto = {}
 
+    @doble_de(GarminClient)
     class ClienteFalso:
         def connect(self):
             pass
 
-        def window(self, day, days, *, ride_days):
+        def window(self, day, days=7, ride_days=None):
             visto.update(ride_days=ride_days)
             return [], []
 

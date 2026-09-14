@@ -33,6 +33,8 @@ from app.analysis.concordancia import (
     vista_desfase,
 )
 from app.models import Activity, Base, Checkin, DailyMetrics
+from tests.dobles import doble_de
+from app.analysis.stats import Resultado
 
 HOY = date(2026, 9, 11)
 
@@ -403,6 +405,7 @@ def test_un_signo_contrario_pero_diminuto_no_cuenta_como_contradiccion(db):
     """
     from app.analysis.concordancia import Par, _al_reves
 
+    @doble_de(Resultado)
     class Res:
         r = -0.04
         suficiente = True

@@ -70,6 +70,8 @@ from app.models import (
     SessionPerformance,
     WorkoutLog,
 )
+from tests.dobles import doble_de
+from app.config_loader import Config
 
 HOY = date(2026, 9, 11)
 
@@ -82,6 +84,7 @@ def db():
         yield session
 
 
+@doble_de(Config)
 class Cfg:
     """Un `config.yaml` de mentira con lo justo que mira esta vista.
 

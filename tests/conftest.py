@@ -24,7 +24,10 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
+
+from tests.dobles import doble_de, no_es_doble
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +35,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+@no_es_doble("excepción propia del cerrojo de red; no representa nada de `app/`")
 class RedProhibidaEnTests(RuntimeError):
     pass
 
@@ -227,6 +231,7 @@ def checkin(day: date, **values) -> Checkin:
 # ---------------------------------------------------------------------------
 
 
+@doble_de(httpx.Response)
 class FakeResponse:
     def __init__(self, status_code: int, payload: Any = None, text: str = ""):
         self.status_code = status_code
@@ -237,6 +242,7 @@ class FakeResponse:
         return self._payload
 
 
+@doble_de(httpx.Client)
 class FakeHTTP:
     """Sustituto de `httpx.Client` que registra lo que se le pide.
 

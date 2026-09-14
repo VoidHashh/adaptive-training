@@ -24,6 +24,8 @@ from app.integrations.telegram import (
 )
 
 from tests.conftest import FakeHTTP, FakeResponse, _telegram_rechazaria
+from tests.dobles import doble_de, no_es_doble
+from app.settings import Settings
 
 
 def _httpx_falso(doble: FakeHTTP):
@@ -34,6 +36,7 @@ def _httpx_falso(doble: FakeHTTP):
     `sys.modules`, que es lo que resuelve ese import.
     """
 
+    @no_es_doble("suplanta al MODULO httpx, no a una clase de app/")
     class ModuloFalso:
         @staticmethod
         def Client(*args, **kwargs):  # noqa: N802 - imita la API de httpx
@@ -274,6 +277,7 @@ def test_sin_etiquetas_conoce_code_que_la_lista_vieja_no_conocia():
 # ---------------------------------------------------------------------------
 
 
+@doble_de(Settings)
 @dataclass
 class SettingsFalsos:
     telegram_bot_token: str = "123:abc"

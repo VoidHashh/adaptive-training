@@ -39,6 +39,9 @@ from app.integrations.hevy import (
 )
 
 from tests.conftest import FakeHTTP, FakeResponse
+from tests.dobles import doble_de
+from app.engine.session_builder import BuiltSession
+from app.settings import Settings
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,7 @@ from tests.conftest import FakeHTTP, FakeResponse
 # ---------------------------------------------------------------------------
 
 
+@doble_de(BuiltSession)
 @dataclass
 class SesionFalsa:
     """Lo mínimo de `BuiltSession` que mira `build_routine_payload`.
@@ -1315,6 +1319,7 @@ def test_una_reversion_rechazada_lanza(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@doble_de(Settings)
 @dataclass
 class SettingsFalsos:
     hevy_api_key: str = "clave"

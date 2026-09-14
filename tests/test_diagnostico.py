@@ -19,6 +19,12 @@ from datetime import date, timedelta
 
 from app import diagnostico as dg
 from app.diagnostico import DIAS_ATRAS_LECTURA, Paso, Resultado
+from tests.dobles import doble_de
+from app.config_loader import Config
+from app.engine.signals import DayMetrics
+from app.integrations.garmin import GarminClient
+from app.integrations.hevy import HevyClient
+from app.integrations.telegram import TelegramClient
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +115,7 @@ def test_el_paso_viaja_entero_al_cliente():
 # ---------------------------------------------------------------------------
 
 
+@doble_de(GarminClient)
 class _ClienteFalso:
     """Un cliente de Garmin de mentira, con los estados que importan."""
 
@@ -123,12 +130,13 @@ class _ClienteFalso:
     def connect(self):
         return None
 
-    def day_metrics(self, dia):
+    def day_metrics(self, day):
         if self._al_leer is not None:
             self._al_leer(self)
         return self._metricas
 
 
+@doble_de(DayMetrics)
 class _Metricas:
     def __init__(self, **kw):
         self.hrv = kw.get("hrv")
@@ -333,30 +341,55 @@ def test_si_no_hay_cliente_los_pasos_siguientes_dicen_que_no_se_intentaron(
 # ---------------------------------------------------------------------------
 
 
+@doble_de(HevyClient)
 class _HevyFalso:
+    """Un Hevy de mentira con la alarma puesta en las puertas QUE EXISTEN.
+
+    LA ALARMA VIGILABA UNA PUERTA TAPIADA
+    -------------------------------------
+    Aquí había `update_routine` y `create_routine`, y ninguno de los dos existe
+    en `HevyClient`. O sea que `test_el_diagnostico_de_hevy_no_escribe_nada` no
+    probaba nada: el diagnóstico no podía llamar a esos métodos ni queriendo,
+    porque el cliente de verdad no los tiene. Un test en verde durante meses
+    certificando que no se cruza una puerta tapiada, mientras las tres puertas
+    de verdad -`write_routine`, `restore`, `revert_to_day_start`- se quedaban
+    sin vigilar.
+
+    Ahora las alarmas están en los tres métodos que el cliente real tiene y que
+    de verdad escriben. Si el diagnóstico llama a cualquiera, el test lo caza.
+    Y si mañana `HevyClient` estrena un cuarto método de escritura, esta clase
+    no lo sabrá -eso sigue necesitando pensar-, pero al menos lo que hay escrito
+    aquí ya no puede ser mentira: `tests/test_dobles.py` compara los nombres.
+    """
+
     def __init__(self, rutinas, workouts=None):
         self._rutinas = rutinas
         self._workouts = workouts if workouts is not None else [1, 2, 3]
         self.escrituras = []
 
-    def get_workouts(self, since=None):
+    def get_workouts(self, since=None, *, max_pages: int = 5):
         return self._workouts
 
-    def get_routine(self, rid):
-        if rid not in self._rutinas:
+    def get_routine(self, routine_id):
+        if routine_id not in self._rutinas:
             raise RuntimeError("404 no existe")
-        return {"title": self._rutinas[rid]}
+        return {"title": self._rutinas[routine_id]}
 
-    # Si el diagnóstico llamara a cualquiera de estas, el test lo caza.
-    def update_routine(self, *a, **k):
-        self.escrituras.append("update")
+    # -- las tres puertas por las que se escribe de verdad --------------------
+    def write_routine(self, routine_id, payload, *, dry_run=False):
+        self.escrituras.append("write_routine")
         raise AssertionError("el diagnóstico ha escrito en Hevy")
 
-    def create_routine(self, *a, **k):
-        self.escrituras.append("create")
+    def restore(self, routine_id, backup=None):
+        self.escrituras.append("restore")
+        raise AssertionError("el diagnóstico ha escrito en Hevy")
+
+    def revert_to_day_start(self, routine_id, dia):
+        self.escrituras.append("revert_to_day_start")
         raise AssertionError("el diagnóstico ha escrito en Hevy")
 
 
+@doble_de(Config)
 class _CfgFalso:
     def __init__(self, rutinas):
         self.routines = rutinas
@@ -465,13 +498,14 @@ def test_un_config_sin_rutinas_declaradas_es_un_fallo(monkeypatch):
 def _cli_falso(resultado, enviados=None, token="123:abc", chat="-100"):
     """Un doble con la forma del `TelegramClient` real, ni más ni menos."""
 
+    @doble_de(TelegramClient)
     class Cli:
         bot_token = token
         chat_id = chat
 
-        def send(self, texto):
+        def send(self, text, *, dry_run=False):
             if enviados is not None:
-                enviados.append(texto)
+                enviados.append(text)
             return resultado
 
     return Cli()

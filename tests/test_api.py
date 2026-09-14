@@ -32,6 +32,8 @@ from app.db import get_session
 from app.models import Base
 from app.settings import settings
 from tests.conftest import LUNES, dias
+from tests.dobles import doble_de
+from app.config_loader import Config
 
 
 @pytest.fixture
@@ -1077,6 +1079,7 @@ def test_el_modo_en_seco_tambien_se_avisa(cliente):
     )
 
 
+@doble_de(Config)
 class _CfgConZona:
     """Un `config` de mentira del que solo se mira la zona horaria."""
 

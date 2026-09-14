@@ -35,6 +35,8 @@ from app.analysis.auditoria import (
     vista_auditoria,
 )
 from app.models import Base, Decision, RuleState
+from tests.dobles import doble_de
+from app.config_loader import Config
 
 HOY = date(2026, 9, 11)
 N = 28
@@ -52,6 +54,7 @@ def dia(i: int) -> date:
     return HOY - timedelta(days=N - 1 - i)
 
 
+@doble_de(Config)
 class Cfg:
     """Un `config.yaml` de mentira con lo justo que mira esta vista."""
 

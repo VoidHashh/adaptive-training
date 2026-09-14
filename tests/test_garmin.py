@@ -28,6 +28,9 @@ from app.integrations.garmin import (
     ride_from_activity,
     rides_from_activities,
 )
+from tests.dobles import doble_de
+from app.settings import Settings
+from garminconnect import Garmin
 
 
 def actividad(**kwargs) -> dict:
@@ -329,12 +332,14 @@ def test_una_llamada_correcta_no_ensucia_el_registro_de_429():
 # ---------------------------------------------------------------------------
 
 
+@doble_de(Settings)
 class SettingsFalsos:
     garmin_email = ""
     garmin_password = ""
     garmin_token_dir = "/tmp/tokens"
 
 
+@doble_de(Settings)
 class SettingsConCredenciales(SettingsFalsos):
     garmin_email = "a@b.c"
     garmin_password = "x"
@@ -501,6 +506,7 @@ def test_el_cliente_sin_conectar_se_niega_a_leer():
 # ---------------------------------------------------------------------------
 
 
+@doble_de(Garmin)
 class ApiConActividades:
     def __init__(self, crudas):
         self.crudas = crudas
@@ -543,6 +549,7 @@ def test_sin_actividades_se_devuelve_una_lista_y_no_None():
     assert c.raw_activities(date(2026, 9, 1), date(2026, 9, 7)) == []
 
 
+@doble_de(Garmin)
 class ApiQueFalla:
     """Un API de Garmin en el que todo revienta menos las pulsaciones."""
 
@@ -559,6 +566,7 @@ class ApiQueFalla:
         raise RuntimeError("timeout")
 
 
+@doble_de(Garmin)
 class ApiSana:
     """El mismo API cuando todo va bien. Es la base de casi todos los tests."""
 
@@ -795,6 +803,7 @@ def test_no_hay_quinta_llamada():
 def test_un_429_sigue_propagandose_y_no_se_queda_en_un_apunte():
     """`fetch_errors` es para los fallos que se pueden absorber. Un 429 no lo
     es: si se anotara aquí, el día se decidiría con datos a medias."""
+    @doble_de(Garmin)
     class ApiLimitada:
         def get_hrv_data(self, *_):
             raise RuntimeError("429 Too Many Requests")
@@ -821,6 +830,7 @@ def test_un_429_sigue_propagandose_y_no_se_queda_en_un_apunte():
 # lee no es el valor que se usa.
 
 
+@doble_de(Garmin)
 class _InternoFalso:
     """El cliente de dentro de `Garmin`. Su `login` es el que cuesta dinero."""
 
@@ -832,6 +842,14 @@ class _InternoFalso:
         return (None, None)
 
 
+@doble_de(
+    Garmin,
+    # `dump` no está en `Garmin`: está en `Garmin.garth`, que es otro objeto,
+    # de la librería `garth`. Este doble se apunta a sí mismo en `self.garth`
+    # para no tener que fabricar dos clases, así que necesita el método encima
+    # para que `api.garth.dump(ruta)` -la llamada que hace `garmin.py`- funcione.
+    salvo=("dump",),
+)
 class _GarminFalso:
     """Imita las tres salidas reales de `Garmin.login(tokenstore)`.
 
@@ -982,6 +1000,15 @@ def test_si_no_se_puede_mirar_el_login_se_dice_que_no_se_sabe(monkeypatch, tmp_p
     Suponer lo cómodo aquí es elegir entre dos mentiras. `None` dice la verdad:
     no se sabe.
     """
+    @doble_de(
+        Garmin,
+        # `client` y `garth` no están en la CLASE `Garmin`: los crea su
+        # `__init__`, así que `hasattr(Garmin, "client")` es False aunque un
+        # `Garmin` de verdad los tenga siempre. Aquí se ponen a `None` a
+        # propósito, porque el caso que este test simula es justamente el de
+        # una sesión de la que no se puede mirar si hubo login.
+        salvo=("client", "garth"),
+    )
     class SinCliente:
         client = None
         garth = None

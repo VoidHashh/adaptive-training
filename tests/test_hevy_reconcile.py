@@ -26,6 +26,8 @@ from app.integrations.hevy import (
     workout_compliance,
 )
 from tests.conftest import FakeHTTP, FakeResponse
+from tests.dobles import doble_de
+from app.engine.session_builder import BuiltSession
 
 DIA = date(2026, 9, 7)
 
@@ -35,6 +37,7 @@ DIA = date(2026, 9, 7)
 # ---------------------------------------------------------------------------
 
 
+@doble_de(BuiltSession)
 class Plan:
     """Lo que el motor planificó. `workout_compliance` solo lee `.exercises`."""
 
