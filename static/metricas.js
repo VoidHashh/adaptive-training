@@ -135,6 +135,14 @@ async function cargar() {
 
   $("titulo").textContent = v.titulo;
   $("subtitulo").textContent = v.subtitulo;
+  // Y el título de la pestaña con él. El `<title>` de `metricas.html` dice
+  // "Cómo vas", que acierta SOLO porque la portada es la vista por defecto:
+  // en cuanto se cambia de vista, la pestaña sigue anunciando la portada
+  // mientras la pantalla enseña el motor. En el escritorio es una pestaña mal
+  // rotulada; en el móvil es el nombre con el que la PWA aparece en el
+  // conmutador de aplicaciones y el que se propone al guardarla en la pantalla
+  // de inicio, así que el rótulo equivocado es el que se queda.
+  document.title = v.titulo;
   pintarNav(`#${clave}`);
 
   $("vista").hidden = true;

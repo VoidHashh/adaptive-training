@@ -23,8 +23,21 @@
 
 /* La versión sube cada vez que cambia el armazón. Si no subiera, `activate` no
  * borraría nada -el nombre del caché sería el mismo- y un móvil con la versión
- * vieja abierta se quedaría con el `metricas.js` de antes contra una API nueva. */
-const VERSION = "v5";
+ * vieja abierta se quedaría con el `metricas.js` de antes contra una API nueva.
+ *
+ * Y ESA FRASE DE AHÍ ARRIBA ESTUVO SIN CUMPLIRSE. `metricas.js` cambió dos
+ * veces -la portada entera y los nombres de los colores- con la versión
+ * clavada en "v5". No se notó, y no se notó por un motivo que conviene
+ * entender: el `fetch` de abajo va A LA RED PRIMERO, así que cualquier móvil
+ * con cobertura se trae el archivo nuevo igual. Lo que la versión protege es
+ * el caso contrario -el móvil que estuvo sin red-, y ese no se prueba nunca
+ * mirando la pantalla.
+ *
+ * Una regla que solo vive en un comentario es una regla que se incumple sin
+ * que salte nada. Ahora la ata `tests/test_pwa.py`, que guarda la huella del
+ * armazón al lado de la versión y se pone rojo si el contenido se mueve y el
+ * número no. */
+const VERSION = "v6";
 const CACHE = `armazon-${VERSION}`;
 
 /* TODO el armazón, no "lo principal".

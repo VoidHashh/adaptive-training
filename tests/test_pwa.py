@@ -31,6 +31,7 @@ sirva de algo.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -167,6 +168,72 @@ def test_el_armazon_no_nombra_ficheros_que_no_existen():
             f"ARMAZON nombra `{ruta}`, que no existe en static/. `addAll` es "
             f"todo o nada: con esto, el service worker no cachea nada."
         )
+
+
+def _version_del_sw() -> str:
+    """El `const VERSION = "vN"` del service worker, o se levanta."""
+    m = re.search(r'const VERSION = "([^"]+)";', SW)
+    if m is None:
+        raise AssertionError('no encuentro `const VERSION = "..."` en sw.js')
+    return m.group(1)
+
+
+def _huella_del_armazon() -> str:
+    """Una huella del CONTENIDO de todo lo que el service worker cachea.
+
+    En bytes y no en texto, porque en `ARMAZON` hay cinco PNG. Ordenada por
+    ruta, y con la ruta dentro del hash: si no, renombrar un archivo por otro
+    del mismo tamaño y contenido no movería la huella.
+    """
+    h = hashlib.sha256()
+    for ruta in sorted(_lista(SW, "ARMAZON")):
+        if ruta == "/":
+            continue  # alias de /index.html, que ya está en la lista
+        p = ESTATICOS / ruta.lstrip("/")
+        h.update(ruta.encode("utf-8"))
+        h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+# La huella del armazón en cada versión. Se añade una línea al subir `VERSION`.
+#
+# Las viejas se quedan a propósito: son la prueba de que el número se movió de
+# verdad cada vez, que es justo lo que no pasó entre la v5 y esta. Que la lista
+# crezca es la señal de que la regla se está cumpliendo.
+HUELLAS_DEL_ARMAZON = {
+    "v6": "6f2fbb1d5b8582bacc197674486762dafc8a004db939ec4cf97244eebd648c5a",
+}
+
+
+def test_la_version_del_service_worker_sube_cuando_cambia_el_armazon():
+    """Una regla que solo vive en un comentario no es una regla.
+
+    `sw.js` lleva escrito desde siempre que la versión sube cada vez que cambia
+    el armazón, y entre medias `metricas.js` cambió dos veces con la versión
+    clavada en "v5". Nadie lo vio, y no por descuido: el `fetch` del service
+    worker va a la red primero, así que con cobertura el archivo nuevo llega
+    igual y la pantalla se ve bien. Lo que la versión protege es el móvil que
+    estuvo sin red -se queda con el `armazon-v5` entero, `activate` no lo borra
+    porque el nombre no ha cambiado, y abre un `metricas.js` viejo contra una
+    API nueva-. Ese caso no aparece mirando la pantalla ningún día.
+
+    Así que se ata aquí: la huella del contenido, al lado del número.
+    """
+    version = _version_del_sw()
+    huella = _huella_del_armazon()
+
+    assert version in HUELLAS_DEL_ARMAZON, (
+        f"`sw.js` va por la versión {version!r} y no está en "
+        f"HUELLAS_DEL_ARMAZON. Añade la línea {version!r}: {huella!r}."
+    )
+    assert HUELLAS_DEL_ARMAZON[version] == huella, (
+        f"el armazón ha cambiado y `VERSION` sigue en {version!r}. Sube la "
+        f"versión en `static/sw.js` y apunta aquí la huella nueva:\n"
+        f'    "vN": "{huella}",\n'
+        f"Sin eso, el caché nuevo se llama igual que el viejo, `activate` no "
+        f"borra nada y un móvil que estuvo sin cobertura se queda con el "
+        f"JavaScript de antes hablando con la API de ahora."
+    )
 
 
 def test_el_armazon_cachea_los_iconos_que_pide_el_manifest():
