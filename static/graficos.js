@@ -297,11 +297,15 @@ function calendario(dias, lado = 13, hueco = 3) {
  * día verde saldría igual de verde que una semana entera de verdes, y la vista
  * se pidió justo para ver cuánto decidió el motor y con qué.
  */
-function barrasSemanales(semanas, alto = 64) {
+function barrasSemanales(semanas, nombres, alto = 64) {
   if (!semanas || !semanas.length) return "";
 
   const anchoBarra = 10, hueco = 3;
   const piezas = [];
+  // Igual que en el resto de la vista: los nombres de los colores vienen del
+  // servidor. Estaban escritos a mano justo aquí dentro, y una tabla escondida
+  // en el título de un `<rect>` es la que nadie se acuerda de tocar.
+  const nombre = (luz) => (nombres || {})[luz] || luz;
 
   semanas.forEach((s, i) => {
     const x = i * (anchoBarra + hueco);
@@ -331,8 +335,8 @@ function barrasSemanales(semanas, alto = 64) {
       `<rect x="${x}" y="0" width="${anchoBarra}" height="${alto}" fill="transparent">` +
       `<title>${escapar(
         `Semana ${s.semana} (${s.desde} → ${s.hasta}): ` +
-        `${s.green} verde, ${s.amber} ámbar, ${s.red} rojo, ` +
-        `${s.sin_decision} sin decisión`,
+        `${s.green} ${nombre("green")}, ${s.amber} ${nombre("amber")}, ` +
+        `${s.red} ${nombre("red")}, ${s.sin_decision} sin decisión`,
       )}</title></rect>`,
     );
   });

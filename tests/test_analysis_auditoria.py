@@ -136,7 +136,12 @@ def test_cada_dia_trae_su_luz_y_los_deslizadores_que_vio_el_motor(db):
     d = dias_de_luz(db, dia(0), dia(0))[0]
 
     assert d["luz"] == "amber"
-    assert d["nombre_luz"] == "Ámbar"
+    # En minúsculas, y a propósito: el nombre tiene que poder meterse dentro de
+    # una frase ("100,0 % ámbar") además de en la insignia de la regla, que de
+    # todas formas la pinta en versales enteras por CSS. La versión con
+    # mayúscula inicial obligaba a llevar una segunda tabla para la prosa, y la
+    # PWA acabó no llevando ninguna: escribía "amber" en la pantalla.
+    assert d["nombre_luz"] == "ámbar"
     assert d["regla_determinante"] == "cansancio_alto"
     assert d["reglas_disparadas"] == ["cansancio_alto", "hrv_baja_1d"]
     assert d["fuente"] == "checkin"

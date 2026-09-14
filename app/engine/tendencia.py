@@ -98,9 +98,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Iterable
 
+from app.engine.luces import LUCES
 from app.engine.signals import week_start
-
-LUCES = {"green", "amber", "red"}
 
 # Fracción mínima de días con decisión que hace falta para que una ventana se
 # considere medida. Por debajo, el detector no responde: contar "3 de 4 días

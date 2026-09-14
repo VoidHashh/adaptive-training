@@ -75,6 +75,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, NamedTuple
 
+from app.engine.luces import nombre_luz
 from app.engine.signals import (
     ClassifiedRide,
     Signals,
@@ -648,4 +649,13 @@ def _baseline_gaps(
 
 
 def _light_es(light: str) -> str:
-    return {"green": "verde", "amber": "ámbar", "red": "rojo"}.get(light, light)
+    """Ya no lleva tabla: la única está en `app/engine/luces.py`.
+
+    Se deja la función en vez de llamar a `nombre_luz` desde el sitio de uso
+    porque el nombre dice en qué idioma habla esa frase. Lo que se va es la
+    tabla, que era la sexta copia de las mismas tres palabras en el proyecto y
+    estaba metida dentro de un `return`, donde no la encontraba ni un `grep` de
+    `NOMBRE_LUZ`. Así se encontraron: preguntándole al AST por diccionarios con
+    esas tres claves, que es lo que ahora vigila `tests/test_engine_luces.py`.
+    """
+    return nombre_luz(light)

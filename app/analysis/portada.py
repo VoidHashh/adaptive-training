@@ -55,6 +55,7 @@ from app.analysis import series as S
 from app.analysis.impacto import vista_impacto
 from app.analysis.stats import percentil_de
 from app.analysis.texto import cuantos
+from app.engine.luces import LUCES as _LUCES
 from app.models import Activity, Checkin, Decision, WorkoutLog
 
 # Cuántos días mira "cómo voy". Una semana: es el tramo más corto que tiene
@@ -798,7 +799,19 @@ def _cuenta_dias(
     )
 
 
+# El PLURAL de cada color, y por eso esta tabla sigue existiendo aparte de la de
+# `app/engine/luces.py` en vez de derivarse de ella: «verde» → «verdes» pero
+# «ámbar» → «ámbares», y pegar sufijos en castellano es justo el fallo que
+# `app/analysis/texto.py` documenta entero. Las dos formas enteras, como allí.
+#
+# Lo que sí se comprueba es que hable de los mismos tres colores que el motor:
+# si mañana aparece un cuarto, esto revienta al importar y no cuatro semanas
+# después con un `KeyError` en la portada de un martes por la mañana.
 NOMBRE_LUZ = {"green": "verdes", "amber": "ámbares", "red": "rojos"}
+assert set(NOMBRE_LUZ) == set(_LUCES), (
+    "los plurales de la portada y los colores del motor no hablan de lo mismo: "
+    f"portada {sorted(NOMBRE_LUZ)}, motor {sorted(_LUCES)}"
+)
 
 
 def _lectura_semaforo(esta: dict[str, int], previa: dict[str, int]) -> str:

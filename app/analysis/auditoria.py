@@ -52,15 +52,14 @@ from sqlalchemy.orm import Session
 
 from app.analysis import series as S
 from app.analysis.texto import cuantos, plural
+
+# Los nombres de los colores NO se escriben aquí: vienen de `engine/luces.py`,
+# que es el único sitio donde están. Se reexportan porque media docena de sitios
+# los importan desde este módulo desde antes de que aquel existiera, y porque la
+# vista de auditoría es la que los manda a la PWA.
+from app.engine.luces import LUCES, NOMBRE_LUZ
 from app.engine.sets import warmup_flags
 from app.models import Decision, RuleState
-
-LUCES = ("green", "amber", "red")
-
-# Cómo se llama cada color en la pantalla. Va desde el servidor por lo mismo que
-# las etiquetas de las series: si la PWA lleva su propia tabla, el día que se
-# añada un cuarto color la pantalla dirá "undefined" y no fallará nada.
-NOMBRE_LUZ = {"green": "Verde", "amber": "Ámbar", "red": "Rojo"}
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +735,12 @@ def vista_auditoria(
         "ventana": {"desde": desde.isoformat(), "hasta": hasta.isoformat(), "dias": dias},
         "cobertura": S.cobertura(session).como_dict(),
         "dias": lista,
+        # Cada día y cada regla ya llevan su `nombre_luz` al lado, pero
+        # `distribucion` va indexada POR color -`{"green": 4, "amber": 1}`-, y un
+        # diccionario no tiene dónde colgar el nombre de su propia clave. Sin
+        # esta tabla la PWA solo puede escribir la clave cruda, y eso es
+        # exactamente lo que estuvo haciendo.
+        "nombres_luz": dict(NOMBRE_LUZ),
         "distribucion": distribucion(lista),
         "reglas": filas_reglas,
         "nunca_dispararon": nunca,

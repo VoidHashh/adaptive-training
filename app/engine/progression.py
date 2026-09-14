@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from app.engine.luces import LUCES, nombre_luz
 from app.engine.rules import COMPARISONS, RuleError
 from app.engine.sets import excludes, warmup_flags
 
@@ -287,7 +288,12 @@ def evaluate_gate(
 
     gate = prog_cfg.get("gate", {}) or {}
     if gate.get("require_green", True) and light != "green":
-        return False, f"el semáforo no está en verde ({light})"
+        # El color, por su nombre. Este motivo NO se queda en un log: se guarda
+        # en la decisión del día y la vista de auditoría lo pinta tal cual, así
+        # que "el semáforo no está en verde (amber)" era una clave del motor
+        # escrita en la pantalla. Y decirlo en positivo -"está en ámbar"- ahorra
+        # la doble negación de leer "no está en verde (rojo)".
+        return False, f"el semáforo está en {nombre_luz(light)}, no en verde"
 
     if gate.get("require_all_sets_at_target_reps", True):
         if compliance_ok is None:
@@ -346,7 +352,19 @@ def evaluate_gate(
     return True, "puerta abierta"
 
 
+# El color EN FEMENINO, porque la única frase que lo usa concuerda con "sesión":
+# «la última sesión de esta rutina fue roja». De las tres palabras solo cambia
+# "rojo", que es justo lo que hace que esto no se pueda derivar de la tabla de
+# `app/engine/luces.py` pegándole una letra: es la misma razón por la que los
+# plurales de `portada.py` van escritos enteros y por la que `texto.cuantos`
+# pide las dos formas. Las excepciones del castellano no caben en un sufijo.
+#
+# Lo que sí se comprueba es que hable de los mismos colores que el motor.
 LIGHT_ES = {"red": "roja", "amber": "ámbar", "green": "verde"}
+assert set(LIGHT_ES) == set(LUCES), (
+    f"el femenino de progression {sorted(LIGHT_ES)} y los colores del motor "
+    f"{sorted(LUCES)} no hablan de lo mismo"
+)
 
 
 def _volume_gate(

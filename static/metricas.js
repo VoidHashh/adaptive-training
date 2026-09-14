@@ -920,6 +920,12 @@ function seccionRanking(rank) {
 async function pintarAuditoria(dias) {
   const d = await pedir(RUTAS.auditoria, { dias });
   const g = d.distribucion.global;
+  // Los nombres los manda el servidor. Esto NO es un detalle de estilo: aquí
+  // había tres colores escritos a mano en tres sitios distintos de la PWA, y el
+  // cuarto -el reparto en porcentaje- ni siquiera los tenía escritos, así que
+  // pintaba la clave cruda. Con la tabla del servidor, un color nuevo aparece
+  // en los cuatro sitios sin tocar nada aquí.
+  const nombre = (luz) => (d.nombres_luz || {})[luz] || luz;
   const partes = [
     encabezadoVista(d.encabezado),
     pintarCobertura(d.cobertura, d.ventana),
@@ -929,15 +935,30 @@ async function pintarAuditoria(dias) {
     `<article class="tarjeta">` +
     `<h2>El reparto de luces</h2>` +
     `<div class="luces">` +
-    `<span class="luz green">${entero(g.green)} verde</span>` +
-    `<span class="luz amber">${entero(g.amber)} ámbar</span>` +
-    `<span class="luz red">${entero(g.red)} rojo</span>` +
+    `<span class="luz green">${entero(g.green)} ${escapar(nombre("green"))}</span>` +
+    `<span class="luz amber">${entero(g.amber)} ${escapar(nombre("amber"))}</span>` +
+    `<span class="luz red">${entero(g.red)} ${escapar(nombre("red"))}</span>` +
     `<span class="luz nada">${entero(g.sin_decision)} sin decisión</span>` +
     `</div>` +
+    // El porcentaje va DEBAJO de las fichas y con su denominador pegado, no
+    // suelto y en grande. Las fichas de arriba dicen "0 verde · 1 ámbar · 0
+    // rojo · 179 sin decisión"; este mismo reparto en tanto por ciento es
+    // "100,0 % ámbar", que leído solo significa "todos los días han sido
+    // ámbar" y es falso: son todos los días CON DECISIÓN, que aquí es uno.
+    // Los días sin decisión no entran en el denominador a propósito -lo
+    // explica `distribucion()` en `auditoria.py`- y por eso hay que decir
+    // cuántos se quedaron fuera; si no, el 100 % se lee sobre la ventana
+    // entera. Un porcentaje sin su denominador al lado no es un dato
+    // incompleto: es un dato distinto.
     (g.porcentaje
-      ? `<p class="cifra">${escapar(
+      ? `<p class="ficha">${escapar(
+          `Sobre ${cuenta(g.n, "día", "días")} con decisión` +
+          (g.sin_decision
+            ? ` (${cuenta(g.sin_decision, "día", "días")} sin ella fuera de la cuenta)`
+            : "") +
+          ": " +
           Object.entries(g.porcentaje)
-            .map(([k, v]) => `${k}: ${pct(v, 1)}`)
+            .map(([k, v]) => `${pct(v, 1)} ${nombre(k)}`)
             .join(" · "),
         )}</p>`
       : bloqueNa(
@@ -947,7 +968,7 @@ async function pintarAuditoria(dias) {
     `<div class="desliza">${calendario(d.dias)}</div>` +
     `<p class="ficha">Un cuadro por día. Los días sin decisión son los huecos ` +
     `con borde: están a la vista porque son parte de lo que hay que auditar.</p>` +
-    `<div class="desliza">${barrasSemanales(d.distribucion.por_semana)}</div>` +
+    `<div class="desliza">${barrasSemanales(d.distribucion.por_semana, d.nombres_luz)}</div>` +
     `<p class="ficha">Una barra por semana, sobre los siete días enteros.</p>` +
     `</article>`,
   );
@@ -963,8 +984,17 @@ async function pintarAuditoria(dias) {
   partes.push(`<h2 class="grupo">Las ${reglas.length} reglas</h2>`);
   partes.push(reglas.map((r) => (
     `<article class="tarjeta fina estado-${escapar(r.estado)}">` +
-    `<h3>${escapar(r.nombre)} <span class="etiqueta-luz ${escapar(r.luz)}">` +
-    `${escapar(r.nombre_luz || r.luz)}</span></h3>` +
+    // Sin luz, sin insignia. Una regla retirada del `config.yaml` -`resaca_finde`
+    // ahora mismo- no tiene color declarado, y esto pintaba la pastilla igual:
+    // un óvalo con borde y nada dentro, al lado del nombre. No es un fallo que
+    // se pueda ver en el payload, porque ahí `luz` vale `null` y eso es
+    // correcto; solo se ve en la pantalla, y parece un texto que no cargó.
+    `<h3>${escapar(r.nombre)}` +
+    (r.luz
+      ? ` <span class="etiqueta-luz ${escapar(r.luz)}">` +
+        `${escapar(r.nombre_luz || r.luz)}</span>`
+      : "") +
+    `</h3>` +
     (r.descripcion ? `<p class="sub">${escapar(r.descripcion)}</p>` : "") +
     `<p class="lectura">${escapar(r.lectura)}</p>` +
     `<p class="ficha">disparó ${entero(r.veces_disparada)} · mandó ` +
@@ -984,7 +1014,12 @@ async function pintarAuditoria(dias) {
     (e) => (
       `<h3>${escapar(e.nombre)}${e.declarada ? "" : " <span class=\"retirada\">retirada</span>"}</h3>` +
       `<p class="lectura">${escapar(e.lectura)}</p>` +
-      `<p class="ficha">activada ${entero(e.veces_activada)} vez/veces</p>` +
+      // `cuenta`, no "vez/veces". Es el mismo plural de plantilla que se sacó
+      // de las diecisiete frases del paquete `app/analysis` -y que allí vigila
+      // un test para todo el paquete-, sobreviviendo aquí porque aquel test
+      // mira Python y esta frase está en JavaScript. Llevaba escrito "activada
+      // 0 vez/veces" en la pantalla del móvil todo este tiempo.
+      `<p class="ficha">activada ${cuenta(e.veces_activada, "vez", "veces")}</p>` +
       // Cada activación con su tramo y su motivo. Sin esto, "se activó 3 veces"
       // no dice si fueron tres días o seis semanas, ni sobre qué ejercicio.
       (e.activaciones.length
@@ -1037,8 +1072,13 @@ async function pintarAuditoria(dias) {
   partes.push(seccionLista(
     "Puertas cerradas", d.puertas_cerradas,
     (x) => (
+      // `x.luz` es la clave del motor -"amber"-, no el nombre. Esta insignia
+      // estaba pintando la clave tal cual, y se pasó por alto en la misma
+      // pasada que arregló el reparto de porcentajes: la insignia de cada
+      // REGLA sí usaba `nombre_luz`, así que a ojo parecía que todas lo hacían.
       `<h3>${fechaCorta(x.fecha)} ` +
-      `<span class="etiqueta-luz ${escapar(x.luz || "")}">${escapar(x.luz || "sin luz")}</span></h3>` +
+      `<span class="etiqueta-luz ${escapar(x.luz || "")}">` +
+      `${escapar(x.luz ? nombre(x.luz) : "sin luz")}</span></h3>` +
       (x.rutina ? `<p class="sub">${escapar(x.rutina)}</p>` : "") +
       puerta(x.puerta_abierta, x.motivo, "No subió la carga") +
       puerta(x.series_permitidas, x.motivo_series, "No se añadió serie") +

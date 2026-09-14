@@ -41,6 +41,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from app.engine.luces import NOMBRE_LUZ as _NOMBRE_LUZ
 from app.engine.sets import warmup_flags
 # Sí, un módulo del motor importando de `integrations`. Es deliberado: este
 # fichero YA escribe `<b>` y `<i>`, o sea que ya está casado con el dialecto
@@ -58,7 +59,14 @@ MESES = [
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
 EMOJI = {"green": "🟢", "amber": "🟡", "red": "🔴"}
-NOMBRE_LUZ = {"green": "VERDE", "amber": "ÁMBAR", "red": "ROJO"}
+
+# En versales porque es lo primero que se lee en el móvil a las siete de la
+# mañana, y porque el mensaje de Telegram no tiene sitio para más jerarquía que
+# el emoji y la mayúscula. Pero se DERIVA de la tabla del motor en vez de
+# escribirse otra vez: el día que haya un cuarto color, aquí saldrá solo. Antes
+# esta tabla estaba escrita a mano y el proyecto tenía la misma lista de colores
+# repetida en cuatro ficheros; el motivo entero está en `app/engine/luces.py`.
+NOMBRE_LUZ = {luz: nombre.upper() for luz, nombre in _NOMBRE_LUZ.items()}
 
 
 def fmt_num(v: float | int | None) -> str:
