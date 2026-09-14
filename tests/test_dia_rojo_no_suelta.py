@@ -38,11 +38,7 @@ import pytest
 
 from app.config_loader import _validate
 from app.engine.rules import RuleError
-from app.engine.session_builder import (
-    RECOVERY,
-    build_session,
-    caducidad_del_aplazamiento,
-)
+from app.engine.session_builder import RECOVERY, build_session, siguiente_en_rotacion
 
 
 def errores(data) -> str:
@@ -178,14 +174,14 @@ def test_el_motor_revienta_si_falta_session(cfg):
     d = copy.deepcopy(cfg.raw)
     d["actions"]["red"].pop("session")
     with pytest.raises(RuleError, match="no está en el config"):
-        build_session(d, date(2026, 9, 14), "red")
+        build_session(d, date(2026, 9, 14), "red", rotation_routine="dia_1")
 
 
 def test_el_motor_revienta_con_un_session_desconocido(cfg):
     d = copy.deepcopy(cfg.raw)
     d["actions"]["red"]["session"] = "full_pero_suave"
     with pytest.raises(RuleError, match="full_pero_suave"):
-        build_session(d, date(2026, 9, 14), "red")
+        build_session(d, date(2026, 9, 14), "red", rotation_routine="dia_1")
 
 
 def test_el_dia_rojo_del_config_real_es_de_recuperacion(cfg):
@@ -194,7 +190,7 @@ def test_el_dia_rojo_del_config_real_es_de_recuperacion(cfg):
     Sin este test los cuatro de arriba solo demostrarían que el sistema sabe
     decir que no.
     """
-    s = build_session(cfg, date(2026, 9, 14), "red")
+    s = build_session(cfg, date(2026, 9, 14), "red", rotation_routine="dia_1")
     assert s.kind == RECOVERY
     assert s.exercises, "el día rojo llega sin un solo ejercicio"
 
@@ -220,7 +216,7 @@ def test_el_motor_revienta_con_un_recovery_block_inexistente(cfg):
     d = copy.deepcopy(cfg.raw)
     d["actions"]["red"]["recovery_block"] = "bloque_fantasma"
     with pytest.raises(RuleError, match="bloque_fantasma"):
-        build_session(d, date(2026, 9, 14), "red")
+        build_session(d, date(2026, 9, 14), "red", rotation_routine="dia_1")
 
 
 def test_un_bloque_de_recuperacion_vacio_no_arranca(cfg):
@@ -245,115 +241,163 @@ def test_una_sesion_de_recuperacion_sin_bloque_no_arranca(cfg):
 
 
 # ---------------------------------------------------------------------------
-# La caducidad del aplazamiento, que estaba escrita a mano en dos sitios
+# El día rojo y la rotación: lo que antes se aplazaba y ahora sencillamente
+# no avanza
 # ---------------------------------------------------------------------------
 #
-# `defer_expires_days` se leía con `.get(..., 7)` en `session_builder` y otra vez
-# en `decision`. Dos copias del mismo defecto son dos sitios donde cambiar el
-# YAML no cambia nada, y además dos sitios que pueden acabar diciendo cosas
-# distintas: `decision` decide si el aplazamiento ha CADUCADO y `build_session`
-# decide si se RECUPERA. Con los números desalineados, la misma sesión podía
-# darse por perdida en un módulo y por vigente en el otro el mismo día.
+# Aquí vivía la batería de `defer_expires_days`, el plazo que tenía una sesión
+# aplazada por un rojo antes de darse por perdida. Se leía con `.get(..., 7)` en
+# `session_builder` y otra vez en `decision`, y de ahí salieron seis tests: dos
+# copias del mismo defecto son dos sitios donde cambiar el YAML no cambia nada,
+# y además dos sitios que pueden acabar diciendo cosas distintas.
+#
+# Nada de eso existe. La rotación se lee de lo EJECUTADO, un día rojo no ejecuta
+# ninguna rutina del ciclo, y por tanto mañana vuelve a tocar exactamente la
+# misma. Lo que hay que proteger ya no es un número, es esa propiedad: que un
+# día malo no cueste una sesión. Es lo mismo que protegían aquellos seis tests,
+# comprobado donde ahora vive.
 
 
-def test_la_caducidad_sale_del_config_no_de_un_siete(cfg):
-    d = copy.deepcopy(cfg.raw)
-    d["actions"]["red"]["defer_expires_days"] = 3
-    assert caducidad_del_aplazamiento(d) == 3
+def test_un_dia_rojo_no_mueve_el_puntero_de_la_rotacion(cfg):
+    """La propiedad entera del rediseño, en una línea.
+
+    Antes esto necesitaba una tabla, un estado, una fecha de caducidad y tres
+    sitios distintos donde limpiarla. El que se saltó uno de esos tres sitios
+    -`advance_state` borraba el pendiente por haber PLANIFICADO otra rutina, no
+    por haberla ejecutado- costó una sesión entera en silencio.
+    """
+    from app.engine.decision import EngineState
+
+    estado = EngineState(last_strength=("dia_1", date(2026, 9, 14)))
+    # Da igual cuántos días rojos pasen: no hay ejecución, no hay avance.
+    assert siguiente_en_rotacion(cfg, estado.last_strength[0]) == "dia_2"
 
 
-def test_sin_caducidad_en_el_config_el_motor_revienta(cfg):
-    d = copy.deepcopy(cfg.raw)
-    d["actions"]["red"].pop("defer_expires_days")
-    with pytest.raises(RuleError, match="defer_expires_days"):
-        caducidad_del_aplazamiento(d)
+def test_el_bloque_de_recuperacion_no_es_una_rutina_del_ciclo(cfg):
+    """Por qué el rojo no avanza la rotación, dicho desde el otro lado.
+
+    No es una regla escrita en ninguna parte: es que `recovery_block` apunta a
+    `recovery_blocks`, que no está en `rotation.order`. Si algún día un bloque
+    de recuperación se colara en el ciclo, el rojo empezaría a avanzar la
+    rotación y la sesión de fuerza SÍ se perdería, que es justo el fallo que
+    este diseño quita.
+    """
+    s = build_session(cfg, date(2026, 9, 14), "red", rotation_routine="dia_1")
+    assert s.kind == RECOVERY
+    assert s.routine_key not in cfg.rotation_order()
 
 
-@pytest.mark.parametrize("valor", ["7", 7.5, True, None])
-def test_la_caducidad_tiene_que_ser_un_entero(cfg, valor):
-    """`7.9` se convertía en 7 en silencio y `'7'` con comillas también colaba."""
-    d = copy.deepcopy(cfg.raw)
-    d["actions"]["red"]["defer_expires_days"] = valor
-    with pytest.raises(RuleError):
-        caducidad_del_aplazamiento(d)
+def test_la_rotacion_da_la_vuelta_y_el_dia_3_esta_dentro(cfg):
+    """El Día 3 es el que el calendario fijo no nombraba NUNCA.
+
+    Todas sus sesiones entraron como entrenos sueltos «que ese día no tocaba
+    fuerza»: sin reconciliar, sin racha, sin adopción de carga y sin progresión.
+    Sus cargas no se movieron una sola vez. Este test es el que se pondría rojo
+    si volviera a salirse del ciclo.
+    """
+    assert cfg.rotation_order() == ["dia_1", "dia_2", "dia_3"]
+    assert siguiente_en_rotacion(cfg, "dia_1") == "dia_2"
+    assert siguiente_en_rotacion(cfg, "dia_2") == "dia_3"
+    assert siguiente_en_rotacion(cfg, "dia_3") == "dia_1"
 
 
-@pytest.mark.parametrize("valor", [0, -1])
-def test_una_caducidad_de_cero_dias_no_es_aplazar(cfg, valor):
-    """Con menos de un día toda sesión aplazada nace caducada.
+def test_sin_ninguna_sesion_ejecutada_la_rotacion_empieza_por_el_principio(cfg):
+    assert siguiente_en_rotacion(cfg, None) == "dia_1"
 
-    Eso no es aplazar, es borrar, y el mensaje seguiría diciendo "se recupera en
-    el próximo día verde".
+
+def test_una_rutina_retirada_del_ciclo_no_deja_la_rotacion_colgada(cfg):
+    """Se saca `dia_2` del ciclo y la última ejecutada era justamente esa.
+
+    Devolver `None` aquí habría sido una mañana sin sesión, indistinguible de un
+    día de descanso. Se empieza de nuevo: el fichero manda y una rutina retirada
+    no tiene un «siguiente».
     """
     d = copy.deepcopy(cfg.raw)
-    d["actions"]["red"]["defer_expires_days"] = valor
-    with pytest.raises(RuleError, match="nace caducada"):
-        caducidad_del_aplazamiento(d)
-    assert "positivo" in errores(d)
+    d["rotation"]["order"] = ["dia_1", "dia_3"]
+    assert siguiente_en_rotacion(d, "dia_2") == "dia_1"
 
 
-def test_el_constructor_usa_la_caducidad_del_config_y_no_un_siete(cfg):
-    """Que el lector exista no sirve de nada si el sitio que decide no lo llama.
-
-    Este test salió de romper el código a propósito: al devolver el
-    `.get("defer_expires_days", 7)` a su sitio, los tests de arriba seguían
-    todos en verde, porque llamaban al lector directamente y nunca pasaban por
-    `build_session`. El lector estaba probado; el sitio donde importa, no.
-
-    Los dos casos están elegidos para que un 7 escrito a mano dé la respuesta
-    CONTRARIA a la del fichero, una vez en cada dirección. Con un solo caso, la
-    mitad de las veces coincidirían por casualidad y el test no probaría nada.
-    """
+def test_un_ciclo_vacio_revienta_en_vez_de_dar_una_manana_en_blanco(cfg):
+    """Sin ciclo no hay nada que escribir, y callarse sería lo de siempre."""
     d = copy.deepcopy(cfg.raw)
-
-    # Nueve días de aplazamiento, en un miércoles de piscina (libre y sin bici).
-    # Con el 7 de antes habría caducado; el fichero dice que no.
-    d["actions"]["red"]["defer_expires_days"] = 10
-    s = build_session(d, date(2026, 9, 23), "green", pending_strength=("dia_1", date(2026, 9, 14)))
-    assert s.routine_key == "dia_1"
-    assert s.deferred_from == date(2026, 9, 14)
-
-    # Cinco días, en un martes de descanso. Con el 7 de antes se recuperaría;
-    # el fichero dice que ya no.
-    d["actions"]["red"]["defer_expires_days"] = 3
-    s = build_session(d, date(2026, 9, 22), "green", pending_strength=("dia_2", date(2026, 9, 17)))
-    assert s.routine_key is None
+    d["rotation"]["order"] = []
+    with pytest.raises(RuleError, match="rotation.order"):
+        siguiente_en_rotacion(d, "dia_1")
+    assert "al menos una rutina" in errores(d)
 
 
-def test_el_constructor_revienta_si_falta_la_caducidad(cfg):
-    """Sin la clave, y con un aplazamiento vivo, no hay nada que inventar.
+def test_el_constructor_revienta_si_la_rotacion_senala_una_rutina_que_no_existe(cfg):
+    """La segunda cerradura, para la ruta que entre sin pasar por el validador.
 
-    Los dos casos de arriba tampoco bastaban. Un `.get("defer_expires_days", 7)`
-    devuelve el valor del fichero siempre que la clave ESTÉ: el defecto solo se
-    nota cuando falta. Así que la única forma de que el 7 escrito a mano quede
-    en evidencia es quitar la clave, que es además el caso real -un config
-    montado a mano, una ruta que no pasa por el validador- para el que existe
-    esta segunda cerradura.
+    Antes de la rotación, una rutina que no existía en `routines` salía del
+    constructor como un día de descanso con título "Descanso": el fallo mudo
+    exacto que costó el Día 3.
     """
-    d = copy.deepcopy(cfg.raw)
-    d["actions"]["red"].pop("defer_expires_days")
-    with pytest.raises(RuleError, match="defer_expires_days"):
-        build_session(d, date(2026, 9, 22), "green", pending_strength=("dia_2", date(2026, 9, 17)))
+    with pytest.raises(RuleError, match="dia_inventado"):
+        build_session(cfg, date(2026, 9, 14), "green", rotation_routine="dia_inventado")
 
 
-def test_los_dos_modulos_leen_la_misma_caducidad():
-    """Que no vuelva a haber dos números para lo mismo.
+def test_nadie_vuelve_a_leer_el_calendario_ni_el_aplazamiento():
+    """Que no quede un lector suelto de lo que se ha borrado.
 
-    No compara valores: comprueba que solo hay UNA lectura de la clave en todo
-    `app/`, que es lo que impide que se desalineen otra vez.
+    Mismo espíritu que el test que había aquí -«que no vuelva a haber dos
+    números para lo mismo»-, aplicado a las claves enteras: un `.get("calendar")`
+    o un `defer_expires_days` olvidado en `app/` no daría error, daría un valor
+    vacío, y de un valor vacío salen días de descanso que nadie pidió.
     """
-    import re
-    from pathlib import Path
+    import ast
 
     from tests.conftest import REPO_ROOT
 
+    MUERTAS = {
+        "calendar", "active_variant", "today_plan",
+        "defer_strength", "defer_expires_days", "caducidad_del_aplazamiento",
+        "pending_strength", "PendingStrength", "expired_deferral",
+        "deferred_from", "calendar_routine",
+    }
+
+    # Se mira el ÁRBOL, no el texto. Un `grep` daría por lector cada uno de los
+    # comentarios y docstrings que cuentan qué había aquí antes -que son muchos
+    # y tienen que poder nombrar lo que explican-, y el test acabaría
+    # relajándose hasta no mirar nada. Del árbol se leen tres cosas: nombres,
+    # atributos y literales de cadena que no sean el docstring de su bloque.
     lecturas = []
     for py in (REPO_ROOT / "app").rglob("*.py"):
-        for n, linea in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r"""["']defer_expires_days["']""", linea):
-                lecturas.append(f"{py.relative_to(REPO_ROOT)}:{n}")
-    # Una en el validador, y las del propio lector en session_builder. Ninguna
-    # en decision.py: ese fue el duplicado que había.
-    assert not [x for x in lecturas if "decision.py" in x], (
-        f"decision.py vuelve a leer la clave por su cuenta: {lecturas}"
-    )
+        # `utf-8-sig` y no `utf-8`: hay ficheros del proyecto guardados con BOM
+        # y `ast.parse` lo rechaza como carácter no imprimible. Con `utf-8` el
+        # test moría de SyntaxError -ruidoso, pero un fallo del test, no del
+        # código- en vez de mirar el fichero.
+        arbol = ast.parse(py.read_text(encoding="utf-8-sig"), filename=str(py))
+        docstrings = set()
+        for nodo in ast.walk(arbol):
+            if isinstance(
+                nodo, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+            ):
+                primero = (nodo.body or [None])[0]
+                if isinstance(primero, ast.Expr) and isinstance(
+                    primero.value, ast.Constant
+                ):
+                    docstrings.add(id(primero.value))
+        for nodo in ast.walk(arbol):
+            visto = None
+            if isinstance(nodo, ast.Name) and nodo.id in MUERTAS:
+                visto = nodo.id
+            elif isinstance(nodo, ast.Attribute) and nodo.attr in MUERTAS:
+                visto = nodo.attr
+            elif (
+                isinstance(nodo, ast.Constant)
+                and isinstance(nodo.value, str)
+                and nodo.value in MUERTAS
+                and id(nodo) not in docstrings
+            ):
+                visto = nodo.value
+            if visto:
+                lecturas.append(
+                    f"{py.relative_to(REPO_ROOT)}:{getattr(nodo, 'lineno', '?')}: {visto}"
+                )
+
+    # `config_loader` las nombra a propósito para RECHAZARLAS: reescribir
+    # `calendar` en el YAML tiene que dar un error con nombre propio, no un
+    # "sección desconocida". Eso no es leerlas, es cerrarles la puerta.
+    lecturas = [x for x in lecturas if "config_loader.py" not in x]
+    assert not lecturas, "quedan lectores de la maquinaria borrada:\n" + "\n".join(lecturas)

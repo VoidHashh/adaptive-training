@@ -575,10 +575,13 @@ actions:
     allow_progression: false
     allow_hiit: false
     bike_max: descanso
-    defer_strength: true      # la fuerza NO se salta: queda pendiente en
-                              # `pending_strength` y se recupera en el siguiente
-                              # día verde disponible
-    defer_expires_days: 7     # si no se recupera en 7 días, se descarta
+    # Aquí vivían `defer_strength: true` y `defer_expires_days: 7`. Un rojo
+    # guardaba la sesión de fuerza en una tabla y la reponía en el primer día
+    # verde libre, y si no llegaba en siete días se perdía. Con la rotación
+    # leída de lo ejecutado (ver `rotation`) eso sobra entero: un día rojo no
+    # ejecuta ninguna rutina del ciclo, luego el puntero no se mueve y mañana
+    # vuelve a tocar exactamente la misma. No hay nada que aplazar ni que
+    # caducar, y por tanto tampoco una sesión que se pueda perder por caducidad.
     recovery_block: recuperacion_suave   # ver `recovery_blocks` abajo
 
 
@@ -1002,33 +1005,43 @@ special_rules:
 
 
 # -----------------------------------------------------------------------------
-# 7. CALENDARIO
+# 7. ROTACIÓN DE FUERZA
 # -----------------------------------------------------------------------------
-# `active_variant` decide cuál se usa. Cambiar de temporada = cambiar esta línea,
-# sin tocar código.
-calendar:
-  active_variant: with_pool
-
-  variants:
-    with_pool:
-      description: "Temporada con piscina"
-      monday:    {strength: dia_1}
-      tuesday:   {rest: true}
-      wednesday: {pool: true}
-      thursday:  {strength: dia_2}
-      friday:    {pool: true}
-      saturday:  {bike: true}
-      sunday:    {bike: true}
-
-    summer:
-      description: "Verano, sin piscina, tres días de fuerza"
-      monday:    {strength: dia_1}
-      tuesday:   {rest: true}
-      wednesday: {strength: dia_2}
-      thursday:  {rest: true}
-      friday:    {strength: dia_3}
-      saturday:  {bike: true}
-      sunday:    {bike: true}
+# AQUÍ HABÍA UN CALENDARIO FIJO, Y LO QUE HIZO FUE PERDER SESIONES
+# ----------------------------------------------------------------
+# Había un `calendar` con dos variantes de temporada y un día de la semana
+# asignado a cada rutina. La activa (`with_pool`) programaba lunes=dia_1 y
+# jueves=dia_2, y NO nombraba `dia_3` ningún día. El Día 3 se entrena con
+# normalidad desde el principio, así que todas esas sesiones entraron en el
+# sistema como entrenamientos sueltos «que ese día no tocaba fuerza»: sin
+# reconciliar contra ningún plan, sin racha, sin adopción de carga y sin
+# progresión. La carga de los ejercicios del Día 3 no se movió NUNCA.
+#
+# No fue un fallo del código: el código hacía exactamente lo que el calendario
+# decía. Fue un fichero que declaraba una semana que no era la de verdad, y una
+# semana declarada mal no da error, da silencio.
+#
+# LO QUE MANDA AHORA ES LO QUE SE EJECUTA EN HEVY
+# -----------------------------------------------
+# No hay días asignados. La fuerza va en ciclo y el puntero sale de la ÚLTIMA
+# sesión de esta lista que aparece EJECUTADA en `workout_log` (leída de Hevy
+# por `routine_id`, nunca por el título: ver `routine_key_de`). Si la última
+# fue `dia_2`, hoy toca `dia_3`, sea lunes o sea sábado.
+#
+# Se lee de lo EJECUTADO y no de lo planificado a propósito. Con lo planificado,
+# un día que se decide y no se entrena adelantaría la rotación igual, y a los
+# tres días el sistema estaría escribiendo el Día 3 cuando la última sesión
+# real fue el Día 1. Leyendo lo ejecutado, un día sin entrenar simplemente no
+# mueve nada: la rotación se aplaza sola, sin maquinaria de aplazamiento. Por
+# eso ya no existen `pending_strength`, `defer_strength` ni
+# `defer_expires_days`; y por eso un bloque de recuperación de día rojo tampoco
+# avanza el ciclo, porque no es ninguna de estas rutinas.
+#
+# El orden es el ciclo. Cambiarlo cambia qué viene después de qué; quitar una
+# rutina de aquí la saca del ciclo (y entonces `focus` sobra en ella, que es lo
+# que comprueba el validador).
+rotation:
+  order: [dia_1, dia_2, dia_3]
 
 # -----------------------------------------------------------------------------
 # 7-bis. CICLISMO
@@ -1620,7 +1633,8 @@ routines:
     title: "Día 3"
     hevy_routine_id: "05e27b0c-7c9e-484c-a9aa-1c78622bc0c2"
     focus: "Caderas + hombro + brazo + core"
-    # Solo se usa en la variante `summer` del calendario.
+    # Estuvo fuera del calendario fijo y por eso no progresó nunca; ahora es el
+    # tercer paso de `rotation.order`, igual de real que los otros dos.
     # DECISIONES CERRADAS: este día lleva vuelos posteriores con mancuernas
     # (rear delt fly), NO remo con apoyo de pecho. Son ejercicios distintos y
     # está bien así. Y nunca lleva HIIT: ver `hiit.never_routines`.
@@ -1767,14 +1781,18 @@ routines:
           - {duration_s: 20}
 
   # ---------------------------------------------------------------------------
-  # Bloques HIIT. No son rutinas de calendario: se AÑADEN al final de dia_1 o
+  # Bloques HIIT. No están en `rotation.order`: se AÑADEN al final de dia_1 o
   # dia_2 cuando `hiit.enabled` es true y se cumplen las condiciones.
   # Cada día tiene el suyo; ver `hiit.blocks`.
   #
+  # Que no estén en el ciclo también significa que hacer un HIIT suelto no
+  # avanza la rotación, que es lo correcto: el HIIT se añade a una sesión de
+  # fuerza, no la sustituye.
+  #
   # Llevaban un `standalone: false` que no leía nadie. Repetía en forma de
-  # interruptor un hecho que no es configurable: quién se ejecuta suelto lo
-  # deciden `calendar` (que no los nombra) y `hiit.blocks` (que los ata a
-  # dia_1 y dia_2). Ponerlo a `true` no los habría programado ningún día.
+  # interruptor un hecho que no es configurable: quién entra en el ciclo lo
+  # dice `rotation.order` (que no los nombra) y `hiit.blocks` los ata a dia_1
+  # y dia_2. Ponerlo a `true` no los habría programado ningún día.
   hiit_dia_1:
     title: "Día 1 HIIT"
     hevy_routine_id: "a41e5c8a-f806-4a1f-87aa-1c1c32b1a04e"

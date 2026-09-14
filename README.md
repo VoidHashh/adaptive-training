@@ -495,5 +495,5 @@ Un sistema que decide solo y se equivoca en voz alta se arregla. Uno que se
 equivoca en silencio, no: no llega mensaje, y no llegar mensaje se parece
 demasiado a un día de descanso. Por eso hay tantos sitios donde esto se **niega
 a continuar** en vez de apañárselas —una base desfasada, un `config.yaml` que
-promete algo que el código no hace, un día del calendario que no declara qué
-toca—. Cada uno de ellos era antes un fallo mudo.
+promete algo que el código no hace, una rutina que `rotation.order` no nombra—.
+Cada uno de ellos era antes un fallo mudo.

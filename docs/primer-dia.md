@@ -126,8 +126,16 @@ Verlo ahí significa que acabas de arrancar; no verlo es lo normal.
 **La rutina `dia_3` de tu Hevy se usó como banco de pruebas el sábado.** Se
 destruyó a propósito (de 11 ejercicios a 2) y se revirtió. Está como estaba: 11
 ejercicios, título «Día 3», idéntica campo a campo a la copia previa. Se eligió
-`dia_3` porque la variante de calendario activa (`with_pool`) no la programa
-nunca, así que el `dia_1` del lunes no podía ser daño colateral.
+`dia_3` porque la variante de calendario activa (`with_pool`) no la programaba
+nunca, así que ningún día podía pillarla en medio.
+
+> Ese motivo ya no existe, y merece la pena decir por qué. El calendario fijo se
+> ha borrado: la fuerza va en ciclo `dia_1 → dia_2 → dia_3` y el ciclo lo lleva
+> cuál fue la última sesión **ejecutada** en Hevy. Que `dia_3` fuera la rutina
+> «que no programa nadie» no era una comodidad para hacer pruebas: era el fallo.
+> Todas las sesiones reales de Día 3 se registraban como entrenos sueltos, sin
+> reconciliación, sin racha y sin progresión. Hoy `dia_3` es un escalón más del
+> ciclo y elegirla como banco de pruebas ya no sería inocuo.
 
 ---
 
@@ -138,9 +146,11 @@ recordarlo.
 
 ### 2.1 Escribe en Hevy
 
-**Una sola cosa, un solo sitio:** `PUT /v1/routines/{id}` sobre la rutina del
-día. Sólo los días que la tienen (lunes y jueves con el calendario `with_pool`;
-sábado y domingo son bici y no se toca nada).
+**Una sola cosa, un solo sitio:** `PUT /v1/routines/{id}` sobre la rutina que
+toca según el ciclo. Todos los días la hay —el mensaje dice «si vas al gimnasio
+hoy: Día 2»—, así que se escribe todos los días menos los rojos, que prescriben
+recuperación y no tocan Hevy. Antes esto dependía del día de la semana («lunes y
+jueves con el calendario `with_pool`»); ya no hay días asignados.
 
 `PUT` es **reemplazo total**. No añade: sustituye la rutina entera por lo que
 lleva el cuerpo. Por eso:

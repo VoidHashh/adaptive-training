@@ -54,8 +54,7 @@ from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_lig
 from app.engine.session_builder import (
     BuiltSession,
     build_session,
-    caducidad_del_aplazamiento,
-    today_plan,
+    siguiente_en_rotacion,
 )
 from app.engine.signals import Signals, WEEKDAY_NAMES, week_start
 
@@ -136,7 +135,16 @@ class EngineState:
     # de los frenos de volumen: un rojo en lunes no cancela el viernes.
     last_routine_light: dict[str, str | None] = field(default_factory=dict)
     active_rules: list[ActiveRule] = field(default_factory=list)
-    pending_strength: tuple[str, date] | None = None
+    # El puntero de la rotación: la última rutina del ciclo que aparece
+    # EJECUTADA en Hevy, con la fecha del día en que se hizo. Aquí había un
+    # `pending_strength` con la sesión que un día rojo había dejado aplazada, y
+    # la diferencia entre las dos cosas es todo el rediseño: aquello guardaba lo
+    # que NO se había hecho y había que reponerlo antes de que caducara; esto
+    # recuerda lo que SÍ se hizo y de ahí sale lo siguiente, sin plazos.
+    #
+    # La fecha no la usa la rotación -para saber qué toca basta la clave-, la
+    # usa el mensaje para decir cuántos días llevas sin fuerza.
+    last_strength: tuple[str, date] | None = None
     program_start: date | None = None
     # Inicio de la última semana de descarga ya concedida. Sin esto el jitter
     # no tiene memoria y la descarga podría repetirse o saltarse.
@@ -209,24 +217,33 @@ class DayDecision:
     light_decision: LightDecision
     session: BuiltSession
     deload: DeloadStatus
-    # La rutina de fuerza que TOCABA hoy por calendario, se haya ejecutado o
-    # no. En un día rojo `session.routine_key` apunta al bloque de
-    # recuperación, así que sin este campo no habría forma de saber qué queda
-    # pendiente de recuperar.
-    calendar_routine: str | None = None
+    # La rutina que toca en el ciclo, se vaya al gimnasio o no. En un día rojo
+    # `session.routine_key` apunta al bloque de recuperación, así que sin este
+    # campo no habría forma de saber qué sigue esperando su turno.
+    #
+    # Se llamaba `calendar_routine` y significaba «la que tocaba hoy por
+    # calendario». Ya no la manda el día de la semana: la manda cuál fue la
+    # última que se ejecutó en Hevy.
+    rotation_routine: str | None = None
     active_rules: list[ActiveRule] = field(default_factory=list)
     progression: ProgressionPlan | None = None
     bike: BikeRecommendation | None = None
     notes: list[str] = field(default_factory=list)
     config_hash: str | None = None
     source: str = "checkin"
-    # La sesión aplazada que hoy ha caducado, si la hay: (rutina, día en que se
-    # aplazó). Va en la decisión y no en `EngineState` porque no es algo que se
-    # recuerde, es algo que ha pasado HOY y hay que contar. `advance_state` la
-    # usa para borrar el aplazamiento, y `to_dict` para que quede en el
-    # histórico: dentro de tres semanas, "esa semana entrené una vez menos" se
-    # explica aquí o no se explica.
-    expired_deferral: tuple[str, date] | None = None
+    # Aquí estaba `expired_deferral`: la sesión aplazada por un rojo que hoy
+    # había caducado, para poder contar en el mensaje "esa semana entrené una
+    # vez menos". No existe porque no existe la caducidad. Con la rotación leída
+    # de lo ejecutado, una sesión que no se hace no se pierde: sigue siendo la
+    # siguiente hasta que se haga. Lo que ocupa su sitio en el mensaje es el
+    # número de días desde la última sesión de fuerza, que dice lo mismo sin
+    # inventar un plazo.
+    #
+    # La última de fuerza ejecutada y su fecha, tal y como venían en el estado.
+    # Es lo que hace que el mensaje pueda decir "llevas N días sin fuerza" y de
+    # dónde sale `rotation_routine`. Se guarda en la decisión para que el
+    # histórico explique por qué ese día tocaba esa rutina y no otra.
+    last_strength: tuple[str, date] | None = None
     # Adopciones de carga de la reconciliación de ANOCHE, ya en formato de
     # diccionario (`Adopcion.to_dict`). No las produce `decide`: las cuelga
     # `run_daily` justo antes de redactar el mensaje, leyéndolas de la base.
@@ -273,7 +290,7 @@ class DayDecision:
             "weekday": self.weekday,
             "light": self.light,
             "trigger_rule": self.trigger_rule,
-            "calendar_routine": self.calendar_routine,
+            "rotation_routine": self.rotation_routine,
             "source": self.source,
             "config_hash": self.config_hash,
             "inputs": self.signals.snapshot(),
@@ -285,12 +302,12 @@ class DayDecision:
             "bike": self.bike.to_dict() if self.bike else None,
             "progression": _progression_dict(self.progression),
             "notes": self.notes,
-            "expired_deferral": (
+            "last_strength": (
                 {
-                    "routine": self.expired_deferral[0],
-                    "deferred_from": self.expired_deferral[1].isoformat(),
+                    "routine": self.last_strength[0],
+                    "day": self.last_strength[1].isoformat(),
                 }
-                if self.expired_deferral
+                if self.last_strength
                 else None
             ),
             "load_adoptions": list(self.load_adoptions),
@@ -591,73 +608,66 @@ def decide(
     notes.append(f"descarga: {deload.reason}")
 
     # --- 3. progresión ------------------------------------------------------
-    # Solo si hoy hay fuerza. Sin rutina no hay nada que progresar, y llamar a
-    # `plan_progression` con routine_key=None inventaría un plan vacío que
-    # luego habría que distinguir de "plan que no subió nada", que es distinto.
-    plan_today = today_plan(config, day)
-    calendar_routine = plan_today.get("strength")
-    routine_key = calendar_routine
-
-    # La sesión aplazada por un rojo se recupera en el primer verde libre.
-    # `build_session` toma la decisión final, pero la progresión necesita saber
-    # QUÉ rutina se va a planificar, así que se replica el criterio aquí.
+    # Qué toca en el ciclo. Se calcula UNA vez, aquí, y se le pasa hecha a
+    # `build_session`: antes cada uno leía el calendario por su cuenta y también
+    # replicaba a mano el criterio de recuperar aplazamientos, con el resultado
+    # previsible de dos copias del mismo razonamiento que podían separarse sin
+    # que nada las comparase.
     #
-    # La caducidad se mira SIEMPRE, no solo en los días verdes y libres. Antes
-    # colgaba de ese `if`, y por eso un aplazamiento podía caducar sin que nadie
-    # llegara nunca a comprobarlo: bastaba con que los días siguientes tocara
-    # bici o el semáforo no fuese verde, que es justo lo que pasa cuando se
-    # arrastra una mala racha. La sesión se perdía en el único escenario en el
-    # que de verdad importa saberlo.
-    expired_deferral: tuple[str, date] | None = None
-    if state.pending_strength:
-        pkey, pday = state.pending_strength
-        expires = caducidad_del_aplazamiento(raw)
-        if (day - pday).days > expires:
-            # Solo el dato estructurado. El texto lo redacta `message.py`, que
-            # es quien sabe a quién se lo está contando, y así no hay dos
-            # frases distintas para el mismo hecho ni que deduplicarlas luego.
-            expired_deferral = (pkey, pday)
-        elif routine_key is None and light == "green" and not plan_today.get("bike"):
-            routine_key = pkey
-            notes.append(f"se recupera la sesión '{pkey}' aplazada el {pday}")
+    # Siempre hay rutina. No existe el día sin fuerza asignada: existe el día en
+    # que no se va al gimnasio, y de eso se entera el sistema leyendo Hevy, no
+    # decidiéndolo por adelantado.
+    ultima = state.last_strength
+    rotation_routine = siguiente_en_rotacion(config, ultima[0] if ultima else None)
+    routine_key = rotation_routine
 
-    progression: ProgressionPlan | None = None
-    if routine_key:
-        exercises = (raw.get("routines", {}) or {}).get(routine_key, {}).get(
-            "exercises", []
-        ) or []
-        keys = [e["key"] for e in exercises]
-        compliance, clean = state.for_routine(routine_key, keys)
-        progression = plan_progression(
-            config,
-            routine_key,
-            signals,
-            light,
-            compliance=compliance,
-            clean_sessions=clean,
-            deload_active=deload.active,
-            last_routine_light=state.last_routine_light.get(routine_key),
-            current_sets=state.current_sets,
-            # La cola de los cupos, acotada a esta rutina: `plan_progression`
-            # trabaja con claves de ejercicio a secas.
-            sessions_since_progress={
-                k: v
-                for (rk, k), v in state.sessions_since_progress.items()
-                if rk == routine_key
-            },
-        )
+    # SIN `if routine_key:` DELANTE, Y ESO ES UN CAMBIO
+    # ------------------------------------------------
+    # Con el calendario fijo había días sin rutina asignada, y en esos días
+    # `progression` se quedaba en `None`. Ya no existe ese día: la rotación
+    # siempre tiene una siguiente, y `siguiente_en_rotacion` revienta en vez de
+    # devolver nada. Dejar el `if` puesto sería dejar una rama que no se puede
+    # ejecutar, y una rama que no se ejecuta no se prueba: el día que alguien
+    # cambiara algo debajo, fallaría sin que ningún test pasara por ahí.
+    #
+    # Que el plan exista no significa que la puerta esté abierta. En un día rojo
+    # sale con `gate_open=False` y sin cambios, que es información -"hoy no sube
+    # nada, y por esto"- y no un hueco.
+    exercises = (raw.get("routines", {}) or {}).get(routine_key, {}).get(
+        "exercises", []
+    ) or []
+    keys = [e["key"] for e in exercises]
+    compliance, clean = state.for_routine(routine_key, keys)
+    progression = plan_progression(
+        config,
+        routine_key,
+        signals,
+        light,
+        compliance=compliance,
+        clean_sessions=clean,
+        deload_active=deload.active,
+        last_routine_light=state.last_routine_light.get(routine_key),
+        current_sets=state.current_sets,
+        # La cola de los cupos, acotada a esta rutina: `plan_progression`
+        # trabaja con claves de ejercicio a secas.
+        sessions_since_progress={
+            k: v
+            for (rk, k), v in state.sessions_since_progress.items()
+            if rk == routine_key
+        },
+    )
 
     # --- 4. sesión ----------------------------------------------------------
     session = build_session(
         config,
         day,
         light,
+        rotation_routine=rotation_routine,
         progression=progression,
         # `session_builder` espera {name, action}, con la acción anidada. No se
         # aplana: `apply_rule_load_cuts` busca `rule["action"]["reduce_load"]`.
         active_rules=[{"name": r.name, "action": r.action} for r in active_rules],
         deload_active=deload.active,
-        pending_strength=state.pending_strength,
         program_start=state.program_start,
         current_sets=state.current_sets,
     )
@@ -673,14 +683,14 @@ def decide(
         light_decision=light_decision,
         session=session,
         deload=deload,
-        calendar_routine=calendar_routine,
+        rotation_routine=rotation_routine,
         active_rules=active_rules,
         progression=progression,
         bike=bike,
         notes=notes,
         config_hash=getattr(config, "hash", None),
         source=source,
-        expired_deferral=expired_deferral,
+        last_strength=state.last_strength,
     )
 
 
@@ -714,7 +724,7 @@ def advance_state(
         below_plan_best_kg=dict(state.below_plan_best_kg),
         last_routine_light=dict(state.last_routine_light),
         active_rules=[copy.deepcopy(r) for r in decision.active_rules],
-        pending_strength=state.pending_strength,
+        last_strength=state.last_strength,
         program_start=state.program_start,
         last_deload_start=(
             decision.deload.start if decision.deload.active else state.last_deload_start
@@ -732,37 +742,30 @@ def advance_state(
         for clave, series in (sess.target_sets or {}).items():
             new.current_sets[(rkey, clave)] = copy.deepcopy(series)
 
-    # Un rojo aplaza la fuerza en vez de saltársela.
-    if decision.light == "red" and decision.calendar_routine:
-        new.pending_strength = (decision.calendar_routine, decision.day)
-    elif rkey and sess.kind in {"full", "reduced"}:
-        # Solo lo borra la rutina que estaba pendiente, no una cualquiera.
-        #
-        # Esto era `new.pending_strength = None` a secas, y el efecto era este:
-        # un lunes en rojo aplaza `dia_1`; el jueves toca `dia_2` por
-        # calendario; planificar `dia_2` -ni siquiera ejecutarlo- borraba el
-        # `dia_1` aplazado. La sesión que un rojo había protegido desaparecía
-        # por haber entrenado otra cosa, sin ejecutarse y sin decir nada. El
-        # aplazamiento existe justamente para que un día malo no cueste una
-        # sesión, y así costaba la sesión igual pero en diferido.
-        pendiente = new.pending_strength
-        if pendiente and pendiente[0] == rkey:
-            new.pending_strength = None
-
-    # Un aplazamiento caducado se borra, y quien decidió que había caducado fue
-    # `decide` -que es quien tiene el config con `defer_expires_days`-. Aquí
-    # solo se ejecuta.
+    # Aquí vivía toda la contabilidad del aplazamiento: un rojo guardaba la
+    # sesión, planificar otra rutina la borraba -y borrarla por haber
+    # planificado, no por haber ejecutado, costó una sesión entera en silencio-,
+    # y un aplazamiento caducado se limpiaba en un tercer sitio. Tres reglas
+    # para decidir cuál era la siguiente sesión.
     #
-    # Antes no lo borraba nadie: pasados los días, la fila se quedaba en la base
-    # para siempre, `decide` ya no la miraba nunca más y la sesión aplazada
-    # dejaba de existir sin que se enterase nadie. Borrarla en silencio sería el
-    # mismo fallo con la base más limpia, así que `decide` además lo cuenta en
-    # las notas: una sesión perdida es información de entrenamiento.
-    if decision.expired_deferral:
-        new.pending_strength = None
+    # La regla es una: la siguiente es la que va después de la última que se
+    # HIZO. Y por eso el puntero solo se mueve unas líneas más abajo, cuando hay
+    # ejecución de verdad.
 
     if executed is None or not rkey or sess.kind not in {"full", "reduced"}:
         return new
+
+    # El puntero de la rotación. Se mueve aquí y en ningún otro sitio, y solo
+    # con `executed` distinto de None: a las 07:00 la decisión está tomada pero
+    # el entrenamiento no ha pasado, y adelantar la rotación por la mañana es
+    # exactamente el fallo que este diseño evita. Un bloque de recuperación de
+    # día rojo tampoco llega hasta aquí, porque su `kind` es `recovery`.
+    #
+    # En producción esto lo vuelve a calcular `load_state` leyendo `workout_log`
+    # -la fuente de verdad es Hevy, no el estado-, pero hace falta igual: es lo
+    # que mantiene honesta la simulación de `scripts/sim_12_semanas.py`, que
+    # avanza el estado sin base de datos detrás.
+    new.last_strength = (rkey, decision.day)
 
     return apply_execution(
         new,

@@ -38,7 +38,6 @@ from app.engine.tendencia import DecisionDia
 from app.models import (
     ExerciseTarget,
     LoadAdoption,
-    PendingStrength,
     ProgramState,
     RoutineState,
     RuleState,
@@ -63,10 +62,19 @@ CAMPOS_PERSISTIDOS = frozenset(
         "below_plan_best_kg",
         "last_routine_light",
         "active_rules",
-        "pending_strength",
         "last_deload_start",
         # `program_start` sale de config.yaml, no de la BD. Ver `load_state`.
         "program_start",
+        # `last_strength` tampoco tiene tabla propia, y a propósito: sale de
+        # `workout_log`, que es lo que se ha leído de Hevy. Guardarlo aparte
+        # sería tener dos versiones de «cuál fue la última sesión» -la que dice
+        # Hevy y la que este proceso recuerda- y un día discreparían. Aquí está
+        # en la lista porque se RECUPERA (`load_state` lo rellena); lo que no
+        # hace `save_state` es escribirlo, porque no es suyo.
+        #
+        # El aquí llamado `pending_strength`, que sí tenía tabla, era lo
+        # contrario: la sesión que un rojo había aplazado. Ver `app/models.py`.
+        "last_strength",
     }
 )
 
@@ -81,12 +89,24 @@ def campos_sin_persistir() -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def load_state(session: Session, *, program_start: date | None = None) -> EngineState:
+def load_state(
+    session: Session,
+    *,
+    program_start: date | None = None,
+    rotation_order: list[str] | None = None,
+) -> EngineState:
     """Reconstruye el estado del motor desde la base de datos.
 
     `program_start` se pasa desde `config.yaml` en vez de leerse de una tabla:
     es un ajuste del usuario, y tenerlo en dos sitios solo sirve para que un día
-    discrepen y nadie sepa cuál manda.
+    discrepen y nadie sepa cuál manda. `rotation_order` viene por lo mismo, y
+    además porque es lo que decide qué filas de `workout_log` cuentan como paso
+    del ciclo: un HIIT suelto o una rutina que ya no está en el ciclo se
+    entrenan igual pero no mueven el puntero.
+
+    Sin `rotation_order` el puntero se queda en None y la rotación arranca por
+    el principio. Es lo correcto para los llamantes que no deciden nada -un
+    informe, un script de lectura-, y es visible: `decide` lo pasa siempre.
     """
     state = EngineState(program_start=program_start)
 
@@ -144,13 +164,34 @@ def load_state(session: Session, *, program_start: date | None = None) -> Engine
             )
         )
 
-    pendiente = session.scalars(
-        select(PendingStrength)
-        .where(PendingStrength.status == "pending")
-        .order_by(PendingStrength.deferred_from.desc())
-    ).first()
-    if pendiente is not None:
-        state.pending_strength = (pendiente.routine_key, pendiente.deferred_from)
+    # El puntero de la rotación: la última sesión del ciclo que aparece
+    # EJECUTADA. Sale de `workout_log`, que es lo leído de Hevy, y no de una
+    # tabla de estado, porque la pregunta que contesta -«¿cuál fue la última que
+    # hice?»- ya la contesta Hevy y tener dos respuestas es tener una que un día
+    # miente.
+    #
+    # `routine_key` se rellena en la reconciliación a partir del `routine_id` de
+    # Hevy, NUNCA del título: hay entrenamientos reales cuyo título nombra una
+    # rutina distinta de la que se ejecutó. Ver `routine_key_de`.
+    #
+    # Se filtra por pertenencia a `rotation_order` y no por "no es nulo": un
+    # HIIT suelto, o una rutina retirada del ciclo, están en la tabla con su
+    # clave puesta y no son un paso del ciclo. Sin el filtro, un HIIT de un
+    # martes adelantaría la rotación.
+    #
+    # `unplanned` NO entra en el filtro, y esto importa: una sesión del ciclo
+    # hecha un día que el sistema no la esperaba -o sin decisión guardada- se
+    # marca como suelta, y sigue siendo esa sesión. Descartarla aquí repetiría
+    # en pequeño el fallo del calendario: entrenar algo y que el sistema no se
+    # entere.
+    if rotation_order:
+        ultima = session.scalars(
+            select(WorkoutLog)
+            .where(WorkoutLog.routine_key.in_(list(rotation_order)))
+            .order_by(WorkoutLog.date.desc(), WorkoutLog.id.desc())
+        ).first()
+        if ultima is not None:
+            state.last_strength = (str(ultima.routine_key), ultima.date)
 
     programa = session.get(ProgramState, 1)
     if programa is not None:
@@ -177,7 +218,6 @@ def save_state(session: Session, state: EngineState, *, day: date | None = None)
     _guardar_ejercicios(session, state)
     _guardar_rutinas(session, state, day)
     _guardar_reglas(session, state)
-    _guardar_pendiente(session, state)
     _guardar_programa(session, state)
     session.flush()
 
@@ -283,29 +323,11 @@ def _guardar_reglas(session: Session, state: EngineState) -> None:
         )
 
 
-def _guardar_pendiente(session: Session, state: EngineState) -> None:
-    abiertas = session.scalars(
-        select(PendingStrength).where(PendingStrength.status == "pending")
-    ).all()
-
-    if state.pending_strength is None:
-        # La sesión aplazada se ha recuperado (o ya no procede). Se marca, no se
-        # borra: que una sesión roja se recuperase tres días después es
-        # justamente lo que se querrá mirar dentro de un mes.
-        for fila in abiertas:
-            fila.status = "recovered"
-        return
-
-    rutina, aplazada_el = state.pending_strength
-    for fila in abiertas:
-        if fila.routine_key == rutina and fila.deferred_from == aplazada_el:
-            return  # ya está registrada; no se duplica
-        fila.status = "cancelled"
-    session.add(
-        PendingStrength(
-            routine_key=rutina, deferred_from=aplazada_el, status="pending"
-        )
-    )
+# Aquí estaba `_guardar_pendiente`, que llevaba la contabilidad de la tabla
+# `pending_strength`: abrir el aplazamiento de un día rojo, cerrarlo como
+# `recovered` cuando se hacía y como `cancelled` cuando lo tapaba otro. No hay
+# nada que guardar porque no hay aplazamiento: el puntero de la rotación se lee
+# de `workout_log` y `save_state` no lo escribe. Ver `CAMPOS_PERSISTIDOS`.
 
 
 def _guardar_programa(session: Session, state: EngineState) -> None:
@@ -321,18 +343,15 @@ def _guardar_programa(session: Session, state: EngineState) -> None:
 # ---------------------------------------------------------------------------
 
 
-def read_pending(session: Session) -> tuple[str, date] | None:
-    """La sesión de fuerza que quedó aplazada, si la hay.
-
-    Se usa al arrancar para poder decirlo: una sesión aplazada que nadie
-    menciona es una sesión perdida.
-    """
-    fila = session.scalars(
-        select(PendingStrength)
-        .where(PendingStrength.status == "pending")
-        .order_by(PendingStrength.deferred_from.desc())
-    ).first()
-    return (fila.routine_key, fila.deferred_from) if fila else None
+# Aquí estaba `read_pending`, que devolvía la sesión aplazada por un día rojo
+# para poder nombrarla al arrancar. No confundir con
+# `app.integrations.hevy.read_pending`, que es otra cosa entera -la marca de la
+# última escritura en Hevy- y sigue viva y en uso.
+#
+# Lo que se quería evitar con aquella -«una sesión aplazada que nadie menciona
+# es una sesión perdida»- ahora no puede pasar: no hay aplazamiento, la sesión
+# que no se hace sigue siendo la siguiente, y lo que el mensaje cuenta es
+# cuántos días llevas sin fuerza.
 
 
 # ---------------------------------------------------------------------------
@@ -1165,12 +1184,12 @@ def state_as_dict(state: EngineState) -> dict[str, Any]:
         },
         "last_routine_light": dict(sorted(state.last_routine_light.items())),
         "active_rules": [r.to_dict() for r in state.active_rules],
-        "pending_strength": (
+        "last_strength": (
             {
-                "routine": state.pending_strength[0],
-                "deferred_from": state.pending_strength[1].isoformat(),
+                "routine": state.last_strength[0],
+                "day": state.last_strength[1].isoformat(),
             }
-            if state.pending_strength
+            if state.last_strength
             else None
         ),
         "program_start": (

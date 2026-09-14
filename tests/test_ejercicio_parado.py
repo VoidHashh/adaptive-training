@@ -217,13 +217,28 @@ def test_sin_ejercicios_parados_no_hay_bloque(cfg):
     assert "Sube hoy" in txt, "el día de control tiene que subir algo de verdad"
 
 
-def test_un_dia_sin_fuerza_no_revienta(cfg):
-    """Martes: descanso, y por tanto `decision.progression is None`."""
-    from datetime import timedelta
+def test_un_dia_sin_sesion_de_fuerza_no_revienta(cfg):
+    """El día rojo, que es el único que ya no prescribe una sesión del ciclo.
+
+    Antes este test usaba el martes, que el calendario declaraba descanso, y lo
+    que comprobaba era `decision.progression is None`. Ese `None` ya no existe:
+    con la rotación siempre hay una rutina siguiente, así que siempre hay plan
+    de progresión, incluso el día que no se va a levantar nada.
+
+    Lo que hay que comprobar es lo mismo de antes dicho al derecho: que un plan
+    con la puerta cerrada NO se convierte en "estos ejercicios llevan parados
+    tres semanas". Se ha decidido no subir hoy, que es una cosa; llevar parado,
+    que es otra. Confundirlas pondría el aviso de parados todos los días malos.
+    """
+    from app.engine.decision import decide
+    from tests.conftest import sig
 
     c = preparar(cfg)
-    dec = decidir(c, LUNES + timedelta(days=1))
-    assert dec.progression is None
+    dec = decide(c, LUNES, sig(LUNES, lower_discomfort=8), EngineState())
+    assert dec.session.kind == "recovery"
+    assert dec.progression is not None, "con la rotación siempre hay plan"
+    assert not dec.progression.gate_open
+    assert not dec.progression.changes
     assert "Sin progresar" not in render_plain(dec, c)
 
 

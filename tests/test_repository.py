@@ -1,8 +1,8 @@
 """Que el motor no amanezca con la memoria en blanco.
 
 Este sistema decide cada mañana apoyándose en lo que recuerda: cuántas sesiones
-limpias lleva cada ejercicio, qué reglas especiales siguen vigentes, qué sesión
-quedó aplazada, cuándo fue la última descarga. Todo eso vive en un
+limpias lleva cada ejercicio, qué reglas especiales siguen vigentes, por dónde
+va la rotación de fuerza, cuándo fue la última descarga. Todo eso vive en un
 `EngineState` que existe en memoria mientras el proceso está vivo.
 
 Un fallo aquí no se parece a un error: se parece a un sistema que funciona. La
@@ -31,8 +31,8 @@ from app.models import (
     Decision as DecisionRow,
     ExerciseTarget,
     LoadAdoption,
-    PendingStrength,
     RuleState,
+    WorkoutLog,
 )
 from app.repository import (
     CAMPOS_ACTIVIDAD,
@@ -47,7 +47,6 @@ from app.repository import (
     guardar_adopciones,
     load_state,
     marcar_adopciones_contadas,
-    read_pending,
     save_decision,
     save_state,
     serie_decisiones,
@@ -111,7 +110,11 @@ def estado_lleno():
                 notify=True,
             )
         ],
-        pending_strength=("dia_3", LUNES - timedelta(days=1)),
+        # Este NO lo escribe `save_state`: el puntero de la rotación sale de
+        # `workout_log`, de sesiones ejecutadas. Está aquí porque el test que
+        # exige que ningún campo se quede en su valor por defecto tiene razón en
+        # exigirlo, y porque `state_as_dict` sí lo enseña.
+        last_strength=("dia_3", LUNES - timedelta(days=1)),
         program_start=LUNES - timedelta(weeks=4),
         last_deload_start=LUNES - timedelta(weeks=2),
     )
@@ -364,7 +367,6 @@ def test_el_estado_sobrevive_a_la_ida_y_la_vuelta(db, estado_lleno):
         "último en vez del mejor de la racha, que es más bajo"
     )
     assert vuelto.last_routine_light == estado_lleno.last_routine_light
-    assert vuelto.pending_strength == estado_lleno.pending_strength
     assert vuelto.program_start == estado_lleno.program_start
     assert vuelto.last_deload_start == estado_lleno.last_deload_start
 
@@ -598,32 +600,103 @@ def test_una_regla_que_ya_no_esta_en_el_estado_desaparece_de_la_tabla(db, estado
 
 
 # ---------------------------------------------------------------------------
-# La sesión aplazada
+# El puntero de la rotación
 # ---------------------------------------------------------------------------
+#
+# Aquí vivían los tres tests de la sesión aplazada. Ya no hay nada que aplazar:
+# el puntero no lo escribe nadie, se lee de las sesiones que se han HECHO. Lo
+# que sigue prueba que lo lee de donde tiene que leerlo, porque el fallo que
+# sustituye a "se perdió el aplazamiento" es más callado: un puntero que salga
+# de lo PLANIFICADO avanza los días que no piso el gimnasio, y al tercer día
+# libre me habría saltado el Día 2 sin que nada lo dijera.
 
 
-def test_la_sesion_aplazada_se_recuerda(db, estado_lleno):
+def _log(db, dia: date, routine_key: str | None, *, unplanned: bool = False) -> None:
+    """Una fila de `workout_log` tal y como la escribe la reconciliación.
+
+    El título va a propósito con un texto que no nombra ninguna rutina: los
+    títulos no son dato, y si algún día el puntero empezara a mirarlos, estos
+    tests tendrían que caerse.
+    """
+    db.add(
+        WorkoutLog(
+            date=dia,
+            hevy_workout_id=f"w-{dia.isoformat()}-{routine_key}",
+            routine_key=routine_key,
+            title="lo que diga Hevy",
+            unplanned=unplanned,
+        )
+    )
+    db.flush()
+
+
+def test_el_puntero_sale_de_la_ultima_sesion_ejecutada(db):
+    _log(db, LUNES - timedelta(days=6), "dia_1")
+    _log(db, LUNES - timedelta(days=3), "dia_2")
+
+    estado = load_state(db, rotation_order=["dia_1", "dia_2", "dia_3"])
+    assert estado.last_strength == ("dia_2", LUNES - timedelta(days=3))
+
+
+def test_sin_el_ciclo_delante_el_puntero_no_se_inventa(db):
+    """`load_state` sin `rotation_order` no adivina.
+
+    Es la llamada que hacen los tests y algún script suelto. Que devuelva None
+    en vez de coger la última fila de `workout_log` sea cual sea importa: un
+    HIIT o una sesión suelta no son escalones del ciclo, y tomarlos por el
+    puntero adelantaría la rotación una posición por cada uno.
+    """
+    _log(db, LUNES - timedelta(days=1), "dia_2")
+    assert load_state(db).last_strength is None
+
+
+def test_lo_que_no_esta_en_el_ciclo_no_mueve_el_puntero(db):
+    """Un HIIT, un bloque de recuperación o una sesión sin rutina reconocida
+    quedan en `workout_log` igual que todo lo demás. Ninguno es un escalón."""
+    _log(db, LUNES - timedelta(days=5), "dia_1")
+    _log(db, LUNES - timedelta(days=2), "hiit_bici")
+    _log(db, LUNES - timedelta(days=1), None, unplanned=True)
+
+    estado = load_state(db, rotation_order=["dia_1", "dia_2", "dia_3"])
+    assert estado.last_strength == ("dia_1", LUNES - timedelta(days=5)), (
+        "el puntero ha saltado a algo que no es del ciclo: la próxima sesión "
+        "de fuerza se habría saltado un día de la rotación"
+    )
+
+
+def test_una_sesion_del_ciclo_hecha_el_dia_que_no_tocaba_tambien_cuenta(db):
+    """`unplanned` no descalifica.
+
+    Este es el filtro que NO se puso, y a propósito: el Día 3 se estuvo
+    registrando como suelto durante meses porque el calendario no lo nombraba.
+    Si se hace el Día 3 un día cualquiera, se ha hecho el Día 3.
+    """
+    _log(db, LUNES - timedelta(days=4), "dia_2")
+    _log(db, LUNES - timedelta(days=1), "dia_3", unplanned=True)
+
+    estado = load_state(db, rotation_order=["dia_1", "dia_2", "dia_3"])
+    assert estado.last_strength == ("dia_3", LUNES - timedelta(days=1))
+
+
+def test_dos_sesiones_el_mismo_dia_desempatan_por_la_ultima_escrita(db):
+    """Empate de fechas. Sin el desempate por `id`, SQLite devuelve lo que le
+    apetezca y el puntero sería distinto en cada arranque con los mismos datos."""
+    _log(db, LUNES, "dia_1")
+    _log(db, LUNES, "dia_2")
+
+    estado = load_state(db, rotation_order=["dia_1", "dia_2", "dia_3"])
+    assert estado.last_strength == ("dia_2", LUNES)
+
+
+def test_el_puntero_no_lo_escribe_save_state(db, estado_lleno):
+    """La otra mitad de la regla: que no haya DOS sitios donde vive el puntero.
+
+    Si `save_state` lo guardara además de leerlo de `workout_log`, volvería el
+    patrón que ha costado todos los fallos del proyecto: dos valores para lo
+    mismo y ninguna forma de saber cuál manda.
+    """
     save_state(db, estado_lleno, day=LUNES)
-    assert read_pending(db) == ("dia_3", LUNES - timedelta(days=1))
-
-
-def test_al_recuperarla_se_marca_pero_no_se_borra(db, estado_lleno):
-    """El histórico de "esta sesión roja se recuperó tres días después" es
-    justo lo que se querrá mirar dentro de un mes."""
-    save_state(db, estado_lleno, day=LUNES)
-    estado_lleno.pending_strength = None
-    save_state(db, estado_lleno, day=LUNES + timedelta(days=2))
-
-    assert read_pending(db) is None
-    filas = db.query(PendingStrength).all()
-    assert len(filas) == 1, "la fila se marca, no se borra"
-    assert filas[0].status == "recovered"
-
-
-def test_no_se_acumulan_dos_aplazadas_de_la_misma_sesion(db, estado_lleno):
-    save_state(db, estado_lleno, day=LUNES)
-    save_state(db, estado_lleno, day=LUNES + timedelta(days=1))
-    assert len(db.query(PendingStrength).all()) == 1
+    assert load_state(db, rotation_order=["dia_1", "dia_2", "dia_3"]).last_strength is None
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +709,7 @@ def test_una_base_vacia_da_un_estado_limpio_y_no_un_error(db):
     estado = load_state(db, program_start=LUNES)
     assert estado.clean_sessions == {}
     assert estado.active_rules == []
-    assert estado.pending_strength is None
+    assert estado.last_strength is None
     assert estado.last_deload_start is None
     assert estado.program_start == LUNES, "esto sí viene, pero del config"
 
@@ -681,7 +754,7 @@ def test_el_inicio_del_programa_manda_el_config_y_no_la_base_de_datos(db, estado
 def test_el_estado_legible_no_pierde_las_claves_compuestas(estado_lleno):
     d = state_as_dict(estado_lleno)
     assert d["clean_sessions"]["dia_1/hip_thrust_barra"] == 2
-    assert d["pending_strength"]["routine"] == "dia_3"
+    assert d["last_strength"]["routine"] == "dia_3"
     assert d["last_deload_start"] == estado_lleno.last_deload_start.isoformat()
 
 

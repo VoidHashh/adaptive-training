@@ -48,7 +48,12 @@ from app.engine.sets import excludes, warmup_flags
 FULL = "full"
 REDUCED = "reduced"
 RECOVERY = "recovery"
-REST = "rest"
+# Aquí estaba `REST = "rest"`, y con él las clases `pool` y `bike`. Eran los
+# días que el calendario fijo dejaba sin fuerza. Sin calendario no hay días sin
+# fuerza asignada: todos los días tienen la rutina que toque en el ciclo, y si
+# se entrena o no lo dice el usuario yendo o no yendo. La piscina y la bici
+# nunca fueron una sesión que este sistema construyera -no escribía nada en
+# Hevy ni progresaba nada-, solo una etiqueta para el mensaje.
 
 
 def _tipo_de_sesion(action: dict[str, Any], light: str) -> str:
@@ -90,44 +95,12 @@ def _tipo_de_sesion(action: dict[str, Any], light: str) -> str:
     return sesion
 
 
-def caducidad_del_aplazamiento(raw: dict[str, Any]) -> int:
-    """Cuántos días sobrevive una sesión aplazada por un rojo, SIN defecto.
-
-    El número estaba escrito a mano, como `7`, en dos sitios: aquí y en
-    `decision.py`. Dos copias del mismo defecto son dos sitios donde cambiar el
-    YAML no cambia nada, y además son dos sitios que pueden acabar diciendo
-    cosas distintas: `decision` decide si el aplazamiento ha caducado y
-    `build_session` decide si se recupera, así que con los dos números
-    desalineados la sesión podía darse por caducada en un módulo y por vigente
-    en el otro el mismo día.
-
-    No hay valor por defecto a propósito. Se llama solo cuando hay un
-    aplazamiento pendiente de verdad, y en ese momento no saber cuánto dura no
-    es una situación que se pueda resolver inventando una semana.
-    """
-    accion_roja = (raw.get("actions", {}) or {}).get("red", {}) or {}
-    if "defer_expires_days" not in accion_roja:
-        raise RuleError(
-            "hay una sesión de fuerza aplazada pero actions.red.defer_expires_days "
-            "no está en el config. Si has quitado defer_strength, el aplazamiento "
-            "guardado en el estado sigue ahí y nadie sabe ya cuándo caduca: o se "
-            "repone la clave o se limpia el pendiente. Antes esto valía 7 por "
-            "defecto, escrito a mano en dos módulos distintos."
-        )
-    dias = accion_roja["defer_expires_days"]
-    if isinstance(dias, bool) or not isinstance(dias, int):
-        raise RuleError(
-            f"actions.red.defer_expires_days vale {dias!r} ({type(dias).__name__}), "
-            f"y tiene que ser un entero de días. Un 7.9 se convertía en 7 sin "
-            f"decir nada y un '7' con comillas también colaba."
-        )
-    if dias < 1:
-        raise RuleError(
-            f"actions.red.defer_expires_days vale {dias}, y con menos de un día "
-            f"toda sesión aplazada nace caducada: el rojo dejaría de aplazar y "
-            f"pasaría a borrar, que no es lo que dice la palabra 'aplazar'."
-        )
-    return dias
+# Aquí vivía `caducidad_del_aplazamiento`, que leía del YAML cuántos días
+# sobrevivía una sesión de fuerza aplazada por un día rojo. Ya no hay
+# aplazamiento que caducar: la rotación sale de lo EJECUTADO en Hevy (ver
+# `rotation` en el config), un día rojo no ejecuta ninguna rutina del ciclo, el
+# puntero no se mueve y mañana vuelve a tocar exactamente la misma sesión. La
+# rotación se aplaza sola, sin plazo y sin nada que se pueda perder al vencer.
 
 
 @dataclass
@@ -135,7 +108,7 @@ class BuiltSession:
     """La sesión de hoy, lista para escribirse en Hevy y contarse por Telegram."""
 
     day: date
-    kind: str  # full | reduced | recovery | rest | pool | bike
+    kind: str  # full | reduced | recovery
     routine_key: str | None
     title: str
     exercises: list[dict[str, Any]] = field(default_factory=list)
@@ -146,7 +119,6 @@ class BuiltSession:
     changes: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    deferred_from: date | None = None
     # La carga que queda VIGENTE a partir de hoy, por clave de ejercicio. Se
     # captura justo después de la progresión y ANTES de la descarga, los
     # recortes por regla y el ámbar, porque esos tres son modulaciones del día y
@@ -168,7 +140,6 @@ class BuiltSession:
             "changes": self.changes,
             "dropped": self.dropped,
             "notes": self.notes,
-            "deferred_from": self.deferred_from.isoformat() if self.deferred_from else None,
             "exercises": self.exercises,
         }
 
@@ -181,18 +152,57 @@ class BuiltSession:
 
 
 # ---------------------------------------------------------------------------
-# Calendario
+# Rotación
 # ---------------------------------------------------------------------------
 
 
-def today_plan(config: Any, day: date) -> dict[str, Any]:
-    """Qué toca hoy según la variante activa del calendario."""
-    raw = config.raw if hasattr(config, "raw") else config
-    cal = raw.get("calendar", {}) or {}
-    variant = cal.get("variants", {}).get(cal.get("active_variant"), {}) or {}
-    from app.engine.signals import WEEKDAY_NAMES
+def orden_de_rotacion(config: Any) -> list[str]:
+    """El ciclo de fuerza tal y como lo declara el config, SIN defecto.
 
-    return variant.get(WEEKDAY_NAMES[day.weekday()], {}) or {}
+    Aquí había un `today_plan(config, day)` que miraba qué tocaba hoy según el
+    día de la semana y la variante de calendario en curso. No hay días
+    asignados: hay un ciclo, y lo que toca depende de la última sesión
+    ejecutada, no de la fecha.
+
+    Se revienta con la lista vacía en vez de devolver `[]` y seguir. Sin ciclo
+    no hay ninguna rutina que escribir, y el efecto de seguir sería una mañana
+    sin sesión, que es indistinguible de un día de descanso: el fallo mudo de
+    siempre. El validador ya exige que `rotation.order` esté y traiga rutinas de
+    verdad; esto es la segunda cerradura para la ruta que entre sin pasar por él.
+    """
+    raw = config.raw if hasattr(config, "raw") else config
+    orden = list(((raw.get("rotation") or {}).get("order") or []))
+    if not orden:
+        raise RuleError(
+            "rotation.order está vacío o no está en el config. Es el ciclo de "
+            "fuerza entero: sin él no hay ninguna rutina que programar y la "
+            "mañana saldría sin sesión, que por fuera se ve igual que un día de "
+            "descanso."
+        )
+    return orden
+
+
+def siguiente_en_rotacion(config: Any, ultima: str | None) -> str:
+    """Qué rutina toca después de `ultima`, dando la vuelta al final del ciclo.
+
+    `ultima` es la clave de la última sesión de fuerza que aparece EJECUTADA en
+    Hevy (ver `repository.load_state`), no la última que se planificó. La
+    diferencia es todo el diseño: con lo planificado, un día que se decide y no
+    se entrena adelantaría el puntero igual, y a los tres días el sistema
+    estaría escribiendo el Día 3 cuando la última sesión real fue el Día 1. Con
+    lo ejecutado, un día sin entrenar sencillamente no mueve nada.
+
+    Dos casos devuelven el primero del ciclo:
+
+    - No hay ninguna sesión ejecutada todavía (programa recién arrancado).
+    - La última ejecutada ya no está en `rotation.order`, porque se ha sacado
+      del ciclo editando el config. Se empieza de nuevo en vez de fallar: el
+      fichero es el que manda y una rutina retirada no tiene un «siguiente».
+    """
+    orden = orden_de_rotacion(config)
+    if ultima is None or ultima not in orden:
+        return orden[0]
+    return orden[(orden.index(ultima) + 1) % len(orden)]
 
 
 # ---------------------------------------------------------------------------
@@ -538,14 +548,24 @@ def build_session(
     config: Any,
     day: date,
     light: str,
+    *,
+    rotation_routine: str,
     progression: ProgressionPlan | None = None,
     active_rules: list[dict[str, Any]] | None = None,
     deload_active: bool = False,
-    pending_strength: tuple[str, date] | None = None,
     program_start: date | None = None,
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
 ) -> BuiltSession:
-    """Construye la sesión del día completa."""
+    """Construye la sesión del día completa.
+
+    `rotation_routine` es la rutina que toca según el ciclo, y viene dada: la
+    calcula `decision.decide` con `siguiente_en_rotacion` y la guarda además en
+    la decisión del día. No se recalcula aquí a propósito. Antes esto leía el
+    calendario por su cuenta y `decision` leía el suyo, y dos lectores del mismo
+    dato son dos sitios que pueden acabar diciendo cosas distintas sin que nada
+    los compare. Es obligatorio y sin defecto por lo de siempre: el defecto
+    habría sido «hoy no toca fuerza», que no da error, da una mañana en blanco.
+    """
     raw = config.raw if hasattr(config, "raw") else config
     actions = raw.get("actions", {}) or {}
     set_cfg = raw.get("set_types", {}) or {}
@@ -553,29 +573,20 @@ def build_session(
     routines = raw.get("routines", {}) or {}
     action = actions.get(light, {}) or {}
 
-    plan = today_plan(config, day)
-    routine_key = plan.get("strength")
-    deferred_from: date | None = None
-
-    # Una sesión aplazada por un rojo se recupera en el primer día verde libre.
-    # No se apila sobre la del día: se hace EN VEZ DE descansar.
-    if routine_key is None and pending_strength and light == "green":
-        pkey, pday = pending_strength
-        expires = caducidad_del_aplazamiento(raw)
-        if (day - pday).days <= expires and not plan.get("bike"):
-            routine_key, deferred_from = pkey, pday
-
-    if routine_key is None:
-        kind = REST
-        for k in ("pool", "bike", "rest"):
-            if plan.get(k):
-                kind = k
-                break
-        return BuiltSession(
-            day=day, kind=kind, routine_key=None,
-            title={"pool": "Piscina", "bike": "Bici", "rest": "Descanso"}.get(kind, "Descanso"),
-            write_to_hevy=False,
+    routine_key = rotation_routine
+    if routine_key not in routines:
+        raise RuleError(
+            f"la rotación señala la rutina '{routine_key}', que no está en "
+            f"`routines` (hay: {sorted(routines)}). Antes de la rotación, una "
+            f"rutina que no existía salía como día de descanso."
         )
+
+    # Aquí había un bloque que recuperaba una sesión aplazada por un rojo en el
+    # primer día verde libre, y otro que convertía el día en descanso, piscina o
+    # bici cuando el calendario no ponía fuerza. Ya no hay ni una cosa ni otra:
+    # todos los días tienen una rutina del ciclo -la que toque- y lo que el
+    # mensaje dice no es «hoy entrenas», es qué tocaría SI se va al gimnasio.
+    # Quién decide si se va es el usuario, y el sistema se entera al leer Hevy.
 
     sesion = _tipo_de_sesion(action, light)
 
@@ -602,11 +613,16 @@ def build_session(
             exercises=copy.deepcopy(block.get("exercises") or []),
             write_to_hevy=bool(block.get("write_to_hevy", False)),
         )
-        if action.get("defer_strength", True):
-            out.notes.append(
-                f"la sesión de fuerza ({routine_key}) queda pendiente y se "
-                f"recupera en el próximo día verde libre"
-            )
+        # La nota ya no promete recuperar nada, porque no hay nada que
+        # recuperar: el bloque de recuperación no es ninguna rutina del ciclo,
+        # así que no mueve el puntero y mañana vuelve a tocar la misma sesión.
+        # Antes esto dependía de `actions.red.defer_strength` y podía quedarse
+        # callado con la clave a false, que era la peor combinación: la sesión
+        # se guardaba igual y nadie lo decía.
+        out.notes.append(
+            f"la rotación no se mueve: el próximo día que vayas al gimnasio "
+            f"sigue tocando {routine_key}"
+        )
         return out
 
     routine = routines.get(routine_key, {}) or {}
@@ -622,10 +638,7 @@ def build_session(
         routine_key=routine_key,
         title=str(routine.get("title", routine_key)),
         hevy_routine_id=routine.get("hevy_routine_id"),
-        deferred_from=deferred_from,
     )
-    if deferred_from:
-        out.notes.append(f"sesión recuperada del {deferred_from.isoformat()}")
 
     # 1. retiradas por regla especial
     exercises, log, dropped = apply_rule_removals(exercises, active_rules or [])

@@ -187,7 +187,7 @@ def run_daily(
 
     # El estado sale de la base de datos, no de cero. Es la diferencia entre un
     # sistema que recuerda y uno que cada mañana vuelve a nacer.
-    state = repo.load_state(session, program_start=cfg.program_start)
+    state = repo.load_state(session, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
     decision = decide(cfg, day, signals, state, source=source)
 
     # Lo que la reconciliación de anoche movió de la carga, para contarlo AHORA.
@@ -845,14 +845,23 @@ def run_reconcile(
     res.sueltos = sueltos
 
     if not es_fuerza:
+        # Con el calendario fijo aquí caían casi todos los días de la semana, y
+        # la frase decía "el {day} no tocaba fuerza". Ahora todos los días
+        # tienen su rutina del ciclo, así que solo se llega hasta aquí por dos
+        # caminos: un día rojo, en el que lo planificado fue un bloque de
+        # recuperación, o un día del que no quedó decisión guardada.
+        motivo_no_fuerza = (
+            f"lo planificado fue {plan.get('kind')}"
+            if fila is not None
+            else "no quedó decisión guardada de ese día"
+        )
         res.motivo = (
-            f"{len(nuevos)} entrenamiento(s) registrados; el {day} no tocaba "
-            f"fuerza ({plan.get('kind') if fila is not None else 'sin decisión guardada'}): "
-            f"nada que reconciliar contra el plan"
+            f"{len(nuevos)} entrenamiento(s) registrados; el {day} "
+            f"{motivo_no_fuerza}: nada que reconciliar contra el plan"
         )
         return res
 
-    state = repo.load_state(session, program_start=cfg.program_start)
+    state = repo.load_state(session, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
     apply_execution(
         state,
         routine_key=str(rkey),
@@ -931,10 +940,25 @@ def _motivo_suelto(
             return f"HIIT por libre: ese día el plan pedía {previsto}"
         return "HIIT por libre: el plan de ese día no llevaba HIIT"
     if not es_fuerza:
-        return f"ese día no tocaba fuerza ({plan.get('kind')})"
+        # ESTA FRASE DECÍA «ese día no tocaba fuerza», Y ESE ERA EL FALLO ENTERO
+        # ----------------------------------------------------------------------
+        # Con el calendario fijo, que no nombraba `dia_3` ningún día, TODAS las
+        # sesiones del Día 3 aterrizaban aquí con ese motivo: entrenamientos
+        # reales, marcados como sueltos, sin reconciliar, sin racha, sin
+        # adopción de carga y sin progresión. El sistema los veía y los
+        # archivaba diciendo que no tocaban.
+        #
+        # Ahora no hay días en los que no toque fuerza. Se llega aquí cuando lo
+        # planificado no era una sesión del ciclo, que en la práctica es un día
+        # rojo con su bloque de recuperación: entrenar es entonces una decisión
+        # del usuario por encima de la del sistema, y se cuenta como tal, sin
+        # dar a entender que sobraba.
+        return (
+            f"ese día el plan era {plan.get('kind')} y entrenaste fuerza igual"
+        )
     if rk is None:
         return "no sale de ninguna rutina del plan"
-    return f"es {rk} y ese día tocaba {rkey}"
+    return f"es {rk} y en la rotación tocaba {rkey}"
 
 
 class _PlanLeido:

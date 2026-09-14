@@ -4,7 +4,7 @@ Tres responsabilidades:
 
 1. Cargar el YAML.
 2. Validar las referencias cruzadas. El YAML es grande y está lleno de claves
-   que apuntan a otras claves (el calendario nombra rutinas, las reglas
+   que apuntan a otras claves (la rotación nombra rutinas, las reglas
    especiales nombran ejercicios, el HIIT nombra un bloque). Una errata ahí
    no rompe nada al arrancar pero produce una decisión silenciosamente mal
    una mañana cualquiera. Preferimos petar al cargar.
@@ -155,9 +155,14 @@ class Config:
     def thresholds(self) -> dict[str, Any]:
         return self._data.get("thresholds", {})
 
-    def active_calendar(self) -> dict[str, Any]:
-        cal = self._data["calendar"]
-        return cal["variants"][cal["active_variant"]]
+    def rotation_order(self) -> list[str]:
+        """El ciclo de fuerza, en orden. Ver la sección `rotation` del YAML.
+
+        Aquí había un `active_calendar()` que devolvía la variante de calendario
+        en curso. No hay variantes ni días asignados: lo que toca hoy sale de
+        cuál fue la última de estas rutinas que se EJECUTÓ en Hevy.
+        """
+        return list((self._data.get("rotation") or {}).get("order") or [])
 
     def slider_keys(self) -> list[str]:
         return [s["key"] for s in self._data.get("checkin_sliders", [])]
@@ -223,7 +228,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "thresholds",
         "actions",
         "progression",
-        "calendar",
+        "rotation",
         "routines",
         "cycling",
         "hiit",
@@ -269,7 +274,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "actions",
         "safety",
         "progression",
-        "calendar",
+        "rotation",
         "schedule",
         "routines",
         "set_types",
@@ -327,6 +332,20 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "min_days_required de baseline y de cada adaptive_thresholds, y "
         "'notify' es incondicional (los días con datos incompletos se avisan "
         "siempre en el mensaje). Bórralo.",
+    )
+
+    # `calendar` era el calendario fijo: variantes de temporada y un día de la
+    # semana por rutina. Se ha sustituido entero por `rotation`. Se rechaza con
+    # nombre propio en vez de dejarlo caer en "sección desconocida" porque lo
+    # que hay que entender no es que la clave sobre, sino que lo que había
+    # dentro YA NO SE APLICA: un `monday: {strength: dia_1}` olvidado aquí no
+    # programaría nada, y el error genérico no lo dejaría claro.
+    require(
+        "calendar" not in data,
+        "calendar ya no existe: ni las variantes de temporada ni los días "
+        "asignados. La fuerza va en ciclo y el ciclo lo lleva `rotation.order`, "
+        "leyendo de Hevy cuál fue la última sesión EJECUTADA. Si querías volver "
+        "a una semana fija, esto no la restaura: bórralo y ajusta `rotation`.",
     )
 
     # --- origen del programa ------------------------------------------------
@@ -483,77 +502,44 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "hay claves duplicadas en checkin_sliders",
     )
 
-    # --- calendario ---------------------------------------------------------
-    cal = data["calendar"]
-    variant = cal.get("active_variant")
+    # --- rotación -----------------------------------------------------------
+    # Aquí vivía la validación del calendario fijo: variantes de temporada, un
+    # día de la semana por rutina y siete comprobaciones para que ningún lunes
+    # se quedara en blanco. Miraba tan de cerca porque un descuido ahí no se
+    # notaba nunca... y aun así el descuido que de verdad pasó se le escapó
+    # entero: el calendario estaba impecable, con sus siete días escritos, y
+    # sencillamente no nombraba `dia_3` en ningún sitio. Todas las sesiones del
+    # Día 3 entraron como entrenos sueltos «que ese día no tocaba fuerza» y sus
+    # cargas no se movieron nunca. Un fichero puede estar bien formado y decir
+    # una semana que no es la de verdad.
+    #
+    # `rotation` no puede tener ese fallo por construcción: no hay días que
+    # olvidar, solo un ciclo, y una rutina que no está en el ciclo no está en el
+    # programa. Lo que queda por comprobar es poco y se comprueba entero.
+    rot = data["rotation"]
+    require(isinstance(rot, dict), "rotation tiene que ser un mapa con la clave `order`")
+    check_keys(rot, {"order"}, "rotation")
+
+    orden = rot.get("order")
     require(
-        variant in cal.get("variants", {}),
-        f"calendar.active_variant '{variant}' no existe en calendar.variants",
+        isinstance(orden, list) and bool(orden),
+        "rotation.order tiene que ser una lista con al menos una rutina. Vacía, "
+        "no habría ninguna sesión de fuerza que escribir y el sistema se "
+        "quedaría callado en vez de dar error.",
     )
-    # Aquí un descuido no se nota NUNCA, y por eso se mira tan de cerca. El
-    # constructor de sesiones lee `strength` y, si no hay, cae a `rest` por
-    # defecto (`session_builder.build_session`). O sea que un `strenght: dia_1`
-    # mal escrito, o un lunes que se quedó sin escribir, no dan error ni salen en
-    # ningún log: el lunes pasa a ser descanso, el mensaje de las nueve anuncia
-    # descanso con toda la seguridad del mundo, y el día de fuerza desaparece del
-    # programa sin que nadie pueda relacionarlo con el archivo.
-    DIA_CLAVES = {"strength", "rest", "pool", "bike"}
-    BANDERAS = ("rest", "pool", "bike")
-    for vname, vdata in cal.get("variants", {}).items():
-        for day, plan in vdata.items():
-            if day == "description":
-                continue
-            require(day in WEEKDAYS, f"calendar.variants.{vname}: '{day}' no es un día válido")
-            plan = plan or {}
-            sobran = set(plan) - DIA_CLAVES
-            require(
-                not sobran,
-                f"calendar.variants.{vname}.{day}: {sorted(sobran)} no se lee(n). "
-                f"Solo existen {sorted(DIA_CLAVES)}. Un día con una clave mal "
-                f"escrita se convierte en descanso sin avisar.",
-            )
-
-            key = plan.get("strength")
-            if key is not None:
-                require(
-                    key in routines,
-                    f"calendar.variants.{vname}.{day}: la rutina '{key}' no existe",
-                )
-
-            # `pool: false` y no escribir `pool` acaban en el mismo sitio, así
-            # que la primera forma solo sirve para hacer creer que dice algo.
-            for bandera in BANDERAS:
-                if bandera in plan:
-                    require(
-                        plan[bandera] is True,
-                        f"calendar.variants.{vname}.{day}.{bandera} vale "
-                        f"{plan[bandera]!r}. Solo se entiende `true`: quitar la "
-                        f"clave y ponerla a false son lo mismo para el código.",
-                    )
-
-            # Un día es una cosa y solo una. `{strength: dia_1, pool: true}` es
-            # media verdad: gana la fuerza y la piscina no llega a leerse.
-            puestas = [b for b in BANDERAS if plan.get(b)] + (
-                ["strength"] if key is not None else []
-            )
-            require(
-                len(puestas) == 1,
-                f"calendar.variants.{vname}.{day} declara {sorted(puestas)} y "
-                f"tiene que declarar exactamente una cosa. "
-                + (
-                    "Un día vacío se lee como descanso, pero entonces conviene "
-                    "escribir `rest: true` y que se vea."
-                    if not puestas
-                    else "Solo se aplica una y las demás se descartan en silencio."
-                ),
-            )
-
-        faltan = set(WEEKDAYS) - set(vdata)
+    require(
+        len(set(orden)) == len(orden),
+        f"rotation.order repite rutinas: {sorted({k for k in orden if orden.count(k) > 1})}. "
+        f"El puntero sale de la ÚLTIMA sesión ejecutada de la lista, así que una "
+        f"rutina que aparece dos veces no tiene un «siguiente» definido: el ciclo "
+        f"saltaría siempre al primero de los dos sitios y el segundo tramo no se "
+        f"visitaría nunca.",
+    )
+    for key in orden:
         require(
-            not faltan,
-            f"calendar.variants.{vname} no dice qué toca el/los "
-            f"{sorted(faltan)}. Un día que no está se lee como descanso, que es "
-            f"justo lo que no se distingue de un olvido.",
+            key in routines,
+            f"rotation.order nombra la rutina '{key}', que no existe en `routines`. "
+            f"Existen: {sorted(routines)}.",
         )
 
     # --- reglas del semáforo ------------------------------------------------
@@ -648,8 +634,6 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 "set_reduction",
                 "min_sets_per_exercise",
                 "drop_expendable",
-                "defer_strength",
-                "defer_expires_days",
                 "recovery_block",
             },
             f"actions.{light}",
@@ -774,22 +758,16 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"falta hace saber qué hacer- el mensaje llega sin nada dentro.",
         )
 
-    # `defer_expires_days` lo leían `session_builder` y `decision` cada uno por
-    # su cuenta, con un 7 escrito a mano en los dos. Dos copias del mismo
-    # defecto son dos sitios donde cambiar el fichero no cambia nada, y además
-    # dos sitios que podían acabar diciendo cosas distintas: `decision` decide
-    # si el aplazamiento ha CADUCADO y `build_session` decide si se RECUPERA.
-    # Ahora hay un solo lector, `caducidad_del_aplazamiento`, y lo de aquí es
-    # que el fichero traiga el número y no haya nada que inventar.
-    roja = data["actions"].get("red") or {}
-    if roja.get("defer_strength"):
-        dias = roja.get("defer_expires_days")
-        require(
-            isinstance(dias, int) and not isinstance(dias, bool) and dias > 0,
-            f"actions.red.defer_expires_days vale {dias!r} y tiene que ser un "
-            f"entero de días positivo: es lo que decide cuánto tiempo sigue "
-            f"viva una sesión aplazada por un rojo.",
-        )
+    # Aquí se validaba `actions.red.defer_expires_days`, el plazo que tenía una
+    # sesión aplazada por un rojo antes de darse por perdida. No hay plazo
+    # porque no hay aplazamiento: con la rotación leída de lo EJECUTADO (ver
+    # `rotation` en el YAML), un día rojo no ejecuta ninguna rutina del ciclo,
+    # el puntero no se mueve y mañana vuelve a tocar la misma. Nada que caducar
+    # y, sobre todo, ninguna sesión que se pueda perder por caducidad.
+    #
+    # Que las dos claves ya no estén en la lista blanca de `actions.*` de arriba
+    # basta para que reescribirlas dé error: se rechazan como clave que no se
+    # lee, que es exactamente lo que serían.
 
     rec = data["cycling"].get("recommendation", {})
     for day, level in rec.get("baseline_by_weekday", {}).items():
@@ -1213,17 +1191,13 @@ def _validate(data: dict[str, Any]) -> list[str]:
 
     # --- rutinas ------------------------------------------------------------
     #
-    # Las que algún día de alguna variante programa como fuerza. Se miran TODAS
-    # las variantes y no solo la activa: `dia_3` solo existe en `summer`, y
-    # validar únicamente la variante en curso dejaría el fichero pasando en
-    # invierno y fallando el día que se cambie de temporada, que es cuando
-    # menos se quiere descubrir un error de configuración.
-    rutinas_de_fuerza = {
-        plan.get("strength")
-        for vdata in (cal.get("variants") or {}).values()
-        for dia, plan in vdata.items()
-        if dia != "description" and isinstance(plan, dict) and plan.get("strength")
-    }
+    # Las del ciclo, que ahora son TODAS las de fuerza que hay: lo que no está
+    # en `rotation.order` no lo programa nadie. Antes esto se sacaba de recorrer
+    # todas las variantes del calendario, la activa y las que no, porque `dia_3`
+    # vivía solo en `summer` y mirar únicamente la variante en curso habría
+    # dejado el fichero pasando en invierno y fallando al cambiar de temporada.
+    # Ese cuidado ya no hace falta: hay una sola lista y es la que se aplica.
+    rutinas_de_fuerza = set(orden)
     for rkey, routine in routines.items():
         # Una rutina vacía no daba error, y `all([])` es True: "no hay nada que
         # comprobar" se lee igual que "todo comprobado y correcto". Hoy no tiene
@@ -1240,8 +1214,9 @@ def _validate(data: dict[str, Any]) -> list[str]:
         )
         # `standalone: false` vivía aquí sin que lo leyera nadie, en los dos
         # bloques HIIT. No era una opción: repetía en forma de interruptor algo
-        # que deciden `calendar` -que no los nombra- y `hiit.blocks` -que los
-        # ata a dia_1 y dia_2-. Un `standalone: true` no habría programado nada.
+        # que deciden `rotation.order` -que no los nombra- y `hiit.blocks` -que
+        # los ata a dia_1 y dia_2-. Un `standalone: true` no habría programado
+        # nada.
         check_keys(
             routine,
             {"title", "hevy_routine_id", "exercises", "focus"},
@@ -1260,10 +1235,11 @@ def _validate(data: dict[str, Any]) -> list[str]:
         elif "focus" in routine:
             require(
                 False,
-                f"rutina '{rkey}': lleva 'focus' pero no la programa ningún "
-                f"día de `calendar` como fuerza, así que nadie lo enseñaría. "
-                f"Los bloques HIIT se añaden al final de otra sesión y usan el "
-                f"encabezado de esa. Bórralo.",
+                f"rutina '{rkey}': lleva 'focus' pero no está en "
+                f"`rotation.order`, así que no entra en el ciclo y nadie "
+                f"enseñaría ese subtítulo. Los bloques HIIT se añaden al final "
+                f"de otra sesión y usan el encabezado de esa. Bórralo -o mete "
+                f"la rutina en el ciclo, si lo que falta es eso.",
             )
         keys_here: set[str] = set()
         # `or []` y no `, []`: con `exercises:` a secas YAML devuelve None, y

@@ -26,8 +26,12 @@ from app.engine.signals import Signals
 
 ROOT = Path(__file__).resolve().parents[1]
 CFG = load_config(ROOT / "config.yaml")
+CICLO = CFG.rotation_order()
 
-# Lunes. Con la variante `with_pool` activa: lunes=dia_1, jueves=dia_2.
+# Dos fechas cualesquiera. Llevan nombre de día de la semana por costumbre, pero
+# ya no significan nada: qué rutina toca no lo decide el calendario, lo decide
+# cuál fue la última que apareció EJECUTADA en Hevy. Lo que gobierna estos
+# apartados es el `EngineState` que se les pasa, no el día.
 MON = date(2026, 9, 7)
 THU = MON + timedelta(days=3)
 
@@ -44,11 +48,23 @@ def sig(day: date, hist: dict[str, dict[date, object]] | None = None, **values) 
     return Signals(day=day, values=values, history=hist or {})
 
 
-def summer_cfg():
-    """Copia del config con la variante que sí entrena las tres rutinas."""
-    c = copy.deepcopy(CFG)
-    c.raw["calendar"]["active_variant"] = "summer"
-    return c
+def tras(routine_key: str, day: date = MON, **kw) -> EngineState:
+    """El estado de quien acaba de ejecutar `routine_key`.
+
+    Sustituye a un `summer_cfg()` que copiaba el config y le cambiaba
+    `calendar.active_variant` a `"summer"` porque la variante activa
+    (`with_pool`) no programaba `dia_3` ningún día de la semana. Ese apaño era
+    la única forma que tenía este script de llegar al Día 3, y su existencia era
+    el aviso -no leído- de que las sesiones reales de Día 3 no cuadraban con
+    ningún plan. Ahora al ciclo se le dice por dónde va y ya está.
+    """
+    return EngineState(last_strength=(routine_key, day), **kw)
+
+
+def anterior(routine_key: str) -> str:
+    """La rutina que hay que haber ejecutado para que hoy toque `routine_key`."""
+    i = CICLO.index(routine_key)
+    return CICLO[i - 1]
 
 
 def head(t: str) -> None:
@@ -58,16 +74,25 @@ def head(t: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-head("A. Día verde con fuerza (lunes, dia_1)")
+head("A. Día verde con fuerza: sin nada leído de Hevy, el ciclo empieza por el principio")
 d = decide(CFG, MON, sig(MON), EngineState())
 print(f"    semáforo={d.light}  sesión={d.session.kind}  rutina={d.session.routine_key}")
-print(f"    calendar_routine={d.calendar_routine}")
+print(f"    rotation_routine={d.rotation_routine}  last_strength={d.last_strength}")
 print(f"    bici: {d.bike.level} — {d.bike.label}")
 check(d.light == "green", "sin señales malas el semáforo es verde")
 check(d.session.kind == "full", "sesión completa")
-check(d.session.routine_key == "dia_1", "rutina dia_1")
-check(d.calendar_routine == "dia_1", "calendar_routine registrado")
+check(d.session.routine_key == CICLO[0], f"rutina {CICLO[0]}, la primera del ciclo")
+check(d.rotation_routine == CICLO[0], "rotation_routine registrado en la decisión")
+check(d.last_strength is None,
+      "y se deja escrito que no había ninguna leída: el mensaje lo necesita "
+      "para no inventarse un 'hace 0 días'")
 check(d.progression is not None, "hay plan de progresión")
+
+# El ciclo entero, pidiendo cada escalón por su estado anterior.
+for rkey in CICLO:
+    dd = decide(CFG, MON, sig(MON), tras(anterior(rkey)))
+    check(dd.session.routine_key == rkey,
+          f"tras {anterior(rkey)} toca {rkey} (salió {dd.session.routine_key})")
 check(d.bike is not None, "hay recomendación de bici")
 check(not d.deload.active, "no es semana de descarga")
 
@@ -81,25 +106,46 @@ check(d.progression is not None and not d.progression.gate_open,
       "la puerta de progresión está cerrada en ámbar")
 
 # ---------------------------------------------------------------------------
-head("C. Día rojo: recuperación y fuerza aplazada")
-d = decide(CFG, MON, sig(MON, lower_discomfort=7), EngineState())
+head("C. Día rojo: recuperación, y el puntero del ciclo no se mueve")
+st_prev = tras("dia_1", MON - timedelta(days=3))   # venimos de haber hecho dia_1
+d = decide(CFG, MON, sig(MON, lower_discomfort=7), st_prev)
 print(f"    semáforo={d.light} ({d.trigger_rule})  sesión={d.session.kind}")
+print(f"    rotation_routine={d.rotation_routine}")
 check(d.light == "red", "lumbar 7 -> rojo")
 check(d.session.kind == "recovery", "bloque de recuperación")
-st = advance_state(EngineState(), d, executed={})
-print(f"    pending_strength={st.pending_strength}")
-check(st.pending_strength == ("dia_1", MON), "dia_1 queda pendiente, no se pierde")
+check(d.rotation_routine == "dia_2", "el ciclo sigue diciendo que tocaría dia_2")
+st = advance_state(st_prev, d, executed={})
+print(f"    last_strength={st.last_strength}")
+check(st.last_strength == ("dia_1", MON - timedelta(days=3)),
+      "el bloque de recuperación NO cuenta como sesión del ciclo: el puntero "
+      "se queda en dia_1 y dia_2 sigue siendo el siguiente")
 
 # ---------------------------------------------------------------------------
-head("D. La sesión aplazada se recupera en el siguiente día libre y verde")
-tue = MON + timedelta(days=1)  # martes = descanso
-d2 = decide(CFG, tue, sig(tue), st)
-print(f"    sesión={d2.session.kind}  rutina={d2.session.routine_key}")
-print(f"    deferred_from={d2.session.deferred_from}")
-check(d2.session.routine_key == "dia_1", "se recupera dia_1 en el martes de descanso")
-check(d2.session.deferred_from == MON, "queda registrado de qué día venía")
-st2 = advance_state(st, d2, executed={})
-check(st2.pending_strength is None, "el pendiente se consume al recuperarlo")
+head("D. El aplazamiento no se ha quitado: se ha vuelto la conducta por defecto")
+# Aquí había un apartado titulado "la sesión aplazada se recupera en el
+# siguiente día libre y verde", que construía el día siguiente con el
+# `pending_strength` que había dejado el rojo y comprobaba que se consumía. Ya
+# no hay nada que consumir: el puntero solo avanza con una sesión EJECUTADA, así
+# que no hacer nada lo deja donde estaba, indefinidamente y sin fecha de
+# caducidad. Lo que antes era una máquina -guardar, recuperar, caducar- ahora es
+# la ausencia de máquina, y eso se comprueba dejando pasar los días.
+seguidos = []
+for i in range(1, 15):
+    dd = decide(CFG, MON + timedelta(days=i), sig(MON + timedelta(days=i)), st)
+    seguidos.append(dd.rotation_routine)
+print(f"    catorce días sin pisar el gimnasio: {sorted(set(seguidos))}")
+check(set(seguidos) == {"dia_2"},
+      "dos semanas después sigue tocando dia_2, sin estado que guardar")
+
+# Y en cuanto se ejecuta de verdad, avanza.
+d2 = decide(CFG, MON + timedelta(days=14), sig(MON + timedelta(days=14)), st)
+st2 = advance_state(st, d2, executed={e["key"]: True for e in d2.session.exercises})
+print(f"    tras ejecutarla: last_strength={st2.last_strength}")
+check(st2.last_strength == ("dia_2", MON + timedelta(days=14)),
+      "ejecutarla sí mueve el puntero")
+check(decide(CFG, MON + timedelta(days=15), sig(MON + timedelta(days=15)),
+             st2).rotation_routine == "dia_3",
+      "y al día siguiente ya toca dia_3")
 
 # ---------------------------------------------------------------------------
 head("E. Regla especial: retirada de peso muerto (lumbar >=5 dos días)")
@@ -145,13 +191,14 @@ head("H. Recorte de carga por regla especial (factor exacto)")
 # `smoke_session.py` sección G, que sí construye el caso con progresión activa.
 # Aquí lo que se comprueba es que la regla llega hasta la sesión y aplica su
 # factor exacto.
-cfg_s = summer_cfg()
-fri = date(2026, 9, 11)  # viernes -> dia_3 en la variante summer
+fri = date(2026, 9, 11)
 press_before = None
-for ex in cfg_s.raw["routines"]["dia_3"]["exercises"]:
+for ex in CFG.raw["routines"]["dia_3"]["exercises"]:
     if ex["key"] == "press_hombro_maquina":
         press_before = [s.get("weight_kg") for s in ex["sets"]]
-d = decide(cfg_s, fri, sig(fri, upper_discomfort=6), EngineState())
+# Se llega al Día 3 diciendo que la última ejecutada fue la anterior del ciclo.
+d = decide(CFG, fri, sig(fri, upper_discomfort=6), tras(anterior("dia_3"), fri - timedelta(days=2)))
+check(d.session.routine_key == "dia_3", f"la sesión es dia_3 ({d.session.routine_key})")
 nombres = [r.name for r in d.active_rules]
 press_after = None
 for ex in d.session.exercises:
@@ -161,8 +208,16 @@ print(f"    reglas activas: {nombres}")
 print(f"    press antes:  {press_before}")
 print(f"    press ahora:  {press_after}")
 check("descarga_press_hombro" in nombres, "la regla de hombro dispara con 6")
-check(press_after is not None and press_after[0] == 10 * 0.70,
-      "la primera serie está exactamente al 70% (10 -> 7,0)")
+# El factor y el peso de partida salen del config, no de una constante. Aquí
+# ponía `press_after[0] == 10 * 0.70`, con el 10 copiado a mano de cuando la
+# primera serie del press pesaba 10 kg. Ahora pesa 12,5 y el check marcaba FALLO
+# por un peso que había subido -o sea, por la única cosa que se quiere que pase-.
+_factor = float(next(r for r in CFG.raw["special_rules"]
+                     if r["name"] == "descarga_press_hombro")["action"]["reduce_load"]["factor"])
+_esperado = round(press_before[0] * _factor * 2) / 2
+check(press_after is not None and press_after[0] == _esperado,
+      f"la primera serie está exactamente al {int(_factor * 100)}% "
+      f"({press_before[0]} -> {_esperado})")
 check(d.light == "amber" and len(press_after) < len(press_before),
       "y además el ámbar ha recortado series (efecto acumulado, no alternativo)")
 
@@ -208,14 +263,19 @@ check(not d_red.deload.active and d_red.deload.shifted,
 
 # ---------------------------------------------------------------------------
 head("J. Avance del estado: rachas por RUTINA+EJERCICIO")
-cfg_s = summer_cfg()
+# Aquí había otra `summer_cfg()` y dos fechas elegidas para caer en dia_1 y
+# dia_2. No hace falta ninguna de las dos: se entrena dos veces seguidas y el
+# ciclo avanza solo, que es justo lo que se quiere demostrar de paso.
 st = EngineState()
-mon = date(2026, 9, 7)   # dia_1
-wed = date(2026, 9, 9)   # dia_2
-d_mon = decide(cfg_s, mon, sig(mon), st)
+mon = date(2026, 9, 7)
+wed = date(2026, 9, 9)
+d_mon = decide(CFG, mon, sig(mon), st)
 st = advance_state(st, d_mon, executed={e["key"]: True for e in d_mon.session.exercises})
-d_wed = decide(cfg_s, wed, sig(wed), st)
+d_wed = decide(CFG, wed, sig(wed), st)
 st = advance_state(st, d_wed, executed={e["key"]: True for e in d_wed.session.exercises})
+print(f"    dos sesiones seguidas: {d_mon.session.routine_key} -> {d_wed.session.routine_key}")
+check([d_mon.session.routine_key, d_wed.session.routine_key] == CICLO[:2],
+      "entrenar dos veces avanza el ciclo sin que nadie le diga la fecha")
 
 planchas = {k: v for k, v in st.clean_sessions.items() if "plancha_lateral" in k[1]}
 print(f"    rachas de plancha_lateral: {planchas}")
@@ -223,27 +283,39 @@ check(len(planchas) >= 2, "la plancha lateral tiene una racha por cada rutina")
 check(all(isinstance(k, tuple) and len(k) == 2 for k in st.clean_sessions),
       "todas las claves son (rutina, ejercicio)")
 print(f"    last_routine_light = {st.last_routine_light}")
-check(st.last_routine_light.get("dia_1") == "green", "se recuerda el semáforo de dia_1")
+check(st.last_routine_light.get(d_mon.session.routine_key) == "green",
+      f"se recuerda el semáforo de {d_mon.session.routine_key}")
 
-# racha rota
-d_mon2 = decide(cfg_s, mon + timedelta(days=7), sig(mon + timedelta(days=7)), st)
+# Racha rota. Hay que dar la vuelta entera al ciclo antes de poder romper nada:
+# una racha solo existe donde ya se ha entrenado, y tras dos sesiones la
+# siguiente es una rutina virgen con la racha a 0. Con el `"dia_1"` escrito a
+# mano que había aquí, este apartado acababa comprobando que 0 seguía siendo 0.
+d_3 = decide(CFG, mon + timedelta(days=4), sig(mon + timedelta(days=4)), st)
+st = advance_state(st, d_3, executed={e["key"]: True for e in d_3.session.exercises})
+
+d_mon2 = decide(CFG, mon + timedelta(days=7), sig(mon + timedelta(days=7)), st)
+rk2 = d_mon2.session.routine_key
 falla = next(e["key"] for e in d_mon2.session.exercises)
 exe = {e["key"]: True for e in d_mon2.session.exercises}
 exe[falla] = False
-antes = st.clean_sessions.get(("dia_1", falla), 0)
+antes = st.clean_sessions.get((rk2, falla), 0)
 st3 = advance_state(st, d_mon2, executed=exe)
-print(f"    '{falla}': racha {antes} -> {st3.clean_sessions.get(('dia_1', falla))}")
-check(st3.clean_sessions.get(("dia_1", falla)) == 0,
+print(f"    {rk2}/'{falla}': racha {antes} -> {st3.clean_sessions.get((rk2, falla))}")
+check(antes > 0, f"hay una racha que romper en {rk2}/{falla} (vale {antes})")
+check(st3.clean_sessions.get((rk2, falla)) == 0,
       "una serie sin completar resetea la racha entera, no la decrementa")
 
 # ---------------------------------------------------------------------------
 head("K. El estado no avanza si la sesión aún no se ha ejecutado")
 st_pre = EngineState()
-d_pre = decide(cfg_s, mon, sig(mon), st_pre)
+d_pre = decide(CFG, mon, sig(mon), st_pre)
 st_post = advance_state(st_pre, d_pre, executed=None)
 check(st_post.clean_sessions == {},
       "a las 7 de la mañana la decisión existe pero la racha no ha avanzado")
 check(st_post.last_routine_light == {}, "ni el semáforo de la rutina")
+check(st_post.last_strength is None,
+      "ni el puntero del ciclo: planificar no es entrenar, y si avanzara aquí "
+      "un día sin gimnasio se saltaría una rutina entera")
 
 # ---------------------------------------------------------------------------
 head("L. to_dict serializable a JSON")

@@ -99,17 +99,17 @@ def cfg_copia(cfg):
     return copy.deepcopy(cfg)
 
 
-@pytest.fixture
-def cfg_summer(cfg):
-    """Variante de calendario que sí entrena las tres rutinas.
-
-    La activa (`with_pool`) no programa `dia_3` ningún día, así que los tests
-    que necesitan esa rutina tienen que cambiar de variante explícitamente en
-    vez de dar por hecho que existe en el calendario.
-    """
-    c = copy.deepcopy(cfg)
-    c.raw["calendar"]["active_variant"] = "summer"
-    return c
+# AQUÍ ESTABA `cfg_summer`. Era una copia del config con `active_variant` a
+# "summer", y existía por una sola razón: la variante activa, `with_pool`, no
+# programaba `dia_3` ningún día de la semana, así que cualquier test que
+# necesitara esa rutina tenía que cambiarse de calendario para alcanzarla.
+#
+# Esa fixture era el síntoma escrito en los tests de un fallo que estaba en el
+# config: el Día 3 se hace, y se hace a menudo, y el sistema no lo tenía
+# programado nunca. Todas esas sesiones se registraron como entrenos sueltos.
+# Con la rotación 1→2→3 las tres rutinas están en el ciclo por definición y a
+# `dia_3` se llega poniendo el puntero donde toca -`EngineState(last_strength=
+# ("dia_2", ...))`-, que además es lo que pasa de verdad.
 
 
 # ---------------------------------------------------------------------------

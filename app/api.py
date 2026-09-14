@@ -788,7 +788,7 @@ def get_state(
     s: Session = Depends(get_session), cfg=Depends(get_config)
 ) -> dict[str, Any]:
     """El estado del motor, legible. Es la ventana a por qué hace lo que hace."""
-    estado = repo.load_state(s, program_start=cfg.program_start)
+    estado = repo.load_state(s, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
     return repo.state_as_dict(estado)
 
 

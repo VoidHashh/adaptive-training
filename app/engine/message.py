@@ -271,37 +271,52 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # --- la sesión ----------------------------------------------------------
     s = decision.session
     L.append("")
-    if s.kind in {"rest", "pool", "bike"}:
-        L.append(f"😴 <b>{escapar_html(s.title)}</b>")
-    else:
-        etiqueta = {
-            "full": "sesión completa",
-            "reduced": "sesión reducida",
-            "recovery": "recuperación",
-        }.get(s.kind, s.kind)
+    etiqueta = {
+        "full": "sesión completa",
+        "reduced": "sesión reducida",
+        "recovery": "recuperación",
+    }.get(s.kind, s.kind)
+    # AQUÍ HABÍA UNA RAMA PARA `rest`, `pool` Y `bike`, Y EL MODO VERBAL ERA OTRO
+    # --------------------------------------------------------------------------
+    # Con calendario fijo, los días sin fuerza asignada salían como un "😴
+    # Descanso" y los de fuerza se anunciaban en indicativo -"Día 1 (sesión
+    # completa)"-, como quien lee una agenda. Ya no hay días asignados ni días
+    # de descanso decididos por el sistema: todos los días tienen la rutina que
+    # toque en el ciclo, y el mensaje no manda, informa de qué tocaría SI se va
+    # al gimnasio. Quién decide es el usuario, y el sistema se entera leyendo
+    # Hevy.
+    #
+    # El día rojo se queda en indicativo a propósito: el bloque de recuperación
+    # no es una sesión del ciclo que uno elija hacer o no, es lo que el sistema
+    # propone para hoy. Ponerle un "si vas al gimnasio" delante lo ofrecería
+    # como alternativa al gimnasio, que es lo contrario de lo que dice un rojo.
+    if s.kind == "recovery":
         cab = f"💪 <b>{escapar_html(s.title)}</b> ({escapar_html(etiqueta)})"
-        # `routines.*.focus` llevaba desde el principio en el YAML sin que lo
-        # leyera nadie: "Tren inferior + core", "Cadena posterior + espalda",
-        # "Caderas + hombro + brazo + core". Es la única frase del fichero que
-        # dice de qué va la sesión, y el mensaje de la mañana la ignoraba
-        # mientras enumeraba ocho ejercicios sin encabezarlos.
-        #
-        # Va pegado al título y no en una línea aparte: el mensaje ya tiene
-        # bloques de sobra, y esto es un subtítulo, no un apartado. Se busca en
-        # `routines` a propósito: en un día de recuperación `routine_key`
-        # apunta a `recovery_blocks`, no encuentra nada, y el encabezado se
-        # queda como estaba.
-        foco = ((raw.get("routines") or {}).get(s.routine_key or "") or {}).get("focus")
-        if foco:
-            cab += f" — {escapar_html(foco)}"
-        if s.deferred_from:
-            cab += f"\n<i>Recuperas la sesión del {fmt_short(s.deferred_from)}</i>"
-        L.append(cab)
-        for ex in s.exercises:
-            nombre_ex = escapar_html(ex.get("name", ex.get("key")))
-            L.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
-        if s.hiit_block:
-            L.append(f"🔥 <b>HIIT:</b> {escapar_html(s.hiit_block)}")
+    else:
+        cab = (
+            f"💪 <b>Si vas al gimnasio hoy:</b> {escapar_html(s.title)} "
+            f"({escapar_html(etiqueta)})"
+        )
+    # `routines.*.focus` llevaba desde el principio en el YAML sin que lo
+    # leyera nadie: "Tren inferior + core", "Cadena posterior + espalda",
+    # "Caderas + hombro + brazo + core". Es la única frase del fichero que
+    # dice de qué va la sesión, y el mensaje de la mañana la ignoraba
+    # mientras enumeraba ocho ejercicios sin encabezarlos.
+    #
+    # Va pegado al título y no en una línea aparte: el mensaje ya tiene
+    # bloques de sobra, y esto es un subtítulo, no un apartado. Se busca en
+    # `routines` a propósito: en un día de recuperación `routine_key`
+    # apunta a `recovery_blocks`, no encuentra nada, y el encabezado se
+    # queda como estaba.
+    foco = ((raw.get("routines") or {}).get(s.routine_key or "") or {}).get("focus")
+    if foco:
+        cab += f" — {escapar_html(foco)}"
+    L.append(cab)
+    for ex in s.exercises:
+        nombre_ex = escapar_html(ex.get("name", ex.get("key")))
+        L.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
+    if s.hiit_block:
+        L.append(f"🔥 <b>HIIT:</b> {escapar_html(s.hiit_block)}")
 
     # --- lo que movió la carga que se levantó de verdad ---------------------
     # Va ANTES de "Sube hoy" porque ocurrió antes: la adopción se decide al
@@ -465,23 +480,43 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         for n in degradaciones:
             L.append(f"• {escapar_html(n)}")
 
-    # --- una sesión que se ha perdido ---------------------------------------
-    # FUERA de `include_reasoning`, por el mismo motivo que el bloque de
-    # arriba. Que un aplazamiento haya caducado no es "por qué he decidido
-    # esto": es "esta semana has entrenado una vez menos". Es un hecho del
-    # programa, y con el razonamiento apagado este mensaje era el único sitio
-    # donde podía constar y no constaba en ninguno.
+    # --- cuánto hace de la última sesión de fuerza --------------------------
+    # Aquí había un bloque "⏳ Sesión perdida" que saltaba cuando un
+    # aplazamiento caducaba: "esta semana has entrenado una vez menos". No hay
+    # sesiones perdidas porque no hay aplazamiento -la que no se hace sigue
+    # siendo la siguiente-, y lo que ocupa su sitio es este número.
     #
-    # Antes ni siquiera se detectaba: la sesión aplazada se quedaba en la base
-    # de datos, nadie volvía a mirarla y desaparecía en silencio.
-    if decision.expired_deferral:
-        rutina, aplazada = decision.expired_deferral
+    # SALE SIEMPRE, SIN UMBRAL. La tentación era enseñarlo solo a partir de N
+    # días, y ese N habría sido una constante inventada: ni sale de los datos
+    # del usuario ni hay nada que la justifique. Un número que aparece a los
+    # ocho días y no a los siete está dando una opinión disfrazada de dato.
+    # Diciéndolo todos los días no hay opinión: hay una cuenta, y quien la lee
+    # sabe mejor que el sistema si nueve días son unas vacaciones o un aviso.
+    #
+    # Y por eso tampoco lleva emoji de alarma ni va en su propio bloque con
+    # título: es un apunte, como el recuento de intensas. El tono importa aquí
+    # más que en ningún otro sitio del mensaje, porque es la única línea que
+    # habla de lo que NO se ha hecho.
+    if decision.last_strength:
+        _, ultimo_dia = decision.last_strength
+        dias = (decision.day - ultimo_dia).days
+        if dias == 0:
+            L.append("")
+            L.append("💤 <i>Última sesión de fuerza: hoy mismo.</i>")
+        else:
+            L.append("")
+            L.append(
+                f"💤 <i>Última sesión de fuerza: hace {dias} "
+                f"{'día' if dias == 1 else 'días'} "
+                f"({fmt_short(ultimo_dia)}).</i>"
+            )
+    else:
+        # Ninguna sesión del ciclo leída todavía. Se dice, y no se calla: el
+        # silencio aquí se confundiría con "hoy mismo", que es el caso opuesto.
         L.append("")
-        L.append("⏳ <b>Sesión perdida</b>")
         L.append(
-            f"• '{escapar_html(rutina)}', aplazada el {aplazada.isoformat()}, ha caducado sin "
-            f"que haya habido un día libre y en verde para recuperarla. No se "
-            f"recupera sola: si la quieres, hay que meterla a mano."
+            "💤 <i>Todavía no hay ninguna sesión de fuerza leída de Hevy; "
+            "la rotación empieza por el principio.</i>"
         )
 
     # --- mantenimiento del propio sistema -----------------------------------
@@ -533,16 +568,14 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         # aquí y no arriba- pero tampoco eran visibles en ninguna parte: solo
         # los imprimía el CLI, que es justo lo que no se lee por la mañana.
         # Dentro caen cosas que se notan en la app sin explicación: "sin HIIT:
-        # <motivo>", "progresión no aplicada: el semáforo está en amber", la
-        # fuerza que queda pendiente de recuperar, o una regla especial que ha
-        # caducado y por eso hoy vuelve un ejercicio que llevaba días fuera.
+        # <motivo>", "progresión no aplicada: el semáforo está en amber", que la
+        # rotación no se ha movido, o una regla especial que ha caducado y por
+        # eso hoy vuelve un ejercicio que llevaba días fuera.
         # Las que ya se han dicho arriba se reconstruyen desde la MISMA fuente
-        # que las produjo, no se reconocen por el texto. Buscar "descarga:" o
-        # "sesión recuperada" con un `startswith` funcionaría hoy y dejaría de
-        # funcionar el día que alguien reescriba la frase, sin avisar.
+        # que las produjo, no se reconocen por el texto. Buscar "descarga:" con
+        # un `startswith` funcionaría hoy y dejaría de funcionar el día que
+        # alguien reescriba la frase, sin avisar.
         ya_dicho = {f"descarga: {decision.deload.reason}"}
-        if s.deferred_from:
-            ya_dicho.add(f"sesión recuperada del {s.deferred_from.isoformat()}")
         apuntes = [
             n for n in list(s.notes) + list(decision.notes) if n not in ya_dicho
         ]

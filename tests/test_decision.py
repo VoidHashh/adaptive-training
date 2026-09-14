@@ -35,7 +35,7 @@ def test_un_dia_sin_señales_malas_es_verde_y_entrena_entero(cfg):
     assert d.light == "green"
     assert d.session.kind == "full"
     assert d.session.routine_key == "dia_1"
-    assert d.calendar_routine == "dia_1"
+    assert d.rotation_routine == "dia_1"
     assert d.progression is not None
     assert d.bike is not None
     assert not d.deload.active
@@ -55,94 +55,117 @@ def test_una_molestia_lumbar_de_7_pone_el_dia_en_rojo(cfg):
 
 
 # ---------------------------------------------------------------------------
-# La sesión aplazada no se pierde
+# La rotación se aplaza sola
 # ---------------------------------------------------------------------------
+#
+# Aquí estaban los cinco tests del aplazamiento: la sesión de un día rojo
+# quedaba pendiente en una tabla, se recuperaba en el siguiente día libre y
+# verde, y caducaba a los siete días. Toda esa maquinaria existía para
+# compensar un calendario fijo: si el lunes tocaba `dia_1` y el lunes salía
+# rojo, había que anotar en algún sitio que `dia_1` no se había hecho, porque
+# el martes el calendario ya estaba diciendo otra cosa.
+#
+# Con la rotación no hay nada que anotar. El puntero es "la última sesión de
+# fuerza que HICE", así que un día que no se entrena no lo mueve, y la sesión
+# que no se hizo sigue siendo la siguiente mañana, y la siguiente, hasta que se
+# haga. El aplazamiento no se ha quitado: se ha vuelto la conducta por defecto.
 
 
-def test_la_fuerza_de_un_dia_rojo_queda_pendiente(cfg):
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), d, executed={})
-    assert st.pending_strength == ("dia_1", LUNES)
+def test_un_dia_rojo_no_mueve_el_puntero(cfg):
+    """Lo que antes hacían la tabla `pending_strength` y sus tres estados.
 
-
-def test_lo_pendiente_se_recupera_en_el_siguiente_dia_libre_y_verde(cfg):
-    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), rojo, executed={})
-
-    martes = LUNES + timedelta(days=1)  # día de descanso en el calendario
-    d2 = decide(cfg, martes, sig(martes), st)
-    assert d2.session.routine_key == "dia_1"
-    assert d2.session.deferred_from == LUNES
-
-    st2 = advance_state(st, d2, executed={})
-    assert st2.pending_strength is None, "el pendiente se consume al recuperarlo"
-
-
-def test_entrenar_otra_rutina_no_se_lleva_por_delante_la_aplazada(cfg):
-    """El aplazamiento existe para que un día malo no cueste una sesión.
-
-    Esto lo borraba `advance_state` con un `pending_strength = None` a secas:
-    un lunes rojo aplazaba `dia_1`, el jueves tocaba `dia_2` por calendario, y
-    PLANIFICAR el `dia_2` -ni siquiera ejecutarlo- borraba el `dia_1`. La
-    sesión que el rojo había protegido desaparecía por haber entrenado otra
-    cosa. Costaba la sesión igual, pero tres días más tarde y sin decirlo.
+    El bloque de recuperación de un día rojo no es un escalón del ciclo: se
+    hace en casa, con banda elástica, y no es el Día 1. Si lo contara, la
+    próxima vez que pisara el gimnasio me tocaría el Día 2 sin haber hecho
+    nunca el Día 1.
     """
-    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), rojo, executed={})
-    assert st.pending_strength == ("dia_1", LUNES)
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
+    assert d.session.kind == "recovery"
 
-    jueves = LUNES + timedelta(days=3)
-    d2 = decide(cfg, jueves, sig(jueves, lower_discomfort=1), st)
-    assert d2.session.routine_key == "dia_2", "el escenario necesita OTRA rutina"
-
-    st2 = advance_state(st, d2, executed={k["key"]: True for k in d2.session.exercises})
-    assert st2.pending_strength == ("dia_1", LUNES), (
-        "haber hecho dia_2 no es haber hecho el dia_1 que quedaba pendiente"
+    st = advance_state(EngineState(), d, executed={})
+    assert st.last_strength is None, (
+        "el bloque de recuperación ha movido la rotación: la sesión que el rojo "
+        "protegía se habría perdido igual que con el calendario fijo"
     )
 
+    # Y al día siguiente vuelve a tocar lo mismo, sin que nadie lo haya anotado.
+    martes = LUNES + timedelta(days=1)
+    d2 = decide(cfg, martes, sig(martes), st)
+    assert d2.rotation_routine == "dia_1"
+    assert d2.session.routine_key == "dia_1"
 
-def test_un_aplazamiento_que_caduca_se_borra_y_se_cuenta(cfg):
-    """Antes no lo borraba nadie y no lo contaba nadie.
 
-    Pasados los `defer_expires_days`, `decide` dejaba de mirar la fila y la
-    sesión aplazada se evaporaba: ni se recuperaba, ni se limpiaba, ni se
-    avisaba. Una sesión de fuerza menos esa semana, sin rastro.
+def test_planificar_no_es_entrenar(cfg):
+    """El puntero sale de lo EJECUTADO, nunca de lo planificado.
+
+    Es la diferencia entera entre la rotación y el calendario que sustituye. Un
+    puntero que avanzara al planificar correría solo: tres días sin pisar el
+    gimnasio y me habría "hecho" el ciclo completo sin levantar nada.
     """
-    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), rojo, executed={})
+    d = decide(cfg, LUNES, sig(LUNES), EngineState())
+    assert d.session.routine_key == "dia_1"
 
-    tarde = LUNES + timedelta(days=9)  # defer_expires_days = 7
-    d = decide(cfg, tarde, sig(tarde, lower_discomfort=1), st)
-    assert d.expired_deferral == ("dia_1", LUNES)
+    st = advance_state(EngineState(), d, executed=None)
+    assert st.last_strength is None
 
-    st2 = advance_state(st, d, executed=None)
-    assert st2.pending_strength is None, "caducado y encima sin limpiar"
-
-
-def test_la_caducidad_se_mira_aunque_el_dia_no_sea_verde_ni_libre(cfg):
-    """La comprobación colgaba del `if` que recupera la sesión, que solo entra
-    en días verdes y sin bici. O sea: se dejaba de comprobar exactamente
-    cuando se arrastra una mala racha, que es cuando un aplazamiento caduca."""
-    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), rojo, executed={})
-
-    tarde = LUNES + timedelta(days=9)
-    d = decide(cfg, tarde, sig(tarde, lower_discomfort=7), st)  # otro rojo
-    assert d.light == "red"
-    assert d.expired_deferral == ("dia_1", LUNES)
+    d2 = decide(cfg, LUNES + timedelta(days=1), sig(LUNES + timedelta(days=1)), st)
+    assert d2.rotation_routine == "dia_1", "la rotación ha avanzado sin entrenar"
 
 
-def test_dentro_de_plazo_no_caduca_nada(cfg):
-    """El contraste: sin esto, un `expired_deferral` siempre activo pasaría los
-    dos tests de arriba y borraría todos los aplazamientos al día siguiente."""
-    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), rojo, executed={})
+def test_haber_entrenado_de_verdad_si_mueve_el_puntero(cfg):
+    d = decide(cfg, LUNES, sig(LUNES), EngineState())
+    st = advance_state(
+        EngineState(), d, executed={k["key"]: True for k in d.session.exercises}
+    )
+    assert st.last_strength == ("dia_1", LUNES)
 
-    pronto = LUNES + timedelta(days=2)
-    d = decide(cfg, pronto, sig(pronto, lower_discomfort=1), st)
-    assert d.expired_deferral is None
-    st2 = advance_state(st, d, executed=None)
-    assert st2.pending_strength is not None or d.session.routine_key == "dia_1"
+    martes = LUNES + timedelta(days=1)
+    assert decide(cfg, martes, sig(martes), st).rotation_routine == "dia_2"
+
+
+def test_da_igual_el_dia_de_la_semana_que_sea(cfg):
+    """Ni "los lunes toca Día 1" ni "los domingos se descansa".
+
+    Se entrena cuando se va al gimnasio. El mismo estado tiene que dar la misma
+    rutina los siete días, porque lo que manda es por dónde va el ciclo.
+    """
+    st = EngineState(last_strength=("dia_1", LUNES))
+    for salto in range(7):
+        dia = LUNES + timedelta(days=1 + salto)
+        d = decide(cfg, dia, sig(dia), st)
+        assert d.rotation_routine == "dia_2", f"{dia} ({dia.strftime('%A')}) se ha salido"
+        assert d.session.kind == "full"
+
+
+def test_el_ciclo_da_la_vuelta_pasando_por_el_dia_3(cfg):
+    """Las tres, en orden, y el Día 3 dentro.
+
+    Con el calendario `with_pool` que había activo, `dia_3` no aparecía en
+    ningún día de la semana: todas las sesiones de Día 3 se registraban como
+    entrenos sueltos, sin racha, sin adopción de carga y sin progresión.
+    """
+    st = EngineState()
+    hechas = []
+    for i in range(4):
+        dia = LUNES + timedelta(days=i * 2)
+        d = decide(cfg, dia, sig(dia), st)
+        hechas.append(d.session.routine_key)
+        st = advance_state(st, d, executed={k["key"]: True for k in d.session.exercises})
+
+    assert hechas == ["dia_1", "dia_2", "dia_3", "dia_1"]
+
+
+def test_una_semana_entera_sin_pisar_el_gimnasio_deja_el_puntero_quieto(cfg):
+    """Lo que antes caducaba a los siete días. Ahora no caduca: espera."""
+    st = EngineState(last_strength=("dia_2", LUNES))
+    for i in range(1, 15):
+        dia = LUNES + timedelta(days=i)
+        d = decide(cfg, dia, sig(dia), st)
+        st = advance_state(st, d, executed=None)
+
+    assert st.last_strength == ("dia_2", LUNES)
+    ultimo = decide(cfg, LUNES + timedelta(days=15), sig(LUNES + timedelta(days=15)), st)
+    assert ultimo.rotation_routine == "dia_3"
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +222,7 @@ def test_y_caduca_al_dia_quince(cfg):
     assert "retirada_peso_muerto" not in [r.name for r in d.active_rules]
 
 
-def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_y_cae_en_disco(cfg_summer):
+def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_y_cae_en_disco(cfg):
     """Y se ACUMULA con el recorte de series del ámbar, no lo sustituye.
 
     Antes esto comparaba contra `antes[0] * 0.70` pelado, y pasaba de milagro:
@@ -214,15 +237,20 @@ def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_y_cae_en_disco(cfg_su
     clavar un literal: los pesos del config cambian cada vez que se releen las
     rutinas, y un test que se rompe por eso no está midiendo el motor.
     """
-    viernes = date(2026, 9, 11)  # dia_3 en la variante summer
+    viernes = date(2026, 9, 11)
     antes = [
         s.get("weight_kg")
-        for ex in cfg_summer.raw["routines"]["dia_3"]["exercises"]
+        for ex in cfg.raw["routines"]["dia_3"]["exercises"]
         if ex["key"] == "press_hombro_maquina"
         for s in ex["sets"]
     ]
 
-    d = decide(cfg_summer, viernes, sig(viernes, upper_discomfort=6), EngineState())
+    # El `dia_3` se pide por donde va el ciclo, no por el día de la semana: se
+    # viene de haber hecho el `dia_2`. Antes esto necesitaba una variante de
+    # calendario entera -`summer`- solo porque la activa no lo programaba nunca.
+    despues_del_dia_2 = EngineState(last_strength=("dia_2", viernes - timedelta(days=2)))
+    d = decide(cfg, viernes, sig(viernes, upper_discomfort=6), despues_del_dia_2)
+    assert d.session.routine_key == "dia_3"
     despues = [
         s.get("weight_kg")
         for ex in d.session.exercises
@@ -342,7 +370,7 @@ def test_la_descarga_se_programa_cada_siete_semanas_y_siempre_en_lunes(cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_las_rachas_son_por_rutina_y_ejercicio(cfg_summer):
+def test_las_rachas_son_por_rutina_y_ejercicio(cfg):
     """La plancha lateral aparece en varias rutinas y cada una lleva su racha.
 
     Con ámbito solo-ejercicio, hacerla bien en `dia_1` haría progresar la de
@@ -350,7 +378,7 @@ def test_las_rachas_son_por_rutina_y_ejercicio(cfg_summer):
     """
     st = EngineState()
     for dia in (date(2026, 9, 7), date(2026, 9, 9)):
-        d = decide(cfg_summer, dia, sig(dia), st)
+        d = decide(cfg, dia, sig(dia), st)
         st = advance_state(st, d, executed={e["key"]: True for e in d.session.exercises})
 
     planchas = {k: v for k, v in st.clean_sessions.items() if "plancha_lateral" in k[1]}
@@ -359,26 +387,30 @@ def test_las_rachas_son_por_rutina_y_ejercicio(cfg_summer):
     assert st.last_routine_light.get("dia_1") == "green"
 
 
-def test_una_serie_sin_completar_resetea_la_racha_entera(cfg_summer):
+def test_una_serie_sin_completar_resetea_la_racha_entera(cfg):
     st = EngineState()
     lunes = date(2026, 9, 7)
-    d = decide(cfg_summer, lunes, sig(lunes), st)
+    d = decide(cfg, lunes, sig(lunes), st)
     st = advance_state(st, d, executed={e["key"]: True for e in d.session.exercises})
 
     siguiente = lunes + timedelta(days=7)
-    d2 = decide(cfg_summer, siguiente, sig(siguiente), st)
+    d2 = decide(cfg, siguiente, sig(siguiente), st)
     falla = next(e["key"] for e in d2.session.exercises)
     ejecutado = {e["key"]: True for e in d2.session.exercises}
     ejecutado[falla] = False
 
     st2 = advance_state(st, d2, executed=ejecutado)
-    assert st2.clean_sessions.get(("dia_1", falla)) == 0
+    # La rutina se lee de la decisión y no se escribe a mano: con la rotación,
+    # la segunda sesión ya no es el mismo `dia_1` que la primera, y un literal
+    # aquí probaría una clave que no existe -y `.get` devolvería None, que no
+    # es 0, así que al menos este fallaría en vez de callarse-.
+    assert st2.clean_sessions.get((d2.session.routine_key, falla)) == 0
 
 
-def test_el_estado_no_avanza_si_la_sesion_aun_no_se_ha_ejecutado(cfg_summer):
+def test_el_estado_no_avanza_si_la_sesion_aun_no_se_ha_ejecutado(cfg):
     """A las siete de la mañana la decisión existe, pero la racha no."""
     st = EngineState()
-    d = decide(cfg_summer, date(2026, 9, 7), sig(date(2026, 9, 7)), st)
+    d = decide(cfg, date(2026, 9, 7), sig(date(2026, 9, 7)), st)
     despues = advance_state(st, d, executed=None)
     assert despues.clean_sessions == {}
     assert despues.last_routine_light == {}

@@ -466,18 +466,26 @@ class RuleState(Base):
     __table_args__ = (Index("ix_rule_states_active", "rule_name", "entity", "active_until"),)
 
 
-class PendingStrength(Base):
-    """Sesión de fuerza aplazada por un día rojo. No se salta, se recupera."""
-
-    __tablename__ = "pending_strength"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    routine_key: Mapped[str] = mapped_column(String(64), index=True)
-    deferred_from: Mapped[date] = mapped_column(Date)
-    expires_on: Mapped[date | None] = mapped_column(Date)
-    resolved_on: Mapped[date | None] = mapped_column(Date)
-    # pending | recovered | expired | cancelled
-    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+# AQUÍ ESTABA `PendingStrength`, Y LA TABLA `pending_strength` SIGUE EN EL DISCO
+# ------------------------------------------------------------------------------
+# Guardaba la sesión de fuerza que un día rojo había aplazado, con su fecha de
+# caducidad y un estado (`pending`, `recovered`, `expired`, `cancelled`). Todo
+# eso existía para contestar a «¿cuál es la siguiente sesión?» cuando la
+# respuesta la mandaba un calendario de días fijos y había que reponer lo que el
+# calendario había programado y el cuerpo no había permitido.
+#
+# Con la rotación leída de lo EJECUTADO (ver `rotation` en `config.yaml`) la
+# pregunta se contesta sola: la siguiente es la que va detrás de la última que
+# aparece hecha en `workout_log`. Un día rojo no ejecuta ninguna rutina del
+# ciclo, luego el puntero no se mueve y mañana vuelve a tocar la misma. No hay
+# nada que aplazar, ni que caducar, ni que se pueda perder al caducar.
+#
+# La tabla física NO se borra al arrancar, y conviene saberlo: `ensure_schema`
+# recorre `Base.metadata.tables`, o sea solo lo que los modelos declaran, y una
+# tabla que ya no declara nadie se queda donde está sin que nada la mire. Es un
+# huérfano inerte: ocupa unos kilobytes y guarda el histórico de los
+# aplazamientos que hubo, que para una arqueología futura tampoco estorba.
+# Quitarla es un `DROP TABLE pending_strength` a mano, cuando se quiera.
 
 
 # ---------------------------------------------------------------------------

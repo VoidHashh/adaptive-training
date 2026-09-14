@@ -26,8 +26,10 @@ from app.repository import load_state, save_decision, save_state
 from app.runner import run_daily, run_reconcile
 from tests.conftest import LUNES, dias, sig_completa
 
-# `with_pool` no programa `dia_3`; los tests que necesitan fuerza usan cfg_summer
-# o un lunes, que sí entrena.
+# Con la rotación ya no hay días sin fuerza: cualquier día, si vas, te toca la
+# siguiente del ciclo. Lo que decide CUÁL es `EngineState.last_strength`, no el
+# día de la semana, así que un test que necesite una rutina concreta pone el
+# puntero en la anterior en vez de buscar el día del calendario que la traía.
 
 
 @pytest.fixture
@@ -737,25 +739,37 @@ def test_un_hiit_que_el_plan_no_pedia_queda_visible_con_su_motivo(db, cfg):
     assert "HIIT por libre" in fila.motivo_suelto, fila.motivo_suelto
 
 
-def test_un_entrenamiento_de_un_dia_sin_fuerza_se_registra_igual(db, cfg_summer):
-    """Un sábado, una rutina que no está en el plan, cualquier cosa. Antes esto
-    devolvía sin escribir nada y el entrenamiento no había existido: ni volumen,
-    ni series, ni presupuesto de intensas."""
-    domingo = LUNES + timedelta(days=6)
-    corre(db, cfg_summer, day=domingo, hevy=HevyFalso(), tg=TelegramFalso())
-    plan = _plan_guardado(db, domingo)
-    assert plan.get("kind") not in {"full", "reduced"}, (
-        f"el domingo ya entrena fuerza; el test hay que rehacerlo: {plan.get('kind')}"
+def test_un_entrenamiento_de_un_dia_que_no_planificaba_fuerza_se_registra_igual(db, cfg):
+    """Antes esto devolvía sin escribir nada y el entrenamiento no había
+    existido: ni volumen, ni series, ni presupuesto de intensas.
+
+    El escenario ha cambiado de forma con la rotación. Antes era un domingo:
+    el calendario no ponía fuerza ese día y punto. Ya no hay días sin fuerza
+    -si voy, me toca la siguiente del ciclo, sea domingo o jueves-, así que el
+    único plan que no es fuerza es el bloque de recuperación de un día rojo. Y
+    ese caso es más interesante que el domingo, porque es el que pasa de
+    verdad: el sistema dice "hoy toca cuidarse" y yo voy al gimnasio igual.
+    Que quede registrado no es opcional; el registro no opina.
+    """
+    from app.repository import upsert_checkin
+
+    upsert_checkin(
+        db, LUNES, dict(CHECKIN_TRANQUILO, lower_discomfort=8), config=cfg
+    )
+    corre(db, cfg, day=LUNES, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db, LUNES)
+    assert plan.get("kind") == "recovery", (
+        f"el escenario necesita un día rojo y salió {plan.get('kind')}"
     )
 
-    w = _entrenamiento_completo({"exercises": []}, wid="domingo", day=domingo)
-    res = run_reconcile(db, cfg_summer, domingo, workouts=[w])
+    w = _entrenamiento_completo({"exercises": []}, wid="rojo", day=LUNES)
+    res = run_reconcile(db, cfg, LUNES, workouts=[w])
 
     assert not res.avanzado
     assert res.workouts_nuevos == 1
     fila = db.scalars(select(WorkoutLog)).one()
     assert fila.unplanned is True
-    assert fila.date == domingo
+    assert fila.date == LUNES
 
 
 def test_lo_registrado_lleva_duracion_series_y_volumen(db, cfg):

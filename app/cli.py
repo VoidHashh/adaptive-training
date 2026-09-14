@@ -473,7 +473,7 @@ def estado_para_el_ensayo(cfg) -> tuple[EngineState, str]:
 
         ensure_schema()
         with SessionLocal() as s:
-            estado = repo.load_state(s, program_start=cfg.program_start)
+            estado = repo.load_state(s, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
     except Exception as exc:  # noqa: BLE001
         # Que no se pueda leer NO puede pasar por "no hay nada guardado": son
         # cosas distintas y llevan a informes distintos. Se sigue en frío, pero

@@ -294,26 +294,36 @@ def test_un_bloque_de_hiit_que_no_existe_se_dice_en_vez_de_desaparecer(
     assert "bloque_que_no_existe" in render_plain(d, cfg_hiit)
 
 
-def test_la_fuerza_que_queda_pendiente_se_dice(cfg):
-    """Un día rojo aplaza la fuerza. Sin decirlo, el usuario no sabe si esa
-    sesión se ha perdido o vuelve."""
+def test_un_dia_rojo_dice_que_la_rotacion_no_se_mueve(cfg):
+    """Sin decirlo, un día rojo se lee como una sesión perdida.
+
+    Antes la frase era "queda pendiente" y detrás había una tabla. Ahora no hay
+    tabla y la frase tiene que decir la verdad nueva: que no hay nada que
+    recuperar porque no se ha ido nada, y que el próximo día de gimnasio sigue
+    tocando lo mismo.
+    """
     d = decision(cfg, lower_discomfort=7)
+    assert d.session.kind == "recovery"
     txt = render_plain(d, cfg)
-    assert "queda pendiente" in txt
+    assert "la rotación no se mueve" in txt, txt
+    assert d.rotation_routine in txt, "hay que decir CUÁL sigue tocando"
 
 
-def test_la_sesion_que_caduca_se_dice_aunque_el_razonamiento_este_apagado(
+def test_los_dias_sin_fuerza_se_dicen_aunque_el_razonamiento_este_apagado(
     cfg_sin_motivo,
 ):
-    """Perder una sesión es un hecho del programa, no la explicación de una
-    decisión.
+    """Cuánto hace que no entreno es un hecho, no la explicación de una decisión.
 
     Es la misma frontera que el bloque de "Decidido con datos incompletos":
     dentro de `include_reasoning` van los porqués, y quien lo apaga está
-    diciendo "no me cuentes cómo lo has razonado", no "no me digas que esta
-    semana has entrenado una vez menos". Un aplazamiento que caduca es lo
-    segundo, y además es lo único que distingue una sesión perdida de una
-    sesión que sigue esperando.
+    diciendo "no me cuentes cómo lo has razonado", no "no me digas cuándo fue
+    la última vez que levanté algo".
+
+    Aquí estaba el aviso de "Sesión perdida" del aplazamiento caducado. Ya no
+    se pierde ninguna sesión -la rotación espera-, así que lo que queda es el
+    recuento, y el recuento no tiene umbral: sale siempre, diga 1 o diga 19. Un
+    número que aparece el día 8 y no el día 7 no es un dato, es una opinión con
+    un disfraz.
     """
     from datetime import timedelta
 
@@ -322,36 +332,40 @@ def test_la_sesion_que_caduca_se_dice_aunque_el_razonamiento_este_apagado(
     cfg = cfg_sin_motivo
     rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
     st = advance_state(EngineState(), rojo, executed={})
-    assert st.pending_strength, "el lunes rojo ya no aplaza; rehaz el test"
-    rutina, aplazada = st.pending_strength
 
-    # Sin pasar por los días intermedios: si se decidiera cada día, alguno
-    # verde y libre la recuperaría antes de caducar, que es justo lo que este
-    # test NO quiere.
     tarde = LUNES + timedelta(days=9)
     d = decide(cfg, tarde, sig(tarde), st)
-    assert d.expired_deferral == (rutina, aplazada)
 
     txt = render_plain(d, cfg)
-    assert "Sesión perdida" in txt
-    assert rutina in txt, "hay que decir CUÁL se ha perdido"
-    assert aplazada.isoformat() in txt, "y de qué día era"
-    assert txt.count("Sesión perdida") == 1
+    assert "sesión de fuerza" in txt
+    assert "9 días" in txt or "todavía" in txt.lower()
 
 
-def test_dentro_de_plazo_el_mensaje_no_da_por_perdida_la_sesion(cfg_sin_motivo):
-    """Guarda del de arriba: un aviso que saliera siempre no informa de nada."""
+def test_el_recuento_de_dias_sale_con_el_numero_y_la_fecha(cfg_sin_motivo):
+    """Sin denominador y sin reproche: cuántos días y de qué día fue."""
     from datetime import timedelta
 
-    from app.engine.decision import advance_state
-
     cfg = cfg_sin_motivo
-    rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
-    st = advance_state(EngineState(), rojo, executed={})
+    hace_nueve = LUNES - timedelta(days=9)
+    d = decide(cfg, LUNES, sig(LUNES), EngineState(last_strength=("dia_2", hace_nueve)))
 
-    pronto = LUNES + timedelta(days=2)
-    d = decide(cfg, pronto, sig(pronto), st)
-    assert "Sesión perdida" not in render_plain(d, cfg)
+    txt = render_plain(d, cfg)
+    assert "9 días" in txt, txt
+    assert hace_nueve.isoformat() in txt or hace_nueve.strftime("%d/%m") in txt, txt
+    assert d.rotation_routine == "dia_3", "y sigue tocando la que tocaba"
+
+
+def test_sin_ninguna_sesion_leida_el_mensaje_lo_dice_en_vez_de_poner_un_cero(
+    cfg_sin_motivo,
+):
+    """El primer día. Cero días sin entrenar y "nunca he entrenado" son cosas
+    distintas, y un 0 las confundiría."""
+    cfg = cfg_sin_motivo
+    d = decide(cfg, LUNES, sig(LUNES), EngineState())
+
+    txt = render_plain(d, cfg)
+    assert "0 días" not in txt
+    assert "sesión de fuerza" in txt
 
 
 def test_el_motivo_de_la_descarga_no_se_cuela_cuando_no_hay_descarga(cfg):
@@ -403,24 +417,30 @@ def test_la_descarga_llega_a_activarse_alguna_vez(cfg):
     assert activas, "la descarga no se activa en 12 semanas"
 
 
-def test_la_sesion_recuperada_no_se_dice_dos_veces(cfg):
-    """La cabecera ya lo pone; el apunte del motor diría lo mismo."""
+def test_despues_de_un_rojo_el_mensaje_no_habla_de_recuperar_nada(cfg):
+    """El día siguiente a un rojo es una mañana normal.
+
+    Aquí estaba el test de "Recuperas la sesión": la cabecera lo decía una vez
+    y el apunte del motor no tenía que repetirlo. Ya no hay nada que recuperar
+    -la rotación no se movió, así que hoy toca lo mismo que ayer-, y el mensaje
+    no puede hablar de recuperaciones ni de pendientes, porque las dos palabras
+    dan a entender que hay una deuda apuntada en alguna parte.
+    """
+    from datetime import timedelta
+
     from app.engine.decision import advance_state
 
     rojo = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7), EngineState())
     st = advance_state(EngineState(), rojo, executed={})
 
-    from datetime import timedelta
+    martes = LUNES + timedelta(days=1)
+    d = decide(cfg, martes, sig(martes), st)
+    assert d.session.routine_key == "dia_1", "la rotación se movió con un día rojo"
 
-    for i in range(1, 8):
-        dia = LUNES + timedelta(days=i)
-        d = decide(cfg, dia, sig(dia), st)
-        if d.session.deferred_from:
-            txt = render_plain(d, cfg)
-            assert txt.count("Recuperas la sesión") == 1
-            assert "sesión recuperada del" not in txt
-            return
-    pytest.fail("ningún día de la semana recuperó la sesión aplazada")
+    txt = render_plain(d, cfg)
+    assert "Recuperas" not in txt
+    assert "pendiente" not in txt
+    assert "Si vas al gimnasio hoy" in txt
 
 
 # ---------------------------------------------------------------------------
@@ -471,15 +491,19 @@ def test_el_foco_sobrevive_a_include_reasoning_false(cfg_sin_motivo):
     assert cfg_sin_motivo.raw["routines"]["dia_1"]["focus"] in txt
 
 
-def test_un_dia_de_descanso_no_lleva_foco(cfg):
-    """Martes es descanso: sin `routine_key` no hay nada que buscar."""
-    from datetime import timedelta
+def test_un_dia_de_recuperacion_no_lleva_foco(cfg):
+    """El único día cuyo `routine_key` no apunta a `routines`.
 
-    from app.engine.decision import EngineState, decide
-
-    martes = LUNES + timedelta(days=1)
-    txt = render_plain(decide(cfg, martes, sig_completa(martes), EngineState()), cfg)
-    assert "💪" not in txt
+    Era "un día de descanso", pero ya no hay días de descanso decididos por el
+    sistema. Queda el rojo: su `routine_key` apunta a `recovery_blocks`, la
+    búsqueda del foco no encuentra nada y el encabezado se queda sin subtítulo.
+    Si algún día el foco se buscara con un `or` de relleno, saldría el de otra
+    rutina y el mensaje diría "Tren inferior + core" encima de un bloque de
+    banda elástica.
+    """
+    d = decision(cfg, lower_discomfort=7)
+    assert d.session.kind == "recovery"
+    txt = render_plain(d, cfg)
     for r in cfg.raw["routines"].values():
         assert r.get("focus", "\0") not in txt
 
@@ -985,7 +1009,6 @@ def _envenenar_decision(d, cfg=None):
     d.session.hiit_block = f"8x30s{VENENO}"
     d.session.dropped = [f"peso muerto{VENENO}", f"remo{VENENO}"]
     d.session.notes = list(d.session.notes) + [f"nota de sesión{VENENO}"]
-    d.session.deferred_from = LUNES - timedelta(days=3)
     d.notes = list(d.notes) + [f"apunte del motor{VENENO}"]
     d.signals.notes = list(d.signals.notes) + [f"degradación{VENENO}"]
     # Dos ejercicios y no los nueve del día: con todos los bloques encendidos a
@@ -1038,7 +1061,7 @@ def _envenenar_decision(d, cfg=None):
         _Regla(f"otra_regla{VENENO}"),
     ]
 
-    # Bici, tendencia, recalibración, sesión perdida y el bloque "Por qué".
+    # Bici, tendencia, recalibración, días sin fuerza y el bloque "Por qué".
     d.bike = _Texto(
         f"Bici: intensa{VENENO}",
         notas=[
@@ -1049,7 +1072,10 @@ def _envenenar_decision(d, cfg=None):
     d.bike.applies = True
     d.tendencia = _Lineas(f"Tendencia: seis días sin verde{VENENO}")
     d.recalibracion = _Lineas(f"revisa caida_min_min{VENENO}")
-    d.expired_deferral = (f"dia_2{VENENO}", LUNES - timedelta(days=9))
+    # La rama larga del recuento de días sin fuerza. Sin esto se pinta la otra
+    # -"todavía no hay ninguna sesión leída"-, que no interpola nada, y el
+    # bloque se quedaría fuera de este test sin que se notara.
+    d.last_strength = (f"dia_2{VENENO}", LUNES - timedelta(days=9))
     d.trigger_rule = f"lumbar_alto{VENENO}"
     d.light_decision.fired = [
         _Regla(d.trigger_rule, detail=[f"lower_discomfort 6 > 5{VENENO}"])
@@ -1057,11 +1083,17 @@ def _envenenar_decision(d, cfg=None):
     return d
 
 
-def _dia_de_descanso(cfg):
-    """La otra cabecera: `rest`/`pool`/`bike` no pasan por la de fuerza."""
+def _dia_de_recuperacion(cfg):
+    """La otra cabecera: el día rojo no lleva el "Si vas al gimnasio hoy".
+
+    Era `_dia_de_descanso`, con `kind="rest"`. Ese `kind` ya no existe: no hay
+    días que el sistema declare de descanso. La segunda rama de la cabecera es
+    ahora la del rojo, y sigue habiendo dos sitios donde se interpola el título
+    de la sesión, que es lo que este helper existe para cubrir.
+    """
     d = decision(cfg)
-    d.session.kind = "rest"
-    d.session.title = f"Descanso{VENENO}"
+    d.session.kind = "recovery"
+    d.session.title = f"Recuperación{VENENO}"
     return d
 
 
@@ -1091,19 +1123,20 @@ def test_el_mensaje_lo_acepta_telegram_aunque_los_textos_lleven_angulos(cfg):
     for cabecera in ("Ajustado a lo que levantaste", "No adoptado", "Sube hoy",
                      "Sin progresar", "Fuera hoy", "Reglas activas",
                      "Tendencia", "Decidido con datos incompletos",
-                     "Sesión perdida", "Toca recalibrar", "Semana de descarga",
-                     "HIIT", "Progresión cerrada", "Recuperas la sesión"):
+                     "Última sesión de fuerza", "Toca recalibrar",
+                     "Semana de descarga", "HIIT", "Progresión cerrada",
+                     "Si vas al gimnasio hoy"):
         assert cabecera in txt, f"el bloque «{cabecera}» no se ha pintado"
 
     r = _telegram_rechazaria({"text": txt, "parse_mode": "HTML"})
     assert r is None, r.text if r else ""
 
 
-def test_la_cabecera_de_un_dia_sin_fuerza_tambien_va_escapada(cfg):
-    """`rest`, `pool` y `bike` no pasan por la cabecera de la sesión de fuerza."""
+def test_la_cabecera_de_un_dia_rojo_tambien_va_escapada(cfg):
+    """El día rojo tiene su propia rama de cabecera y también interpola."""
     from tests.conftest import _telegram_rechazaria
 
-    txt = render_telegram(_dia_de_descanso(cfg), cfg)
+    txt = render_telegram(_dia_de_recuperacion(cfg), cfg)
     assert "&lt;" in txt
     r = _telegram_rechazaria({"text": txt, "parse_mode": "HTML"})
     assert r is None, r.text if r else ""

@@ -1,8 +1,20 @@
 """Simulación de 12 semanas completas del motor, de principio a fin.
 
-Tres rutinas alternando (variante `summer`, la única que programa las tres),
-semáforos variados con una distribución realista, una semana de descarga, y el
-estado de las rutinas persistiendo de una sesión a la siguiente.
+Tres rutinas en ciclo, semáforos variados con una distribución realista, una
+semana de descarga, y el estado de las rutinas persistiendo de una sesión a la
+siguiente.
+
+QUÉ SE SIMULA AHORA QUE NO HAY CALENDARIO
+-----------------------------------------
+Antes el calendario decía qué día tocaba cada rutina y la simulación no tenía
+que preguntarse nada: el lunes era dia_1 y punto. Con la rotación libre el
+calendario ya no existe, así que la simulación tiene que simular la decisión que
+antes se daba por hecha: SI SE VA AL GIMNASIO O NO (`P_GIMNASIO`).
+
+El orden es el del sistema real: cada mañana hay una rutina propuesta -"si vas
+al gimnasio hoy, te toca esta"- y el puntero del ciclo solo se mueve si esa
+sesión se EJECUTA. Un día sin gimnasio, un día rojo o una semana de vacaciones
+dejan el ciclo exactamente donde estaba, sin nada que guardar ni que caducar.
 
 QUÉ PERSISTE Y QUÉ NO
 ---------------------
@@ -33,7 +45,11 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from app.config_loader import load_config
 from app.engine.progression import plan_progression
-from app.engine.session_builder import apply_progression, build_session, today_plan
+from app.engine.session_builder import (
+    apply_progression,
+    build_session,
+    siguiente_en_rotacion,
+)
 from app.engine.sets import warmup_flags
 from app.engine.signals import Signals
 
@@ -43,13 +59,25 @@ CFG = load_config(ROOT / "config.yaml")
 WEEKS = 12
 START = date(2026, 9, 7)          # lunes
 DELOAD_WEEK = 8
-VARIANT = "summer"
 SEED = 20260907
 
 # Distribución de semáforos. Calibrada a ojo sobre lo que sería un trimestre
 # normal: la mayoría de los días se entrena, algunos se entrena menos y muy de
 # vez en cuando no se entrena. PENDIENTE DE RECALIBRACIÓN con datos reales.
 P_GREEN, P_AMBER = 0.72, 0.20     # el resto, rojo
+
+# Cuántos días se pisa el gimnasio. Tres a la semana es lo que se venía haciendo
+# con el calendario fijo, así que se mantiene el ritmo para que la simulación
+# siga siendo comparable con las anteriores; lo que cambia es que ahora los tres
+# días no son lunes, miércoles y viernes, sino tres cualesquiera.
+#
+# TAMBIÉN PENDIENTE DE RECALIBRACIÓN, y esta más que ninguna: en cuanto haya
+# tres meses de `workout_log` real, este número sale de contar filas y deja de
+# ser una suposición. Es la constante más influyente del script -manda el número
+# de sesiones, y por tanto todas las subidas- y conviene que se note que es una
+# suposición y no un dato.
+P_GIMNASIO = 3 / 7
+
 P_FAIL_AFTER_LOAD = 0.30          # fallar las reps tras una subida de carga
 P_FAIL_NORMAL = 0.05
 
@@ -68,10 +96,13 @@ if len(sys.argv) > 1 and sys.argv[1] in PERFILES:
 rng = random.Random(SEED)
 
 STATE = copy.deepcopy(CFG)
-STATE.raw["calendar"]["active_variant"] = VARIANT
 RAW = STATE.raw
 SET_CFG = RAW["set_types"]
-ROUTINES = ["dia_1", "dia_2", "dia_3"]
+# El ciclo sale del config, no de una lista escrita aquí. Con `["dia_1",
+# "dia_2", "dia_3"]` a mano, meter una cuarta rutina en `rotation.order` dejaría
+# la simulación ignorándola en silencio: la rotación se la daría y las tablas de
+# abajo no la tendrían.
+ROUTINES = STATE.rotation_order()
 
 ALL_KEYS: dict[str, list[str]] = {
     r: [e["key"] for e in RAW["routines"][r]["exercises"]] for r in ROUTINES
@@ -141,15 +172,22 @@ progressed: dict[tuple[str, str], int] = dict.fromkeys(clean, 0)
 ceiling_hits: dict[tuple[str, str], int] = {}
 missing: dict[tuple[str, str], int] = {}
 gate_log: list[tuple[str, str, bool, str, bool, str]] = []
-counts = {"full": 0, "reduced": 0, "recovery": 0, "rest": 0, "bike": 0, "pool": 0}
+counts = {"full": 0, "reduced": 0, "recovery": 0}
 lights_count = {"green": 0, "amber": 0, "red": 0}
-pending: tuple[str, date] | None = None
-deferred_recovered = 0
 blocked_reasons: dict[str, int] = {}
 
+# El puntero del ciclo: la última rutina EJECUTADA y cuándo. Es lo mismo que
+# guarda `EngineState.last_strength` y lo mismo que `repository.load_state`
+# reconstruye leyendo `workout_log`. Empieza a None, como el primer día.
+ultima: tuple[str, date] | None = None
+dias_sin_gimnasio = 0
+racha_sin_fuerza = 0          # días seguidos sin sesión, ahora mismo
+peor_racha_sin_fuerza = 0     # la más larga de las 12 semanas
+
 print("=" * 100)
-print(f"SIMULACIÓN DE {WEEKS} SEMANAS · variante '{VARIANT}' · descarga en la semana "
-      f"{DELOAD_WEEK} · semilla {SEED}")
+print(f"SIMULACIÓN DE {WEEKS} SEMANAS · ciclo {' → '.join(ROUTINES)} · "
+      f"descarga en la semana {DELOAD_WEEK} · gimnasio {P_GIMNASIO:.0%} de los días · "
+      f"semilla {SEED}")
 print("=" * 100)
 
 for wk in range(1, WEEKS + 1):
@@ -179,44 +217,54 @@ for wk in range(1, WEEKS + 1):
             history={"light": dict(light_hist), "lower_discomfort": dict(disc_hist)},
         )
 
-        plan_day = today_plan(STATE, day)
-        rk = plan_day.get("strength")
-        is_recovered = False
-        if rk is None and pending and light == "green" and not plan_day.get("bike"):
-            if (day - pending[1]).days <= 7:
-                rk, is_recovered = pending[0], True
+        # Lo que toca SI se va al gimnasio. Se calcula todos los días, se vaya o
+        # no: es lo que dice el mensaje de la mañana.
+        rk = siguiente_en_rotacion(STATE, ultima[0] if ultima else None)
 
-        prog = None
-        if rk:
-            prog = plan_progression(
-                RAW, rk, sig, light,
-                compliance={k: compliance[(rk, k)] for k in ALL_KEYS[rk]},
-                clean_sessions={k: clean[(rk, k)] for k in ALL_KEYS[rk]},
-                deload_active=deload,
-                sessions_since_progress={k: waiting[(rk, k)] for k in ALL_KEYS[rk]},
-                last_routine_light=last_light[rk],
-            )
-            gate_log.append((rk, light, prog.sets_allowed, prog.sets_reason,
-                             prog.reps_allowed, prog.reps_reason))
+        prog = plan_progression(
+            RAW, rk, sig, light,
+            compliance={k: compliance[(rk, k)] for k in ALL_KEYS[rk]},
+            clean_sessions={k: clean[(rk, k)] for k in ALL_KEYS[rk]},
+            deload_active=deload,
+            sessions_since_progress={k: waiting[(rk, k)] for k in ALL_KEYS[rk]},
+            last_routine_light=last_light[rk],
+        )
 
         sess = build_session(
             STATE, day, light,
+            rotation_routine=rk,
             progression=prog,
             deload_active=deload,
-            pending_strength=pending,
         )
-        counts[sess.kind] = counts.get(sess.kind, 0) + 1
 
-        if sess.kind == "recovery" and sess.routine_key:
-            pending = (rk, day) if rk else pending
-        elif sess.routine_key and sess.kind in ("full", "reduced"):
-            if is_recovered or (pending and sess.deferred_from):
-                deferred_recovered += 1
-                pending = None
+        # Y aquí la decisión que antes tomaba el calendario. Ojo al orden: se
+        # tira el dado DESPUÉS de construir la sesión, porque en el sistema real
+        # la decisión de ir o no se toma con el mensaje ya leído.
+        va = rng.random() < P_GIMNASIO
+        if not va:
+            dias_sin_gimnasio += 1
+            racha_sin_fuerza += 1
+            peor_racha_sin_fuerza = max(peor_racha_sin_fuerza, racha_sin_fuerza)
+            print(f"   {day.strftime('%a')} {day.day:>2}  "
+                  f"{ {'green': 'V', 'amber': 'A', 'red': 'R'}[light] }  d{disc}  "
+                  f"{'—':<16}(no va; sigue tocando {rk})")
+            continue
+
+        counts[sess.kind] = counts.get(sess.kind, 0) + 1
+        if sess.kind in ("full", "reduced"):
+            gate_log.append((rk, light, prog.sets_allowed, prog.sets_reason,
+                             prog.reps_allowed, prog.reps_reason))
+            racha_sin_fuerza = 0
+        else:
+            # Un rojo se va al gimnasio y se hace el bloque de recuperación, que
+            # no es una sesión del ciclo: el puntero no se mueve y el contador de
+            # días sin fuerza sigue corriendo.
+            racha_sin_fuerza += 1
+            peor_racha_sin_fuerza = max(peor_racha_sin_fuerza, racha_sin_fuerza)
 
         # --- persistir SOLO la progresión -----------------------------------
         applied: set[str] = set()
-        if rk and prog and sess.kind == "full" and not deload:
+        if prog and sess.kind == "full" and not deload:
             live = RAW["routines"][rk]["exercises"]
             # Un ejercicio retirado hoy por una regla no debe progresar en el
             # estado guardado: no se ha hecho.
@@ -238,7 +286,7 @@ for wk in range(1, WEEKS + 1):
                 blocked_reasons[prog.gate_reason] = blocked_reasons.get(prog.gate_reason, 0) + 1
 
         # --- actualizar el estado que arrastra el motor ----------------------
-        if rk and sess.kind in ("full", "reduced"):
+        if sess.kind in ("full", "reduced"):
             for k in ALL_KEYS[rk]:
                 if k not in {e["key"] for e in sess.exercises}:
                     continue
@@ -250,9 +298,13 @@ for wk in range(1, WEEKS + 1):
             just_loaded = {(rk, c.key) for c in (prog.changes if prog else [])
                            if c.kind == "load"}
             last_light[rk] = light
-        elif rk and sess.kind == "recovery":
-            # Un rojo con la fuerza aplazada también es información sobre esa
-            # rutina: la próxima vez que toque, la puerta estricta la ve.
+            # LA ÚNICA LÍNEA QUE MUEVE EL CICLO, y está dentro del `if` de sesión
+            # ejecutada a propósito. Es el equivalente de `advance_state`, que
+            # tampoco toca `last_strength` si `executed is None`.
+            ultima = (rk, day)
+        else:
+            # Un rojo también es información sobre esa rutina: la próxima vez que
+            # toque, la puerta estricta la ve. Pero el ciclo no se mueve.
             last_light[rk] = light
 
         # --- línea del día ---------------------------------------------------
@@ -260,18 +312,14 @@ for wk in range(1, WEEKS + 1):
         what = ", ".join(f"{c.name.split('(')[0].strip()} {c.what}"
                          for c in (prog.changes if prog and applied else [])
                          if c.key in applied)
-        tail = ""
-        if sess.kind in ("full", "reduced", "recovery"):
-            tail = f"{sess.title:<16}"
-            if sess.deferred_from:
-                tail += "[recuperada] "
-            if sess.kind == "reduced":
-                tail += f"[-{len(sess.dropped)} ej, {sess.total_effective_sets(SET_CFG)} series] "
-            elif deload and sess.kind == "full":
-                tail += f"[descarga, {sess.total_effective_sets(SET_CFG)} series] "
-            tail += what or ("—" if sess.kind == "full" else "")
-        else:
-            tail = sess.title
+        tail = f"{sess.title:<16}"
+        if sess.kind == "reduced":
+            tail += f"[-{len(sess.dropped)} ej, {sess.total_effective_sets(SET_CFG)} series] "
+        elif deload and sess.kind == "full":
+            tail += f"[descarga, {sess.total_effective_sets(SET_CFG)} series] "
+        elif sess.kind == "recovery":
+            tail += f"[sigue tocando {rk}] "
+        tail += what or ("—" if sess.kind == "full" else "")
         print(f"   {day.strftime('%a')} {day.day:>2}  {mark}  d{disc}  {tail}")
 
 print("\n" + "=" * 100)
@@ -308,7 +356,14 @@ print(f"  días simulados      {tot}  ·  verde {lights_count['green']} "
       f"({lights_count['amber'] / tot:.0%})  rojo {lights_count['red']} "
       f"({lights_count['red'] / tot:.0%})")
 print(f"  sesiones            " + "  ".join(f"{k} {v}" for k, v in counts.items() if v))
-print(f"  aplazadas recuperadas  {deferred_recovered}")
+print(f"  días sin pisar el gimnasio  {dias_sin_gimnasio} de {tot} "
+      f"({dias_sin_gimnasio / tot:.0%})")
+print(f"  racha más larga sin sesión de fuerza  {peor_racha_sin_fuerza} días")
+hechas = counts["full"] + counts["reduced"]
+print(f"  sesiones de fuerza  {hechas}  ·  {hechas / WEEKS:.1f} por semana  "
+      f"·  {hechas / len(ROUTINES):.1f} vueltas al ciclo")
+print(f"  el ciclo acaba en   {ultima[0] if ultima else '—'} "
+      f"(último día de fuerza: {ultima[1].isoformat() if ultima else 'ninguno'})")
 
 cap_l = RAW["progression"]["volume_safety"]["max_load_increases_per_session"]
 cap_v = RAW["progression"]["volume_safety"]["max_volume_increases_per_session"]

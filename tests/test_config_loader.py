@@ -306,15 +306,10 @@ def test_program_start_acepta_una_cadena_bien_escrita_en_el_accesor():
 # ---------------------------------------------------------------------------
 
 
-def test_rutina_inexistente_en_el_calendario(cfg):
+def test_rutina_inexistente_en_la_rotacion(cfg):
     data = copy.deepcopy(cfg.raw)
-    variante = data["calendar"]["active_variant"]
-    dia = next(
-        d for d in data["calendar"]["variants"][variante]
-        if d != "description" and (data["calendar"]["variants"][variante][d] or {}).get("strength")
-    )
-    data["calendar"]["variants"][variante][dia]["strength"] = "dia_fantasma"
-    assert "la rutina 'dia_fantasma' no existe" in errores(data)
+    data["rotation"]["order"][1] = "dia_fantasma"
+    assert "no existe" in errores(data)
 
 
 def test_regla_especial_sobre_un_ejercicio_inexistente(cfg):
@@ -682,86 +677,107 @@ def test_las_copias_no_se_pueden_apagar(cfg_copia):
 
 
 # ---------------------------------------------------------------------------
-# El calendario
+# La rotación
 #
-# El peor sitio del archivo para un descuido, porque el constructor de sesiones
-# cae a `rest` cuando no encuentra `strength`. Todo lo que sale mal aquí sale mal
-# hacia el mismo lado: el día de fuerza se convierte en descanso, el mensaje de
-# las nueve anuncia descanso, y no hay error, ni log, ni forma de sospecharlo.
+# Aquí estaban los nueve tests del calendario fijo: un día mal escrito, un día
+# que falta, un día de más, un día vacío, dos cosas en el mismo día, una bandera
+# en `false`, una variante inactiva. Miraban tan de cerca porque el constructor
+# de sesiones caía a `rest` en cuanto no encontraba `strength`, y todo lo que
+# saliera mal salía mal hacia el mismo lado: el día de fuerza se convertía en
+# descanso sin error, sin log y sin forma de sospecharlo.
+#
+# Y con los nueve en verde, el calendario que había activo no nombraba `dia_3`
+# en ningún día de la semana. Estaba bien formado y era falso. Ninguno de los
+# nueve podía verlo, porque todos comprobaban la FORMA y el fallo era del
+# CONTENIDO: una semana declarada que no era mi semana.
+#
+# `rotation` tiene una superficie mucho más pequeña -una lista- y por eso se
+# comprueba entera. Lo que sigue no es la traducción de los nueve: es lo que de
+# verdad se puede escribir mal aquí.
 # ---------------------------------------------------------------------------
 
 
-def _lunes(cfg_copia) -> dict:
-    return cfg_copia.raw["calendar"]["variants"]["with_pool"]
+def test_el_calendario_se_rechaza_con_nombre_propio(cfg_copia):
+    """Y no como "sección desconocida".
 
-
-def test_un_dia_mal_escrito_no_arranca(cfg_copia):
-    """`strenght` en vez de `strength`: el lunes pasaría a ser descanso."""
-    _lunes(cfg_copia)["monday"] = {"strenght": "dia_1"}
-    err = errores(cfg_copia.raw)
-    assert "strenght" in err
-    assert "monday" in err
-
-
-def test_un_dia_que_falta_no_arranca(cfg_copia):
-    """Olvidar un día y declararlo descanso acaban igual, y no son lo mismo."""
-    del _lunes(cfg_copia)["monday"]
-    err = errores(cfg_copia.raw)
-    assert "monday" in err
-
-
-def test_un_dia_de_mas_no_arranca(cfg_copia):
-    """Lo encontró la mutación. Con los siete días en su sitio, un octavo
-    inventado no lo veía nadie: la comprobación de días que FALTAN no dice nada
-    de los que SOBRAN, y el bloque se quedaba ahí escrito sin hacer nada.
-
-    Es el caso de quien añade `holiday:` esperando que signifique algo.
+    Lo que hay que entender no es que la clave sobre, sino que lo que lleva
+    dentro YA NO SE APLICA. Un `monday: {strength: dia_1}` que sobreviva a una
+    fusión de ramas no programaría nada, y un error genérico dejaría pensando
+    que basta con moverlo de sitio.
     """
-    _lunes(cfg_copia)["holiday"] = {"rest": True}
-    assert "holiday" in errores(cfg_copia.raw)
-
-
-def test_un_dia_vacio_no_arranca(cfg_copia):
-    """Que un descanso haya que escribirlo es el precio de poder distinguirlo
-    de un día a medio escribir."""
-    _lunes(cfg_copia)["monday"] = {}
-    assert "monday" in errores(cfg_copia.raw)
-
-
-def test_un_dia_con_dos_cosas_no_arranca(cfg_copia):
-    """Gana la fuerza y la piscina no llega a leerse nunca."""
-    _lunes(cfg_copia)["monday"] = {"strength": "dia_1", "pool": True}
+    cfg_copia.raw["calendar"] = {"active_variant": "with_pool", "variants": {}}
     err = errores(cfg_copia.raw)
-    assert "monday" in err
-    assert "pool" in err and "strength" in err
+    assert "calendar ya no existe" in err
+    assert "rotation.order" in err
 
 
-def test_dos_banderas_a_la_vez_tampoco(cfg_copia):
-    _lunes(cfg_copia)["wednesday"] = {"pool": True, "bike": True}
-    assert "wednesday" in errores(cfg_copia.raw)
+def test_sin_rotacion_no_arranca(cfg_copia):
+    """Sin ciclo no hay ninguna sesión que escribir en Hevy. El sistema tiene
+    que negarse, no amanecer en blanco."""
+    del cfg_copia.raw["rotation"]
+    assert "rotation" in errores(cfg_copia.raw)
 
 
-def test_una_bandera_en_false_no_arranca(cfg_copia):
-    """`pool: false` y no escribir `pool` son indistinguibles para el código,
-    así que escribirlo solo sirve para aparentar que dice algo."""
-    _lunes(cfg_copia)["wednesday"] = {"pool": False, "rest": True}
+def test_un_ciclo_vacio_no_arranca(cfg_copia):
+    cfg_copia.raw["rotation"]["order"] = []
     err = errores(cfg_copia.raw)
-    assert "pool" in err
-    assert "false" in err.lower()
+    assert "rotation.order" in err
 
 
-def test_una_rutina_que_no_existe_sigue_sin_arrancar(cfg_copia):
-    """Ya estaba comprobado; se deja escrito para que las claves nuevas de
-    arriba no puedan cargárselo sin que nadie se entere."""
-    _lunes(cfg_copia)["monday"] = {"strength": "dia_4"}
-    assert "dia_4" in errores(cfg_copia.raw)
+def test_un_ciclo_que_no_es_una_lista_no_arranca(cfg_copia):
+    """`order: dia_1` en vez de una lista. En Python eso es una cadena, y una
+    cadena es iterable: el ciclo pasaría a ser `['d','i','a','_','1']`."""
+    cfg_copia.raw["rotation"]["order"] = "dia_1"
+    assert "rotation.order" in errores(cfg_copia.raw)
 
 
-def test_una_variante_que_no_se_usa_tambien_se_valida(cfg_copia):
-    """`summer` no está activa hoy, y ese es justo el problema: el día que se
-    cambie `active_variant` no hay ninguna otra oportunidad de revisarla."""
-    cfg_copia.raw["calendar"]["variants"]["summer"]["friday"] = {"strength": "dia_9"}
-    assert "dia_9" in errores(cfg_copia.raw)
+def test_una_rutina_repetida_en_el_ciclo_no_arranca(cfg_copia):
+    """El puntero sale de la última sesión ejecutada que esté en la lista.
+
+    Con `[dia_1, dia_2, dia_1, dia_3]`, haber hecho `dia_1` no dice en cuál de
+    las dos posiciones estoy: el ciclo salta siempre a la primera y el tramo de
+    después del segundo `dia_1` no se visita jamás. `dia_3` desaparecería del
+    programa sin que nada fallara, que es exactamente lo que ya pasó una vez.
+    """
+    cfg_copia.raw["rotation"]["order"] = ["dia_1", "dia_2", "dia_1", "dia_3"]
+    err = errores(cfg_copia.raw)
+    assert "repite" in err
+    assert "dia_1" in err
+
+
+def test_una_clave_inventada_dentro_de_rotation_no_arranca(cfg_copia):
+    """El caso de quien escribe `start_with:` esperando que signifique algo."""
+    cfg_copia.raw["rotation"]["start_with"] = "dia_2"
+    assert "start_with" in errores(cfg_copia.raw)
+
+
+def test_sacar_una_rutina_del_ciclo_y_dejarla_declarada_no_arranca(cfg_copia):
+    """LA comprobación. La que le habría salvado los meses al Día 3.
+
+    Una rutina que está escrita en `routines`, con sus ejercicios, sus cargas y
+    su `focus`, pero que no aparece en el ciclo, no se programa nunca. Es
+    exactamente la situación en la que el Día 3 estuvo meses: declarado,
+    hecho, y fuera del plan. El resultado era que cada sesión entraba como
+    entreno suelto, sin racha, sin adopción de carga y sin progresión.
+
+    Sacarla del ciclo sigue siendo legal -a lo mejor es lo que se quiere-, pero
+    hay que quererlo a propósito y borrar lo que la anunciaba. Callado, no.
+    """
+    cfg_copia.raw["rotation"]["order"] = ["dia_1", "dia_2"]
+    err = errores(cfg_copia.raw)
+    assert "dia_3" in err
+    assert "rotation.order" in err
+
+
+def test_y_si_ademas_se_borra_lo_que_la_anunciaba_entonces_si_arranca(cfg_copia):
+    """El contraste: sin esto, el de arriba pasaría con un validador que
+    rechazara cualquier `rotation.order` más corto que `routines`."""
+    cfg_copia.raw["rotation"]["order"] = ["dia_1", "dia_2"]
+    cfg_copia.raw["routines"]["dia_3"].pop("focus", None)
+
+    assert errores(cfg_copia.raw) == ""
+    assert "dia_3" in cfg_copia.raw["routines"], "sigue declarada, y no se escribe"
+    assert Config(cfg_copia.raw, "x").rotation_order() == ["dia_1", "dia_2"]
 
 
 # ---------------------------------------------------------------------------
@@ -983,14 +999,15 @@ def test_un_foco_en_un_bloque_hiit_se_rechaza(cfg_copia):
     assert "hiit_dia_1" in err and "focus" in err
 
 
-def test_se_exige_en_las_rutinas_de_TODAS_las_variantes(cfg_copia):
-    """`dia_3` solo lo programa la variante de verano, que no es la activa.
+def test_se_exige_en_LAS_TRES_y_no_solo_en_las_que_salen_pronto(cfg_copia):
+    """Era "en las rutinas de TODAS las variantes", cuando había variantes.
 
-    Validar solo la variante en curso dejaría el fichero pasando en invierno
-    y fallando el día del cambio de temporada, que es cuando peor viene
-    descubrir un error de configuración.
+    El motivo de entonces sigue valiendo con otra forma: el `dia_3` puede
+    tardar cinco días en salir por el ciclo, y un fichero que arranca hoy y
+    falla el jueves es peor que uno que no arranca. Todas las del ciclo se
+    validan al cargar, salgan cuándo salgan.
     """
-    assert cfg_copia.raw["calendar"]["active_variant"] != "summer"
+    assert cfg_copia.rotation_order()[0] != "dia_3", "el escenario pide que no sea la primera"
     del cfg_copia.raw["routines"]["dia_3"]["focus"]
     assert "dia_3" in errores(cfg_copia.raw)
 
