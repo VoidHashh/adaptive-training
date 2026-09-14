@@ -91,16 +91,23 @@ def make_signals(
         adaptive={},
         notes=[],
         rides=historial(day, dias_desde) if rides is None else rides,
-        weekend=None,
         intense_count=conteo,
     )
 
 
 def cuenta(used: int, unknown: int = 0) -> IntensityCount:
+    """La ventana de siete días que termina HOY, no un trozo de semana.
+
+    Aquí ponía `week_start=HOY - timedelta(days=2)`, o sea el lunes de una
+    semana que empezaba a contar el lunes. Con la ventana rodante hay que dar
+    los dos extremos, y el de abajo tiene que ser `HOY - 6` para que el guión
+    enseñe la misma frase que va a leer el usuario por la mañana.
+    """
     return IntensityCount(
         used=used,
         detail=["test"],
-        week_start=HOY - timedelta(days=2),
+        desde=HOY - timedelta(days=6),
+        hasta=HOY,
         unknown=unknown,
     )
 
@@ -191,7 +198,11 @@ print("   (aquí antes había un 2/2 que bajaba el sábado a 'suave')")
 print("   El recuento ya NO es nota de la bici: sale en su propia línea del")
 print("   mensaje, porque se calcula después de decidir. Ver message.py.")
 for n in (0, 2, 4, 7, 12):
-    show(f"{n} sesiones intensas esta semana", make_signals(HOY, conteo=cuenta(n)), "green")
+    show(
+        f"{n} sesiones intensas en los últimos 7 días",
+        make_signals(HOY, conteo=cuenta(n)),
+        "green",
+    )
 
 print()
 print("=" * 78)
@@ -199,7 +210,11 @@ print("F. El techo del semáforo, que es el único recorte que queda")
 print("=" * 78)
 show("ámbar", make_signals(HOY), "amber")
 show("rojo", make_signals(HOY), "red")
-show("ámbar con 9 intensas esta semana", make_signals(HOY, conteo=cuenta(9)), "amber")
+show(
+    "ámbar con 9 intensas en los últimos 7 días",
+    make_signals(HOY, conteo=cuenta(9)),
+    "amber",
+)
 
 print()
 print("=" * 78)

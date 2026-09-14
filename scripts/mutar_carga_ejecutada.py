@@ -175,7 +175,11 @@ def pytest(ficheros: list[str]) -> tuple[bool, str]:
 
 def main() -> int:
     solo = sys.argv[1] if len(sys.argv) > 1 else ""
+    # Dos listas, no una: ver el comentario largo en `scripts/mutar_bici.py`.
+    # Una aguja que ya no está en el fichero no es un agujero en los tests, es
+    # una mutación que no se ha llegado a hacer.
     vivas = []
+    caducadas = []
     for nombre, rel, aguja, nuevo, ficheros in MUTACIONES:
         if solo and not nombre.startswith(solo):
             continue
@@ -183,8 +187,8 @@ def main() -> int:
         original = io.open(ruta, encoding="utf-8", newline="").read()
         mutado = sustituir(original, aguja, nuevo)
         if mutado is None:
-            print(f"[ ?? ] {nombre}\n       aguja ausente o repetida en {rel}")
-            vivas.append(nombre)
+            print(f"[CADU] {nombre}\n       aguja ausente o repetida en {rel}")
+            caducadas.append(nombre)
             continue
 
         respaldo = ruta.with_suffix(ruta.suffix + ".bak_mut")
@@ -205,10 +209,16 @@ def main() -> int:
             respaldo.unlink()
 
     total = len([m for m in MUTACIONES if not solo or m[0].startswith(solo)])
-    print(f"\n{total - len(vivas)}/{total} mutaciones muertas")
+    print(f"\n{total - len(vivas) - len(caducadas)}/{total} mutaciones muertas")
     for v in vivas:
         print(f"  SOBREVIVE: {v}")
-    return 1 if vivas else 0
+    for c in caducadas:
+        print(f"  CADUCADA (aquí no se ha probado nada): {c}")
+    if caducadas:
+        print("\nLas caducadas no son un agujero en los tests: es que el código "
+              "que mutaban ya no está escrito así. Arregla la aguja o borra la "
+              "mutación, pero no la dejes contando como cobertura.")
+    return 1 if (vivas or caducadas) else 0
 
 
 if __name__ == "__main__":

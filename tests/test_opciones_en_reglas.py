@@ -55,7 +55,6 @@ from app.engine.rules import (
     NOT_FIRED,
     SKIPPED,
     RuleError,
-    evaluate_light,
     evaluate_rule,
     resolve_option,
 )
@@ -173,7 +172,13 @@ def test_un_umbral_adaptativo_sin_datos_si_se_salta(cfg):
 @pytest.mark.parametrize(
     "valor,motivo",
     [
-        ("cycling.weekend.days", "es una lista"),
+        # Era `cycling.weekend.days`, que ya no existe. Una ruta que apunta a
+        # una sección borrada revienta por «no existe», no por «no es un
+        # número», así que este caso habría dejado de probar lo que dice sin
+        # ponerse rojo: el `pytest.raises` de abajo busca un texto concreto y
+        # el otro error nunca lo habría traído. Se cambia por otra lista viva
+        # del mismo bloque del fichero.
+        ("cycling.recommendation.intensity_order", "es una lista"),
         ("cycling.load.source", "es un texto"),
         ("cycling", "es una sección entera"),
         ("set_types.write_warmup_type_to_hevy", "es un booleano"),
@@ -223,7 +228,9 @@ def test_una_ruta_rota_impide_arrancar(cfg_copia):
 
 
 def test_una_ruta_que_apunta_a_algo_que_no_es_numero_impide_arrancar(cfg_copia):
-    data = _con_regla(cfg_copia, {"load_3d": {"gt_option": "cycling.weekend.days"}})
+    data = _con_regla(
+        cfg_copia, {"load_3d": {"gt_option": "cycling.recommendation.intensity_order"}}
+    )
     assert "tiene que ser un número" in "\n".join(_validate(data))
 
 
@@ -286,55 +293,74 @@ def test_reponer_la_regla_impide_arrancar(cfg_copia):
 
 
 @pytest.mark.parametrize(
-    "muerto,valor", [("total_hours_threshold", 2.5), ("intense_rides_threshold", 1)]
+    "muerto,valor",
+    [("total_hours_threshold", 2.5), ("intense_rides_threshold", 1), ("days", ["saturday"])],
 )
-def test_reponer_solo_los_umbrales_tampoco_pasa(cfg_copia, muerto, valor):
+def test_reponer_el_bloque_del_fin_de_semana_tampoco_pasa(cfg_copia, muerto, valor):
     """Esta es la mitad peligrosa de las dos.
 
     Escribir el umbral sin la regla no frena nada, pero deja en el fichero un
     número con pinta de decidir el lunes. Se saldría a rodar el domingo contando
     con un freno que no existe, que es peor que no tenerlo.
+
+    AHORA SE COMPRUEBA EL BLOQUE ENTERO, NO SOLO LOS UMBRALES
+    ---------------------------------------------------------
+    Antes esto escribía la clave muerta DENTRO de un `cycling.weekend` que
+    seguía existiendo, porque quedaba vivo su `days: [saturday, sunday]`. Con
+    el paso al recuento rodante se han borrado sus dos últimos lectores
+    -`weekend_summary` y `_intense_rides_this_weekend`- y la sección se ha ido
+    entera. Por eso `days` entra ahora en la lista: reponerlo ya no es reponer
+    una clave viva, es reponer el calendario fijo con otro nombre.
     """
-    cfg_copia.raw["cycling"]["weekend"][muerto] = valor
+    cfg_copia.raw["cycling"]["weekend"] = {muerto: valor}
     errores = "\n".join(_validate(cfg_copia.raw))
-    assert f"cycling.weekend.{muerto} ya no lo lee nadie" in errores
+    assert "cycling.weekend ya no lo lee nadie" in errores
+    assert "intensity_count" in errores, "hay que decir qué lo sustituye"
 
 
-def test_el_fin_de_semana_solo_dice_ya_que_dias_son(cfg):
-    """Lo que queda de `cycling.weekend` es una lista de días, y nada más.
+def test_el_fin_de_semana_ya_no_existe_como_seccion(cfg):
+    """Lo contrario exacto de lo que comprobaba este test hace una semana.
 
-    Sigue habiendo quien la lee -el resumen del fin de semana y la ventana del
-    `bike_advisor`-, así que la sección no se borra. Lo que no puede tener es un
-    umbral suelto esperando a que alguien lo conecte.
+    Decía «lo que queda de `cycling.weekend` es una lista de días, y nada más»,
+    y justificaba no borrar la sección con que «sigue habiendo quien la lee».
+    Ya no la lee nadie: las dos funciones que miraban `days` se han borrado con
+    el paso al recuento rodante.
+
+    El argumento de entonces era el que hay que desconfiar: una sección que
+    conserva UNA clave viva sobrevive indefinidamente, porque cada vez que se
+    revisa parece que algo hace. Lo que hacía era agrupar por sábado y domingo,
+    que es dar por hecho dónde cae el esfuerzo grande -el mismo calendario fijo
+    que se echó de `cycling.recommendation`, escondido dos bloques más abajo-.
     """
-    assert set(cfg.raw["cycling"]["weekend"]) == {"days"}
+    assert "weekend" not in cfg.raw["cycling"]
 
 
-def test_el_lunes_ya_no_sale_ambar_por_haber_rodado_el_fin_de_semana(cfg):
-    """El caso concreto que se ha quitado, escrito como caso.
-
-    Nueve horas de bici el fin de semana y una salida intensa: con
-    `resaca_finde` esto era ámbar el lunes -menos series, sin progresión y sin
-    HIIT- con la HRV alta y el pulso de reposo por debajo de la media. Ahora es
-    verde, y si el cuerpo estuviera fundido lo diría `carga_acumulada`.
-    """
-    luz = evaluate_light(
-        cfg,
-        sig_completa(LUNES, weekend_total_hours=9.06, weekend_intense_rides=1),
-    )
-    assert luz.light == "green", luz.fired_names()
-
-
-def test_las_horas_del_fin_de_semana_se_siguen_calculando(cfg):
-    """Quitar el freno no es dejar de mirar.
-
-    La señal sigue existiendo y sigue guardándose en la decisión; lo único que
-    ha cambiado es que ya no la lee ninguna regla. El día que se quiera saber
-    qué se hizo ese fin de semana, el dato está.
-    """
-    s = sig_completa(LUNES, weekend_total_hours=9.06, weekend_intense_rides=1)
-    assert s.get("weekend_total_hours") == 9.06
-    assert s.get("weekend_intense_rides") == 1
+# ---------------------------------------------------------------------------
+# TUMBA: los dos tests que se quedaron sin nada que mirar
+# ---------------------------------------------------------------------------
+#
+# Aquí estaban `test_el_lunes_ya_no_sale_ambar_por_haber_rodado_el_fin_de_semana`
+# y `test_las_horas_del_fin_de_semana_se_siguen_calculando`. Los dos pasaban, y
+# los dos habrían seguido pasando para siempre sin comprobar nada.
+#
+# El primero metía `weekend_total_hours=9.06` y `weekend_intense_rides=1` en las
+# señales y afirmaba que el lunes salía verde. Sale verde, sí: no hay ninguna
+# regla que lea esas dos señales -`resaca_finde` se borró- y desde el recuento
+# rodante `build_signals` ni siquiera las escribe. Estaba comprobando que un
+# valor que nadie mira no dispara una regla que no existe. Lo que de verdad
+# impide que la regla vuelva es `test_reponer_la_regla_impide_arrancar`, aquí
+# arriba, que valida el fichero.
+#
+# El segundo era peor, porque además mentía en el docstring: decía «la señal
+# sigue existiendo y sigue guardándose en la decisión». No se guarda. Pasaba
+# porque `sig_completa(**overrides)` acepta cualquier clave que se le pase y
+# luego el test leía la que él mismo acababa de escribir. Un test que se
+# pregunta y se contesta.
+#
+# Y el fondo del asunto: el registro de lo que se hizo el fin de semana NO era
+# esa señal. Es la tabla `activities` y el `data/cache/activities.json`, con
+# cada salida, su fecha y su duración. El resumen era un agregado recalculable
+# de eso; «registrar» se había convertido en la excusa para no borrarlo.
 
 
 def test_el_config_real_sigue_siendo_valido(cfg):

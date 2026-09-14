@@ -950,13 +950,20 @@ def test_una_errata_en_cycling_no_se_ignora(cfg_copia):
 @pytest.mark.parametrize(
     "clave",
     ["activity_types", "classification", "classification_fallback",
-     "fetch", "load", "recommendation", "weekend"],
+     "fetch", "load", "recommendation"],
 )
 def test_las_claves_vivas_de_cycling_siguen_pasando(cfg, clave):
     """Guarda de la lista blanca: si alguien la recorta, esto lo dice.
 
-    Las siete se leen de verdad -`signals.py`, `bike_advisor.py`,
+    Las seis se leen de verdad -`signals.py`, `bike_advisor.py`,
     `activity_cache.py`-, así que ninguna puede caer en el rechazo.
+
+    Eran siete. `weekend` se ha caído de la lista porque la sección se ha
+    borrado entera al pasar el recuento a ventana rodante: sus dos últimos
+    lectores, `weekend_summary` y `_intense_rides_this_weekend`, ya no existen.
+    Que no vuelva lo vigila `test_reponer_el_bloque_del_fin_de_semana_tampoco_pasa`
+    en `tests/test_opciones_en_reglas.py`, que es el lado contrario de esta
+    guarda: esta comprueba que lo vivo pasa, aquella que lo muerto no.
     """
     assert clave in cfg.raw["cycling"]
     assert "clave desconocida" not in errores(cfg.raw)
@@ -1273,6 +1280,80 @@ def test_quitar_el_bloque_entero_tampoco_pasa(cfg_copia):
     """
     del cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
     assert "intensity_count" in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# `window_days`: el ancho de la ventana, que sale escrito en el mensaje
+# ---------------------------------------------------------------------------
+#
+# ESTA SECCIÓN LA ABRIÓ UNA MUTACIÓN, NO UNA IDEA.
+#
+# `scripts/mutar_bici.py` cambió la línea `ventana = conteo.get("window_days")`
+# de `config_loader` por un `ventana = 7` -o sea: el validador deja de mirar la
+# clave y se inventa el ancho- y sobrevivió. La guarda estaba escrita, con su
+# comentario largo explicando por qué no puede haber un 7 por defecto, y no la
+# tocaba ningún test. Una guarda sin test no es media guarda: es una guarda que
+# alguien puede borrar limpiando código sin que nada se ponga rojo.
+#
+# El precio de perderla: el YAML arranca sin `window_days`, `intensity_count()`
+# revienta a las 6:00 dentro del contenedor, y lo que tenía que fallar en la
+# aduana falla en mitad del cálculo de la mañana.
+
+
+def test_un_recuento_sin_window_days_no_pasa(cfg_copia):
+    """El periodo del recuento sale escrito en el mensaje, así que se exige."""
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
+    del b["window_days"]
+    assert "intensity_count.window_days" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize("malo", [True, False, 0, -3, 7.0, "7", None, [7]])
+def test_un_window_days_que_no_es_un_entero_positivo_tampoco_pasa(cfg_copia, malo):
+    """`window_days: yes` es el caso real, y en Python `True` es un `int`.
+
+    `isinstance(True, int)` vale cierto, así que sin la exclusión explícita del
+    booleano esa errata pasaría la validación y daría una ventana de UN día: el
+    mensaje diría «ninguna sesión intensa hoy» mirando solo hoy, con toda la
+    naturalidad del mundo. El resto de valores son la familia habitual -el cero,
+    el negativo, el flotante, el número entre comillas- que convierten el ancho
+    en algo que no se puede escribir en una frase.
+    """
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
+    b["window_days"] = malo
+    assert "intensity_count.window_days" in errores(cfg_copia.raw)
+
+
+def test_el_error_de_window_days_dice_que_no_se_supone_un_siete(cfg_copia):
+    """Un error que solo prohíbe no explica por qué el defecto sería peor.
+
+    Quien vea la queja va a pensar «pues ponle un 7 por defecto y a correr», que
+    es exactamente lo que no se puede hacer: el número sale escrito en el
+    mensaje de la mañana y suponerlo es publicar un dato con unidades que nadie
+    eligió. El mensaje tiene que llevar esa razón dentro.
+    """
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
+    del b["window_days"]
+    msg = errores(cfg_copia.raw)
+    assert "mensaje" in msg, "hay que decir que el periodo se publica"
+    assert "no se supone" in msg, "hay que decir por qué no vale un defecto"
+
+
+def test_con_el_recuento_apagado_no_se_exige_el_ancho(cfg_copia):
+    """El control negativo: la guarda cuelga de `enabled`, y eso es a propósito.
+
+    Sin este test, invertir la condición -exigir `window_days` siempre, incluso
+    con el bloque apagado- dejaría los cuatro de arriba en verde y nadie estaría
+    comprobando que apagar el recuento sigue siendo una configuración válida.
+
+    Y no es una hipótesis de laboratorio: apagado el bloque, `intensity_count()`
+    devuelve `None` antes de mirar el ancho, así que exigirlo aquí sería el
+    validador pidiendo un dato que el motor ya no va a usar. Los dos lados
+    tienen que preguntar lo mismo.
+    """
+    b = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
+    b["enabled"] = False
+    del b["window_days"]
+    assert "window_days" not in errores(cfg_copia.raw)
 
 
 # ---------------------------------------------------------------------------

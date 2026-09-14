@@ -28,11 +28,9 @@ from app.engine.signals import (
     load_series,
     mean_excluding_outliers,
     percentile,
-    previous_weekday,
     resolve_adaptive_threshold,
     rolling_load,
     week_start,
-    weekend_summary,
     zone_percentages,
 )
 
@@ -57,12 +55,15 @@ CYCLING = {
             "load_per_hour": {"suave": 50, "media": 90, "intensa": 150},
         }
     },
-    "weekend": {"days": ["saturday", "sunday"]},
+    # `weekend: {days: [...]}` ya no existe en `cycling`: el resumen del fin de
+    # semana se borró con el recuento rodante y el config_loader rechaza la
+    # clave por su nombre. Dejarla aquí haría que este diccionario describiera
+    # una configuración que el sistema real no acepta.
     "recommendation": {
         "lookback_days": 1,
         "intensity_count": {
             "enabled": True,
-            "week_starts_on": "monday",
+            "window_days": 7,
             "counts_as_intense": {"ride_intensa": True, "hiit_executed": True},
         },
     },
@@ -108,11 +109,14 @@ def test_semana_empieza_el_lunes():
         assert week_start(LUNES + timedelta(days=i)) == LUNES
 
 
-def test_previous_weekday_es_estrictamente_anterior():
-    """Si hoy es lunes, 'el lunes anterior' es hace 7 días, no hoy."""
-    assert previous_weekday(LUNES, "monday") == LUNES - timedelta(days=7)
-    assert previous_weekday(LUNES, "sunday") == LUNES - timedelta(days=1)
-    assert previous_weekday(LUNES, "saturday") == LUNES - timedelta(days=2)
+# Aquí estaba `test_previous_weekday_es_estrictamente_anterior`. La función que
+# comprobaba se ha borrado con `weekend_summary` y con la nota de fin de semana
+# de la bici, que eran sus dos únicos llamantes. El test era correcto y por eso
+# se va: un test verde sobre código que no ejecuta nadie es cobertura de adorno,
+# y encima de las que peor envejecen, porque cuenta en el total.
+#
+# `week_start` sí sigue, con su test justo encima: lo usan el ciclo de descarga
+# y `tendencia`, donde la semana natural es la unidad real.
 
 
 # ---------------------------------------------------------------------------
@@ -476,33 +480,22 @@ def test_excluir_los_ceros_cambia_el_recuento_de_dias_validos():
 
 
 # ---------------------------------------------------------------------------
-# Fin de semana y presupuesto de intensidad
+# Recuento rodante de intensidad
 # ---------------------------------------------------------------------------
-
-
-def test_una_salida_sin_clasificar_deja_el_fin_de_semana_en_no_se_sabe():
-    """Ante la duda, la regla del lunes se salta; no se asume que fue suave."""
-    sabado = previous_weekday(LUNES, "saturday")
-    rides = classify_all([Ride(date=sabado, duration_s=3600)], CYCLING)
-    res = weekend_summary(rides, LUNES, CYCLING)
-    assert res.unknown_rides == 1
-    assert res.intense_rides is None
-
-
-def test_una_intensa_confirmada_manda_aunque_falte_clasificar_otra():
-    """El dato que falta ya no cambia la conclusión, así que la regla sí evalúa."""
-    sabado = previous_weekday(LUNES, "saturday")
-    domingo = previous_weekday(LUNES, "sunday")
-    rides = classify_all(
-        [
-            Ride(date=sabado, duration_s=3600),  # desconocida
-            ride(domingo, zones=(0, 0, 0, 900, 900)),  # intensa
-        ],
-        CYCLING,
-    )
-    res = weekend_summary(rides, LUNES, CYCLING)
-    assert res.unknown_rides == 1
-    assert res.intense_rides == 1
+#
+# AQUÍ HABÍA DOS TESTS DE `weekend_summary` Y SE VAN CON ELLA
+# ------------------------------------------------------------
+# `test_una_salida_sin_clasificar_deja_el_fin_de_semana_en_no_se_sabe` y
+# `test_una_intensa_confirmada_manda_aunque_falte_clasificar_otra`. Los dos
+# comprobaban cómo se resolvía `intense_rides` del fin de semana cuando había
+# salidas sin clasificar, y los dos justificaban su existencia diciendo "la
+# regla del lunes se salta" — una regla (`resaca_finde`) que se borró hace
+# tiempo. O sea que llevaban meses verdes defendiendo el comportamiento de algo
+# que ya no se ejecutaba.
+#
+# La distinción que SÍ importaba -una salida sin clasificar no es un paseo- no
+# se pierde: vive en `unknown` de `IntensityCount` y tiene su propio test más
+# abajo, `test_una_salida_sin_clasificar_no_se_cuenta_como_paseo`.
 
 
 def test_el_recuento_cuenta_lo_ejecutado_no_lo_programado():
@@ -537,7 +530,7 @@ def test_el_recuento_no_tiene_techo_por_alto_que_suba():
     assert c.used == 7
     assert not hasattr(c, "limit")
     assert not hasattr(c, "exhausted")
-    assert "7" in c.linea()
+    assert "llevas 7 sesiones intensas" in c.linea()
 
 
 def test_la_linea_del_recuento_no_lleva_denominador():
@@ -550,14 +543,57 @@ def test_la_linea_del_recuento_no_lleva_denominador():
     rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
     linea = intensity_count(rides, [], LUNES, CYCLING).linea()
     assert "de 4" not in linea and "/" not in linea
-    assert "llevas 1 sesion intensa esta semana" in linea.replace("ó", "o")
+    assert "llevas 1 sesion intensa en los ultimos 7 dias" in (
+        linea.replace("ó", "o").replace("í", "i").replace("ú", "u")
+    )
 
 
 def test_sin_nada_hecho_la_linea_lo_dice_en_positivo():
-    """Cero no es un hueco: es el dato de que la semana está entera por delante."""
+    """Cero no es un hueco: es el dato de que no se ha apretado en una semana."""
     linea = intensity_count([], [], LUNES, CYCLING).linea()
     assert "ninguna" in linea
-    assert "0" not in linea
+    # El "0" no puede salir como cifra, pero el periodo sí lleva un número: lo
+    # que se comprueba es que no aparezca un cero, no que no aparezca ningún
+    # dígito. Antes bastaba con `"0" not in linea` porque la frase no llevaba
+    # cifras ningunas; ahora lleva el ancho de la ventana.
+    assert "0" not in linea.replace("en los últimos 7 días", "")
+
+
+def test_la_linea_dice_el_periodo_en_vez_de_darlo_por_supuesto():
+    """«Esta semana» obliga a saber qué día es hoy; «7 días» no.
+
+    Y se fue el «todavía». Decía «ninguna sesión intensa esta semana todavía», y
+    ese «todavía» presuponía un periodo abierto por llenar, o sea una cuota
+    implícita justo en la frase escrita para no tener cuota. En una ventana
+    rodante no hay nada pendiente: los siete días de atrás ya pasaron enteros.
+    """
+    vacia = intensity_count([], [], LUNES, CYCLING).linea()
+    assert "en los últimos 7 días" in vacia
+    assert "todavía" not in vacia
+    assert "semana" not in vacia
+
+    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
+    llena = intensity_count(rides, [], LUNES, CYCLING).linea()
+    assert "en los últimos 7 días" in llena
+    assert "semana" not in llena
+
+
+def test_el_periodo_de_la_frase_es_el_que_dice_el_config():
+    """Si `window_days` cambia, la frase cambia con él y no se queda en 7.
+
+    Es la comprobación de que no hay ningún 7 escrito en el texto. Un literal
+    ahí dejaría el mensaje diciendo «en los últimos 7 días» mientras la cuenta
+    mira catorce, que es la forma más limpia que hay de publicar un número con
+    las unidades equivocadas.
+    """
+    for ancho in (3, 7, 14, 21):
+        cyc = copy.deepcopy(CYCLING)
+        cyc["recommendation"]["intensity_count"]["window_days"] = ancho
+        c = intensity_count([], [], LUNES, cyc)
+        assert c.dias == ancho
+        assert c.desde == LUNES - timedelta(days=ancho - 1)
+        assert c.hasta == LUNES
+        assert f"en los últimos {ancho} días" in c.linea()
 
 
 def test_la_linea_concuerda_el_plural_en_vez_de_escribir_parentesis():
@@ -572,12 +608,16 @@ def test_la_linea_concuerda_el_plural_en_vez_de_escribir_parentesis():
 
     def linea(used, unknown=0):
         return IntensityCount(
-            used=used, detail=[], week_start=LUNES, unknown=unknown
+            used=used,
+            detail=[],
+            desde=LUNES - timedelta(days=6),
+            hasta=LUNES,
+            unknown=unknown,
         ).linea()
 
     assert "(s)" not in linea(1) and "(es)" not in linea(1)
-    assert "1 sesión intensa esta semana" in linea(1)
-    assert "3 sesiones intensas esta semana" in linea(3)
+    assert "1 sesión intensa en los últimos 7 días" in linea(1)
+    assert "3 sesiones intensas en los últimos 7 días" in linea(3)
     assert "1 salida sin clasificar que pudo serlo" in linea(2, unknown=1)
     assert "2 salidas sin clasificar que pudieron serlo" in linea(2, unknown=2)
     for u in range(0, 6):
@@ -612,10 +652,114 @@ def test_una_salida_sin_clasificar_no_se_cuenta_como_paseo():
     assert "sin clasificar" in c.linea()
 
 
-def test_la_intensidad_de_la_semana_pasada_no_cuenta():
-    anterior = LUNES - timedelta(days=1)  # domingo
-    rides = classify_all([ride(anterior, zones=(0, 0, 0, 900, 900))], CYCLING)
-    assert intensity_count(rides, [], LUNES, CYCLING).used == 0
+def test_la_intensa_de_ayer_cuenta_aunque_fuera_otra_semana():
+    """ESTE TEST DECÍA LO CONTRARIO, Y ERA EL DEFECTO ESCRITO EN VERDE.
+
+    Se llamaba `test_la_intensidad_de_la_semana_pasada_no_cuenta` y afirmaba
+    que una salida intensa el domingo NO cuenta el lunes. Pasaba, porque el
+    código hacía eso. Y lo que describía era el sistema diciéndole al usuario
+    «ninguna sesión intensa esta semana todavía» el lunes por la mañana, doce
+    horas después de una salida en Z4-Z5.
+
+    Medido sobre la caché real -58 salidas, 184 días-, eso pasó en 8 de 26
+    lunes: el 31%. La cuenta natural y la rodante de 7 días discrepan en 39 de
+    los 184 días, y el signo es siempre el mismo: la natural nunca cuenta de
+    más. Con una hernia L4-L5 detrás, el error sistemático hacia «vas
+    descansado» no es el lado en el que uno quiere equivocarse.
+
+    Ahora la ventana rueda y el domingo entra, que es lo que el cuerpo sabía
+    desde el principio.
+    """
+    ayer = LUNES - timedelta(days=1)  # domingo: otra semana natural
+    rides = classify_all([ride(ayer, zones=(0, 0, 0, 900, 900))], CYCLING)
+    c = intensity_count(rides, [], LUNES, CYCLING)
+    assert c.used == 1
+    assert c.desde == LUNES - timedelta(days=6)
+
+
+def test_lo_que_cae_fuera_de_la_ventana_no_cuenta():
+    """La ventana rueda, pero tiene borde: el día 7 hacia atrás ya no entra.
+
+    Se comprueban los dos lados del corte con la misma salida movida un día,
+    porque un `<=` por un `<` aquí no daría error: daría otro número, y un
+    número plausible. Es el modo de fallo que este proyecto ya ha pagado dos
+    veces con los percentiles.
+    """
+    dentro = LUNES - timedelta(days=6)
+    fuera = LUNES - timedelta(days=7)
+    assert intensity_count(
+        classify_all([ride(dentro, zones=(0, 0, 0, 900, 900))], CYCLING),
+        [], LUNES, CYCLING,
+    ).used == 1
+    assert intensity_count(
+        classify_all([ride(fuera, zones=(0, 0, 0, 900, 900))], CYCLING),
+        [], LUNES, CYCLING,
+    ).used == 0
+
+
+def test_el_recuento_no_depende_del_dia_de_la_semana():
+    """La comprobación de que el calendario se ha ido de verdad.
+
+    El mismo historial relativo -una intensa anteayer- mirado desde los siete
+    días de la semana tiene que dar siete veces lo mismo. Con `week_starts_on`
+    no lo daba: daba 1 de martes a domingo y 0 los lunes, porque el lunes el
+    corte caía en medio.
+
+    Está escrito con el historial RELATIVO a cada día y no con fechas fijas a
+    propósito: si se fijaran las fechas, lo que se mediría sería otra cosa -qué
+    días caen dentro de una ventana concreta- y volvería a depender del
+    calendario por la puerta de atrás.
+    """
+    vistos = set()
+    for i in range(7):
+        hoy = LUNES + timedelta(days=i)
+        rides = classify_all(
+            [ride(hoy - timedelta(days=2), zones=(0, 0, 0, 900, 900))], CYCLING
+        )
+        c = intensity_count(rides, [], hoy, CYCLING)
+        vistos.add((c.used, c.dias, c.linea()))
+    assert len(vistos) == 1, f"el día de la semana cambia el recuento: {vistos}"
+
+
+def test_sin_window_days_el_recuento_para_en_vez_de_suponer_siete():
+    """El periodo sale escrito en el mensaje, así que no se puede inventar.
+
+    Es la diferencia con `counts_as_intense`, que sí tiene defectos: si falta
+    `hiit_executed`, el número cambia pero sigue queriendo decir lo que dice.
+    Si falta `window_days` y el código supone un 7, la frase «en los últimos 7
+    días» se convierte en una afirmación sobre un periodo que nadie eligió, y
+    el que la lee no tiene forma de sospecharlo.
+    """
+    from app.engine.signals import IntensityCountConfigError
+
+    cyc = copy.deepcopy(CYCLING)
+    del cyc["recommendation"]["intensity_count"]["window_days"]
+    with pytest.raises(IntensityCountConfigError, match="window_days"):
+        intensity_count([], [], LUNES, cyc)
+
+    # `window_days: yes` en YAML es `True`, y `isinstance(True, int)` es cierto
+    # en Python: sin la guarda explícita del bool, esa errata contaría una
+    # ventana de un día y el mensaje diría "hoy" tan tranquilo.
+    for malo in (True, 0, -3, 7.0, "7", None):
+        cyc["recommendation"]["intensity_count"]["window_days"] = malo
+        with pytest.raises(IntensityCountConfigError):
+            intensity_count([], [], LUNES, cyc)
+
+
+def test_la_clave_de_la_semana_natural_no_puede_volver_en_silencio():
+    """`week_starts_on` reaparecido tiene que doler, no ignorarse.
+
+    Quien la escriba creerá estar eligiendo por dónde corta el contador. No
+    corta por ningún sitio, así que no pasaría nada — que es exactamente el
+    fallo que este proyecto lleva meses pagando, y en la dirección peor: la del
+    silencio que se parece a que funciona.
+    """
+    from app.engine.signals import IntensityCountConfigError
+
+    cyc = copy.deepcopy(CYCLING)
+    cyc["recommendation"]["intensity_count"]["week_starts_on"] = "monday"
+    with pytest.raises(IntensityCountConfigError, match="week_starts_on"):
+        intensity_count([], [], LUNES, cyc)
 
 
 def test_manda_la_salida_mas_intensa_del_dia_anterior():
@@ -877,6 +1021,14 @@ def test_los_umbrales_de_carga_siguen_saliendo_despues_de_bajar_el_bloque(cfg):
     ],
 )
 def test_las_claves_del_presupuesto_muerto_revientan(muerta):
+    """El resto del bloque va completo A PROPÓSITO.
+
+    Si aquí faltara `window_days`, la función reventaría igual pero por otro
+    motivo, y `match=muerta` podría seguir pasando por casualidad mientras el
+    test ya no comprueba lo que dice comprobar. Un bloque válido salvo por la
+    clave muerta es la única forma de que el fallo que se observa sea el que se
+    está buscando.
+    """
     from app.engine.signals import IntensityCountConfigError
 
     cyc = dict(CYCLING)
@@ -884,7 +1036,7 @@ def test_las_claves_del_presupuesto_muerto_revientan(muerta):
         "lookback_days": 1,
         "intensity_count": {
             "enabled": True,
-            "week_starts_on": "monday",
+            "window_days": 7,
             muerta: 2,
         },
     }
@@ -904,7 +1056,7 @@ def test_el_error_de_clave_muerta_dice_por_donde_se_frena_de_verdad():
     cyc = dict(CYCLING)
     cyc["recommendation"] = {
         "lookback_days": 1,
-        "intensity_count": {"enabled": True, "week_starts_on": "monday", "weekly_limit": 2},
+        "intensity_count": {"enabled": True, "window_days": 7, "weekly_limit": 2},
     }
     with pytest.raises(IntensityCountConfigError) as e:
         intensity_count([], [], LUNES, cyc)
@@ -913,15 +1065,115 @@ def test_el_error_de_clave_muerta_dice_por_donde_se_frena_de_verdad():
     assert "carga de Garmin" in texto
 
 
-def test_sin_bloque_de_recuento_no_se_exige_nada():
-    """No contar es una decisión legítima; contar a medias no.
+def test_sin_bloque_de_recuento_no_se_cuenta_y_no_se_dice_nada():
+    """No contar es una decisión legítima; contar cero es una afirmación.
 
     Que el bloque ESTÉ es cosa de `config_loader`, que lo exige en el YAML real.
-    Aquí abajo, con un diccionario cualquiera, la función se limita a devolver
-    un recuento vacío en vez de reventar: es una función de cálculo, no la
-    aduana del fichero.
+    Aquí abajo, con un diccionario cualquiera, la función no revienta: es una
+    función de cálculo, no la aduana del fichero.
+
+    Lo que sí hace es devolver `None` y no un recuento a cero. La versión
+    anterior devolvía `IntensityCount(used=0, ...)` SIN MIRAR las salidas, y ese
+    cero acababa en el mensaje de la mañana como «ninguna sesión intensa hoy»:
+    una frase falsa el día que sí hubo una, y sin ningún indicio de que lo
+    fuera.
+
+    Y el test que cubría esto pasaba `rides=[]`. Con la lista vacía, `used == 0`
+    salía bien por los dos motivos a la vez -porque no se contó y porque no
+    había nada que contar- así que no distinguía el correcto del defectuoso. Por
+    eso aquí abajo hay una salida intensa de verdad: es lo único que separa una
+    pregunta de una respuesta que se contesta sola.
     """
-    cyc = dict(CYCLING)
-    cyc["recommendation"] = {"lookback_days": 1}
-    c = intensity_count([], [], LUNES, cyc)
-    assert c.used == 0
+    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
+    assert [r.level for r in rides] == ["intensa"], "el montaje del test"
+
+    cyc = copy.deepcopy(CYCLING)
+    del cyc["recommendation"]["intensity_count"]
+    assert intensity_count(rides, [], LUNES, cyc) is None
+
+
+def test_apagar_el_recuento_lo_apaga_de_verdad():
+    """`enabled: false` no lo leía NADIE, y el validador juraba que sí.
+
+    `config_loader` exige la clave, exige que sea booleana, y su mensaje de
+    error dice por escrito que para no contar hay que poner `enabled: false`.
+    Mientras tanto `intensity_count()` no la miraba en ningún sitio: el fichero
+    validaba, el interruptor se dejaba apagar, y el número seguía saliendo en el
+    mensaje todas las mañanas.
+
+    Una opción muerta que además viene certificada como viva por el validador es
+    peor que una opción muerta a secas: la primera no se nota nunca, porque
+    quien la apaga se queda convencido de haberla apagado.
+
+    Con una salida intensa dentro de la ventana, para que apagado y encendido no
+    den lo mismo por casualidad.
+    """
+    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
+
+    encendido = intensity_count(rides, [], LUNES, CYCLING)
+    assert encendido is not None and encendido.used == 1, "el montaje del test"
+
+    cyc = copy.deepcopy(CYCLING)
+    cyc["recommendation"]["intensity_count"]["enabled"] = False
+    assert intensity_count(rides, [], LUNES, cyc) is None
+
+
+def test_sin_la_clave_enabled_se_cuenta_igual_y_no_se_calla():
+    """El defecto de la clave ausente es contar, y hay que escribirlo aquí.
+
+    En el YAML real la clave no puede faltar: `config_loader` la exige presente
+    y booleana. Pero esta función la llaman además scripts y tests con
+    diccionarios a mano, y para esos hay que elegir un defecto.
+
+    Se elige contar, por dos motivos. Uno, que quien escribe el bloque con su
+    `window_days` lo escribe para que cuente: si no, no lo escribiría. Y dos,
+    porque el otro defecto -callar- es el que se rompe en silencio: un
+    diccionario al que se le olvide la clave dejaría de contar sin un solo
+    error, y el número simplemente no saldría en el mensaje. Los dos defectos se
+    equivocan, pero solo uno de los dos se nota.
+
+    Esto lo pinta una mutación que sobrevivió: cambiar el `True` por `False` no
+    ponía rojo ni un test, porque todos los diccionarios del proyecto escriben
+    `enabled` a mano. Un defecto que nadie fija es un defecto que el siguiente
+    puede cambiar creyendo que da igual.
+    """
+    rides = classify_all([ride(LUNES, zones=(0, 0, 0, 900, 900))], CYCLING)
+
+    cyc = copy.deepcopy(CYCLING)
+    del cyc["recommendation"]["intensity_count"]["enabled"]
+
+    c = intensity_count(rides, [], LUNES, cyc)
+    assert c is not None, "sin la clave se cuenta: callar sería romperse en silencio"
+    assert c.used == 1
+    assert c.dias == 7
+
+
+def test_con_el_recuento_apagado_la_senal_no_se_escribe_a_cero(cfg_copia):
+    """Que falte la clave es incómodo de leer, y por eso es honesto.
+
+    `sig.values` es lo que leen las reglas del YAML y lo que se guarda en la
+    base para el panel y los replays. Un `intense_count_7d: 0` escrito por un
+    bloque apagado es indistinguible, mirándolo, de un 0 que quiere decir «no
+    has apretado esta semana», y se queda en el histórico para siempre. Un hueco
+    se nota; un cero fabricado, no.
+
+    Con una salida intensa de verdad, para que el contraste de arriba -la señal
+    a 1 con el bloque encendido- no sea también un cero disfrazado.
+    """
+    from app.engine.signals import build_signals
+
+    rides = [ride(LUNES, zones=(0, 0, 0, 900, 900))]
+
+    encendida = build_signals(
+        cfg_copia, LUNES, metrics=[], rides=rides, sessions=[], checkin_history=[]
+    )
+    assert encendida.values.get("intense_count_7d") == 1, "el montaje del test"
+
+    cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]["enabled"] = False
+    apagada = build_signals(
+        cfg_copia, LUNES, metrics=[], rides=rides, sessions=[], checkin_history=[]
+    )
+
+    assert apagada.intense_count is None
+    claves = [k for k in apagada.values if k.startswith("intense_count")]
+    assert claves == [], f"con el recuento apagado no debería haber señal: {claves}"

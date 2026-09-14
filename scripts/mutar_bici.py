@@ -16,6 +16,22 @@ las averías concretas que se temen, escritas como código que compila:
   - que la ventana de 180 días se calcule sobre una caché de 90
   - que un día sin base se vuelva mudo en vez de decir que no tiene base
   - que el recuento de intensas se pierda del mensaje entero
+  - que la ventana rodante de 7 días cuente 6 u 8, o se coma un borde
+
+LA TANDA W: POR QUÉ LA VENTANA RODANTE ENTRA AQUÍ
+--------------------------------------------------
+El recuento pasó de semana natural a ventana rodante porque la semana natural
+se equivocaba SIEMPRE hacia el mismo lado: sobre 184 días reales, las dos
+cuentas discrepaban en 39, con un mínimo de 0 y un máximo de +2, y nunca a
+favor de la natural. Un error con signo es peor que uno al azar, porque el que
+lo sufre siempre lo sufre en la misma dirección -aquí, «vas más descansado de
+lo que vas»-.
+
+Y el fallo anterior a ese no fue el cálculo: fue que la batería lo aprobaba.
+`test_la_intensidad_de_la_semana_pasada_no_cuenta` llevaba meses en verde
+DESCRIBIENDO el defecto -afirmaba que una intensa del domingo no cuenta el
+lunes-. Por eso las mutaciones de abajo atacan sobre todo los bordes y las
+unidades: son lo que un test mal escrito no distingue.
 
 Reglas de la casa: `newline=''` para no tocar los finales de línea, copia con
 `shutil.copy2` y restauración en un `finally` (NUNCA `git checkout`: hay
@@ -41,6 +57,11 @@ FICHEROS = [
     "tests/test_message.py",
     "tests/test_config_loader.py",
     "tests/test_activity_cache.py",
+    # Entra con la tanda W: el recuento rodante se calcula en
+    # `app/engine/signals.py` y quien lo vigila vive aquí. Sin este fichero en
+    # la lista, las mutaciones de la ventana saldrían «[VIVA]» por no tener a
+    # nadie mirando, que es la forma más tonta de falso positivo.
+    "tests/test_signals.py",
 ]
 
 # (nombre, fichero, aguja, reemplazo, qué debería morir)
@@ -184,6 +205,120 @@ MUTACIONES = [
         "    conteo = None",
         "recuento",
     ),
+    # --- W. la ventana rodante de 7 días -----------------------------------
+    #
+    # Todas estas dejan el sistema funcionando y el mensaje bien formado. Ese
+    # es el punto: un recuento equivocado no se cae, sale un número distinto
+    # con la misma cara. La única defensa posible es un test que mire el borde.
+    (
+        "W1. la ventana se pasa un día: `- 1` de menos y cuenta 8 días",
+        "app/engine/signals.py",
+        "    start = day - timedelta(days=ventana - 1)",
+        "    start = day - timedelta(days=ventana)",
+        "ventana or fuera_de_la_ventana or periodo",
+    ),
+    (
+        "W2. el borde viejo de la ventana se cae: `<=` pasa a `<`",
+        "app/engine/signals.py",
+        "            if not (start <= r.date <= day):",
+        "            if not (start < r.date <= day):",
+        "ventana or fuera_de_la_ventana or intensa_de_ayer",
+    ),
+    (
+        "W3. la salida de HOY deja de contar: la ventana termina ayer",
+        "app/engine/signals.py",
+        "            if not (start <= r.date <= day):",
+        "            if not (start <= r.date < day):",
+        "recuento or ventana or ejecutado",
+    ),
+    (
+        "W4. `window_days` vuelve a tener un 7 por defecto, con unidades inventadas",
+        "app/engine/signals.py",
+        '    ventana = cfg.get("window_days")',
+        '    ventana = cfg.get("window_days", 7)',
+        "window_days or suponer",
+    ),
+    (
+        "W5. el agujero del booleano: `window_days: yes` da una ventana de 1 día",
+        "app/engine/signals.py",
+        "    if not isinstance(ventana, int) or isinstance(ventana, bool) or ventana < 1:",
+        "    if not isinstance(ventana, int) or ventana < 1:",
+        "window_days or suponer",
+    ),
+    (
+        "W6. el atajo del bloque ausente se traga también el bloque incompleto",
+        "app/engine/signals.py",
+        "    if not cfg:",
+        '    if not cfg.get("window_days"):',
+        "window_days or suponer",
+    ),
+    (
+        "W7. `week_starts_on` puede volver en silencio",
+        "app/engine/signals.py",
+        "    de_calendario = [k for k in CLAVES_DE_CUANDO_ERA_SEMANA_NATURAL if k in cfg]",
+        "    de_calendario = []",
+        "semana_natural or clave",
+    ),
+    (
+        "W8. el ancho de la ventana se queda corto: la frase dice 6 donde hay 7",
+        "app/engine/signals.py",
+        "        return (self.hasta - self.desde).days + 1",
+        "        return (self.hasta - self.desde).days",
+        "periodo or dice_el_periodo",
+    ),
+    (
+        "W9. la frase vuelve a dar el periodo por supuesto",
+        "app/engine/signals.py",
+        '        periodo = f"en los últimos {self.dias} días" if self.dias != 1 else "hoy"',
+        '        periodo = "esta semana"',
+        "periodo or dice_el_periodo or linea",
+    ),
+    (
+        "W10. el config real se queda sin `window_days` y arranca igual",
+        "app/config_loader.py",
+        "        ventana = conteo.get(\"window_days\")",
+        "        ventana = 7",
+        "window_days",
+    ),
+    # --- X. el interruptor que el validador certificaba y nadie leía --------
+    #
+    # Estas cuatro nacen de que W10 SOBREVIVIÓ. Al ir a escribirle el test que
+    # le faltaba se vio lo de al lado: `enabled` se exigía en el YAML, se
+    # obligaba a que fuera booleano, el error decía por escrito que poniéndolo a
+    # `false` se dejaba de contar, y `intensity_count()` no lo miraba en ningún
+    # sitio. El interruptor se dejaba apagar y no apagaba nada.
+    #
+    # No lo encontró una revisión del código: lo encontró una mutación que
+    # sobrevivía a un metro de distancia. Por eso las mutaciones caducadas
+    # dejaron de contar como cobertura en este mismo commit.
+    (
+        "X1. `enabled: false` vuelve a no apagar nada",
+        "app/engine/signals.py",
+        '    if not cfg.get("enabled", True):\n        return None',
+        '    if False:\n        return None',
+        "apagar_el_recuento or apagado",
+    ),
+    (
+        "X2. el interruptor, del revés: apaga cuando está encendido",
+        "app/engine/signals.py",
+        '    if not cfg.get("enabled", True):',
+        '    if cfg.get("enabled", True):',
+        "recuento or apagado or periodo",
+    ),
+    (
+        "X3. la clave ausente pasa a significar 'no cuentes' (silencio por omisión)",
+        "app/engine/signals.py",
+        '    if not cfg.get("enabled", True):',
+        '    if not cfg.get("enabled", False):',
+        "enabled or apagado or recuento",
+    ),
+    (
+        "X4. el bloque apagado vuelve a escribir la señal a cero",
+        "app/engine/signals.py",
+        "    if conteo is not None:\n        # El nombre de la señal lleva la ventana dentro.",
+        "    if True:\n        # El nombre de la señal lleva la ventana dentro.",
+        "apagado or senal_no_se_escribe",
+    ),
     # --- la caché que sostiene los 180 días --------------------------------
     (
         "N. `dias_adaptativos` vuelve a ignorar la ventana de la bici",
@@ -239,14 +374,22 @@ def pytest(patron: str) -> tuple[bool, str]:
 
 
 def main() -> int:
+    # Dos listas, no una. Una aguja que ya no está en el fichero NO es una
+    # mutación que sobrevive: es una mutación que no se ha llegado a hacer, y
+    # por tanto un trozo de código del que esta batería no ha mirado nada.
+    # Meterla en `vivas` decía justo lo contrario de lo que pasaba -«los tests
+    # tienen un agujero aquí»- y encima invitaba a buscar el agujero en unos
+    # tests que estaban bien. El fallo real está en la aguja, que se quedó
+    # escrita contra un código que ya se ha reescrito.
     vivas = []
+    caducadas = []
     for nombre, rel, aguja, nuevo, patron in MUTACIONES:
         ruta = RAIZ / rel
         original = io.open(ruta, encoding="utf-8", newline="").read()
         mutado = sustituir(original, aguja, nuevo)
         if mutado is None:
-            print(f"[ ?? ] {nombre}\n       aguja ausente o repetida en {rel}")
-            vivas.append(nombre)
+            print(f"[CADU] {nombre}\n       aguja ausente o repetida en {rel}")
+            caducadas.append(nombre)
             continue
 
         respaldo = ruta.with_suffix(ruta.suffix + ".bak_mut")
@@ -267,10 +410,16 @@ def main() -> int:
             respaldo.unlink()
 
     total = len(MUTACIONES)
-    print(f"\n{total - len(vivas)}/{total} mutaciones muertas")
+    print(f"\n{total - len(vivas) - len(caducadas)}/{total} mutaciones muertas")
     for v in vivas:
         print(f"  SOBREVIVE: {v}")
-    return 1 if vivas else 0
+    for c in caducadas:
+        print(f"  CADUCADA (aquí no se ha probado nada): {c}")
+    if caducadas:
+        print("\nLas caducadas no son un agujero en los tests: es que el código "
+              "que mutaban ya no está escrito así. Arregla la aguja o borra la "
+              "mutación, pero no la dejes contando como cobertura.")
+    return 1 if (vivas or caducadas) else 0
 
 
 if __name__ == "__main__":

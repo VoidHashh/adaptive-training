@@ -144,8 +144,13 @@ SENALES_COMPLETAS: dict[str, Any] = {
     "rhr_delta": 0.0,
     "sleep_min": 450.0,
     "load_3d": 100.0,
-    "weekend_intense_rides": 0,
-    "weekend_total_hours": 1.0,
+    # Aquí estaban `weekend_intense_rides: 0` y `weekend_total_hours: 1.0`, y se
+    # han ido. Eran las dos señales que pedía `resaca_finde`; la regla se borró
+    # hace tiempo y `build_signals` dejó de escribirlas al pasar el recuento a
+    # ventana rodante. Dejarlas aquí convertía este diccionario -que se llama
+    # «todas las señales que pide alguna regla»- en una lista de señales que ya
+    # no existen, y el test que lo vigila habría seguido en verde: comprueba que
+    # no FALTE ninguna, no que no SOBRE ninguna.
 }
 
 # Los percentiles NO son señales: viven en `Signals.adaptive` y las reglas los

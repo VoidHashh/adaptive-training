@@ -20,6 +20,7 @@ no "ocúltame que hoy has decidido a ciegas".
 from __future__ import annotations
 
 import copy
+from datetime import timedelta
 
 import pytest
 
@@ -784,7 +785,7 @@ def test_va_despues_de_la_bici_y_antes_de_las_degradaciones(cfg):
 
 
 # ---------------------------------------------------------------------------
-# El recuento semanal: informa todos los días y no regaña ninguno
+# El recuento rodante: informa todos los días y no regaña ninguno
 # ---------------------------------------------------------------------------
 #
 # Antes el número solo se escribía cuando servía para recortar la salida del
@@ -792,6 +793,12 @@ def test_va_despues_de_la_bici_y_antes_de_las_degradaciones(cfg):
 # que solo aparece cuando además te frena no es información: es la
 # justificación del frenazo. Ahora que no frena nada, tiene que estar todos los
 # días o no está.
+#
+# Y ya no dice «esta semana» sino «en los últimos 7 días». El cambio de palabra
+# es el cambio de cuenta: la semana natural se vaciaba cada lunes de madrugada,
+# y en 8 de los 26 lunes del histórico el mensaje decía «ninguna sesión intensa
+# esta semana todavía» con una o dos intensas en los siete días anteriores -en
+# tres de esos lunes, con el sábado Y el domingo intensos doce horas antes-.
 
 
 def _con_conteo(cfg, used: int, unknown: int = 0):
@@ -799,7 +806,11 @@ def _con_conteo(cfg, used: int, unknown: int = 0):
 
     d = decision(cfg)
     d.signals.intense_count = IntensityCount(
-        used=used, detail=[], week_start=LUNES, unknown=unknown
+        used=used,
+        detail=[],
+        desde=LUNES - timedelta(days=6),
+        hasta=LUNES,
+        unknown=unknown,
     )
     return d
 
@@ -807,18 +818,18 @@ def _con_conteo(cfg, used: int, unknown: int = 0):
 def test_el_recuento_sale_un_lunes_que_no_es_dia_de_bici(cfg):
     """LUNES: no hay recomendación de bici, y el número tiene que salir igual."""
     txt = render_telegram(_con_conteo(cfg, used=3), cfg)
-    assert "3 sesiones intensas esta semana" in txt
+    assert "3 sesiones intensas en los últimos 7 días" in txt
 
 
 def test_el_recuento_sale_tambien_cuando_es_cero(cfg):
-    """Cero no es un hueco: es el dato de que la semana está entera por delante.
+    """Cero no es un hueco: es el dato de que no ha habido nada fuerte en 7 días.
 
     Si el bloque se saltara con `if conteo.used:`, el lunes por la mañana -que
     es cuando más sentido tiene leerlo- no habría línea, y el mensaje del día
     que no has hecho nada sería idéntico al del día que el recuento se rompió.
     """
     txt = render_telegram(_con_conteo(cfg, used=0), cfg)
-    assert "inguna sesión intensa esta semana" in txt
+    assert "inguna sesión intensa en los últimos 7 días" in txt
 
 
 def test_sin_recuento_no_hay_linea_ni_hueco(cfg):
@@ -1022,15 +1033,15 @@ def test_el_recuento_no_se_repite(cfg):
     estuviera puesto cuando se construyó la recomendación. Si no lo estaba,
     desaparecía del mensaje sin error y sin hueco.
     """
-    from datetime import timedelta
-
     from app.engine.signals import IntensityCount
 
     sabado = LUNES + timedelta(days=5)
     s = _con_bici(sabado)
-    s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
+    s.intense_count = IntensityCount(
+        used=5, detail=[], desde=sabado - timedelta(days=6), hasta=sabado
+    )
     txt = render_telegram(decide(cfg, sabado, s, EngineState()), cfg)
-    assert txt.count("sesiones intensas esta semana") == 1
+    assert txt.count("sesiones intensas en los últimos 7 días") == 1
 
 
 def test_el_recuento_sale_aunque_se_calcule_despues_de_decidir(cfg):
@@ -1041,15 +1052,15 @@ def test_el_recuento_sale_aunque_se_calcule_despues_de_decidir(cfg):
     es lo que hacen varias rutas- lo borraría del mensaje entero. El número se
     lee en el momento de escribir, y por eso sale igual.
     """
-    from datetime import timedelta
-
     from app.engine.signals import IntensityCount
 
     sabado = LUNES + timedelta(days=5)
     d = decide(cfg, sabado, _con_bici(sabado), EngineState())
     assert d.bike.applies, "sin recomendación de bici el test no prueba nada"
-    d.signals.intense_count = IntensityCount(used=4, detail=[], week_start=LUNES)
-    assert "4 sesiones intensas esta semana" in render_telegram(d, cfg)
+    d.signals.intense_count = IntensityCount(
+        used=4, detail=[], desde=sabado - timedelta(days=6), hasta=sabado
+    )
+    assert "4 sesiones intensas en los últimos 7 días" in render_telegram(d, cfg)
 
 
 def test_las_salidas_sin_clasificar_salen_en_la_misma_linea(cfg):

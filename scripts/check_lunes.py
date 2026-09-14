@@ -182,7 +182,14 @@ def rojos() -> set[str]:
 
 
 def main() -> int:
-    fallos = 0
+    # Dos contadores, no uno. Ver el comentario largo en
+    # `scripts/check_recalibracion.py::main`, donde este mismo fallo se dio de
+    # verdad: una mutación cuyo fragmento ya no existía llevaba meses sumando
+    # al total de «mutaciones sin test que las pille», y eso es lo contrario de
+    # lo que pasaba. Un [SETUP] fallido no es un agujero en los tests: es que
+    # de ese trozo de código esta batería no ha mirado nada.
+    verdes = 0
+    caducadas = 0
     print(f"{len(MUTACIONES)} mutaciones\n")
     for nombre, rel, viejo, nuevo, esperados in MUTACIONES:
         ruta = RAIZ / rel
@@ -190,7 +197,7 @@ def main() -> int:
         if original.count(viejo) != 1:
             print(f"[SETUP] {nombre}: el fragmento aparece "
                   f"{original.count(viejo)} veces en {rel}, no 1")
-            fallos += 1
+            caducadas += 1
             continue
         try:
             ruta.write_text(original.replace(viejo, nuevo), encoding="utf-8")
@@ -200,7 +207,7 @@ def main() -> int:
 
         if esperados is None:
             if caidos:
-                fallos += 1
+                verdes += 1
                 print(f"[ROJO INESPERADO] {nombre}")
                 for t in sorted(caidos):
                     print(f"         ha pinchado: {t}")
@@ -210,7 +217,7 @@ def main() -> int:
 
         faltan = [t for t in esperados if t not in caidos]
         if faltan:
-            fallos += 1
+            verdes += 1
             print(f"[VERDE] {nombre}")
             for t in faltan:
                 print(f"         sigue pasando: {t}")
@@ -218,8 +225,14 @@ def main() -> int:
             print(f"[ok] {nombre}  ({len(caidos)} rojo/s)")
 
     print()
-    if fallos:
-        print(f"{fallos} mutación/es sin test que las pille.")
+    if caducadas:
+        print(f"{caducadas} mutación/es CADUCADAS: el código que mutaban ya no "
+              f"está, así que no se ha probado nada de esa parte. No es que los "
+              f"tests fallen: es que aquí no se ha mirado. Arréglalas o "
+              f"bórralas.")
+    if verdes:
+        print(f"{verdes} mutación/es sin test que las pille.")
+    if verdes or caducadas:
         return 1
     print("Todas las mutaciones pinchan. Los tests comprueban lo que dicen.")
     return 0

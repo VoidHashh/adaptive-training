@@ -86,14 +86,26 @@ MUTACIONES: list[tuple[str, str, str, str, list[str]]] = [
             "test_cuando_toca_el_mensaje_de_la_mañana_lo_dice",
         ],
     ),
+    # EL FRAGMENTO QUE BUSCABA ESTA MUTACIÓN YA NO EXISTÍA
+    # -----------------------------------------------------
+    # Nombraba `cycling.weekend.total_hours_threshold` junto a
+    # `cycling.classification`, y ese umbral se borró con `resaca_finde`. El
+    # `old` dejó de aparecer en `recalibracion.py` y esta entrada llevaba desde
+    # entonces dando `[SETUP] el fragmento aparece 0 veces`, que el guión suma
+    # al total de «mutaciones sin test que las pille».
+    #
+    # Es el fallo de esta casa en su versión de andamiaje: una comprobación que
+    # dejó de comprobar y siguió contándose. Un [SETUP] fallido no es lo mismo
+    # que una mutación que se escapa -uno dice «no he podido probarlo» y el
+    # otro «lo he probado y pasa»- y mezclarlos en el mismo contador hace que
+    # arreglarlo parezca opcional.
     (
         "el aviso no dice qué umbrales mirar",
         RECAL,
-        '            "Toca mirar con /api/export los umbrales calibrados sobre muestras "\n            "cortas: la clasificación de las salidas de bici "\n            "(cycling.classification) y el umbral del fin de semana "\n            "(cycling.weekend.total_hours_threshold).",',
+        '            "Toca mirar con /api/export el único umbral que sigue calibrado a "\n            "mano sobre una muestra corta: la clasificación de las salidas de "\n            "bici (cycling.classification). Los demás se recalibran solos "\n            "contra tu histórico (adaptive_thresholds); comprueba de paso que "\n            "sus ventanas siguen teniendo días suficientes.",',
         '            "Toca mirar los umbrales con /api/export.",',
         [
             "test_las_rutas_que_nombra_el_aviso_existen_en_el_config_real[cycling.classification]",
-            "test_las_rutas_que_nombra_el_aviso_existen_en_el_config_real[cycling.weekend.total_hours_threshold]",
         ],
     ),
     (
@@ -313,7 +325,24 @@ def rojos() -> set[str]:
 
 
 def main() -> int:
-    fallos = 0
+    # DOS CONTADORES, NO UNO, Y NO ES UN DETALLE
+    # -------------------------------------------
+    # Antes esto era un `fallos` solo, y al final imprimía «N mutación/es sin
+    # test que las pille». Eso mezcla dos cosas que no se parecen en nada:
+    #
+    #   [VERDE] = la mutación se aplicó, los tests corrieron, y pasaron. Hay un
+    #             agujero de verdad en la batería de tests.
+    #   [SETUP] = el fragmento a mutar ya no está en el fichero, así que la
+    #             mutación NI SIQUIERA SE PROBÓ. No se sabe nada de ese trozo
+    #             de código; lo que hay es una comprobación caducada.
+    #
+    # Contarlas juntas hace que una comprobación caducada se lea como un
+    # agujero en los tests, y -peor- que arreglarla parezca cuestión de gusto.
+    # Es exactamente el defecto que este guión existe para cazar, cometido por
+    # el propio guión: un `[SETUP]` sobrevivió aquí meses porque su línea se
+    # perdía entre los `[ok]` y el resumen final no distinguía.
+    verdes = 0
+    caducadas = 0
     print(f"{len(MUTACIONES)} mutaciones\n")
     for nombre, rel, viejo, nuevo, esperados in MUTACIONES:
         ruta = RAIZ / rel
@@ -321,7 +350,7 @@ def main() -> int:
         if original.count(viejo) != 1:
             print(f"[SETUP] {nombre}: el fragmento aparece "
                   f"{original.count(viejo)} veces en {rel}, no 1")
-            fallos += 1
+            caducadas += 1
             continue
         try:
             ruta.write_text(original.replace(viejo, nuevo), encoding="utf-8")
@@ -331,7 +360,7 @@ def main() -> int:
 
         faltan = [t for t in esperados if t not in caidos]
         if faltan:
-            fallos += 1
+            verdes += 1
             print(f"[VERDE] {nombre}")
             for t in faltan:
                 print(f"         sigue pasando: {t}")
@@ -339,8 +368,14 @@ def main() -> int:
             print(f"[ok] {nombre}  ({len(caidos)} rojo/s)")
 
     print()
-    if fallos:
-        print(f"{fallos} mutación/es sin test que las pille.")
+    if caducadas:
+        print(f"{caducadas} mutación/es CADUCADAS: el código que mutaban ya no "
+              f"está, así que no se ha probado nada de esa parte. No es que los "
+              f"tests fallen: es que aquí no se ha mirado. Arréglalas o "
+              f"bórralas.")
+    if verdes:
+        print(f"{verdes} mutación/es sin test que las pille.")
+    if verdes or caducadas:
         return 1
     print("Todas las mutaciones pinchan. Los tests comprueban lo que dicen.")
     return 0

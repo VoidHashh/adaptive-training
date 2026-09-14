@@ -1146,25 +1146,34 @@ cycling:
       load_per_hour: {suave: 40, media: 90, intensa: 160}
 
   # ---------------------------------------------------------------------------
-  # Qué días son "fin de semana"
+  # AQUÍ ESTABA `weekend: {days: [saturday, sunday]}`, Y SE HA BORRADO
   # ---------------------------------------------------------------------------
-  # Solo eso: qué días se agrupan al resumir el fin de semana. Lo leen
-  # `weekend_summary` -que calcula las horas y las salidas intensas del sábado y
-  # el domingo, y las guarda como DATO- y `bike_advisor`, para saber hasta dónde
-  # llega la ventana al contar salidas de este fin de semana.
+  # Decía qué días se agrupan al resumir el fin de semana. Lo leían
+  # `weekend_summary` -que calculaba horas y salidas intensas del sábado y el
+  # domingo- y `_intense_rides_this_weekend`, que ponía una nota en la
+  # recomendación de bici. Las dos funciones se han borrado, así que el bloque
+  # se queda sin un solo lector.
   #
-  # Aquí vivían `total_hours_threshold: 2.5` e `intense_rides_threshold: 1`, los
-  # dos umbrales de `resaca_finde`. Se han ido con ella; el motivo está escrito
-  # entero donde estaba la regla, en `thresholds.amber`. No se han dejado "por
-  # si acaso": un número que no lee nadie es lo que este proyecto lleva meses
-  # persiguiendo, y encima estos dos venían con un comentario de calibración
-  # que hacía creer que decidían algo.
+  # Antes ya se habían ido de aquí `total_hours_threshold: 2.5` e
+  # `intense_rides_threshold: 1`, los dos umbrales de `resaca_finde`, y el
+  # comentario que quedó defendía lo que sobrevivía: «las horas y las salidas
+  # intensas del fin de semana SIGUEN calculándose y guardándose; el sistema
+  # registra lo que se hizo aunque no lo use para frenar». Sonaba bien y era
+  # falso por dentro. Lo que se guardaba no era el registro: el registro son
+  # las salidas enteras, que están en `data/cache/activities.json` y en la
+  # tabla `activities` con su fecha, su duración y sus zonas. Lo que se
+  # guardaba era un RESUMEN DERIVADO de eso, recalculable en tres líneas,
+  # escrito todos los días en el snapshot y leído exactamente por nadie.
+  # «Registrar» se había convertido en la excusa para no borrar.
   #
-  # Las horas y las salidas intensas del fin de semana SIGUEN calculándose y
-  # guardándose en cada decisión. No deciden nada, y por eso siguen: el sistema
-  # registra lo que se hizo aunque no lo use para frenar.
-  weekend:
-    days: [saturday, sunday]
+  # Y el fondo del asunto no es el código sobrante, es que agrupar por «sábado
+  # y domingo» da por hecho que el esfuerzo grande cae en fin de semana. Eso es
+  # el calendario fijo que se echó de `recommendation`, sobreviviendo dos
+  # bloques más abajo. Lo que hacía falta saber -cuánta intensidad se lleva
+  # encima- lo dice ahora `intensity_count` con una ventana rodante, y lo dice
+  # los siete días.
+  #
+  # Si vuelve a escribirse, el arranque falla con ese motivo.
 
   # ---------------------------------------------------------------------------
   # Recomendación de bici (todos los días)
@@ -1312,12 +1321,48 @@ cycling:
     # aquí y recortaban; se han borrado, no desactivado.
     lookback_days: 1
 
-    # --- Recuento semanal de sesiones intensas -----------------------------
+    # --- Recuento rodante de sesiones intensas -----------------------------
     # ESTO YA NO ES UN PRESUPUESTO. Cuenta y se enseña; no limita nada.
     #
     # Cuenta como intensa cualquier HIIT EJECUTADO (no solo programado) y
     # cualquier salida clasificada como INTENSA. El número sale en el mensaje
     # todos los días y se guarda en `inputs_snapshot_json` para las métricas.
+    #
+    # Y AQUÍ SE VA EL SEGUNDO CALENDARIO: ERA `week_starts_on: monday`
+    # -----------------------------------------------------------------
+    # La cuenta empezaba el lunes y se ponía a cero a las doce de la noche del
+    # domingo. Medido sobre las 58 salidas reales de la caché -184 días, 12
+    # intensas-, la cuenta natural y una ventana rodante de 7 días NO COINCIDEN
+    # en 39 de esos 184 días, uno de cada cinco. Y el desacuerdo tiene un solo
+    # signo: la rodante nunca queda por debajo, y llega a estar +2 por encima.
+    # La semana natural no se equivoca al azar, se equivoca SIEMPRE por lo bajo.
+    #
+    # El caso de libro es el lunes por la mañana. En 8 de 26 lunes -el 31%- el
+    # mensaje decía «ninguna sesión intensa esta semana todavía» habiendo 1 o 2
+    # intensas en los siete días anteriores; en tres de ellos, sábado Y domingo
+    # intensos, doce horas antes de leerlo. La frase era cierta como frase y
+    # mentira como información, que es la combinación más difícil de detectar:
+    # no se la puede contradecir y engaña igual.
+    #
+    # Con `window_days: 7` el corte desaparece. Todos los días se miran los
+    # mismos siete hacia atrás, extremos incluidos y terminando HOY, y el número
+    # solo se mueve cuando se mueve lo que se ha hecho.
+    #
+    # POR QUÉ 7 ES UNA CONSTANTE Y NO UN PERCENTIL DE MI DISTRIBUCIÓN
+    # ---------------------------------------------------------------
+    # En este fichero casi todos los números se calculan contra el propio
+    # histórico, y es la norma. Esta no lo hace, a propósito: `window_days` no
+    # es un umbral. No se compara contra nada, no tiene denominador y no frena.
+    # Es la UNIDAD en la que se cuenta, y una unidad tiene que quedarse quieta
+    # para que el número de hoy se pueda comparar con el de la semana pasada.
+    # Un periodo recalculado cada día movería el contador sin que se hubiera
+    # hecho ni dejado de hacer nada: el mismo defecto que se está quitando.
+    #
+    # Se puede cambiar: si algún día 10 o 14 describen mejor el ciclo, se
+    # escribe aquí y el mensaje dirá «en los últimos 14 días» solo. No hay
+    # ningún 7 escrito en el código; si esta clave falta, el sistema para en vez
+    # de suponerlo, porque el periodo va escrito en la frase que se lee a las
+    # siete de la mañana y suponerlo sería ponerle unidades falsas.
     #
     # POR QUÉ SE FUE EL LÍMITE, Y CON ÉL EL BLOQUE ENTERO
     # ---------------------------------------------------
@@ -1339,8 +1384,25 @@ cycling:
     # días contra el percentil 90 del propio histórico. Eso es el cuerpo
     # hablando. Un cupo semanal es una hoja de cálculo hablando.
     intensity_count:
+      # `enabled` NO LO LEÍA NADIE, Y ESTE FICHERO LO CERTIFICABA
+      # --------------------------------------------------------
+      # El validador exigía la clave, exigía que fuera booleana, y su mensaje
+      # de error decía por escrito que para no contar había que ponerla a
+      # `false`. `intensity_count()` no la miraba en ningún sitio: se podía
+      # apagar y seguía contando, el número seguía saliendo en el mensaje todas
+      # las mañanas, y el fichero validaba sin una queja. Una opción muerta que
+      # además viene certificada como viva no se descubre nunca, porque quien la
+      # apaga se queda convencido de haberla apagado.
+      #
+      # No lo encontró una revisión del código: lo encontró una mutación que
+      # sobrevivía al lado (`scripts/mutar_bici.py`, tanda W10).
+      #
+      # Ya está conectada. En `false` el recuento no se calcula, la línea
+      # desaparece del mensaje, y la señal `intense_count_7d` NO SE ESCRIBE: no
+      # se escribe a cero, porque un cero afirma que no has apretado y se queda
+      # en el histórico igual que uno contado de verdad.
       enabled: true
-      week_starts_on: monday
+      window_days: 7
       counts_as_intense:
         hiit_executed: true       # HIIT realmente hecho, leído de Hevy
         ride_intensa: true        # salida clasificada INTENSA

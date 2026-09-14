@@ -603,7 +603,11 @@ def _con_recuento(day: date, used: int, unknown: int = 0) -> Signals:
 
     s = _senales(day, dias_desde=DIAS_INTENSA)
     s.intense_count = IntensityCount(
-        used=used, detail=[], week_start=day, unknown=unknown
+        used=used,
+        detail=[],
+        desde=day - timedelta(days=6),
+        hasta=day,
+        unknown=unknown,
     )
     return s
 
@@ -675,61 +679,57 @@ def test_sin_contexto_no_hay_nota_ni_hueco(cfg):
 
 
 # ---------------------------------------------------------------------------
-# La ventana del fin de semana contaba el domingo de la semana pasada
+# TUMBA: los dos tests de la ventana del fin de semana
 # ---------------------------------------------------------------------------
 #
-# El filtro era `<= 6 días`, y un sábado el domingo anterior cae exactamente a
-# 6. El número que se enseña tiene que ser verdad aunque no decida nada; si
-# acaso más, porque un dato que no decide es un dato que nadie va a ir a
-# comprobar.
+# Aquí vivían `test_el_domingo_pasado_no_es_este_fin_de_semana` y
+# `test_el_sabado_de_ayer_si_es_este_fin_de_semana`, más el ayudante
+# `_con_salidas` que solo ellos usaban. Probaban `_intense_rides_this_weekend`,
+# que ya no existe.
+#
+# Los dos eran tests buenos: uno de ellos nació de un fallo real -el filtro era
+# `<= 6 días` y un sábado el domingo ANTERIOR cae exactamente a 6, así que la
+# nota del sábado contaba una salida de la semana pasada-. Se borran porque la
+# función entera se ha ido, y se ha ido porque la pregunta que contestaba
+# estaba mal hecha: «cuántas intensas llevas este fin de semana» solo se puede
+# contestar sábado y domingo, y de lunes a viernes devolvía cero sin decir que
+# era un cero de «no aplica» y no un cero de «no has hecho nada».
+#
+# Lo que probaban -que la ventana no se coma días de antes- lo prueba ahora
+# `test_lo_que_cae_fuera_de_la_ventana_no_cuenta` en `tests/test_signals.py`,
+# con el borde exacto de la ventana rodante: el día -6 entra y el -7 no.
 
 
-def _con_salidas(day: date, fechas: list[date]) -> Signals:
-    s = Signals(day=day)
-    s.rides = [
-        ClassifiedRide(
-            ride=Ride(date=d, duration_s=7200),
-            level="intensa",
-            source="test",
-            load=100.0,
-            load_estimated=False,
-        )
-        for d in fechas
-    ]
-    return s
-
-
-def test_el_domingo_pasado_no_es_este_fin_de_semana(cfg):
-    from app.engine.bike_advisor import _intense_rides_this_weekend
-
-    domingo_pasado = SABADO - timedelta(days=6)
-    assert domingo_pasado.weekday() == 6
-    sig = _con_salidas(SABADO, [domingo_pasado])
-    assert _intense_rides_this_weekend(sig, cfg.raw["cycling"]) == 0
-
-
-def test_el_sabado_de_ayer_si_es_este_fin_de_semana(cfg):
-    from app.engine.bike_advisor import _intense_rides_this_weekend
-
-    sig = _con_salidas(DOMINGO, [SABADO])
-    assert _intense_rides_this_weekend(sig, cfg.raw["cycling"]) == 1
-
-
-def test_la_salida_del_fin_de_semana_se_cuenta_pero_no_recorta(cfg):
+def test_la_salida_del_fin_de_semana_ya_no_es_una_categoria_aparte(cfg):
     """El freno que había aquí, `max_intense_rides_per_weekend`, ya no está.
 
     Y aparte de sobrar, contaba mal: solo era alcanzable los sábados -el punto
     de partida del domingo era 'media' y el bloque entero se saltaba- y en los
     sábados miraba al domingo de la semana anterior.
+
+    Lo que se comprueba hoy es lo contrario de lo que se comprobaba: que de las
+    notas de la bici ha desaparecido el calendario. Una intensa de ayer sigue
+    moviendo el punto de partida y sigue avisando -eso lo mira el test de
+    abajo-, pero ya no hay ninguna frase que hable de «este fin de semana». Ese
+    concepto era el último resto de semana natural que quedaba dentro del
+    recomendador, y contaba con una unidad distinta de la del recuento del
+    mensaje: dos números sobre lo mismo, en dos unidades, en la misma pantalla.
     """
     sig = _senales(DOMINGO, dias_desde=1)  # la última intensa fue ayer, sábado
+    sig.values["yesterday_ride_level"] = "intensa"
     rec = recommend_bike(cfg, sig, "green")
     assert rec.level == "suave", [d[2] for d in rec.downgrades]
     assert not rec.downgrades
-    nota = next(n for n in rec.texto_notas() if "fin de semana" in n)
-    assert nota == "llevas 1 salida intensa este fin de semana", nota
-    assert nota == "llevas 1 salida intensa este fin de semana", nota
-    assert "(s)" not in nota, "esto lo lee una persona, no un log"
+    notas = rec.texto_notas()
+    # Con el `yesterday_ride_level` puesto hay nota seguro. Sin él este test no
+    # comprobaría nada: una lista vacía cumple cualquier «no aparece» que se le
+    # pida, y esa es exactamente la forma de test que se ha ido cazando por todo
+    # el proyecto -el verde sobre el vacío-.
+    assert notas, "el test no vale nada si no hay notas que mirar"
+    for n in notas:
+        assert "fin de semana" not in n, n
+        assert "sábado" not in n.lower(), n
+        assert "domingo" not in n.lower(), n
 
 
 def test_la_intensa_de_ayer_avisa_y_ademas_mueve_el_punto_de_partida(cfg):

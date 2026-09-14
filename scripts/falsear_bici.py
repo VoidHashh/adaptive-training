@@ -121,7 +121,6 @@ def _senales(dia: date, historial: list[ClassifiedRide]) -> Signals:
         adaptive={},
         notes=[],
         rides=historial,
-        weekend=None,
         intense_count=None,
     )
 

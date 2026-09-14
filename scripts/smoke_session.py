@@ -94,8 +94,12 @@ DIA_TRANQUILO = {
     "rhr_delta": 0.0,
     "sleep_min": 450.0,
     "load_3d": 100.0,
-    "weekend_intense_rides": 0,
-    "weekend_total_hours": 1.0,
+    # `weekend_intense_rides` y `weekend_total_hours` se han ido de aquí igual
+    # que de `SENALES_COMPLETAS`: ninguna regla las lee y `build_signals` ya no
+    # las escribe. Copiar a mano los valores de otro fichero tiene este precio
+    # -hay que acordarse de los dos sitios- y se asume a sabiendas: un guión de
+    # diagnóstico que dependiera del andamiaje de los tests dejaría de poder
+    # ejecutarse solo, que es peor.
 }
 
 

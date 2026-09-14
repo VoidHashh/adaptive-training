@@ -79,7 +79,6 @@ from app.engine.signals import (
     ClassifiedRide,
     Signals,
     percentile,
-    previous_weekday,
 )
 
 DESCANSO = "descanso"
@@ -355,13 +354,32 @@ def _notas_de_contexto(
         cuando = "ayer" if lookback <= 1 else f"en los últimos {lookback} días"
         notas.append(f"{cuando} hiciste una salida intensa")
 
-    hechas = _intense_rides_this_weekend(signals, cycling)
-    if hechas:
-        # Plural concordado, no "salida(s)". Mismo motivo que en
-        # `IntensityCount.linea`: esto lo lee una persona el domingo por la
-        # mañana, y los paréntesis de plural delatan un texto de máquina.
-        cuantas = "1 salida intensa" if hechas == 1 else f"{hechas} salidas intensas"
-        notas.append(f"llevas {cuantas} este fin de semana")
+    # AQUÍ ESTABA LA NOTA DEL FIN DE SEMANA, Y ERA EL ÚLTIMO CALENDARIO
+    # -------------------------------------------------------------------
+    # Decía «llevas 1 salida intensa este fin de semana», contando las intensas
+    # del sábado y el domingo con `_intense_rides_this_weekend`. Se ha borrado
+    # entera, con su función.
+    #
+    # Tres motivos, y el tercero es el que la condena:
+    #
+    # 1. Solo hablaba sábado y domingo. De lunes a viernes el bloque de la bici
+    #    no decía una palabra de la intensidad reciente, aunque el jueves
+    #    hubiera habido series. Es el mismo defecto que tenía la recomendación
+    #    antes de quitarle `recommend_on`, sobreviviendo dentro de sus notas.
+    # 2. Era un subconjunto del recuento. La línea 🔥 del mensaje dice ya
+    #    «llevas N sesiones intensas en los últimos 7 días», que incluye esas
+    #    mismas salidas, más el HIIT, y además todos los días. La nota repetía
+    #    parte del mismo hecho con otra unidad justo al lado: dos números
+    #    distintos sobre lo mismo en un mensaje de seis líneas es cómo se
+    #    consigue que no se crea ninguno.
+    # 3. Las dos unidades no coincidían nunca del todo, y la del fin de semana
+    #    era siempre la más pequeña. Medido sobre las 58 salidas reales de la
+    #    caché, la cuenta rodante nunca queda por debajo de la de calendario y
+    #    la supera en 39 de 184 días. Quedarse con la corta era quedarse con la
+    #    que más veces dice «vas descansado».
+    #
+    # Nada de esto se pierde: lo cubre `IntensityCount`, que además no depende
+    # de que hoy sea domingo para existir.
 
     # AQUÍ ESTABA EL RECUENTO SEMANAL DE INTENSAS, Y SE HA IDO AL MENSAJE.
     #
@@ -608,54 +626,25 @@ def _baseline_gaps(
     return Baseline(nivel, why, claro, None)
 
 
-def _intense_rides_this_weekend(signals: Signals, cycling: dict[str, Any]) -> int:
-    """Salidas intensas YA EJECUTADAS en el fin de semana en curso.
-
-    Cuenta lo hecho, no lo recomendado: si el sábado se recomendó intensa y se
-    acabó rodando suave, esa intensidad no ocurrió y no se cuenta.
-
-    LA VENTANA ESTABA UN DÍA -SEIS, EN REALIDAD- DEMASIADO ABIERTA
-    --------------------------------------------------------------
-    El filtro era `(signals.day - d) <= 6 días`. Un sábado, el domingo anterior
-    cae exactamente a 6 días, así que entraba: el sistema contaba el domingo de
-    la semana PASADA como parte de "este fin de semana". Con
-    `max_intense_rides_per_weekend: 1`, una salida intensa el domingo bajaba la
-    del sábado siguiente, seis días después, y el mensaje lo explicaba diciendo
-    "ya hay 1 salida intensa este fin de semana", que era falso de plano.
-
-    Ahora que esto solo informa en vez de recortar, el número deja de bajarle a
-    nadie la salida, pero sale escrito en el mensaje: un número que se enseña
-    tiene que ser verdad aunque no decida nada. Si acaso más, porque un dato
-    que no decide es un dato que nadie va a ir a verificar.
-
-    El fin de semana es una tira contigua de `len(day_names)` días que termina
-    en el último de la lista, así que un día configurado pertenece al fin de
-    semana en curso si cae dentro de esa ventana contando hacia atrás desde
-    hoy. Con sábado y domingo: un sábado solo entra el propio sábado; un
-    domingo entran el sábado de ayer y el domingo de hoy.
-    """
-    day_names = [
-        str(d).lower() for d in ((cycling.get("weekend", {}) or {}).get("days") or [])
-    ]
-    if not day_names:
-        return 0
-
-    ventana = timedelta(days=len(day_names) - 1)
-    days: list = []
-    for name in day_names:
-        if name == signals.weekday():
-            days.append(signals.day)
-        else:
-            d = previous_weekday(signals.day, name)
-            if (signals.day - d) <= ventana:
-                days.append(d)
-
-    rides: list[ClassifiedRide] = signals.rides or []
-    # Estrictamente anteriores a hoy: la salida de hoy todavía no ha ocurrido
-    # cuando se emite la recomendación por la mañana.
-    return sum(
-        1 for r in rides if r.date in days and r.date < signals.day and r.level == "intensa"
-    )
+# AQUÍ ESTABA `_intense_rides_this_weekend`, Y SE HA BORRADO ENTERA
+# ------------------------------------------------------------------
+# Contaba las salidas intensas ya ejecutadas del fin de semana en curso, y su
+# docstring era casi todo la historia de un fallo suyo: el filtro `<= 6 días`
+# metía el domingo de la semana PASADA dentro de «este fin de semana», así que
+# un sábado el mensaje podía decir «ya hay 1 salida intensa este fin de semana»
+# refiriéndose a una de seis días antes. Se arregló, y el arreglo era correcto.
+#
+# La función se va igualmente, y conviene que quede escrito por qué: no se
+# borra porque estuviera mal, se borra porque la pregunta que contestaba estaba
+# mal hecha. «¿Cuántas intensas llevo ESTE FIN DE SEMANA?» solo tiene respuesta
+# sábado y domingo, y solo tiene interés si se da por hecho que ahí es donde
+# cae el esfuerzo. Las dos cosas son el calendario. La pregunta que sí se
+# sostiene los siete días -«¿cuánta intensidad llevo encima?»- la contesta
+# `IntensityCount` sobre una ventana rodante.
+#
+# Con ella se van `previous_weekday` -que no tenía más llamantes- y el bloque
+# `cycling.weekend` del YAML, que existía solo para decirle a esta función y a
+# `weekend_summary` qué días agrupar.
 
 
 def _light_es(light: str) -> str:

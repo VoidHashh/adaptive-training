@@ -1235,6 +1235,20 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # apuntan a lados contrarios: sin la clave, el validador se salta el bloque
     # entero y el motor lo aplica igualmente con los valores que se invente. Un
     # `enable:` por `enabled:` dejaba el fichero pasando la validación.
+    #
+    # Y HUBO UNA SEGUNDA MITAD DEL MISMO DEFECTO, PEOR
+    # ------------------------------------------------
+    # Durante un tiempo el motor no leyó `enabled` EN ABSOLUTO. Este validador
+    # exigía la clave, obligaba a que fuera booleana, y el mensaje de error de
+    # aquí abajo prometía por escrito que poniéndola a `false` se dejaba de
+    # contar. No se dejaba de contar: `intensity_count()` no la miraba, el
+    # número seguía saliendo en el mensaje todas las mañanas, y el fichero
+    # validaba sin una queja.
+    #
+    # O sea que no era una opción muerta de las que no hacen nada y se notan:
+    # era una opción muerta que este fichero certificaba como viva. Ya está
+    # conectada -`intensity_count()` devuelve `None` y la línea desaparece del
+    # mensaje-, y estas dos comprobaciones son ahora verdad.
     # El bloque tiene que ESTAR. Antes daba igual que faltara porque lo único
     # que se perdía era un freno de más; ahora lo que se pierde es el recuento,
     # que es la única razón por la que el bloque sigue existiendo. Un
@@ -1251,13 +1265,42 @@ def _validate(data: dict[str, Any]) -> list[str]:
         require(
             isinstance(conteo.get("enabled"), bool),
             "intensity_count.enabled tiene que estar y ser true o false. Sin "
-            "ella el validador se salta el bloque y el motor lo aplica igual.",
+            "ella el validador se salta el bloque y el motor cuenta igual, que "
+            "es el defecto por defecto y no una decisión de nadie.",
         )
     if conteo.get("enabled"):
+        # El periodo tiene que estar ESCRITO, y no vale un `7` supuesto.
+        #
+        # Aquí se validaba `week_starts_on in WEEKDAYS`, que es la pregunta de
+        # cuando el recuento iba por semana natural. Ahora la ventana rueda y lo
+        # que hay que exigir es su ancho. Se exige de verdad -entero >= 1- y no
+        # solo "si está, que valga": el número sale escrito en el mensaje («en
+        # los últimos N días»), así que un `window_days` ausente no daría un
+        # recuento aproximado, daría un recuento con las unidades inventadas por
+        # el código y sin forma de que el lector lo sospeche.
+        #
+        # `bool` se descarta a mano porque en Python `True` es un `int` y
+        # `window_days: yes` en YAML es `True`. Sin esta línea, esa errata
+        # pasaría la validación y contaría una ventana de un día.
+        ventana = conteo.get("window_days")
         require(
-            conteo.get("week_starts_on") in WEEKDAYS,
-            f"intensity_count.week_starts_on '{conteo.get('week_starts_on')}' no es válido",
+            isinstance(ventana, int)
+            and not isinstance(ventana, bool)
+            and ventana >= 1,
+            f"intensity_count.window_days tiene que ser un entero >= 1 y vale "
+            f"{ventana!r}. Es el periodo del recuento y sale escrito en el "
+            f"mensaje; sin él no se supone una semana, se para.",
         )
+
+    # Las claves de `intensity_count` quedan cerradas. Este bloque ha perdido ya
+    # cinco -cuatro del presupuesto y ahora `week_starts_on`- y cada una se
+    # escribió creyendo que hacía algo. La lista negra de abajo nombra una a una
+    # las que se sabe que existieron; esto es la red por debajo, para la sexta.
+    check_keys(
+        conteo,
+        {"enabled", "window_days", "counts_as_intense"},
+        "cycling.recommendation.intensity_count",
+    )
 
     # LISTA NEGRA: las claves de cuando esto era un presupuesto y recortaba.
     #
@@ -1292,6 +1335,21 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"Para frenar por carga acumulada está thresholds.amber.carga_acumulada, "
             f"que mira la carga de Garmin contra tu propio percentil 90.",
         )
+
+    # Y la quinta, que es de otra familia: no creía frenar, creía elegir el
+    # corte de un contador. Se nombra aparte con su propio motivo porque el que
+    # la reescriba no se estará equivocando en lo mismo.
+    require(
+        "week_starts_on" not in conteo,
+        "intensity_count.week_starts_on es la clave de cuando el recuento iba "
+        "por semana natural y se ponía a cero los lunes. Ahora es una ventana "
+        "rodante que termina hoy, así que no empieza por ningún día: escribir "
+        "aquí 'sunday' no movería nada y lo parecería. Medido sobre el "
+        "histórico real, el corte del lunes hacía que 8 de 26 lunes el mensaje "
+        "dijera 'ninguna sesión intensa esta semana' con 1 o 2 intensas en los "
+        "siete días anteriores. Si lo que se quiere es otro periodo, es "
+        "window_days.",
+    )
 
     # --- rutinas ------------------------------------------------------------
     #
@@ -1899,27 +1957,29 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "computed' implementado, así que rellenar 'max_hr' no cambiaría ni una "
         "clasificación. Bórralo.",
     )
-    # `cycling.weekend` ya no tiene umbrales: solo dice qué días se agrupan al
-    # resumir el fin de semana. Los dos que había alimentaban `resaca_finde` con
-    # el operador `_option`, y se fueron con ella.
+    # `cycling.weekend` SE HA BORRADO ENTERO, no solo sus umbrales.
     #
-    # Se nombran uno a uno en vez de dejar que `check_keys` los rechace con el
-    # mensaje genérico de clave desconocida. Escribirlos otra vez no sería una
-    # errata: sería alguien reponiendo un freno a mano, convencido de que vuelve
-    # a decidir los lunes. Y no volvería: sin la regla que los leía, estos dos
-    # números no los mira nadie. Un freno que se cree repuesto y no lo está es
-    # peor que no tenerlo, porque se sale a rodar contando con él.
-    finde = (data.get("cycling") or {}).get("weekend") or {}
-    for muerto in ("total_hours_threshold", "intense_rides_threshold"):
-        require(
-            muerto not in finde,
-            f"cycling.weekend.{muerto} ya no lo lee nadie: era un umbral de "
-            f"`resaca_finde`, que se ha borrado. Reescribirlo aquí no volvería a "
-            f"poner el lunes en ámbar, solo lo parecería. Para frenar por carga "
-            f"acumulada está thresholds.amber.carga_acumulada, que compara con "
-            f"tu propia distribución y no con un número escrito a mano.",
-        )
-    check_keys(finde, {"days"}, "cycling.weekend")
+    # Fue perdiendo lectores por tandas. Primero se fueron `total_hours_threshold`
+    # e `intense_rides_threshold` con la regla `resaca_finde`, y quedó
+    # `days: [saturday, sunday]` alimentando a `weekend_summary` y a
+    # `_intense_rides_this_weekend`. Con el recuento rodante se han borrado esas
+    # dos funciones, así que el bloque se queda sin un solo lector.
+    #
+    # Y el bloque entero es el problema, no las claves: agrupar por «sábado y
+    # domingo» da por hecho que el esfuerzo grande cae en fin de semana. Es el
+    # calendario fijo que se echó de `cycling.recommendation`, sobreviviendo dos
+    # bloques más abajo con otro nombre. Quien lo reponga no estará configurando
+    # nada: estará describiendo una semana que este sistema ya no mira.
+    require(
+        "weekend" not in (data.get("cycling") or {}),
+        "cycling.weekend ya no lo lee nadie. Sus dos umbrales se fueron con la "
+        "regla `resaca_finde`, y `days` se ha ido con `weekend_summary` y con la "
+        "nota de fin de semana de la bici, que el recuento rodante de "
+        "`intensity_count` sustituye y mejora: dice lo mismo los siete días en "
+        "vez de solo sábado y domingo, y sobre el histórico real nunca cuenta "
+        "por debajo de lo que contaba el fin de semana. Reescribirlo aquí no "
+        "volvería a agrupar nada, solo lo parecería.",
+    )
 
     # `cycling.recommendation` no tenía lista blanca, y es el bloque del que
     # más claves muertas han salido en este proyecto: `recommend_on`,
@@ -1967,7 +2027,6 @@ def _validate(data: dict[str, Any]) -> list[str]:
             "fetch",
             "load",
             "recommendation",
-            "weekend",
         },
         "cycling",
     )

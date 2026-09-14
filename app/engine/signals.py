@@ -48,14 +48,26 @@ UNKNOWN = "desconocida"
 
 
 class IntensityCountConfigError(ValueError):
-    """El bloque de recuento de intensas trae claves de cuando limitaba.
+    """El bloque de recuento de intensas está mal configurado.
 
-    `weekly_limit`, `on_budget_exhausted`, `max_intense_rides_per_weekend` y
-    `require_green_for_intense` existieron y recortaban la salida del fin de
-    semana. Ya no existe nada que las lea. Dejarlas pasar en silencio sería la
-    trampa exacta que el sistema lleva meses pagando, y encima en la dirección
-    más engañosa que hay: alguien escribe `weekly_limit: 2` convencido de que
-    se está poniendo un tope, el fichero valida, y no pasa absolutamente nada.
+    Dos familias de motivo, y las dos son el mismo fallo:
+
+    1. CLAVES DE CUANDO LIMITABA. `weekly_limit`, `on_budget_exhausted`,
+       `max_intense_rides_per_weekend` y `require_green_for_intense` existieron
+       y recortaban la salida del fin de semana. Ya no existe nada que las lea.
+       Dejarlas pasar en silencio sería la trampa exacta que el sistema lleva
+       meses pagando, y encima en la dirección más engañosa que hay: alguien
+       escribe `weekly_limit: 2` convencido de que se está poniendo un tope, el
+       fichero valida, y no pasa absolutamente nada.
+
+    2. CLAVES DE CUANDO ERA UNA SEMANA NATURAL. `week_starts_on` decía por qué
+       día empezaba la cuenta, y la cuenta ya no empieza por ningún día: es una
+       ventana rodante que termina hoy. Quien lo reescriba estará eligiendo un
+       lunes que no existe.
+
+    Y la ventana que SÍ se lee tiene que estar escrita. Sin `window_days` no se
+    supone un 7: se para. Un recuento cuyo periodo se lo inventa el código es
+    un número sin unidades en el mensaje de la mañana.
     """
 
 
@@ -225,7 +237,21 @@ class Signals:
     # espacio de nombres que ven las reglas y lo que se serializa en el
     # snapshot, y ahí solo deben vivir señales evaluables.
     rides: list[ClassifiedRide] = field(default_factory=list)
-    weekend: WeekendSummary | None = None
+    # Aquí vivía `weekend: WeekendSummary | None`, y se ha borrado el campo
+    # entero junto con la función que lo llenaba. Se escribía en cada decisión y
+    # no lo leía NADIE: ni una regla, ni el mensaje, ni el panel, ni las
+    # métricas. Un campo que solo se escribe es una opción muerta con otra ropa,
+    # y encima esta agrupaba por sábado y domingo, que es el calendario fijo
+    # otra vez. Lo que hacía falta de ahí -cuántas intensas se llevan encima- lo
+    # da ahora `intense_count` sin preguntarle al calendario qué día es.
+    #
+    # `None` quiere decir NO SE CUENTA, y cubre los tres caminos que llevan ahí:
+    # unas señales que nadie ha construido, un config sin el bloque, y un
+    # `enabled: false` escrito a propósito. Los tres se parecen en lo único que
+    # importa: nadie ha mirado, así que el mensaje no dice nada. Lo que NO puede
+    # ser es un `IntensityCount(used=0)`, porque un cero sí afirma algo -«no has
+    # hecho ninguna intensa»- y se queda escrito en el histórico igual que uno
+    # contado de verdad.
     intense_count: IntensityCount | None = None
 
     def get(self, name: str) -> Any:
@@ -316,13 +342,18 @@ def week_start(day: date, starts_on: str = "monday") -> date:
     return day - timedelta(days=(day.weekday() - target) % 7)
 
 
-def previous_weekday(day: date, weekday_name: str) -> date:
-    """La última fecha ESTRICTAMENTE anterior a `day` con ese día de la semana."""
-    target = WEEKDAY_NAMES.index(weekday_name)
-    delta = (day.weekday() - target) % 7
-    if delta == 0:
-        delta = 7
-    return day - timedelta(days=delta)
+# Aquí estaba `previous_weekday`, que daba la última fecha estrictamente
+# anterior con un día de la semana dado. Sus dos únicos llamantes eran
+# `weekend_summary` y `_intense_rides_this_weekend`, y los dos se han borrado
+# con el recuento rodante. Se va con ellos en vez de quedarse "por si acaso":
+# una utilidad de calendario sin llamantes, en un sistema del que se acaba de
+# echar el calendario, es exactamente el atajo que lo devolvería.
+#
+# `week_start` se queda, y no es incoherencia: lo usan el ciclo de descarga
+# (`deload_every_weeks`) y `tendencia`, donde la semana natural SÍ es la unidad
+# real —los bloques de entrenamiento se cuentan en semanas—. Lo que no puede
+# ser unidad es el periodo sobre el que se le informa al usuario de lo que
+# lleva hecho, porque ahí el corte del lunes no describe nada del cuerpo.
 
 
 # ---------------------------------------------------------------------------
@@ -554,55 +585,39 @@ def resolve_adaptive_threshold(
 
 
 # ---------------------------------------------------------------------------
-# Fin de semana y presupuesto semanal
+# Recuento rodante de sesiones intensas
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class WeekendSummary:
-    days: list[date]
-    total_hours: float
-    intense_rides: int | None  # None = no se puede saber (salidas sin clasificar)
-    unknown_rides: int
-    rides: list[ClassifiedRide]
-
-
-def weekend_summary(
-    rides: Sequence[ClassifiedRide],
-    day: date,
-    cycling_cfg: dict[str, Any],
-) -> WeekendSummary:
-    """Resumen del fin de semana INMEDIATAMENTE ANTERIOR a `day`.
-
-    Sobre las salidas sin clasificar: si hay alguna `desconocida` y ninguna
-    intensa confirmada, `intense_rides` va a None y la regla del lunes se salta
-    en vez de asumir que el fin de semana fue suave. Si ya hay una intensa
-    confirmada, el dato que falta no cambia la conclusión y la regla sí evalúa.
-    """
-    day_names = (cycling_cfg.get("weekend", {}) or {}).get("days") or ["saturday", "sunday"]
-    days = sorted(previous_weekday(day, name) for name in day_names)
-
-    picked = [r for r in rides if r.date in days]
-    total_hours = sum(r.hours for r in picked)
-    intense = sum(1 for r in picked if r.level == "intensa")
-    unknown = sum(1 for r in picked if r.level == UNKNOWN)
-
-    intense_rides: int | None = intense
-    if unknown and intense == 0:
-        intense_rides = None
-
-    return WeekendSummary(
-        days=days,
-        total_hours=total_hours,
-        intense_rides=intense_rides,
-        unknown_rides=unknown,
-        rides=picked,
-    )
+#
+# AQUÍ ESTABAN `WeekendSummary` Y `weekend_summary`, Y SE HAN BORRADO
+# -------------------------------------------------------------------
+# Resumían el fin de semana inmediatamente anterior: horas totales, salidas
+# intensas y salidas sin clasificar del sábado y el domingo. De ahí salían dos
+# señales, `weekend_total_hours` y `weekend_intense_rides`, y un objeto entero
+# colgado de `Signals.weekend`.
+#
+# No lo leía nadie. Ni una regla del semáforo -`resaca_finde`, la única que lo
+# miraba, se borró hace tiempo con sus dos umbrales-, ni el mensaje, ni el
+# panel, ni las métricas. Lo que quedaba era un cálculo que se ejecutaba todos
+# los días para escribir tres cosas que nadie leía jamás, y que además metía
+# una nota en `notes` -«N salida(s) sin clasificar el fin de semana; la regla
+# del lunes se salta»- que hablaba de una regla del lunes que ya no existe. El
+# sistema se estaba avisando a sí mismo de las consecuencias de algo borrado.
+#
+# Y no es solo código sobrante: es el calendario. Agrupar por «sábado y
+# domingo» presupone que el esfuerzo grande cae en fin de semana, que es
+# exactamente lo que se echó de la bici por no ser verdad.
+#
+# Lo que hacía falta de ahí -cuánta intensidad se lleva encima hace poco- lo da
+# `IntensityCount` sobre una ventana rodante, sin preguntar qué día es hoy. Lo
+# que se pierde -las horas del fin de semana- no se pierde: las salidas enteras
+# siguen en `data/cache/activities.json` y en la tabla `activities`, y de ahí
+# se recalcula cuando haga falta. Un agregado derivado que nadie consulta no es
+# un registro, es una copia sin dueño.
 
 
 @dataclass(frozen=True)
 class IntensityCount:
-    """Sesiones intensas de la semana en curso. Cuenta; no limita.
+    """Sesiones intensas de los últimos N días. Cuenta; no limita.
 
     ESTO ERA UN PRESUPUESTO Y AHORA ES UN CONTADOR
     -----------------------------------------------
@@ -620,14 +635,57 @@ class IntensityCount:
     'desconocida'. O sea que `used` es un MÍNIMO y no el número, y ahora que
     se enseña en el mensaje todos los días eso hay que decirlo cada vez que
     pase, no solo cuando además frenaba.
+
+    Y AHORA LA VENTANA RUEDA, QUE ES EL SEGUNDO CALENDARIO QUE SE VA
+    -----------------------------------------------------------------
+    Esto contaba desde el lunes: `week_start(day, "monday")`. Un contador que
+    se pone a cero a las doce de la noche del domingo, sin que el cuerpo se
+    entere de nada.
+
+    Medido sobre las 58 salidas reales de la caché (184 días, 12 intensas), la
+    cuenta natural y la rodante de 7 días NO COINCIDEN en 39 de esos 184 días,
+    o sea uno de cada cinco. Y el desacuerdo tiene signo: el mínimo es 0 y el
+    máximo +2, siempre a favor de la rodante. La semana natural nunca cuenta de
+    más; cuenta de MENOS, que es el lado peligroso con una hernia detrás.
+
+    El caso claro es el lunes. En 8 de 26 lunes -el 31%- el mensaje decía
+    «ninguna sesión intensa esta semana todavía» habiendo 1 o 2 intensas en los
+    siete días anteriores; tres de esos lunes venían de sábado Y domingo
+    intensos, doce horas antes. La frase era literalmente cierta y
+    prácticamente mentira, que es la peor combinación posible: no se puede
+    discutir con ella y engaña igual.
+
+    Con la ventana rodante el desacuerdo desaparece por construcción, porque no
+    hay corte: todos los días se miran los mismos siete días hacia atrás y el
+    número solo cambia cuando cambia lo que se hizo.
+
+    POR QUÉ 7 Y NO UN PERCENTIL DE MI DISTRIBUCIÓN
+    ------------------------------------------------
+    La norma de la casa es calcular contra la propia distribución en vez de
+    contra constantes. Aquí no aplica, y el motivo es que esto NO ES UN UMBRAL:
+    no se compara contra nada, no hay denominador, no frena. Es la unidad en la
+    que se cuenta, y una unidad tiene que ser estable para poder comparar el
+    número de hoy con el de la semana pasada. Un periodo que se recalculara
+    cada día haría que el contador subiera o bajara sin que se hubiera hecho ni
+    dejado de hacer nada, que es justo el defecto que se está quitando.
     """
 
     used: int
     detail: list[str]
-    week_start: date
-    # Salidas de la semana que no se pudieron clasificar. Podrían haber sido
+    # Los dos extremos de la ventana, incluidos los dos, y guardados en vez de
+    # deducidos. `hasta` es el día de la decisión. Se almacenan los dos porque
+    # es lo que va al snapshot: dentro de un año, «7» no dice sobre qué siete
+    # días se contó, y la fecha de la decisión podría no estar a mano.
+    desde: date
+    hasta: date
+    # Salidas de la ventana que no se pudieron clasificar. Podrían haber sido
     # intensas, así que `used` es un MÍNIMO, no el número.
     unknown: int = 0
+
+    @property
+    def dias(self) -> int:
+        """Ancho de la ventana en días, extremos incluidos."""
+        return (self.hasta - self.desde).days + 1
 
     def linea(self) -> str:
         """La frase informativa del mensaje. Sin referencia y sin juicio.
@@ -641,13 +699,28 @@ class IntensityCount:
         lee una persona a las siete de la mañana, no un log: los paréntesis de
         plural son la marca de un texto generado, y un texto que parece
         generado se lee como relleno. Cuesta dos líneas.
+
+        SE FUE LA PALABRA «TODAVÍA», Y NO ES UN DETALLE DE ESTILO
+        ----------------------------------------------------------
+        Decía «ninguna sesión intensa esta semana todavía». El «todavía»
+        pertenecía a la semana natural: presuponía un periodo abierto que
+        quedaba por llenar, o sea una cuota implícita justo en la frase que se
+        escribió para no tener cuota. En una ventana rodante no hay nada
+        pendiente de llenarse -los siete días de atrás ya pasaron enteros-, así
+        que la palabra sobra y además empujaba.
+
+        El periodo se dice con todas las letras en la frase en vez de darlo por
+        supuesto. «Esta semana» obligaba a saber qué día es hoy para entender
+        el número; «en los últimos 7 días» se entiende un martes y un domingo
+        igual, que es exactamente lo que se busca.
         """
+        periodo = f"en los últimos {self.dias} días" if self.dias != 1 else "hoy"
         if self.used == 0 and not self.unknown:
-            return "ninguna sesión intensa esta semana todavía"
+            return f"ninguna sesión intensa {periodo}"
         cuantas = (
             "1 sesión intensa" if self.used == 1 else f"{self.used} sesiones intensas"
         )
-        base = f"llevas {cuantas} esta semana"
+        base = f"llevas {cuantas} {periodo}"
         if self.unknown:
             sueltas = (
                 "1 salida sin clasificar que pudo serlo"
@@ -665,11 +738,19 @@ class IntensityCount:
         y solo los días en que hubiera recorte. Al dejar de recortar, el dato
         habría desaparecido del histórico por completo justo cuando pasa a ser
         su única razón de existir.
+
+        `week_start` era la clave de cuando la cuenta empezaba el lunes, y no
+        se ha renombrado a secas: se ha sustituido por los dos extremos. Un
+        `desde` suelto obligaría a saber de qué día era la decisión para
+        reconstruir la ventana, y el que lea esto dentro de un año estará
+        leyendo un JSON, no una fila con su fecha al lado.
         """
         return {
             "used": self.used,
             "unknown": self.unknown,
-            "week_start": self.week_start.isoformat(),
+            "desde": self.desde.isoformat(),
+            "hasta": self.hasta.isoformat(),
+            "dias": self.dias,
             "detail": list(self.detail),
         }
 
@@ -683,22 +764,88 @@ CLAVES_DE_CUANDO_LIMITABA = (
     "require_green_for_intense",
 )
 
+# La clave de cuando la ventana era una semana natural. Va aparte de la lista
+# de arriba porque el error que describe es otro: quien escriba `weekly_limit`
+# cree que está frenando algo; quien escriba `week_starts_on` cree que está
+# eligiendo por dónde corta un contador que ya no corta por ningún sitio. El
+# mensaje tiene que decir cada cosa, y un mensaje que las junta no dice
+# ninguna.
+CLAVES_DE_CUANDO_ERA_SEMANA_NATURAL = ("week_starts_on",)
+
 
 def intensity_count(
     rides: Sequence[ClassifiedRide],
     sessions: Sequence[StrengthSession],
     day: date,
     cycling_cfg: dict[str, Any],
-) -> IntensityCount:
-    """Sesiones intensas HECHAS en la semana en curso, hasta `day` incluido.
+) -> IntensityCount | None:
+    """Sesiones intensas HECHAS en los `window_days` que terminan en `day`.
+
+    Devuelve `None` cuando NO SE CUENTA, que no es lo mismo que contar cero.
+    Un cero dice «no has hecho ninguna intensa» y eso es una afirmación sobre el
+    entrenamiento de quien lo lee; `None` no dice nada, y el mensaje se limita a
+    no sacar la línea. Ver abajo por qué la distinción tuvo que hacerse.
 
     Cuenta lo EJECUTADO: un HIIT programado que no se hizo no cuenta. Y no
     limita nada: el número sale en el mensaje y se guarda, y eso es todo lo
     que hace.
+
+    La ventana incluye los dos extremos y termina HOY, no ayer. Es coherente
+    con `rolling_load` y por el mismo motivo: por la mañana todavía no hay nada
+    de hoy, así que en la práctica son los días anteriores; pero si algo
+    recalcula por la tarde, lo que se hizo hoy ya cuenta y el número no se
+    queda corto. Un contador que ignora el propio día se desmiente solo en
+    cuanto alguien mira el panel después de entrenar.
     """
     cfg = ((cycling_cfg.get("recommendation", {}) or {}).get("intensity_count", {})) or {}
 
-    # La guarda vive aquí y no solo en `config_loader` porque `config_loader`
+    # NO CONTAR, CONTAR CERO Y CONTAR A MEDIAS SON TRES COSAS DISTINTAS
+    # -----------------------------------------------------------------
+    # Aquí había un `return IntensityCount(used=0, detail=[], desde=day,
+    # hasta=day)` y era un cero fabricado. Volvía SIN MIRAR `rides`, así que el
+    # mensaje de la mañana salía afirmando «ninguna sesión intensa hoy» un día
+    # en que podía haber una: no es que el recuento fuera aproximado, es que la
+    # frase era falsa y no había forma de sospecharlo leyéndola. Y el test que
+    # cubría este camino pasaba `rides=[]`, con lo cual el cero le salía bien
+    # por los dos motivos a la vez y no distinguía uno del otro.
+    #
+    # Ahora son tres respuestas para tres situaciones:
+    #
+    #   - Sin bloque no hay nada configurado: `None`. No se cuenta y no se dice
+    #     nada. `message.py` no saca la línea.
+    #   - Con `enabled: false` la decisión de no contar está ESCRITA: `None`
+    #     también, por el mismo motivo y con más razón.
+    #   - Con bloque encendido pero sin `window_days` sí hay un número que va a
+    #     salir en el mensaje, y suponerle una ventana sería ponerle unidades
+    #     falsas. Eso revienta, unas líneas más abajo.
+    #
+    # Que el bloque ESTÉ en el YAML de verdad lo exige `config_loader`, que es
+    # la aduana del fichero. Esto de aquí es una función de cálculo y la llaman
+    # también scripts y tests con diccionarios escritos a mano.
+    if not cfg:
+        return None
+
+    # `enabled` NO SE LEÍA, Y EL VALIDADOR PROMETÍA QUE SÍ
+    # ----------------------------------------------------
+    # El bloque exigía la clave -presente y booleana- y el motor no la miraba en
+    # ningún sitio. O sea que `enabled: false` validaba perfectamente y seguía
+    # contando: el interruptor estaba puesto, se podía apagar, y no apagaba
+    # nada. Peor todavía, el error de `config_loader` que exige el bloque dice
+    # literalmente «para no contar hay que escribir `enabled: false`», con lo
+    # cual el fichero documentaba un comportamiento que no existía.
+    #
+    # Es el defecto que da nombre a media docena de comentarios de este
+    # repositorio -el validador y el motor mirando a lados distintos- y estaba
+    # dentro del bloque que este cambio venía a reescribir.
+    #
+    # El defecto de la clave ausente es `True` porque en el YAML real
+    # `config_loader` garantiza que está escrita, y en los diccionarios a mano
+    # de scripts y tests contar es lo que se espera. Donde importa, los dos
+    # lados miran ahora lo mismo.
+    if not cfg.get("enabled", True):
+        return None
+
+    # Las guardas viven aquí y no solo en `config_loader` porque `config_loader`
     # protege el YAML del repositorio, y esta función la llaman además scripts
     # y tests con diccionarios de configuración escritos a mano que no pasan
     # por el validador. Una clave muerta tiene que doler en los dos caminos.
@@ -711,8 +858,35 @@ def intensity_count(
             f"que se busca es frenar por carga acumulada, el camino es el "
             f"semáforo (HRV, sueño, pulso de reposo, carga de Garmin), no un cupo."
         )
+    de_calendario = [k for k in CLAVES_DE_CUANDO_ERA_SEMANA_NATURAL if k in cfg]
+    if de_calendario:
+        raise IntensityCountConfigError(
+            f"cycling.recommendation.intensity_count trae {de_calendario}, que "
+            f"son claves de cuando el recuento iba por semana natural. Ahora es "
+            f"una ventana rodante de `window_days` que termina hoy, así que no "
+            f"empieza ningún día: elegir el lunes no cambiaría nada y parecería "
+            f"que sí. Si lo que se quiere es otro periodo, es `window_days`."
+        )
+
+    # `window_days` NO tiene valor por defecto, y es deliberado. El resto del
+    # bloque se lee con `.get(..., True)` porque un `counts_as_intense` incompleto
+    # da un recuento distinto pero comprensible; aquí lo que se supondría es la
+    # UNIDAD del número, y esa unidad sale escrita en el mensaje de la mañana.
+    # Un «llevas 2 sesiones intensas en los últimos 7 días» calculado sobre una
+    # ventana que el código se inventó porque el YAML no la decía es un número
+    # con unidades falsas, y el lector no tiene forma de sospecharlo.
+    ventana = cfg.get("window_days")
+    if not isinstance(ventana, int) or isinstance(ventana, bool) or ventana < 1:
+        raise IntensityCountConfigError(
+            f"cycling.recommendation.intensity_count.window_days tiene que ser un "
+            f"entero >= 1 y vale {ventana!r}. No se supone un 7: el periodo sale "
+            f"escrito en el mensaje («en los últimos N días»), así que inventarlo "
+            f"aquí sería ponerle unidades falsas a un número que se lee todos los "
+            f"días."
+        )
+
     counts = cfg.get("counts_as_intense", {}) or {}
-    start = week_start(day, str(cfg.get("week_starts_on", "monday")))
+    start = day - timedelta(days=ventana - 1)
 
     detail: list[str] = []
     used = 0
@@ -748,7 +922,8 @@ def intensity_count(
     return IntensityCount(
         used=used,
         detail=sorted(detail),
-        week_start=start,
+        desde=start,
+        hasta=day,
         unknown=unknown,
     )
 
@@ -936,38 +1111,51 @@ def build_signals(
             )
 
     # --- ciclismo ----------------------------------------------------------
-    weekend = weekend_summary(classified, day, cycling_cfg)
-    sig.values["weekend_total_hours"] = round(weekend.total_hours, 3)
-    sig.values["weekend_intense_rides"] = weekend.intense_rides
-    if weekend.intense_rides is None:
-        notes.append(
-            f"weekend_intense_rides: {weekend.unknown_rides} salida(s) sin clasificar "
-            "el fin de semana; la regla del lunes se salta en vez de asumir que fue suave"
-        )
-
+    #
+    # Aquí se llamaba a `weekend_summary` y se escribían `weekend_total_hours` y
+    # `weekend_intense_rides`, más una nota sobre «la regla del lunes». Las tres
+    # cosas se han borrado con la función: nadie las leía y la regla del lunes
+    # llevaba meses sin existir. El motivo largo está donde estaba la función.
     conteo = intensity_count(classified, sessions, day, cycling_cfg)
-    sig.values["week_intense_count"] = conteo.used
-    # `week_intense_remaining` se ha quitado de aquí junto con el límite. Era
-    # `limit - used`, y sin límite no queda nada de lo que quedar. Se borra en
-    # vez de dejarse a cero: una señal que vale siempre cero es una señal que
-    # una regla puede leer y comparar, y entonces el cupo vuelve por la puerta
-    # de atrás sin que nadie lo haya decidido.
-    if conteo.unknown:
-        # Va a `notes` y no solo a la nota de la bici porque
-        # `week_intense_count` se enseña como un número redondo -"llevas 2
-        # sesiones intensas esta semana"- y ese número es un MÍNIMO, no el
-        # dato. Enseñar un mínimo con cara de dato es la forma más limpia que
-        # hay de que alguien se fíe de él, y ahora se enseña todos los días.
-        cuantas = (
-            "1 salida de esta semana sin clasificar que pudo ser intensa"
-            if conteo.unknown == 1
-            else f"{conteo.unknown} salidas de esta semana sin clasificar y "
-            f"cualquiera pudo ser intensa"
-        )
-        notes.append(
-            f"week_intense_count: {conteo.used} es un MÍNIMO, no el número: "
-            f"hay {cuantas}"
-        )
+    # `conteo` es `None` cuando no se cuenta: sin bloque o con `enabled: false`.
+    # Entonces NO se escribe la señal, en vez de escribirla a cero.
+    #
+    # Escribir un cero sería exactamente el fallo que se acaba de quitar de
+    # `intensity_count`, pero un piso más abajo y más caro: `sig.values` es lo
+    # que leen las reglas del YAML y lo que se guarda en la base para el panel y
+    # para los replays. Un `intense_count_7d: 0` puesto por un bloque apagado es
+    # indistinguible, mirándolo, de un 0 que significa «esta semana no has
+    # apretado», y se queda escrito en el histórico para siempre. Que la clave
+    # falte es incómodo de leer y por eso es honesto: se nota.
+    if conteo is not None:
+        # El nombre de la señal lleva la ventana dentro. Se llamaba
+        # `week_intense_count` y eso dejó de ser verdad en cuanto la cuenta dejó
+        # de ir por semanas: una regla que lo leyera creería estar mirando la
+        # semana en curso. Un nombre desfasado es la forma más barata que hay de
+        # mentirle al que llegue después, porque no hace falta ni leerlo entero
+        # para creérselo.
+        sig.values[f"intense_count_{conteo.dias}d"] = conteo.used
+        # `week_intense_remaining` se ha quitado de aquí junto con el límite. Era
+        # `limit - used`, y sin límite no queda nada de lo que quedar. Se borra en
+        # vez de dejarse a cero: una señal que vale siempre cero es una señal que
+        # una regla puede leer y comparar, y entonces el cupo vuelve por la puerta
+        # de atrás sin que nadie lo haya decidido.
+        if conteo.unknown:
+            # Va a `notes` y no solo a la nota de la bici porque el recuento se
+            # enseña como un número redondo -"llevas 2 sesiones intensas en los
+            # últimos 7 días"- y ese número es un MÍNIMO, no el dato. Enseñar un
+            # mínimo con cara de dato es la forma más limpia que hay de que alguien
+            # se fíe de él, y se enseña todos los días.
+            cuantas = (
+                "1 salida de la ventana sin clasificar que pudo ser intensa"
+                if conteo.unknown == 1
+                else f"{conteo.unknown} salidas de la ventana sin clasificar y "
+                f"cualquiera pudo ser intensa"
+            )
+            notes.append(
+                f"intense_count_{conteo.dias}d: {conteo.used} es un MÍNIMO, no el "
+                f"número: hay {cuantas}"
+            )
 
     lookback = int(
         ((cycling_cfg.get("recommendation", {}) or {}).get("lookback_days", 1))
@@ -1026,7 +1214,6 @@ def build_signals(
             notes.append(f"{name}: {why}")
 
     sig.rides = classified
-    sig.weekend = weekend
     sig.intense_count = conteo
 
     return sig

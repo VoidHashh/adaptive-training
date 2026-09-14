@@ -48,13 +48,29 @@ La combinación sigue lógica de Kleene:
     any -> si alguna es cierta, cierta (aunque otras falten)
            si no, si alguna falta, indeterminada
 
-Consecuencia práctica, y es deliberada: `resaca_finde` declara en `requires`
-tanto `weekend_intense_rides` como `weekend_total_hours`, pero su `when` es un
-`any`. Si el sábado quedó una salida sin clasificar (intense_rides = None) pero
-el fin de semana sumó 5 horas, la regla DISPARA igual: la rama de las horas ya
-decide por sí sola y el dato que falta no cambiaría la conclusión. `requires`
-se usa para explicar qué faltaba cuando la regla sí acaba saltándose, no como
-una puerta previa que tire la regla al primer hueco.
+Consecuencia práctica, y es deliberada: en un `any`, una rama cierta manda
+aunque a otra rama le falte el dato. `requires` se usa para explicar qué
+faltaba cuando la regla sí acaba saltándose, no como una puerta previa que tire
+la regla al primer hueco.
+
+EL EJEMPLO QUE HABÍA AQUÍ YA NO EXISTE, Y CONVIENE QUE SE SEPA
+--------------------------------------------------------------
+Este párrafo ilustraba lo de arriba con `resaca_finde`, que declaraba en
+`requires` tanto `weekend_intense_rides` como `weekend_total_hours` y tenía un
+`when` de tipo `any`. Esa regla se borró, y con el paso al recuento rodante se
+han ido también las dos señales: `build_signals` ya no escribe ninguna de las
+dos. O sea que el ejemplo describía, en presente, una regla muerta que leía dos
+señales muertas.
+
+Se deja dicho en vez de sustituirlo por otro ejemplo porque no hay otro ejemplo
+que poner: de las DOCE reglas que quedan en `thresholds`, ninguna usa `any`.
+`_kleene_any` sigue implementada aquí abajo y `when: {any: [...]}` sigue siendo
+gramática válida, pero hoy no la ejercita ni el `config.yaml` ni ningún test.
+Es una rama de código viva que nadie recorre: si se rompiera, nadie se
+enteraría hasta que alguien escribiera la primera regla con `any` -y entonces
+se enteraría por un semáforo equivocado, no por un error-. Queda anotado aquí
+en vez de borrarlo a la ligera, porque `any` es gramática del lenguaje de
+reglas y no una opción del fichero, y quitarlo es una decisión aparte.
 """
 
 from __future__ import annotations
