@@ -468,6 +468,23 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/python -m app.cli --dry-run
 ```
 
+**Ningún guión restaura con git.** Los `scripts/mutar_*.py` rompen el código a
+propósito para comprobar que algún test se entera, y luego lo deshacen. Se
+deshace copiando el fichero antes con `shutil.copy2` y volviendo a copiarlo
+encima en un `finally` —nunca con `git checkout`—. No son lo mismo: `git
+checkout` no deshace la mutación, devuelve el fichero a HEAD, y se lleva por
+delante todo lo que no estuviera commiteado. Como se muta justo la cosa que se
+está escribiendo, eso es lo normal. Aquí pasó, y la implementación perdida hubo
+que rehacerla desde el transcript de la sesión.
+
+La regla ya estaba escrita en prosa, en el docstring de un guión que la cumple,
+y no impidió nada. Así que ahora falla: `tests/test_guiones.py` mira el AST de
+todo `scripts/`, `tests/` y `app/` y revienta si un literal de código junta
+`git` con `checkout`, `restore`, `reset`, `clean` o `stash`. Nombrarlo en un
+comentario o en un docstring está bien —ninguno de los dos llega al AST—;
+ejecutarlo, no. De paso exige que todo `mutar_*.py` copie, restaure en un
+`finally`, **escriba dentro de ese `try`** y cuente la regla en su docstring.
+
 **Los iconos PNG no se editan.** Se dibujan desde los dos SVG de
 `static/icons/` con `python scripts/generar_iconos.py`; si tocas un SVG, vuelve
 a pasarlo. La suite compara píxeles y avisa si se te olvida, porque un PNG
