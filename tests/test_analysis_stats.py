@@ -160,13 +160,13 @@ def test_con_dos_dias_no_se_calcula_y_se_dice_cuantos_faltan():
     """Con dos puntos la recta pasa por los dos: r sale 1 siempre, y es mentira."""
     r = correlacion(pares([1, 2], [5, 9]))
     assert r.r is None
-    assert "faltan 1" in r.na and "2 día(s)" in r.na
+    assert "falta 1" in r.na and "2 días" in r.na
 
 
 def test_sin_ningun_dia_tambien_se_explica():
     r = correlacion(emparejar({}, {}))
     assert r.n == 0 and r.r is None
-    assert r.na and "0 día(s)" in r.na
+    assert r.na and "0 días" in r.na
     assert r.desde is None and r.hasta is None
 
 

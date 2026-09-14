@@ -1326,7 +1326,7 @@ def test_el_ranking_de_ejercicios_llega_con_los_nombres_del_yaml(cliente, db):
     assert d["vista"] == "ranking_ejercicios"
     assert d["respuesta"]["clave"] == "lower_discomfort"
     assert d["respuesta"]["etiqueta"] == "Molestias lumbares"
-    assert d["ordenado_por"] == "correlación a +1 día(s)"
+    assert d["ordenado_por"] == "correlación a +1 día"
 
     primero = d["ranking"][0]
     assert primero["clave"] == "0EB695C9"

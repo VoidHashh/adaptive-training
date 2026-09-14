@@ -440,13 +440,43 @@ def test_todas_las_rutas_que_pide_la_pwa_existen_en_la_api(cliente):
 
     Renombrar un endpoint en Python no rompe nada en Python. Rompe una pantalla
     del móvil, que es donde nadie está mirando cuando se hace el cambio.
+
+    Y AL REVÉS TAMBIÉN, que es el que ha vuelto a pasar. Aquí había un `len(urls)
+    == 6` escrito a mano: un número que dice cuántas rutas hay hoy y que no sabe
+    nada de cuántas debería haber. `/api/metrics/portada` llevaba desde el día 13
+    calculada, servida y con sus tests, y `metricas.js` no la pedía. Este test
+    pasaba en verde con la vista más importante del panel sin un solo lector,
+    porque contar seis de seis es exactamente lo mismo cuando faltan cero que
+    cuando falta la séptima.
+
+    Así que el número se fue y el denominador lo pone ahora la TABLA DE RUTAS de
+    la aplicación. Un endpoint de métricas nuevo que el móvil no pida rompe aquí
+    el día que se escribe, que es cuando todavía cuesta cinco minutos arreglarlo.
     """
     rutas = re.search(r"const RUTAS = \{(.*?)^\};", METRICAS, re.S | re.M)
     assert rutas is not None, "no encuentro `const RUTAS` en metricas.js"
-    urls = re.findall(r'"(/api/[^"]+)"', rutas.group(1))
-    assert len(urls) == 6, f"esperaba las seis rutas de métricas, encontré {urls}"
+    urls = set(re.findall(r'"(/api/[^"]+)"', rutas.group(1)))
 
-    for url in urls:
+    servidas = {
+        r.path
+        for r in app.routes
+        if getattr(r, "path", "").startswith("/api/metrics/")
+    }
+    assert servidas, "no encuentro ni una ruta de métricas en la tabla de la app"
+
+    huerfanas = servidas - urls
+    assert not huerfanas, (
+        f"el servidor calcula y sirve {sorted(huerfanas)} y `metricas.js` no lo "
+        f"pide: son vistas enteras publicadas sin un solo lector, que es como "
+        f"estuvo la portada desde que se escribió"
+    )
+    inventadas = urls - servidas
+    assert not inventadas, (
+        f"`metricas.js` pide {sorted(inventadas)} y la API no lo sirve: eso es "
+        f"una pantalla del móvil que se queda con el error puesto"
+    )
+
+    for url in sorted(urls):
         r = cliente.get(url, params={"dias": 30})
         assert r.status_code == 200, f"{url} → {r.status_code} {r.text[:300]}"
 
@@ -664,14 +694,12 @@ def _sembrar(ses) -> None:
 
 
 def _payloads(cliente) -> dict[str, object]:
-    """Las seis respuestas de verdad, tal cual las recibe el móvil."""
+    """Las siete respuestas de verdad, tal cual las recibe el móvil."""
     rutas = {
+        "portada": ("/api/metrics/portada", {}),
         "concordancia": ("/api/metrics/concordancia", {}),
         "desfase": ("/api/metrics/desfase", {}),
         "impacto": ("/api/metrics/impacto", {}),
-        "ranking": (
-            "/api/metrics/ranking-ejercicios", {"respuesta": "lower_discomfort"}
-        ),
         "auditoria": ("/api/metrics/auditoria", {}),
         "percepcion": ("/api/metrics/percepcion", {}),
     }
@@ -680,6 +708,25 @@ def _payloads(cliente) -> dict[str, object]:
         r = cliente.get(url, params={"dias": DIAS, **extra})
         assert r.status_code == 200, f"{url} → {r.status_code} {r.text[:400]}"
         salida[nombre] = r.json()
+
+    # El ranking va aparte porque NO se pide por su cuenta: el cliente lo pide
+    # para la respuesta con la que la vista de impacto ha abierto, y esa la
+    # decide el servidor. Clavarla aquí -estaba clavada a `lower_discomfort`, que
+    # no tiene ni un día- serviría en el andamio un payload que el cliente de
+    # verdad nunca pediría, y el test pasaría sin haber pintado el ranking que se
+    # ve en el móvil.
+    respuesta = salida["impacto"]["respuesta_por_defecto"]
+    assert respuesta, (
+        "la vista de impacto no trae `respuesta_por_defecto` con la base "
+        "sembrada: o el sembrado no llena ni una casilla, o el servidor ha "
+        "dejado de mandarla y el desplegable volverá a abrir en la primera"
+    )
+    r = cliente.get(
+        "/api/metrics/ranking-ejercicios",
+        params={"dias": DIAS, "respuesta": respuesta},
+    )
+    assert r.status_code == 200, f"ranking → {r.status_code} {r.text[:400]}"
+    salida["ranking"] = r.json()
     return salida
 
 
@@ -730,9 +777,9 @@ def test_los_renderizadores_no_leen_ni_una_clave_que_el_backend_no_mande(
         f"la PWA no pinta limpio contra los payloads de verdad:\n"
         f"{r.stdout}\n{r.stderr}"
     )
-    # Que las cinco se hayan pintado de verdad, y no que el andamio se haya
+    # Que las seis se hayan pintado de verdad, y no que el andamio se haya
     # callado por haberlas saltado todas.
-    assert r.stdout.count("ok ") == 5, f"no se pintaron las cinco vistas:\n{r.stdout}"
+    assert r.stdout.count("ok ") == 6, f"no se pintaron las seis vistas:\n{r.stdout}"
 
 
 def test_las_pantallas_de_la_nav_llevan_a_algo_que_existe():
@@ -744,7 +791,7 @@ def test_las_pantallas_de_la_nav_llevan_a_algo_que_existe():
     marca como activa una pestaña que no es la que se ve.
     """
     pantallas = re.findall(r'href: "([^"]+)"', COMUN)
-    assert len(pantallas) == 6, f"esperaba seis pantallas, encontré {pantallas}"
+    assert len(pantallas) == 7, f"esperaba siete pantallas, encontré {pantallas}"
 
     vistas = set(_claves_de_objeto(METRICAS, "VISTAS"))
     assert vistas, "no encuentro las claves de VISTAS en metricas.js"

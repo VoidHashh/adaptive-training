@@ -1,11 +1,11 @@
 /*
- * Pinta las cinco vistas de la PWA en Node, contra payloads de verdad, y busca
+ * Pinta las seis vistas de la PWA en Node, contra payloads de verdad, y busca
  * lo que un renderizador hace cuando lee una clave que el backend no manda.
  *
  * Lo arranca `tests/test_pwa.py::test_los_renderizadores_no_leen_ni_una_clave_
- * que_el_backend_no_mande`, que antes le escribe las seis respuestas de
+ * que_el_backend_no_mande`, que antes le escribe las siete respuestas de
  * `/api/metrics/*` en el JSON que se le pasa por argumento. Aquí no se toca la
- * base ni la red: entra un JSON, salen las cinco pantallas.
+ * base ni la red: entra un JSON, salen las seis pantallas.
  *
  * POR QUÉ ESTO Y NO UN `node --check`
  * -----------------------------------
@@ -90,6 +90,7 @@ function elemento(id) {
 let vistaEnCurso = null;
 
 const RUTAS = {
+  portada: "/api/metrics/portada",
   concordancia: "/api/metrics/concordancia",
   desfase: "/api/metrics/desfase",
   impacto: "/api/metrics/impacto",
@@ -120,6 +121,25 @@ const contexto = {
       .filter(([, r]) => u.includes(r))
       .sort((a, b) => b[1].length - a[1].length)[0]?.[0];
     if (!clave) throw new Error(`ruta no prevista: ${u}`);
+
+    /* EL RANKING SE PIDE PARA UNA RESPUESTA CONCRETA, y aquí hay una sola.
+     *
+     * El cliente ya no la lleva clavada: la saca de `respuesta_por_defecto`,
+     * que decide el servidor. Si sirviéramos este payload pase lo que pase, el
+     * andamio pintaría tan contento el ranking del dolor lumbar debajo de una
+     * vista de HRV y el test diría «ok». Que las dos respuestas tengan que
+     * coincidir es justo lo que convierte este doble en una prueba. */
+    if (clave === "ranking") {
+      const pedida = new URL(u).searchParams.get("respuesta");
+      const servida = payloads.ranking?.respuesta?.clave;
+      if (pedida !== servida) {
+        throw new Error(
+          `el cliente ha pedido el ranking de '${pedida}' y el payload de ` +
+          `prueba es el de '${servida}': o el cliente elige mal, o el test ` +
+          `preparó el payload equivocado`,
+        );
+      }
+    }
     return { ok: true, status: 200, json: async () => vigilar(payloads[clave], clave) };
   },
 };
@@ -129,7 +149,9 @@ for (const f of ["static/comun.js", "static/graficos.js", "static/metricas.js"])
   vm.runInContext(fs.readFileSync(f, "utf8"), contexto, { filename: f });
 }
 
-const VISTAS = ["concordancia", "desfase", "impacto", "auditoria", "percepcion"];
+const VISTAS = [
+  "portada", "concordancia", "desfase", "impacto", "auditoria", "percepcion",
+];
 
 /* Lo que delata una clave mal adivinada que SÍ acaba impresa.
  *

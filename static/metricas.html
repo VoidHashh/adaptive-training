@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Métricas</title>
+<title>Cómo vas</title>
 
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/styles.css">
@@ -12,13 +12,13 @@
 <meta name="theme-color" content="#14161a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Métricas">
+<meta name="apple-mobile-web-app-title" content="Cómo vas">
 </head>
 <body class="con-nav">
 
 <main id="app">
   <header class="cab">
-    <h1 id="titulo">Métricas</h1>
+    <h1 id="titulo">Cómo vas</h1>
     <p class="fecha" id="subtitulo">—</p>
   </header>
 
@@ -31,9 +31,14 @@
     Los valores son los que acepta la API (7 a 730). No hay ninguno que el
     servidor vaya a rechazar: un botón que devuelve un 422 es una opción muerta
     con aspecto de función.
+
+    La etiqueta decía «Ventana», que es como se llama esto en estadística y no
+    significa nada para quien no lo sabe ya. Lo que hay que entender es que este
+    selector decide CUÁNTO PASADO se está mirando, y «Mirando los últimos» lo
+    dice sin obligar a aprender ninguna palabra.
   -->
   <div class="barra-ventana">
-    <label for="dias">Ventana</label>
+    <label for="dias">Mirando los últimos</label>
     <select id="dias">
       <option value="30">30 días</option>
       <option value="60">60 días</option>

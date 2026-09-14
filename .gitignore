@@ -40,3 +40,8 @@ Thumbs.db
 /out.txt
 *.out.txt
 /Nuevo Documento de texto.txt
+
+# `scripts/ver_panel.py` deja aquí el panel pintado contra la base de VERDAD:
+# HRV, sueño, salidas, check-ins y lo que el motor decidió, en HTML y en JSON.
+# Es exactamente el mismo dato que `data/` y se trata igual de mal que él.
+/out/

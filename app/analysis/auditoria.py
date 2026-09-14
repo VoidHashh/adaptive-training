@@ -51,6 +51,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analysis import series as S
+from app.analysis.texto import cuantos, plural
 from app.engine.sets import warmup_flags
 from app.models import Decision, RuleState
 
@@ -294,7 +295,7 @@ def auditoria_reglas(
         elif not r.declarada:
             estado = "retirada"
             lectura = (
-                f"disparó {n_disparos} vez/veces en esta ventana, pero YA NO está "
+                f"disparó {cuantos(n_disparos, 'vez', 'veces')} en esta ventana, pero YA NO está "
                 f"declarada en el config.yaml: el contador habla de una regla que "
                 f"ya no existe"
             )
@@ -303,15 +304,18 @@ def auditoria_reglas(
             mandas = determinantes.get(nombre, 0)
             if mandas == 0:
                 lectura = (
-                    f"disparó {n_disparos} día(s) y no mandó en ninguno: siempre "
-                    f"hubo otra por delante"
+                    f"disparó {cuantos(n_disparos, 'día', 'días')} y no mandó en "
+                    f"ninguno: siempre hubo otra por delante"
                 )
             else:
-                lectura = f"disparó {n_disparos} día(s) y mandó en {mandas}"
+                lectura = (
+                    f"disparó {cuantos(n_disparos, 'día', 'días')} y mandó en {mandas}"
+                )
         elif n_evaluada == 0:
             estado = "nunca_evaluada"
             que_falta = ", ".join(
-                f"{k} ({v} día(s))" for k, v in faltas.get(nombre, Counter()).most_common(3)
+                f"{k} ({cuantos(v, 'día', 'días')})"
+                for k, v in faltas.get(nombre, Counter()).most_common(3)
             )
             # "le falta algún dato" era honesto pero tapaba dos situaciones que
             # no son la misma. Que se sepa qué falta -y cuántos días- es un
@@ -334,8 +338,8 @@ def auditoria_reglas(
         else:
             estado = "nunca_disparo"
             lectura = (
-                f"se evaluó {n_evaluada} día(s) y no disparó ninguno: o está mal "
-                f"calibrada o sobra"
+                f"se evaluó {cuantos(n_evaluada, 'día', 'días')} y no disparó "
+                f"ninguno: o está mal calibrada o sobra"
             )
 
         filas.append(
@@ -401,7 +405,7 @@ def reglas_especiales(
         declarada = nombre in declaradas
         if activaciones:
             lectura = (
-                f"se activó {len(activaciones)} vez/veces; la última el "
+                f"se activó {cuantos(len(activaciones), 'vez', 'veces')}; la última el "
                 f"{max(S.a_fecha(a.active_from) for a in activaciones).isoformat()}"
             )
         elif declarada:
@@ -620,7 +624,7 @@ def _lectura_progresion(
         return "no se ha prescrito ni un día en esta ventana"
     if subidas:
         ultima = subidas[-1]["fecha"]
-        return f"{len(subidas)} subida(s); la última el {ultima}"
+        return f"{cuantos(len(subidas), 'subida', 'subidas')}; la última el {ultima}"
     if frenos:
         motivos = Counter(f["motivo"] for f in frenos)
         principal, veces = motivos.most_common(1)[0]
@@ -631,11 +635,13 @@ def _lectura_progresion(
             "racha": "todavía no ha completado la racha",
         }
         return (
-            f"NO ha subido ni una vez en {len(puntos)} día(s) prescrito(s): "
-            f"{traduccion.get(principal, principal)} ({veces} día(s))"
+            f"NO ha subido ni una vez en {cuantos(len(puntos), 'día', 'días')} "
+            f"{plural(len(puntos), 'prescrito', 'prescritos')}: "
+            f"{traduccion.get(principal, principal)} ({cuantos(veces, 'día', 'días')})"
         )
     return (
-        f"no ha subido ni una vez en {len(puntos)} día(s) prescrito(s), y no hay "
+        f"no ha subido ni una vez en {cuantos(len(puntos), 'día', 'días')} "
+        f"{plural(len(puntos), 'prescrito', 'prescritos')}, y no hay "
         f"ningún motivo apuntado: eso es un hueco del registro, no una explicación"
     )
 
@@ -682,20 +688,27 @@ def _lecturas(
         "recalibraciones": None
         if recalib
         else sin_motor(
-            f"los {con_decision} día(s) con decisión se resolvieron con la misma "
+            f"{plural(con_decision, 'el', 'los')} "
+            f"{cuantos(con_decision, 'día', 'días')} con decisión se "
+            f"{plural(con_decision, 'resolvió', 'resolvieron')} con la misma "
             f"configuración: no ha habido ninguna recalibración en esta ventana"
         ),
         "puertas_cerradas": None
         if puertas
         else sin_motor(
-            f"la puerta de la progresión no se cerró ni uno de los {con_decision} "
-            f"día(s) con decisión: el semáforo no ha frenado la progresión"
+            # "ni uno de los N días" obliga a un artículo plural que se rompe
+            # con un solo día ("ni uno de el 1 día"). Decir "ni un solo día" y
+            # dar el recuento aparte dice lo mismo y se sostiene con 1 y con 43.
+            f"la puerta de la progresión no se cerró ni un solo día, y hay "
+            f"{cuantos(con_decision, 'día', 'días')} con decisión: el semáforo "
+            f"no ha frenado la progresión"
         ),
         "progresion": None
         if progresion
         else sin_motor(
-            f"hay {con_decision} día(s) con decisión pero ninguno guardó la sesión "
-            f"prescrita: es un hueco del registro, no que no se haya entrenado"
+            f"hay {cuantos(con_decision, 'día', 'días')} con decisión pero "
+            f"ninguno guardó la sesión prescrita: es un hueco del registro, no "
+            f"que no se haya entrenado"
         ),
     }
 

@@ -147,21 +147,32 @@ async function pedir(ruta, parametros = {}) {
 // La navegación
 // ---------------------------------------------------------------------------
 
-/* Las seis pantallas, en el orden en que tienen sentido.
+/* Las siete pantallas, en el orden en que tienen sentido.
  *
- * El check-in va primero porque es lo que se abre a las siete de la mañana. Las
- * cinco de métricas van en el orden en que se pidieron, que además es el orden
- * en que se leen: primero si lo que noto coincide con el reloj, luego si coincide
- * con retraso, luego qué le hace cada cosa al cuerpo, luego qué ha hecho el motor
- * con todo eso, y al final lo que dicen los números frente a lo que parecía.
+ * El check-in va primero porque es lo que se abre a las siete de la mañana. La
+ * portada va justo detrás porque es la respuesta a la pregunta que se hace al
+ * salir de él -«¿y entonces cómo voy?»- y porque es la única que no obliga a
+ * elegir nada para enseñar algo.
+ *
+ * Las cinco de detalle van después, en el orden en que se leen: primero si lo
+ * que noto coincide con el reloj, luego si coincide con retraso, luego qué le
+ * hace cada cosa al cuerpo, luego qué ha hecho el motor con todo eso, y al final
+ * lo que dicen los números frente a lo que parecía.
+ *
+ * LAS ETIQUETAS CORTAS NO SON EL NOMBRE TÉCNICO DE LA VISTA. En una barra de
+ * siete botones en un móvil caben ocho caracteres, y «Concordancia» ahí no dice
+ * nada que ayude a decidir si tocarlo. Dicen QUÉ SE VA A VER: «Coincide»,
+ * «Retraso», «Efecto», «Motor», «Real». El nombre largo y técnico sigue entero
+ * en el título de la pantalla, que es donde hay sitio para explicarlo.
  */
 const PANTALLAS = [
   { href: "/", etiqueta: "Check-in", corta: "Hoy" },
+  { href: "/metricas.html#portada", etiqueta: "Cómo vas", corta: "Cómo vas" },
   { href: "/metricas.html#concordancia", etiqueta: "Concordancia", corta: "Coincide" },
-  { href: "/metricas.html#desfase", etiqueta: "Desfase", corta: "Desfase" },
-  { href: "/metricas.html#impacto", etiqueta: "Impacto", corta: "Impacto" },
+  { href: "/metricas.html#desfase", etiqueta: "Desfase", corta: "Retraso" },
+  { href: "/metricas.html#impacto", etiqueta: "Impacto", corta: "Efecto" },
   { href: "/metricas.html#auditoria", etiqueta: "Auditoría", corta: "Motor" },
-  { href: "/metricas.html#percepcion", etiqueta: "Percepción", corta: "Números" },
+  { href: "/metricas.html#percepcion", etiqueta: "Percepción", corta: "Real" },
 ];
 
 /* La barra de abajo, pintada desde `PANTALLAS` y no escrita a mano en los dos
@@ -190,6 +201,25 @@ const FUENTES = {
   fuerza: "entrenos de fuerza",
 };
 
+/* De dónde sale una SERIE, que no es el mismo vocabulario que el de arriba.
+ *
+ * `FUENTES` son las cuatro patas de la cobertura -lo que hay y lo que falta en
+ * la ventana-; esto son los tres orígenes que declara `Definicion.fuente` en
+ * `series.py`, y no coinciden: allí «bici» y «fuerza» son dos fuentes distintas
+ * y aquí las dos son `entreno`. Se parecen lo bastante como para que juntarlas
+ * pareciera buena idea, y lo bastante poco como para que `FUENTES["entreno"]`
+ * diera `undefined` y la ficha de las series de entreno saliera empezando por
+ * «undefined ·». Dos vocabularios distintos, dos mapas distintos, y cada uno
+ * dice de cuál es.
+ *
+ * Igual que `METODOS`: la clave que no esté se imprime tal cual. Fea y visible
+ * antes que ausente. */
+const ORIGENES = {
+  checkin: "lo contestas tú",
+  garmin: "lo mide el reloj",
+  entreno: "sale de lo entrenado",
+};
+
 /* Desde cuándo hay datos de cada cosa, y de qué NO hay ninguno.
  *
  * Va arriba del todo de cada vista y no escondido en un pie, porque es lo que
@@ -210,9 +240,11 @@ const FUENTES = {
  * cobertura.
  */
 function pintarCobertura(cob, ventana) {
+  // «Ventana pedida» es el nombre del parámetro, no el nombre de la cosa. Lo que
+  // esta línea dice es qué trozo de calendario está mirando la pantalla.
   const cabecera =
-    `<p class="ventana">Ventana pedida: <b>${fechaCorta(ventana.desde)} → ` +
-    `${fechaCorta(ventana.hasta)}</b> (${entero(ventana.dias)} días)</p>`;
+    `<p class="ventana">Se está mirando del <b>${fechaCorta(ventana.desde)}</b> ` +
+    `al <b>${fechaCorta(ventana.hasta)}</b> · ${entero(ventana.dias)} días</p>`;
 
   if (cob === null || cob === undefined) {
     return (
@@ -273,14 +305,67 @@ function pintarCobertura(cob, ventana) {
 // Piezas de presentación que se repiten
 // ---------------------------------------------------------------------------
 
-/* `n = 43 · spearman · 12 descartados`. La ficha técnica de un número.
+/* «4 día(s)», catorce veces en la misma pantalla.
+ *
+ * El paréntesis es el atajo de quien no quiere decidir, y decide igual: decide
+ * que la pantalla parezca a medio terminar. En un panel que existe para que un
+ * hallazgo se pueda leer como una frase, «Hay 2 hallazgo(s) más» es la única
+ * línea que delata que debajo hay una plantilla.
+ *
+ * `n` puede llegar como cadena desde el payload -y `"1" === 1` es falso-, así
+ * que se convierte antes de comparar. Y se compara el VALOR ABSOLUTO: los
+ * desfases van de −3 a +3, y «−1 días» sería lo mismo otra vez pero al revés.
+ *
+ * El plural se pasa entero en vez de añadirle una «s»: en castellano no
+ * funciona -sesión/sesiones- y una regla que acierta en cuatro casos de cinco
+ * es peor que ninguna, porque el que falla no se ve venir. */
+function plural(n, uno, varios) {
+  return Math.abs(Number(n)) === 1 ? uno : varios;
+}
+
+/* El número y su palabra ya concordados: `cuenta(1, "día", "días")` → "1 día". */
+function cuenta(n, uno, varios) {
+  return `${entero(n)} ${plural(n, uno, varios)}`;
+}
+
+/* Cómo se dice en castellano el nombre del método.
+ *
+ * `spearman` y `pearson` son las claves del contrato: viajan en la query, las
+ * valida `_metodo` en `api.py` y las guarda `Resultado.metodo`. Lo que NO son es
+ * texto para leer. Estaban saliendo tal cual en la ficha de cada casilla, en
+ * minúsculas y sin traducir, que es una palabra en inglés dentro de una frase en
+ * castellano y encima el apellido de un estadístico muerto.
+ *
+ * Lo que hay que saber al leer la línea no es de quién es el método, es sobre
+ * qué se calculó: «de rangos» significa que solo se ha mirado el ORDEN de los
+ * días -quién fue mejor que quién- y no la distancia entre ellos, y por eso un
+ * día rarísimo no arrastra el resultado. «Lineal» significa lo contrario.
+ *
+ * La clave que no esté en el mapa se imprime tal cual y no desaparece. Si un día
+ * el servidor manda un tercer método, la ficha dirá su nombre técnico -feo, pero
+ * visible- en vez de dejar el hueco en blanco y hacer creer que no hubo método.
+ */
+const METODOS = {
+  spearman: "correlación de rangos",
+  pearson: "correlación lineal",
+};
+
+/* `43 pares comparados · correlación de rangos · 12 descartados`. La ficha
+ * técnica de un número.
  *
  * Se pidió que TODA métrica exponga su n y su ventana, y este es el sitio por el
  * que pasan todas. Los descartados solo se nombran cuando los hay: un "0
- * descartados" en cada casilla es ruido que enseña a no leer la línea. */
+ * descartados" en cada casilla es ruido que enseña a no leer la línea.
+ *
+ * El `n = 43` de antes decía la verdad en un idioma que hay que haber estudiado.
+ * `n` es la letra con la que se llama a esto en un paper; lo que significa aquí
+ * es cuántas veces se han podido poner dos datos uno al lado del otro, y eso es
+ * exactamente lo que hay que saber para decidir si el número de arriba vale
+ * algo. Se dice entero: la ficha es el sitio donde los números viven, pero
+ * escritos, no cifrados. */
 function ficha(c) {
-  const trozos = [`n = ${entero(c.n)}`];
-  if (c.metodo) trozos.push(escapar(c.metodo));
+  const trozos = [`${entero(c.n)} pares comparados`];
+  if (c.metodo) trozos.push(escapar(METODOS[c.metodo] || c.metodo));
   if (c.descartados) trozos.push(`${entero(c.descartados)} descartados`);
   if (c.desde && c.hasta) {
     trozos.push(`${fechaMinima(c.desde)}–${fechaMinima(c.hasta)}`);

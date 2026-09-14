@@ -534,7 +534,7 @@ def test_la_progresion_marca_cuando_subio_y_por_que(db):
     assert len(f["subidas"]) == 1
     assert f["subidas"][0]["que"] == "100 -> 105 kg en la serie más pesada"
     assert f["subidas"][0]["por_que"] == "tres sesiones limpias seguidas"
-    assert "1 subida(s)" in f["lectura"]
+    assert "1 subida;" in f["lectura"]
 
 
 def test_cada_freno_sale_con_su_motivo_porque_la_accion_es_distinta(db):
@@ -603,7 +603,7 @@ def test_un_ejercicio_que_lleva_meses_parado_lo_dice_con_su_motivo(db):
     assert f["subidas"] == []
     assert "NO ha subido ni una vez" in f["lectura"]
     assert "está en su techo" in f["lectura"]
-    assert f"{N} día(s)" in f["lectura"]
+    assert f"{N} días" in f["lectura"]
 
 
 def test_un_parado_sin_motivo_apuntado_se_llama_hueco_del_registro(db):
@@ -810,9 +810,9 @@ def test_una_lista_vacia_nunca_se_queda_sin_explicar_por_que_lo_esta(db):
 
     lect = vista_auditoria(db, Cfg(), dias=N, hoy=HOY)["lecturas"]
 
-    assert f"{N} día(s) con decisión" in lect["recalibraciones"]
+    assert f"{N} días con decisión" in lect["recalibraciones"]
     assert "ninguna recalibración" in lect["recalibraciones"]
-    assert f"{N} día(s) con decisión" in lect["puertas_cerradas"]
+    assert f"{N} días con decisión" in lect["puertas_cerradas"]
     assert "no ha frenado la progresión" in lect["puertas_cerradas"]
     assert "hueco del registro" in lect["progresion"]
 

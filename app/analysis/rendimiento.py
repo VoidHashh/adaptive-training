@@ -60,6 +60,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis import series as S
 from app.analysis.stats import percentil_de
+from app.analysis.texto import cuantos, plural
 from app.engine.sets import volume_kg
 from app.models import Activity, Checkin, Decision, SessionPerformance, WorkoutLog
 
@@ -721,9 +722,10 @@ def cruzar(
             "direccion": _direccion(gap),
             "disociacion": False,
             "na": (
-                f"solo hay {base} sesión(es) anteriores; hacen falta {BASE_MINIMA} "
-                f"para que un percentil signifique algo, así que esta no cuenta "
-                f"todavía para el contador"
+                f"solo hay {cuantos(base, 'sesión', 'sesiones')} "
+                f"{plural(base, 'anterior', 'anteriores')}; hacen falta "
+                f"{BASE_MINIMA} para que un percentil signifique algo, así que "
+                f"esta no cuenta todavía para el contador"
             ),
         }
 

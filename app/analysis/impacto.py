@@ -56,6 +56,7 @@ from app.analysis.stats import (
     emparejar,
     percentil,
 )
+from app.analysis.texto import cuantos
 from app.models import Activity, WorkoutLog
 
 DIAS_DESPUES = (1, 2, 3)
@@ -448,8 +449,9 @@ def contraste(
         salida["suficiente"] = False
         if not salida.get("na"):
             salida["na"] = (
-                f"solo {len(con)} día(s) con esto y {len(sin)} sin ello; hacen falta "
-                f"al menos {N_MINIMO_EXPUESTOS} de cada para poder compararlos"
+                f"solo {cuantos(len(con), 'día', 'días')} con esto y "
+                f"{len(sin)} sin ello; hacen falta al menos "
+                f"{N_MINIMO_EXPUESTOS} de cada para poder compararlos"
             )
     return salida
 
@@ -802,7 +804,7 @@ def ranking_ejercicios(
         "metodo": metodo,
         "respuesta": {"clave": respuesta, **d_r.como_dict()},
         "retardos": list(retardos),
-        "ordenado_por": f"correlación a +{primero} día(s)",
+        "ordenado_por": f"correlación a +{cuantos(primero, 'día', 'días')}",
         "ventana": {"desde": desde.isoformat(), "hasta": hasta.isoformat(), "dias": dias},
         "cobertura": cob.como_dict(),
         "advertencia": ADVERTENCIA_CONFUSION,

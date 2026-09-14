@@ -29,6 +29,7 @@
  */
 
 const RUTAS = {
+  portada: "/api/metrics/portada",
   concordancia: "/api/metrics/concordancia",
   desfase: "/api/metrics/desfase",
   impacto: "/api/metrics/impacto",
@@ -37,35 +38,69 @@ const RUTAS = {
   percepcion: "/api/metrics/percepcion",
 };
 
+/* LOS TÍTULOS SON LO QUE SE VE, NO CÓMO SE LLAMA LA VISTA POR DENTRO.
+ *
+ * Aquí ponía «Concordancia», «Desfase», «Auditoría» y «Percepción»: los cinco
+ * nombres con los que se pidieron las vistas, que son los nombres correctos para
+ * hablar de ellas y los peores posibles para encontrarlas. A las siete de la
+ * mañana, «Desfase» no dice si lo que hay detrás sirve para lo que se está
+ * buscando; «¿Se adelanta o va con retraso?» sí.
+ *
+ * Los nombres técnicos no se han perdido: siguen siendo las claves de este
+ * objeto, las anclas de la URL (`#desfase`) y los nombres de los módulos del
+ * servidor. Lo que ha cambiado es que ya no son lo que se lee.
+ *
+ * El subtítulo NO repite el título ni la pregunta del encabezado. Dice el
+ * MÉTODO -sobre qué se calcula, con qué ventana, contra qué-, que es lo único
+ * que no cabe en ninguno de los otros dos y es lo que decide si un número se
+ * puede creer.
+ */
 const VISTAS = {
+  portada: {
+    titulo: "Cómo vas",
+    subtitulo: "Lo que hay que saber hoy, sin tener que buscarlo",
+    pintar: pintarPortada,
+  },
   concordancia: {
-    titulo: "Concordancia",
-    subtitulo: "Lo que notas frente al reloj, y el reloj frente a sí mismo",
+    titulo: "Lo que notas y lo que mide el reloj",
+    subtitulo: "Tus check-ins cruzados con el reloj, el mismo día",
     pintar: pintarConcordancia,
   },
   desfase: {
-    titulo: "Desfase",
-    subtitulo: "La misma pregunta, corriendo la ventana de −3 a +3 días",
+    titulo: "¿Se adelanta o va con retraso?",
+    subtitulo: "La misma pregunta, de tres días antes a tres días después",
     pintar: pintarDesfase,
   },
   impacto: {
-    titulo: "Impacto",
-    subtitulo: "Qué le hace al cuerpo cada cosa, uno, dos y tres días después",
+    titulo: "Qué efecto tiene cada cosa",
+    subtitulo: "Uno, dos y tres días después de cada entreno y cada salida",
     pintar: pintarImpacto,
   },
   auditoria: {
-    titulo: "Auditoría",
-    subtitulo: "El motor auditándose: qué decidió, con qué regla y con qué datos",
+    titulo: "Qué ha hecho el motor",
+    subtitulo: "Qué decidió cada día, con qué regla y con qué datos",
     pintar: pintarAuditoria,
   },
   percepcion: {
-    titulo: "Percepción",
-    subtitulo: "Lo que la mañana prometía frente a lo que de verdad salió",
+    titulo: "Lo que esperabas y lo que salió",
+    subtitulo: "Sesión a sesión, la mañana frente al resultado",
     pintar: pintarPercepcion,
   },
 };
 
-const POR_DEFECTO = "concordancia";
+/* La portada es lo primero que se ve, y eso es la mitad del rediseño.
+ *
+ * Antes se entraba en Concordancia: catorce correlaciones con su r, su p y su
+ * corrección por comparaciones múltiples. Es la vista más técnica de las seis y
+ * era la puerta de entrada. Para saber si hoy estás bien había que elegir
+ * variables en un desplegable y saber leer un coeficiente, o sea que la
+ * respuesta a la pregunta más frecuente costaba más trabajo que cualquier otra.
+ *
+ * Ahora se entra en la portada: tres bloques, frases, y los números debajo para
+ * quien quiera bajar. Las otras cinco vistas siguen enteras y sin tocar -no se
+ * ha simplificado nada, se ha ordenado- y se llega a ellas desde abajo.
+ */
+const POR_DEFECTO = "portada";
 const RECUERDA_VENTANA = "metricas-dias";
 
 // Lo elegido en los desplegables de dentro de una vista. Vive aquí y no en el
@@ -126,12 +161,312 @@ async function cargar() {
 }
 
 // ---------------------------------------------------------------------------
+// El encabezado de estado, en todas las vistas
+// ---------------------------------------------------------------------------
+
+/* Qué contesta esta vista, y en qué estado está para contestarlo.
+ *
+ * EL SERVIDOR LLEVABA MESES MANDÁNDOLO Y NADIE LO PINTABA. Las seis vistas
+ * traen `encabezado` en el payload -con la pregunta, el estado, el resumen y el
+ * recuento en la moneda de cada vista- y el navegador lo tiraba entero. Es el
+ * mismo fallo que el aviso del `config.yaml` en la pantalla de la mañana:
+ * calculado, servido, publicado y sin un solo lector.
+ *
+ * Y AQUÍ IMPORTA MÁS QUE EN NINGÚN SITIO, porque una vista de métricas sin
+ * estado se lee siempre igual de fiable. Concordancia con cero pares y
+ * Concordancia con los catorce pintan las dos una pantalla con pinta de
+ * pantalla llena; la diferencia -que una no puede contestar nada todavía- vive
+ * entera en este bloque. Sin él hay que deducir la cobertura contando tarjetas.
+ *
+ * El estado NO se recalcula aquí: `vacio`, `parcial` y `con_datos` los decide
+ * el servidor contando lo que la vista acaba de devolver. Aquí solo se elige el
+ * color.
+ */
+const CLASE_ESTADO = {
+  vacio: "mal",
+  parcial: "ojo",
+  con_datos: "bien",
+};
+
+const ROTULO_ESTADO = {
+  vacio: "Todavía no se puede contestar",
+  parcial: "Se puede contestar a medias",
+  con_datos: "Con datos suficientes",
+};
+
+function encabezadoVista(e) {
+  if (!e) return "";
+  const clase = CLASE_ESTADO[e.estado] || "ojo";
+  const rotulo = ROTULO_ESTADO[e.estado] || e.estado;
+
+  // El recuento va en la moneda de la vista y con su denominador, porque es lo
+  // que dice cuánto de lo que la vista sabe mirar está mirando de verdad. «135
+  // de 396» y «135» son dos frases muy distintas.
+  const cuenta =
+    e.n !== null && e.n !== undefined && e.de
+      ? `<span class="cuenta-estado">${entero(e.n)} de ${entero(e.de)}</span>`
+      : "";
+
+  return (
+    `<section class="encabezado-vista ${clase}">` +
+    `<p class="pregunta">${escapar(e.pregunta)}</p>` +
+    `<p class="estado"><span class="rotulo">${escapar(rotulo)}</span>${cuenta}</p>` +
+    `<p class="resumen-estado">${escapar(e.resumen)}</p>` +
+    `</section>`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vista 0: la portada
+// ---------------------------------------------------------------------------
+
+/* Los tres bloques, en el orden en el que se responden las preguntas de verdad.
+ *
+ * «Cómo voy» es el estado de hoy; «Qué ha cambiado» es la única comparación que
+ * se puede hacer sin elegir nada; «Lo que ya sé de ti» es lo que el sistema ha
+ * aprendido y no cambia de un día para otro. De arriba abajo va de lo más
+ * volátil a lo más estable, que es también de lo más urgente a lo más
+ * interesante.
+ *
+ * NO HAY UN SOLO NÚMERO CALCULADO AQUÍ. Las frases, los niveles, las lecturas y
+ * los `na` vienen hechos del servidor. Esta función elige el orden y el color, y
+ * nada más: la regla de todo el archivo, que en la portada importa el doble
+ * porque es la pantalla que más se va a mirar y la que menos contexto enseña.
+ */
+async function pintarPortada(dias) {
+  const d = await pedir(RUTAS.portada, { dias });
+
+  // La portada NO lleva encabezado de estado, y es la única. Las otras cinco lo
+  // llevan porque contestan una pregunta concreta y hay que saber si pueden
+  // contestarla; la portada es su propio encabezado de arriba abajo -cada uno de
+  // los tres bloques trae su estado y su motivo dentro-, y ponerle otro encima
+  // sería un estado resumen de tres cosas que no comparten moneda.
+  const partes = [pintarCobertura(d.cobertura, d.ventana)];
+
+  partes.push(bloqueComoVoy(d.como_voy));
+  partes.push(bloqueQueHaCambiado(d.que_ha_cambiado));
+  partes.push(bloqueLoQueSeSabe(d.lo_que_se_sabe));
+  partes.push(bloqueLoQueFalta(d.lo_que_no_se_puede_saber));
+
+  $("vista").innerHTML = partes.join("");
+}
+
+/* Lo que TODAVÍA NO se puede contestar, y qué dato exacto lo abriría.
+ *
+ * Va el último y va pequeño, pero va. Es lo que convierte «el panel está vacío»
+ * en «el panel te está diciendo por qué está vacío», y sin él las cuatro vistas
+ * sin datos son indistinguibles de cuatro vistas rotas.
+ *
+ * Cuando no falta nada NO se pinta nada. Es la única sección de todo el panel
+ * que puede desaparecer, y puede porque su vacío no es un vacío de datos: es que
+ * ya no hay ninguna pregunta cerrada. Un «no falta nada» permanente sería una
+ * línea que se deja de leer a la semana.
+ */
+function bloqueLoQueFalta(lista) {
+  if (!lista || !lista.length) return "";
+  return (
+    `<h2 class="grupo">Lo que todavía no se puede contestar</h2>` +
+    `<p class="explica">No es que esté roto: es que le falta un dato concreto, y ` +
+    `aquí está cuál.</p>` +
+    lista.map((f) => (
+      `<article class="tarjeta fina">` +
+      `<h3>${escapar(f.que)}</h3>` +
+      `<p class="lectura">Hace falta ${escapar(f.falta)}.</p>` +
+      `<p class="ficha">Abriría: ${f.vistas.map((v) => (
+        `<a href="#${escapar(v)}">${escapar(VISTAS[v] ? VISTAS[v].titulo : v)}</a>`
+      )).join(" · ")}</p>` +
+      `</article>`
+    )).join("")
+  );
+}
+
+/* El color de una línea sale de `valencia`, que lo decide el servidor.
+ *
+ * Y lo decide él porque "alto" no significa "bien" en todas las señales: una
+ * HRV alta es buena y una frecuencia en reposo alta es mala. Traducir el nivel
+ * a un color aquí obligaría a tener en el navegador una segunda tabla de qué
+ * señal va en qué dirección, que es exactamente la que se quedaría vieja el día
+ * que se añada una señal nueva al `config.yaml`. El servidor ya sabe el sentido
+ * de cada una; aquí solo se pinta lo que diga.
+ */
+const CLASE_VALENCIA = {
+  mejor: "bien",
+  peor: "mal",
+  normal: "neutro",
+  neutro: "neutro",
+};
+
+function cabeceraBloque(b) {
+  return (
+    `<h2 class="grupo">${escapar(b.titulo)}</h2>` +
+    (b.subtitulo ? `<p class="explica">${escapar(b.subtitulo)}</p>` : "")
+  );
+}
+
+function bloqueComoVoy(b) {
+  if (!b) return "";
+  if (b.estado === "vacio" || !b.lineas || !b.lineas.length) {
+    return cabeceraBloque(b) + bloqueNa(b.na);
+  }
+
+  const filas = b.lineas.map((l) => {
+    // Una señal sin datos NO se esconde: se pinta con su motivo. Esconderla
+    // convertiría "todavía no hay fuerza apuntada" en "la fuerza va bien", que
+    // es la diferencia entre no saber y creer que se sabe.
+    if (l.na) {
+      return (
+        `<div class="linea-portada sin-dato">` +
+        `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
+        `<div class="lectura-portada">${escapar(l.na)}</div>` +
+        `</div>`
+      );
+    }
+    const clase = CLASE_VALENCIA[l.valencia] || "neutro";
+    // El número y el percentil van en la ficha, debajo y en pequeño: son la
+    // comprobación, no el mensaje. El mensaje es la lectura en castellano.
+    const detalle = [];
+    if (l.media !== null && l.media !== undefined) {
+      detalle.push(`${num(l.media)}${l.unidad ? ` ${escapar(l.unidad)}` : ""}`);
+    }
+    /* «Percentil 68 de lo tuyo» decía la verdad y hacía falta saber qué es un
+     * percentil para leerla; y es la PRIMERA pantalla, la que se mira a las
+     * siete de la mañana sin haberse despertado del todo. «Por encima del 68 %
+     * de tus días» es lo mismo, palabra por palabra, sin tener que saber nada.
+     *
+     * Lo que NO se ha tocado es contra qué se compara: sigue siendo el histórico
+     * propio y no una tabla de valores normales, que es la decisión que se tomó
+     * para todo el proyecto. La frase lo dice más claro que antes -«tus días»-,
+     * no menos. */
+    if (l.percentil !== null && l.percentil !== undefined) {
+      detalle.push(`por encima del ${entero(l.percentil)} % de tus días`);
+    }
+    if (l.n_reciente) detalle.push(`medido en ${cuenta(l.n_reciente, "día", "días")}`);
+
+    return (
+      `<div class="linea-portada">` +
+      `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
+      `<div class="lectura-portada ${clase}">${escapar(l.lectura)}</div>` +
+      (detalle.length
+        ? `<div class="ficha-portada">${escapar(detalle.join(" · "))}</div>`
+        : "") +
+      `</div>`
+    );
+  }).join("");
+
+  return cabeceraBloque(b) + `<article class="tarjeta portada">${filas}</article>`;
+}
+
+function bloqueQueHaCambiado(b) {
+  if (!b) return "";
+  if (b.estado === "vacio" || !b.lineas || !b.lineas.length) {
+    return cabeceraBloque(b) + bloqueNa(b.na);
+  }
+
+  const filas = b.lineas.map((l) => (
+    `<div class="linea-portada">` +
+    `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
+    `<div class="lectura-portada">${escapar(l.lectura)}</div>` +
+    `</div>`
+  )).join("");
+
+  return cabeceraBloque(b) + `<article class="tarjeta portada">${filas}</article>`;
+}
+
+/* EL FEED DE HALLAZGOS, que es lo que este proyecto existe para producir.
+ *
+ * La frase va primera, grande y en castellano; los números van debajo en la
+ * ficha. Ese orden es todo el punto: «las salidas largas te suben el pulso en
+ * reposo al día siguiente» es el hallazgo, y `r = 0,39 · p = 0,0001 · n = 178`
+ * es cómo se sabe. Puesto al revés -que es como estaba en todas las demás
+ * vistas- hay que traducir mentalmente antes de poder leer nada.
+ *
+ * LA CONFIRMACIÓN Y LA DISCREPANCIA VAN CON EL HALLAZGO, no en un apéndice. Que
+ * lo mismo salga por cuatro caminos distintos es parte de cuánto fiarse, y
+ * enterrarlo en un plegable deja la frase sola y pareciendo más segura de lo que
+ * es. Lo mismo, en el otro sentido, con lo que discrepa.
+ */
+function bloqueLoQueSeSabe(b) {
+  if (!b) return "";
+  if (b.estado === "vacio" || !b.portada || !b.portada.length) {
+    return cabeceraBloque(b) + bloqueNa(b.na);
+  }
+
+  const tarjetas = b.portada.map(tarjetaHallazgo).join("");
+
+  // El recuento y la nota sobre el azar, debajo del feed y no encima: son el
+  // contrapeso de lo que se acaba de leer, y arriba se leerían como un aviso
+  // antes de que haya nada de lo que avisar.
+  const pie = [];
+  if (b.resto) {
+    pie.push(
+      `<p class="explica">Hay ${cuenta(b.resto, "hallazgo", "hallazgos")} más, ` +
+      `que éstos. Están enteros en las vistas de abajo.</p>`,
+    );
+  }
+  if (b.nota_azar) pie.push(`<p class="ficha">${escapar(b.nota_azar)}</p>`);
+
+  return cabeceraBloque(b) + tarjetas + pie.join("");
+}
+
+function tarjetaHallazgo(h) {
+  const clase = CLASE_VALENCIA[h.valencia] || "neutro";
+  const f = h.ficha || {};
+
+  // La fuerza del hallazgo en palabras -«se nota», «apenas»- y no en un número:
+  // viene ya traducida del servidor, que es quien sabe contra qué umbral.
+  const marca = h.fuerza
+    ? `<span class="fuerza ${clase}">${escapar(h.fuerza)}</span>`
+    : "";
+
+  const detalle = [];
+  if (f.dias_despues !== null && f.dias_despues !== undefined) {
+    detalle.push(`${cuenta(f.dias_despues, "día", "días")} después`);
+  }
+  /* `r` y `p` SE QUEDAN con su nombre de una letra, y es a propósito.
+   *
+   * Son los dos únicos números de toda la interfaz que no se pueden decir con
+   * palabras sin perder algo: «r» es la fuerza CON SIGNO en una escala fija de
+   * −1 a 1, y ya está dicha en castellano arriba, en la frase y en la marca de
+   * fuerza. Lo que hace aquí abajo es dejar comprobar la frase, y para eso hace
+   * falta la cifra, no otra paráfrasis de la cifra.
+   *
+   * Lo que sí se traduce es todo lo demás de la línea, porque no son números:
+   * `n` era una letra puesta en lugar de una frase corta, y `spearman` era una
+   * palabra en inglés sin traducir. Ésos no son el dato, son la etiqueta del
+   * dato, y una etiqueta que hay que descifrar enseña a saltarse la línea
+   * entera -incluidos la `r` y la `p`, que sí importan-. */
+  if (f.r !== null && f.r !== undefined) detalle.push(`r = ${num(f.r)}`);
+  if (f.p_corregida !== null && f.p_corregida !== undefined) {
+    detalle.push(`p = ${num(f.p_corregida, 4)} (corregida)`);
+  }
+  if (f.n) detalle.push(`${entero(f.n)} pares comparados`);
+  if (f.metodo) detalle.push(escapar(METODOS[f.metodo] || f.metodo));
+
+  return (
+    `<article class="tarjeta hallazgo">` +
+    `<p class="grupo-hallazgo">${escapar(h.grupo.titulo)} · decide ` +
+    `${escapar(h.grupo.decision)}</p>` +
+    `<p class="frase ${clase}">${escapar(h.frase)}${marca}</p>` +
+    (h.matiz ? `<p class="matiz">${escapar(h.matiz)}</p>` : "") +
+    (h.nota_confirmacion
+      ? `<p class="confirma">${escapar(h.nota_confirmacion)}</p>` : "") +
+    (h.nota_discrepancia
+      ? `<p class="discrepa">${escapar(h.nota_discrepancia)}</p>` : "") +
+    `<p class="ficha">${escapar(detalle.join(" · "))}</p>` +
+    `</article>`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Vista 1: concordancia
 // ---------------------------------------------------------------------------
 
 async function pintarConcordancia(dias) {
   const d = await pedir(RUTAS.concordancia, { dias });
-  const partes = [pintarCobertura(d.cobertura, d.ventana)];
+  const partes = [
+    encabezadoVista(d.encabezado),
+    pintarCobertura(d.cobertura, d.ventana),
+  ];
 
   partes.push(
     `<h2 class="grupo">Lo que notas frente al reloj</h2>` +
@@ -168,16 +503,25 @@ async function pintarConcordancia(dias) {
   // Las señales sueltas, plegadas. Cada una en su propio percentil histórico,
   // que es lo único que permite dibujar un 1-5 y una HRV en milisegundos en la
   // misma escala sin que una de las dos sea una raya pegada al suelo.
+  /* Aquí `n` son DÍAS CON DATO, y en la casilla de al lado son pares, y en la
+   * de percepción son sesiones. Ésa es la razón de fondo para no dejar la letra
+   * suelta en ninguna de las tres: no significa lo mismo, y la única forma de
+   * saber cuál toca era saberse de memoria qué vista se estaba mirando.
+   *
+   * `s.unidad` SÍ se queda con el rango dentro -"0-100"- y es lo correcto: aquí
+   * describe la escala de la serie, que es para lo que ese campo sirve. Lo que
+   * se arregló en la portada no fue el campo, fue pegarlo detrás de un valor. */
   const series = d.series.map((s) => (
     `<div class="serie">` +
     `<div class="linea"><label>${escapar(s.etiqueta)}</label>` +
-    `<output class="valor">n = ${entero(s.n)}</output></div>` +
+    `<output class="valor">${cuenta(s.n, "día", "días")}</output></div>` +
     (s.n
       ? serieTemporal(s.puntos, [0, 100], "escala")
       : bloqueNa(`no hay ni un día con ${escapar(s.etiqueta.toLowerCase())} en esta ventana`)) +
-    `<p class="ficha">${escapar(s.fuente)} · ${escapar(s.unidad)} · ` +
+    `<p class="ficha">${escapar(ORIGENES[s.fuente] || s.fuente)} · ` +
+    `escala ${escapar(s.unidad)} · ` +
     `${s.sentido === "alto_peor" ? "alto = peor" : "alto = mejor"}` +
-    `${s.desplazamiento_dias ? ` · desplazada ${entero(s.desplazamiento_dias)} día(s)` : ""}` +
+    `${s.desplazamiento_dias ? ` · desplazada ${cuenta(s.desplazamiento_dias, "día", "días")}` : ""}` +
     `</p></div>`
   )).join("");
 
@@ -285,7 +629,10 @@ function tarjetaInterna(c) {
 
 async function pintarDesfase(dias) {
   const d = await pedir(RUTAS.desfase, { dias });
-  const partes = [pintarCobertura(d.cobertura, d.ventana)];
+  const partes = [
+    encabezadoVista(d.encabezado),
+    pintarCobertura(d.cobertura, d.ventana),
+  ];
 
   partes.push(`<p class="explica">${escapar(d.convenio)}</p>`);
 
@@ -302,7 +649,7 @@ async function pintarDesfase(dias) {
     curvaDesfase(f.por_desfase, f.mejor_desfase) +
     (f.mejor_desfase !== null && f.mejor_desfase !== undefined
       ? `<p class="cifra">Pico en <b>${f.mejor_desfase > 0 ? "+" : ""}` +
-        `${entero(f.mejor_desfase)} día(s)</b></p>`
+        `${cuenta(f.mejor_desfase, "día", "días")}</b></p>`
       : "") +
     (f.lectura ? `<p class="lectura">${escapar(f.lectura)}</p>` : bloqueNa(f.na)) +
     plegable("Los siete desfases, uno a uno", tablaDesfases(f.por_desfase)) +
@@ -338,9 +685,15 @@ function tablaDesfases(porDesfase) {
       );
     })
     .join("");
+  /* `r` y `p` se quedan de cabecera y `n` no, que parece incoherente y no lo es.
+   * En una tabla de siete filas la cabecera es la ÚNICA explicación que va a
+   * tener cada columna, y «r» y «p» al menos identifican sin ambigüedad las dos
+   * cifras que hay debajo -están dichas con palabras en la lectura de arriba-.
+   * «n» no identificaba nada: el número de esa columna son días, y decir «días»
+   * cuesta lo mismo y no hay que traducirlo. */
   return (
     `<table class="tabla"><thead><tr><th>Desfase</th><th>r</th><th>p</th>` +
-    `<th>n</th><th>Motivo si no hay</th></tr></thead><tbody>${filas}</tbody></table>`
+    `<th>Días</th><th>Motivo si no hay</th></tr></thead><tbody>${filas}</tbody></table>`
   );
 }
 
@@ -349,40 +702,73 @@ function tablaDesfases(porDesfase) {
 // ---------------------------------------------------------------------------
 
 async function pintarImpacto(dias) {
-  const [d, rank] = await Promise.all([
-    pedir(RUTAS.impacto, { dias }),
-    pedir(RUTAS.ranking, { dias, respuesta: "lower_discomfort" }),
-  ]);
+  const d = await pedir(RUTAS.impacto, { dias });
 
-  // Las respuestas posibles salen de la propia rejilla. Escritas a mano aquí,
-  // añadir un deslizador al `config.yaml` lo dejaría fuera del desplegable y
-  // nadie vería nunca su impacto.
-  const respuestas = [];
-  const vistas = new Set();
-  for (const f of d.rejilla) {
-    if (!vistas.has(f.respuesta.clave)) {
-      vistas.add(f.respuesta.clave);
-      respuestas.push(f.respuesta);
-    }
-  }
+  /* EL CATÁLOGO LO MANDA EL SERVIDOR, con cuántas casillas vivas tiene cada
+   * respuesta y cuál conviene abrir. Antes se recorría aquí la rejilla y se
+   * abría en `respuestas[0]`, que es el cansancio: cero de treinta y tres. La
+   * vista se estrenaba vacía con ciento treinta y cinco relaciones calculadas a
+   * dos clics de distancia, y no había forma de saberlo sin ir probando las doce
+   * opciones una por una.
+   *
+   * Contarlo aquí además duplicaría el recuento que `catalogo_de_respuestas` ya
+   * hace en el servidor, y el día que discreparan ganaría el que no se puede
+   * probar. */
+  const respuestas = d.respuestas || [];
+  const vistas = new Set(respuestas.map((r) => r.clave));
   if (!elegido.respuesta || !vistas.has(elegido.respuesta)) {
-    elegido.respuesta = respuestas.length ? respuestas[0].clave : null;
+    elegido.respuesta = d.respuesta_por_defecto || null;
   }
 
-  const partes = [pintarCobertura(d.cobertura, d.ventana)];
+  const partes = [
+    encabezadoVista(d.encabezado),
+    pintarCobertura(d.cobertura, d.ventana),
+  ];
   partes.push(`<p class="aviso ojo"><strong>Ojo con leer esto como una causa.</strong>` +
     `${escapar(d.advertencia)}</p>`);
 
-  partes.push(
-    `<div class="filtro"><label for="resp">Qué le pasó</label>` +
-    `<select id="resp">` +
-    respuestas.map((r) => (
-      `<option value="${escapar(r.clave)}"` +
-      `${r.clave === elegido.respuesta ? " selected" : ""}>` +
-      `${escapar(r.etiqueta)}</option>`
-    )).join("") +
-    `</select></div>`,
+  /* Las vacías NO se quitan del desplegable: se marcan y se van al final.
+   *
+   * Quitarlas escondería que el sistema sabe mirar el dolor lumbar y todavía no
+   * tiene con qué, que es información -y de la que hace falta para saber qué
+   * vale la pena apuntar-. Marcarlas dice las dos cosas a la vez: existe, y hoy
+   * no tiene nada dentro. */
+  const conDatos = respuestas.filter((r) => !r.vacia);
+  const vacias = respuestas.filter((r) => r.vacia);
+  const opcion = (r) => (
+    `<option value="${escapar(r.clave)}"` +
+    `${r.clave === elegido.respuesta ? " selected" : ""}>` +
+    `${escapar(r.etiqueta)}` +
+    `${r.vacia ? " — sin datos todavía" : ` (${entero(r.n)})`}` +
+    `</option>`
   );
+
+  partes.push(
+    `<div class="filtro"><label for="resp">Qué le pasó al cuerpo</label>` +
+    `<select id="resp">` +
+    (conDatos.length
+      ? `<optgroup label="Con datos">${conDatos.map(opcion).join("")}</optgroup>`
+      : "") +
+    (vacias.length
+      ? `<optgroup label="Sin datos todavía">${vacias.map(opcion).join("")}</optgroup>`
+      : "") +
+    `</select>` +
+    `<p class="explica">El número entre paréntesis es cuántas relaciones se han ` +
+    `podido calcular con esa respuesta. Las de abajo salen igual aunque no tengan ` +
+    `nada: el sistema sabe mirarlas y todavía no hay con qué.</p>` +
+    `</div>`,
+  );
+
+  // Que NINGUNA respuesta tenga datos es una situación real -el sistema acaba de
+  // arrancar-, y se dice. Sin esto se pintaría un desplegable de doce opciones
+  // encima de una pantalla vacía, que parece una vista rota.
+  if (!elegido.respuesta) {
+    partes.push(bloqueNa(
+      `ninguna de las ${respuestas.length} respuestas tiene todavía una sola ` +
+      `relación calculada. Hace falta que se apunten sesiones -y que pasen los ` +
+      `días de después- para que haya algo que cruzar`,
+    ));
+  }
 
   const filas = d.rejilla.filter((f) => f.respuesta.clave === elegido.respuesta);
   const familias = {};
@@ -400,7 +786,22 @@ async function pintarImpacto(dias) {
     partes.push(lista.map(tarjetaImpacto).join(""));
   }
 
-  partes.push(seccionRanking(rank));
+  /* EL RANKING SIGUE AL DESPLEGABLE, y antes no lo seguía: estaba clavado a
+   * `lower_discomfort`, que es uno de los deslizadores del check-in y hoy no
+   * tiene ni un día. O sea que debajo de una vista de impacto llena salía
+   * siempre «no hay ni un ejercicio con días suficientes», y parecía que el
+   * ranking estaba roto cuando lo que pasaba es que se le estaba preguntando por
+   * lo único que nadie ha contestado nunca.
+   *
+   * Va en serie y no en paralelo con la otra llamada a propósito: cuál es la
+   * respuesta que se va a pintar lo decide el servidor en la primera, y pedir el
+   * ranking antes de saberlo es lo que obligaba a clavarlo a mano. */
+  if (elegido.respuesta) {
+    partes.push(seccionRanking(await pedir(RUTAS.ranking, {
+      dias, respuesta: elegido.respuesta,
+    })));
+  }
+
   $("vista").innerHTML = partes.join("");
 
   $("resp").addEventListener("change", (ev) => {
@@ -427,7 +828,7 @@ function tarjetaImpacto(f) {
 
   const dias = f.por_dia.map((c) => (
     `<div class="retardo">` +
-    `<div class="linea"><label>+${entero(c.dias_despues)} día(s)</label>` +
+    `<div class="linea"><label>+${cuenta(c.dias_despues, "día", "días")}</label>` +
     `<output class="valor">${num(c.r)}</output></div>` +
     barraR(c) +
     (porGrupos && c.media_expuesto !== null && c.media_expuesto !== undefined &&
@@ -438,7 +839,7 @@ function tarjetaImpacto(f) {
           ? ` · diferencia ${num(c.diferencia)}` : ""}</p>`
       : "") +
     (c.na ? bloqueNa(c.na) : "") +
-    `<p class="ficha">n = ${entero(c.n)}` +
+    `<p class="ficha">${entero(c.n)} días comparados` +
     (porGrupos
       ? ` · ${entero(c.n_expuesto)} con esto · ${entero(c.n_no_expuesto)} sin ello`
       : "") +
@@ -489,14 +890,15 @@ function seccionRanking(rank) {
         // no trae la casilla del retardo por el que se ordenó todo.
         ? bloqueNa(
           `este ejercicio no trae la casilla de +${entero(rank.retardos[0])} ` +
-          `día(s), que es justo por la que está ordenada esta lista`,
+          `${plural(rank.retardos[0], "día", "días")}, que es justo por la que está `
+          + `ordenada esta lista`,
         )
         : barraR(c) +
           (c.r !== null && c.r !== undefined
             ? `<p class="cifra">r = <b>${num(c.r)}</b> a ${escapar(rank.ordenado_por)}</p>`
             : bloqueNa(c.na)) +
           ficha(c)) +
-      `<p class="ficha">hecho ${entero(e.veces_hecho)} día(s) en esta ventana</p>` +
+      `<p class="ficha">hecho ${cuenta(e.veces_hecho, "día", "días")} en esta ventana</p>` +
       `</article>`
     );
   }).join("");
@@ -518,7 +920,10 @@ function seccionRanking(rank) {
 async function pintarAuditoria(dias) {
   const d = await pedir(RUTAS.auditoria, { dias });
   const g = d.distribucion.global;
-  const partes = [pintarCobertura(d.cobertura, d.ventana)];
+  const partes = [
+    encabezadoVista(d.encabezado),
+    pintarCobertura(d.cobertura, d.ventana),
+  ];
 
   partes.push(
     `<article class="tarjeta">` +
@@ -563,12 +968,12 @@ async function pintarAuditoria(dias) {
     (r.descripcion ? `<p class="sub">${escapar(r.descripcion)}</p>` : "") +
     `<p class="lectura">${escapar(r.lectura)}</p>` +
     `<p class="ficha">disparó ${entero(r.veces_disparada)} · mandó ` +
-    `${entero(r.veces_determinante)} · evaluada ${entero(r.dias_evaluada)} día(s) · ` +
+    `${entero(r.veces_determinante)} · evaluada ${cuenta(r.dias_evaluada, "día", "días")} · ` +
     `saltada ${entero(r.veces_saltada)}` +
     `${r.ultima_vez ? ` · última vez ${fechaCorta(r.ultima_vez)}` : ""}</p>` +
     (Object.keys(r.le_falto || {}).length
       ? `<p class="ficha">le faltó: ${escapar(
-          Object.entries(r.le_falto).map(([k, v]) => `${k} (${v} día(s))`).join(", "),
+          Object.entries(r.le_falto).map(([k, v]) => `${k} (${cuenta(v, "día", "días")})`).join(", "),
         )}</p>`
       : "") +
     `</article>`
@@ -647,8 +1052,9 @@ async function pintarAuditoria(dias) {
     (p) => (
       `<h3>${escapar(p.ejercicio)} <span class="sub">${escapar(p.rutina)}</span></h3>` +
       `<p class="lectura">${escapar(p.lectura)}</p>` +
-      `<p class="ficha">prescrito ${entero(p.dias_prescrito)} día(s) · ` +
-      `${p.subidas.length} subida(s) · ${p.frenos.length} freno(s)</p>`
+      `<p class="ficha">prescrito ${cuenta(p.dias_prescrito, "día", "días")} · ` +
+      `${cuenta(p.subidas.length, "subida", "subidas")} · `
+      + `${cuenta(p.frenos.length, "freno", "frenos")}</p>`
     ),
     d.lecturas.progresion,
   ));
@@ -677,7 +1083,7 @@ function seccionLista(titulo, lista, fila, motivoVacio) {
 
 async function pintarPercepcion(dias) {
   const d = await pedir(RUTAS.percepcion, { dias });
-  const partes = [];
+  const partes = [encabezadoVista(d.encabezado)];
 
   for (const [k, v] of Object.entries(d.componentes || {})) {
     if (v.corta) nombresCortos[k] = v.corta;
@@ -769,7 +1175,9 @@ async function pintarPercepcion(dias) {
       `${v.entra_en_el_indice ? "" : ' <span class="sub">(no entra en el índice)</span>'}` +
       `</label><output class="valor">${num(v.media, 1)}</output></div>` +
       (v.media === null || v.media === undefined ? bloqueNa(v.na) : "") +
-      `<p class="ficha">n = ${entero(v.n)}</p></div>`
+      // Y aquí `n` son SESIONES. Tercer significado de la misma letra en la
+      // misma pantalla; por eso ninguna de las tres la lleva ya.
+      `<p class="ficha">media de ${cuenta(v.n, "sesión", "sesiones")}</p></div>`
     )).join("") +
     `</article>`,
   );

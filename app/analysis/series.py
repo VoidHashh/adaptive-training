@@ -40,6 +40,7 @@ pueda olvidar hacerlo.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
@@ -88,12 +89,38 @@ class Definicion:
     # log. Sin defecto, una serie sin frase no llega ni a importarse.
     en_frase: str = field(kw_only=True)
 
+    @property
+    def sufijo(self) -> str | None:
+        """Lo que se escribe DETRÁS de un valor suelto, o `None` si no hay nada.
+
+        `unidad` hace dos trabajos distintos con la misma palabra. Para la HRV
+        vale "ms" y es una unidad de verdad: se pega detrás del número y la frase
+        queda bien -"44,8 ms"-. Para la nota de sueño vale "0-100" y eso NO es
+        una unidad, es el rango de la escala: sirve para poner los topes de un
+        eje, y pegado detrás de un valor da "85,5 0-100", que no lo escribiría
+        nadie y que en la portada salía tal cual.
+
+        No se arregla en la portada porque no es un problema de la portada: es
+        que el campo mezcla dos cosas, y el que lo lee no tiene forma de saber
+        cuál le ha tocado. Aquí se separan, y quien quiera el rango sigue
+        teniendo `unidad` y `rango` intactos.
+
+        Lo que parece un rango -dos números con un guión en medio- no es sufijo.
+        Todo lo demás sí. La regla se escribe por la FORMA y no por una lista de
+        claves a mano: una serie nueva con escala 0-10 acertaría sola, y una
+        lista se habría quedado vieja en silencio el día que se añadiera.
+        """
+        if re.fullmatch(r"\d+(?:[.,]\d+)?-\d+(?:[.,]\d+)?", self.unidad):
+            return None
+        return self.unidad
+
     def como_dict(self) -> dict[str, Any]:
         return {
             "clave": self.clave,
             "etiqueta": self.etiqueta,
             "fuente": self.fuente,
             "unidad": self.unidad,
+            "sufijo": self.sufijo,
             "sentido": self.sentido,
             "rango": list(self.rango) if self.rango else None,
             "desplazamiento_dias": self.desplazamiento,

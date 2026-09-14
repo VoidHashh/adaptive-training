@@ -54,6 +54,7 @@ from sqlalchemy.orm import Session
 from app.analysis import series as S
 from app.analysis.impacto import vista_impacto
 from app.analysis.stats import percentil_de
+from app.analysis.texto import cuantos
 from app.models import Activity, Checkin, Decision, WorkoutLog
 
 # Cuántos días mira "cómo voy". Una semana: es el tramo más corto que tiene
@@ -443,6 +444,65 @@ def _nivel(pct: float) -> tuple[str, str]:
     return "alto", "por encima de lo tuyo"
 
 
+def _linea(
+    *,
+    clave: str,
+    etiqueta: str,
+    lectura: str | None = None,
+    na: str | None = None,
+    nivel: str | None = None,
+    valencia: str | None = None,
+    media: float | None = None,
+    unidad: str | None = None,
+    percentil: float | None = None,
+    n_reciente: int | None = None,
+    n_referencia: int | None = None,
+) -> dict[str, Any]:
+    """Una línea de «Cómo voy», SIEMPRE con las mismas once claves.
+
+    Antes había cinco formas distintas de esta fila esparcidas por el módulo, y
+    las cinco eran correctas por separado: la de Garmin con percentil llevaba
+    `media`, `unidad` y `percentil`; la de Garmin sin datos suficientes no; la de
+    bici y la de fuerza tampoco, y encima ni siquiera traían `n_referencia`.
+    Cada una decía la verdad sobre sí misma.
+
+    El problema es lo que eso obliga a hacer al que las lee. En JavaScript
+    `l.media` sobre la fila de la bici no da ningún error: da `undefined`, y de
+    ahí salen los dos finales de siempre -«—» impreso en medio de una frase, o
+    una rama elegida al revés sin dejar rastro-. El renderizador lo cazó el
+    andamio de Node a la primera, pero lo habría cazado igual de bien un móvil a
+    las siete de la mañana, y allí no hay quien lo lea.
+
+    Así que la ausencia de una clave deja de significar nada, porque no hay
+    ausencias: `None` es «esta línea no tiene media», que es una afirmación, y la
+    hace el servidor, que es quien lo sabe. Es la misma regla que `_lista` en
+    `encabezados.py` mirada desde el otro lado: allí la clave que falta revienta,
+    aquí no puede faltar.
+
+    `unidad` LLEVA UN SUFIJO, NO UN RANGO. La clave se sigue llamando igual
+    porque el nombre siempre fue el correcto; lo que estaba mal era lo que se
+    metía dentro. Aquí llegaba `Definicion.unidad` tal cual, y ese campo vale
+    "ms" para la HRV pero "0-100" para la nota de sueño, así que la portada
+    escribía «85,50 0-100» en la primera pantalla, encima del número que más se
+    mira. Ahora llega `Definicion.sufijo`, que es `None` cuando lo que había era
+    un rango: la nota de sueño sale como «85,50», y la escala -que sigue entera
+    en `unidad` y en `rango`- se queda donde sirve, que es en los ejes.
+    """
+    return {
+        "clave": clave,
+        "etiqueta": etiqueta,
+        "nivel": nivel,
+        "valencia": valencia,
+        "lectura": lectura,
+        "na": na,
+        "media": media,
+        "unidad": unidad,
+        "percentil": percentil,
+        "n_reciente": n_reciente,
+        "n_referencia": n_referencia,
+    }
+
+
 def como_voy(
     session: Session, *, hoy: date, dias: int, cob: S.Cobertura
 ) -> dict[str, Any]:
@@ -471,40 +531,36 @@ def como_voy(
 
         if len(recientes) < MINIMO_RECIENTES:
             lineas.append(
-                {
-                    "clave": clave,
-                    "etiqueta": d.etiqueta,
-                    "nivel": None,
-                    "valencia": None,
-                    "lectura": None,
-                    "na": (
+                _linea(
+                    clave=clave,
+                    etiqueta=d.etiqueta,
+                    na=(
                         f"solo {len(recientes)} de los últimos {DIAS_RECIENTES} días "
                         f"traen este dato; hacen falta {MINIMO_RECIENTES} para que la "
                         f"media sea de la semana y no de los días sueltos que hubo"
                     ),
-                    "n_reciente": len(recientes),
-                    "n_referencia": len(previos),
-                }
+                    unidad=d.sufijo,
+                    n_reciente=len(recientes),
+                    n_referencia=len(previos),
+                )
             )
             continue
 
         referencia = _ventanas(previos, min(DIAS_RECIENTES, len(recientes)))
         if len(referencia) < MINIMO_REFERENCIA:
             lineas.append(
-                {
-                    "clave": clave,
-                    "etiqueta": d.etiqueta,
-                    "nivel": None,
-                    "valencia": None,
-                    "lectura": None,
-                    "na": (
+                _linea(
+                    clave=clave,
+                    etiqueta=d.etiqueta,
+                    na=(
                         f"hay {len(referencia)} semanas anteriores con las que "
                         f"comparar y hacen falta {MINIMO_REFERENCIA}: con menos, "
                         f"decir si esta semana es alta o baja sería inventárselo"
                     ),
-                    "n_reciente": len(recientes),
-                    "n_referencia": len(referencia),
-                }
+                    unidad=d.sufijo,
+                    n_reciente=len(recientes),
+                    n_referencia=len(referencia),
+                )
             )
             continue
 
@@ -521,19 +577,18 @@ def como_voy(
             valencia = "neutro"
 
         lineas.append(
-            {
-                "clave": clave,
-                "etiqueta": d.etiqueta,
-                "nivel": nivel,
-                "valencia": valencia,
-                "lectura": frase,
-                "na": None,
-                "media": round(media, 1),
-                "unidad": d.unidad,
-                "percentil": round(pct, 0) if pct is not None else None,
-                "n_reciente": len(recientes),
-                "n_referencia": len(referencia),
-            }
+            _linea(
+                clave=clave,
+                etiqueta=d.etiqueta,
+                nivel=nivel,
+                valencia=valencia,
+                lectura=frase,
+                media=round(media, 1),
+                unidad=d.sufijo,
+                percentil=round(pct, 0) if pct is not None else None,
+                n_reciente=len(recientes),
+                n_referencia=len(referencia),
+            )
         )
 
     lineas.append(_linea_bici(session, hoy=hoy))
@@ -579,31 +634,27 @@ def _linea_bici(session: Session, *, hoy: date) -> dict[str, Any]:
     )
     ultima = session.scalar(select(func.max(Activity.date)))
     if ultima is None:
-        return {
-            "clave": "bici",
-            "etiqueta": "Bici",
-            "nivel": None,
-            "valencia": None,
-            "lectura": None,
-            "na": "no hay ninguna salida registrada todavía",
-        }
+        return _linea(
+            clave="bici",
+            etiqueta="Bici",
+            na="no hay ninguna salida registrada todavía",
+            n_reciente=0,
+        )
     ultima = S.a_fecha(ultima)
     hace = (hoy - ultima).days
     n = len({S.a_fecha(d) for d in dias_con_salida})
     cuando = _hace(hace)
-    return {
-        "clave": "bici",
-        "etiqueta": "Bici",
-        "nivel": None,
-        "valencia": "neutro",
-        "lectura": (
+    return _linea(
+        clave="bici",
+        etiqueta="Bici",
+        valencia="neutro",
+        lectura=(
             f"{n} salida{'s' if n != 1 else ''} esta semana, la última {cuando}"
             if n
             else f"ninguna salida esta semana, la última {cuando}"
         ),
-        "na": None,
-        "n_reciente": n,
-    }
+        n_reciente=n,
+    )
 
 
 def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
@@ -617,14 +668,12 @@ def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
     desde = hoy - timedelta(days=DIAS_RECIENTES - 1)
     total = session.scalar(select(func.count()).select_from(WorkoutLog)) or 0
     if not total:
-        return {
-            "clave": "fuerza",
-            "etiqueta": "Fuerza",
-            "nivel": None,
-            "valencia": None,
-            "lectura": None,
-            "na": "el sistema todavía no ha apuntado ninguna sesión de fuerza",
-        }
+        return _linea(
+            clave="fuerza",
+            etiqueta="Fuerza",
+            na="el sistema todavía no ha apuntado ninguna sesión de fuerza",
+            n_reciente=0,
+        )
     n = (
         session.scalar(
             select(func.count())
@@ -636,20 +685,17 @@ def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
     ultima = session.scalar(select(func.max(WorkoutLog.date)))
     hace = (hoy - S.a_fecha(ultima)).days if ultima is not None else None
     cola = "" if hace is None else f", la última {_hace(hace)}"
-    # «sesión» + «es» da «sesiónes». En castellano el plural se lleva la tilde
-    # por delante -sesión/sesiones- así que pegar el sufijo a la forma singular
-    # no vale, y las dos formas se escriben enteras. Lo cazó un test; a ojo se
-    # lee cuatro veces sin verlo.
-    cuantas = "1 sesión" if n == 1 else f"{n} sesiones"
-    return {
-        "clave": "fuerza",
-        "etiqueta": "Fuerza",
-        "nivel": None,
-        "valencia": "neutro",
-        "lectura": f"{cuantas} esta semana{cola}",
-        "na": None,
-        "n_reciente": n,
-    }
+    # Las dos formas se escriben enteras porque «sesión» + «es» da «sesiónes»:
+    # en castellano el plural mueve la tilde. El motivo entero está en
+    # `app/analysis/texto.py`, que es donde vive ya esta regla.
+    cuantas = cuantos(n, "sesión", "sesiones")
+    return _linea(
+        clave="fuerza",
+        etiqueta="Fuerza",
+        valencia="neutro",
+        lectura=f"{cuantas} esta semana{cola}",
+        n_reciente=n,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -884,6 +930,15 @@ def vista_portada(
         "que_ha_cambiado": que_ha_cambiado(session, hoy=hoy),
         "lo_que_se_sabe": {
             "titulo": "Lo que ya sé de ti",
+            # Los tres bloques traen `subtitulo` porque los tres se pintan con la
+            # misma cabecera, y a este le faltaba: el renderizador leía
+            # `b.subtitulo` sobre un diccionario que no la tenía y en JavaScript
+            # eso no es un error, es un `undefined` que no imprime nada. La
+            # cabecera salía a medias y no había forma de notarlo desde el móvil.
+            "subtitulo": (
+                f"De las {calculadas} relaciones que hoy se pueden calcular, "
+                f"éstas son las que aguantan."
+            ),
             "estado": "con_datos" if encontrados else "vacio",
             "na": na_hallazgos
             or (

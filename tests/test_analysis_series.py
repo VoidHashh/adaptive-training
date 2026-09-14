@@ -18,6 +18,7 @@ Los tres sitios donde eso puede pasar:
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 import pytest
@@ -351,3 +352,46 @@ def test_todas_las_definiciones_tienen_un_sentido_valido():
         assert d.sentido in {"alto_peor", "alto_mejor", "neutro"}, clave
         assert d.fuente in {"checkin", "garmin", "entreno"}, clave
         assert d.etiqueta and d.unidad, clave
+
+
+def test_un_rango_no_se_escribe_detras_de_un_numero():
+    """«85,50 0-100» estuvo escrito en la primera pantalla del panel.
+
+    `unidad` hace dos trabajos con la misma palabra: para la HRV es una unidad de
+    verdad -"ms"- y para la nota de sueño es el rango de la escala -"0-100"-. La
+    portada la pegaba detrás del valor sin mirar cuál le había tocado, y de ahí
+    salía una frase que no escribiría nadie, en el sitio de la interfaz que más
+    se lee y con el aspecto de un número mal formateado.
+
+    No daba ningún error, y por eso hace falta este test: lo único que lo delató
+    fue pintar las seis vistas contra la base de verdad y leerlas. El andamio de
+    Node no lo veía porque todas las claves existían y todos los valores eran
+    cadenas; era correcto y decía una tontería.
+
+    Se comprueba por la FORMA y no contra una lista de claves: una serie nueva
+    con escala 0-10 tiene que acertar sola. Y se comprueba en los dos sentidos
+    -que los rangos desaparezcan y que las unidades de verdad sigan enteras-,
+    porque un `sufijo` que devolviera `None` siempre también haría pasar la
+    mitad de arriba.
+    """
+    rangos = {c: d for c, d in S.DEFINICIONES.items()
+              if re.fullmatch(r"\d+(?:[.,]\d+)?-\d+(?:[.,]\d+)?", d.unidad)}
+    assert rangos, (
+        "no queda ni una serie con la unidad puesta como rango, así que este "
+        "test ya no vigila nada: o se han arreglado en el catálogo -y entonces "
+        "sobra `sufijo`- o alguien ha cambiado el formato y hay que mirarlo"
+    )
+    for clave, d in rangos.items():
+        assert d.sufijo is None, (
+            f"{clave} tiene la unidad '{d.unidad}', que es un rango, y `sufijo` "
+            f"lo devuelve igualmente: la portada escribirá "
+            f"'85,50 {d.unidad}' detrás del valor"
+        )
+
+    for clave, d in S.DEFINICIONES.items():
+        if clave in rangos:
+            continue
+        assert d.sufijo == d.unidad, (
+            f"{clave} mide en '{d.unidad}' y `sufijo` se lo ha comido: el valor "
+            f"saldrá desnudo y sin decir en qué está"
+        )

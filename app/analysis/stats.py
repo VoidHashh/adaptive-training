@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Sequence
 
+from app.analysis.texto import cuantos, plural
+
 # Por debajo de esto no hay nada que calcular: con dos puntos la recta pasa
 # exactamente por los dos y `r` sale 1 o -1 sin excepción.
 N_MINIMO_CALCULABLE = 3
@@ -331,9 +333,11 @@ def correlacion(pares: Pares, *, metodo: str = "spearman") -> Resultado:
         falta = N_MINIMO_CALCULABLE - len(pares)
         return Resultado(
             na=(
-                f"solo hay {len(pares)} día(s) con las dos cosas medidas; "
-                f"faltan {falta} para poder calcular nada"
-                + (f" (y se descartaron {pares.descartados} por huecos)"
+                f"solo hay {cuantos(len(pares), 'día', 'días')} con las dos "
+                f"cosas medidas; {plural(falta, 'falta', 'faltan')} {falta} "
+                "para poder calcular nada"
+                + (f" (y se {plural(pares.descartados, 'descartó', 'descartaron')}"
+                   f" {pares.descartados} por huecos)"
                    if pares.descartados else "")
             ),
             **base,
@@ -427,12 +431,14 @@ class Desfase:
             return "van a la vez: lo que notas ese día es lo que marca el reloj ese día"
         if d > 0:
             return (
-                f"tu percepción se ADELANTA {d} día(s): lo que notas hoy se parece "
-                f"a lo que el reloj marcará dentro de {d}"
+                f"tu percepción se ADELANTA {cuantos(d, 'día', 'días')}: lo que "
+                f"notas hoy se parece a lo que el reloj marcará dentro de "
+                f"{cuantos(d, 'día', 'días')}"
             )
         return (
-            f"tu percepción va por DETRÁS {abs(d)} día(s): lo que notas hoy se "
-            f"parece a lo que el reloj marcó hace {abs(d)}"
+            f"tu percepción va por DETRÁS {cuantos(abs(d), 'día', 'días')}: lo que "
+            f"notas hoy se parece a lo que el reloj marcó hace "
+            f"{cuantos(abs(d), 'día', 'días')}"
         )
 
 

@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.analysis.texto import cuantos
+
 # Cuándo una vista pasa de "parcial" a "con_datos". No es un porcentaje de
 # calidad: es cuánto de lo que la vista SABE mirar está mirando de verdad. Por
 # debajo de la mitad, la vista está enseñando una esquina de su propio asunto y
@@ -76,10 +78,6 @@ def _estado(vivos: int, posibles: int) -> str:
     return "con_datos"
 
 
-def _cuantos(n: int, singular: str, plural: str) -> str:
-    return f"1 {singular}" if n == 1 else f"{n} {plural}"
-
-
 def _encabezado(
     *,
     pregunta: str,
@@ -100,11 +98,11 @@ def _encabezado(
         resumen = f"Todavía no. Hace falta {falta}."
     elif estado == "parcial":
         resumen = (
-            f"{_cuantos(vivos, *unidad)} de {posibles}. "
+            f"{cuantos(vivos, *unidad)} de {posibles}. "
             f"Lo que falta necesita {falta}."
         )
     else:
-        resumen = f"{_cuantos(vivos, *unidad)} de {posibles}."
+        resumen = f"{cuantos(vivos, *unidad)} de {posibles}."
     return {
         "pregunta": pregunta,
         "estado": estado,

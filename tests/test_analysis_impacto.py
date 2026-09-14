@@ -255,7 +255,7 @@ def test_el_ranking_pone_primero_al_ejercicio_culpable(db):
 
     assert r["n_ejercicios"] == 3
     assert r["respuesta"]["clave"] == "lower_discomfort"
-    assert r["ordenado_por"] == "correlación a +1 día(s)"
+    assert r["ordenado_por"] == "correlación a +1 día"
 
     primero = r["ranking"][0]
     assert primero["clave"] == "malo"
@@ -306,7 +306,7 @@ def test_un_ejercicio_hecho_dos_veces_no_se_calcula_pero_se_ve(db):
     assert raro["veces_hecho"] == 2
     c = a(raro, 1)
     assert c["r"] is None
-    assert "solo 2 día(s) con esto" in c["na"]
+    assert "solo 2 días con esto" in c["na"]
     assert "al menos 3 de cada" in c["na"]
 
 
@@ -330,7 +330,7 @@ def test_el_motivo_que_sale_es_el_del_eslabon_que_falta_de_verdad(db):
 
     assert c["r"] is None
     assert "las dos cosas medidas" in c["na"]
-    assert "0 día(s) con esto" not in c["na"]
+    assert "0 días con esto" not in c["na"]
 
     # Y con la respuesta presente y variando, el motivo sí pasa a ser el del
     # reparto de grupos: hay pares de sobra, pero solo dos días con la exposición.
@@ -343,7 +343,7 @@ def test_el_motivo_que_sale_es_el_del_eslabon_que_falta_de_verdad(db):
     c = a(fila_de(v, "bici_suave", "fatigue"), 1)
 
     assert c["n"] > 20  # pares hay: lo que falta es reparto
-    assert "2 día(s) con esto" in c["na"]
+    assert "2 días con esto" in c["na"]
     assert "al menos 3 de cada" in c["na"]
 
 

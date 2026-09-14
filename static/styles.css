@@ -308,10 +308,16 @@ pre {
   text-align: center;
   color: var(--tenue);
   text-decoration: none;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   line-height: 1.2;
-  /* Seis etiquetas en el ancho de un móvil. Se recortan con puntos suspensivos
-   * antes que envolver a dos líneas y descuadrar la altura de la barra. */
+  /* Siete etiquetas en el ancho de un móvil. Se recortan con puntos suspensivos
+   * antes que envolver a dos líneas y descuadrar la altura de la barra.
+   *
+   * Siete y no seis desde que entró la portada, y por eso la letra bajó de 0,72
+   * a 0,68: en una pantalla de 360 puntos, siete botones dan 51 puntos cada uno
+   * y a 0,72 «Coincide» se recortaba a «Coinci…». Recortar la etiqueta de una
+   * pestaña es peor que encogerla: la que hay que leer de un vistazo es
+   * justamente la palabra entera. */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -381,12 +387,35 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
   font-size: 0.86rem;
 }
 
-/* `n = 43 · spearman · 12 descartados`. Atenuada, nunca invisible. */
+/* `43 pares comparados · correlación de rangos · 12 descartados`. Atenuada,
+   nunca invisible. */
 .ficha {
   margin: 0.45rem 0 0;
   color: var(--tenue);
   font-size: 0.78rem;
   font-variant-numeric: tabular-nums;
+}
+
+/* LOS ENLACES DE DENTRO DE UNA VISTA, que no tenían ninguna regla.
+ *
+ * Sin regla, el navegador pone su azul de fábrica -#0000EE- sobre un fondo
+ * #14161a, y eso es azul marino sobre negro. En «Lo que todavía no se puede
+ * contestar» cada ficha remata con los enlaces a las vistas que se abrirían, que
+ * es LA PARTE ACCIONABLE del bloque entero, y salían prácticamente invisibles.
+ *
+ * Es el defecto que solo aparece mirando. Todas las claves existían, el HTML
+ * era correcto y el andamio de Node daba «ok»: el fallo no estaba en ningún
+ * dato, estaba en que nadie había abierto la página.
+ *
+ * Con `--acento` y no con el azul del sistema, y subrayado punteado en vez de
+ * continuo: estos enlaces viven dentro de `.ficha`, que es texto atenuado a
+ * propósito, y un subrayado macizo ahí dentro pesaría más que el título de la
+ * tarjeta que hay encima. */
+#vista a {
+  color: var(--acento);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 0.2em;
 }
 
 /* --- tarjetas ------------------------------------------------------------ */
@@ -469,6 +498,7 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
 
 .filtro {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
   margin: 0 0 0.9rem;
@@ -656,3 +686,200 @@ code {
   color: var(--tenue);
   font-variant-numeric: tabular-nums;
 }
+
+/* ==========================================================================
+   EL ENCABEZADO DE ESTADO, arriba de cada vista
+
+   Qué contesta esta pantalla y si hoy puede contestarlo. Va ANTES de la
+   cobertura y antes de todo lo demás porque decide cómo hay que leer el resto:
+   una vista con dos parejas de catorce y una con las catorce pintan las dos una
+   pantalla con pinta de pantalla llena.
+
+   El color NO es lo único que lo distingue -hay un rótulo en castellano
+   delante-, por el mismo motivo que en las comprobaciones de la portada: con sol
+   en la pantalla, a las siete de la mañana, el borde no se ve.
+   ========================================================================== */
+
+.encabezado-vista {
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 0.6rem;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-left-width: 3px;
+}
+.encabezado-vista.bien { border-left-color: var(--verde); }
+.encabezado-vista.ojo  { border-left-color: var(--ambar); }
+.encabezado-vista.mal  { border-left-color: var(--rojo); }
+
+/* La pregunta va primero y va del tamaño del texto normal: es el título de
+ * verdad de la pantalla. El de arriba dice cómo se llama la vista, que es una
+ * palabra técnica; éste dice para qué sirve. */
+.encabezado-vista .pregunta {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.35;
+}
+.encabezado-vista .estado {
+  margin: 0.45rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+}
+.encabezado-vista .rotulo {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 700;
+}
+.encabezado-vista.bien .rotulo { color: #bfe6cd; }
+.encabezado-vista.ojo  .rotulo { color: #f3d9a4; }
+.encabezado-vista.mal  .rotulo { color: #f5c2c0; }
+.cuenta-estado { color: var(--tenue); font-variant-numeric: tabular-nums; }
+.encabezado-vista .resumen-estado {
+  margin: 0.3rem 0 0;
+  color: var(--tenue);
+  font-size: 0.85rem;
+}
+
+/* ==========================================================================
+   LA PORTADA
+
+   La primera pantalla al entrar en métricas, y la única que no pide elegir
+   nada. Tres bloques: cómo voy, qué ha cambiado, y lo que ya se sabe.
+
+   LA REGLA TIPOGRÁFICA DE TODA ESTA SECCIÓN es que la FRASE manda y el NÚMERO
+   va debajo y en pequeño. En las otras cinco vistas es al revés -el `r` grande y
+   la lectura debajo- y eso está bien allí, porque allí se va a mirar el número.
+   Aquí se viene a saber cómo se va, y traducir mentalmente un coeficiente antes
+   de poder leer nada es exactamente lo que este rediseño vino a quitar.
+   ========================================================================== */
+
+.tarjeta.portada { padding: 0.25rem 0.9rem; }
+
+/* Una señal: etiqueta a la izquierda, lectura a la derecha, ficha debajo. En
+ * una sola línea cuando cabe, partida en dos cuando no. */
+.linea-portada {
+  display: grid;
+  grid-template-columns: minmax(6rem, auto) 1fr;
+  align-items: baseline;
+  gap: 0.2rem 0.8rem;
+  padding: 0.65rem 0;
+  border-top: 1px solid var(--borde);
+}
+.linea-portada:first-child { border-top: 0; }
+
+.etiqueta-portada { color: var(--tenue); font-size: 0.86rem; }
+
+.lectura-portada {
+  font-size: 1rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+/* El color de la lectura sale de `valencia`, que lo decide el servidor: "alto"
+ * no es "bueno" en todas las señales -una HRV alta es buena y un pulso en
+ * reposo alto es malo-, así que el sentido de cada una no se sabe aquí.
+ *
+ * Y son colores de TEXTO, apagados, no fondos: esto no es el semáforo del motor
+ * y no puede leerse como si lo fuera. La carga la manda el motor, no la
+ * portada. */
+.lectura-portada.bien   { color: #8fd6ab; }
+.lectura-portada.mal    { color: #f0a9a4; }
+.lectura-portada.neutro { color: var(--texto); }
+
+.ficha-portada {
+  grid-column: 1 / -1;
+  color: var(--tenue);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Una señal sin datos NO se esconde: se pinta con su motivo, atenuada y a la
+ * izquierda, porque es prosa y no un valor. */
+.linea-portada.sin-dato .lectura-portada {
+  color: var(--tenue);
+  font-size: 0.84rem;
+  text-align: left;
+}
+
+/* --- el feed de hallazgos ------------------------------------------------ */
+
+/* La tarjeta que este proyecto existe para producir. */
+.tarjeta.hallazgo { padding: 0.9rem; }
+
+/* De qué va el hallazgo y qué decide, arriba y pequeño. Es la etiqueta, no el
+ * mensaje: sirve para saber si esto te afecta hoy, no para leerlo entero. */
+.grupo-hallazgo {
+  margin: 0 0 0.4rem;
+  color: var(--tenue);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* LA FRASE. Lo más grande de la tarjeta, en castellano, sin un solo símbolo
+ * estadístico dentro. */
+.tarjeta.hallazgo .frase {
+  margin: 0;
+  font-size: 1.05rem;
+  line-height: 1.4;
+}
+.tarjeta.hallazgo .frase.bien   { color: #8fd6ab; }
+.tarjeta.hallazgo .frase.mal    { color: #f0a9a4; }
+.tarjeta.hallazgo .frase.neutro { color: var(--texto); }
+
+/* Cuánto se nota, en palabras y no en un número. Va pegada a la frase y en
+ * pequeño: matiza lo que se acaba de leer. */
+.fuerza {
+  display: inline-block;
+  margin-left: 0.45rem;
+  padding: 0.08rem 0.4rem;
+  border-radius: 0.8rem;
+  border: 1px solid var(--borde);
+  color: var(--tenue);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  vertical-align: 0.1em;
+  white-space: nowrap;
+}
+
+.tarjeta.hallazgo .matiz {
+  margin: 0.4rem 0 0;
+  color: var(--tenue);
+  font-size: 0.87rem;
+}
+
+/* Lo que CONFIRMA y lo que DISCREPA van dentro de la tarjeta y no en un
+ * plegable. Que lo mismo salga por cuatro caminos es parte de cuánto fiarse, y
+ * enterrarlo deja la frase sola y pareciendo más segura de lo que es. */
+.tarjeta.hallazgo .confirma,
+.tarjeta.hallazgo .discrepa {
+  margin: 0.4rem 0 0;
+  padding-left: 0.6rem;
+  font-size: 0.83rem;
+  border-left: 2px solid var(--borde);
+}
+.tarjeta.hallazgo .confirma { border-left-color: var(--verde); color: #bfe6cd; }
+.tarjeta.hallazgo .discrepa { border-left-color: var(--ambar); color: #f3d9a4; }
+
+/* --- el desplegable de respuestas de Impacto ----------------------------- */
+
+/* La nota de debajo del desplegable, explicando qué es el número entre
+ * paréntesis y por qué hay opciones sin datos. Pegada al control, no flotando
+ * como un párrafo más: `flex-basis: 100%` la baja a su propia línea dentro del
+ * mismo bloque en vez de meterla en la fila del `select`. */
+.filtro .explica {
+  flex: 1 1 100%;
+  margin: 0;
+  font-size: 0.79rem;
+}
+
+/* Una opción sin ninguna relación calculada sigue en la lista, y se dice en el
+ * propio texto de la opción -«— sin datos todavía»- porque el `<option>` de un
+ * desplegable nativo casi no se puede pintar en un móvil: iOS ignora el color.
+ * El `optgroup` sí se ve, y es el que de verdad las separa. */
+.filtro optgroup { font-style: normal; }

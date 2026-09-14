@@ -823,7 +823,7 @@ def test_con_pocas_sesiones_detras_hay_direccion_pero_no_disociacion():
 
     assert r["direccion"] == PERCEPCION_PEOR
     assert r["disociacion"] is False
-    assert f"solo hay {BASE_MINIMA - 1} sesión(es) anteriores" in r["na"]
+    assert f"solo hay {BASE_MINIMA - 1} sesiones anteriores" in r["na"]
     assert str(BASE_MINIMA) in r["na"]
 
 
