@@ -126,6 +126,41 @@ def _senales(dia: date, historial: list[ClassifiedRide]) -> Signals:
     )
 
 
+def _guarda_de_ventana(todas: list[ClassifiedRide]) -> list[str]:
+    """¿Los datos llegan para la ventana que el config dice mirar?
+
+    ESTE ES EL FALLO QUE YA HA PASADO DOS VECES
+    --------------------------------------------
+    `window_days: 180` no es una promesa: es una petición. Si el histórico solo
+    llega a 90 días, `_baseline_gaps` no da error -da OTRO NÚMERO-, calculado
+    sobre los huecos que quepan. El síntoma no es un fallo: es un percentil
+    distinto, perfectamente formado, que nadie tiene motivo para mirar dos veces.
+
+    Y esta batería no se enteraba. Medido bajando `window_days` de 180 a 90
+    sobre estos mismos datos: los dos bordes siguen a cero, la tasa pasa del 17%
+    al 9% contra un 12% real, y todo aprobaba. El único síntoma era que había
+    cuatro días callados más, que desde fuera parece ruido.
+
+    Así que la ventana se comprueba contra los datos en vez de imprimirse. Es la
+    misma comprobación que `config_loader` hace contra `backfill_days`, repetida
+    aquí porque esta batería puede correr contra `--garmin N` y entonces la que
+    manda es la N que se haya pedido, no el YAML.
+    """
+    window = int(REC["baseline_from_gaps"]["window_days"])
+    if not todas:
+        return ["no hay ni una salida: no se ha medido nada"]
+    span = (todas[-1].date - todas[0].date).days + 1
+    print(f"Ventana pedida: {window} días. Histórico disponible: {span} días "
+          f"({todas[0].date} → {todas[-1].date}).")
+    if span < window:
+        return [
+            f"el histórico son {span} días y `window_days` pide {window}: los "
+            f"percentiles NO se están calculando sobre la ventana declarada, "
+            f"sino sobre lo que hay, y eso es otro número sin previo aviso"
+        ]
+    return []
+
+
 def main() -> int:
     todas = salidas()
     intensas = [r for r in todas if r.level == "intensa"]
@@ -137,8 +172,10 @@ def main() -> int:
         # La producción, tal cual. Si un día devuelve `None` con un motivo, ese
         # día el sistema dice que no tiene base en vez de inventarse un nivel,
         # y aquí cuenta como "callado" igual que callaba el calendario.
-        nivel, _why, _motivo = _baseline_gaps(REC, _senales(dia, todas), ORDEN)
-        return nivel
+        # Por NOMBRE y no desempaquetando: a `_baseline_gaps` le creció un campo
+        # y este `nivel, _why, _motivo = ...` reventó con un ValueError sin que
+        # ningún test se enterara, porque ningún test corre este guión.
+        return _baseline_gaps(REC, _senales(dia, todas), ORDEN).nivel
 
     def viejo(dia: date) -> str | None:
         return CALENDARIO.get(dia.strftime("%A").lower())
@@ -224,6 +261,8 @@ def main() -> int:
     print("=" * 78)
     fallos: list[str] = []
 
+    fallos += _guarda_de_ventana(todas)
+
     uno, paron = malos_del_nuevo
     if uno:
         fallos.append(f"{uno} veces 'intensa' al día siguiente de una intensa")
@@ -231,6 +270,25 @@ def main() -> int:
         fallos.append(f"{paron} veces 'intensa' volviendo de un parón de 30+ días")
 
     fallos += _guarda_de_tasa(*tasas_del_nuevo)
+
+    # NO MEDIDO NO ES APROBADO, Y AQUÍ SALÍAN POR LA MISMA PUERTA
+    # ------------------------------------------------------------
+    # Los dos bordes se cuentan sobre los días en que el esquema habla. Si no
+    # habla ningún día -caché vacía, `min_gaps` imposible, un typo en el YAML-
+    # los dos salen a cero, la guarda de tasa dice "NO MEDIDA" y se devolvía 0:
+    # el veredicto verde de una batería que no ha mirado nada. Quien lo lee es un
+    # `$?`, y para un `$?` eso era indistinguible de "todo bien".
+    #
+    # El 2 es a propósito: 1 es "el esquema hace algo que no puede hacer" y 2 es
+    # "esto no ha medido". Las dos cosas paran, pero no son la misma noticia.
+    dijo_int, _fue_int, n_con_base = tasas_del_nuevo
+    if not fallos and n_con_base < MUESTRA_MINIMA:
+        print(f"SIN VEREDICTO. Solo {n_con_base} salidas con base y hacen falta "
+              f"{MUESTRA_MINIMA}.")
+        print("Los dos bordes salen a cero porque no hay nada que contar, no")
+        print("porque el esquema se porte bien. Esto no aprueba: no ha mirado.")
+        print("=" * 78)
+        return 2
 
     if fallos:
         print("FALSADO. El esquema nuevo ha hecho algo de lo que no puede hacer:")
@@ -259,7 +317,23 @@ MUESTRA_MINIMA = 20
 # solo, con tasas pequeñas, salta por nada (2% contra 1% es un x2 y son dos
 # salidas). Los puntos solos no distinguen 45% contra 35% -que es mucho pero
 # proporcionado- de 30% contra 5%, que es otra cosa.
-FACTOR_MAXIMO = 2.0
+#
+# POR QUÉ 1.5 Y NO 2.0, Y POR QUÉ SOLO HACIA ARRIBA
+# --------------------------------------------------
+# Estaba en 2.0 para los dos lados, y se midió lo que dejaba pasar: moviendo
+# `percentile_low` de 40 a 20 -un cambio de una línea en el YAML- el esquema
+# pasa a decir «intensa» el 31% de las veces contra un 19% real, factor 1.57, y
+# esta batería lo aprobaba. Un 60% más de órdenes de apretar de las que el
+# usuario se da a sí mismo, con una hernia L4-L5 al otro lado, no es una
+# desviación tolerable: es exactamente el fallo que esta batería existe para
+# cazar, y se le escapaba por cuatro centésimas.
+#
+# La guarda es asimétrica a propósito, porque los dos errores no cuestan lo
+# mismo. Pasarse por arriba empuja a cargar una espalda que no lo aguanta.
+# Quedarse corto solo hace al sistema aburrido, y de eso ya avisa la columna de
+# acierto. Así que arriba se aprieta y abajo se deja correr: el suelo solo caza
+# el caso degenerado de no decir «intensa» jamás, que se mira aparte.
+FACTOR_MAXIMO = 1.5
 PUNTOS_MINIMOS = 0.10
 
 

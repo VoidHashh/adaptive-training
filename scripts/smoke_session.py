@@ -416,3 +416,9 @@ print(f"  claves: {sorted(d)}")
 print(f"\n{'=' * 78}")
 print("TODO OK" if not FAILS else f"FALLOS: {FAILS}")
 print("=" * 78)
+
+# El `sys.exit` no estaba, y sin él este guión acumulaba fallos en `FAILS`, los
+# imprimía y salía con 0: quien lo llamara desde una tubería o un cron veía un
+# éxito. Contar los fallos y luego tirarlos es peor que no contarlos, porque
+# desde fuera se parece exactamente a no tener ninguno.
+sys.exit(1 if FAILS else 0)

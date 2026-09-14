@@ -7,9 +7,12 @@ acumulada y la resolución de los umbrales adaptativos.
 
 from __future__ import annotations
 
+import copy
 from datetime import date, timedelta
 
 import pytest
+
+from app.config_loader import load_config
 
 from app.engine.signals import (
     UNKNOWN,
@@ -33,7 +36,7 @@ from app.engine.signals import (
     zone_percentages,
 )
 
-from tests.conftest import LUNES, ride
+from tests.conftest import LUNES, dias, ride
 
 CYCLING = {
     "activity_types": ["cycling"],
@@ -199,26 +202,134 @@ def test_las_actividades_que_no_son_bici_se_descartan():
 # ---------------------------------------------------------------------------
 
 
+# Estos tres miden la ARITMÉTICA de la ventana, y para eso hace falta que la
+# ventana esté observada de punta a punta. Antes no hacía falta decirlo porque
+# un día sin datos valía cero igual que un día de sofá; desde que `rolling_load`
+# distingue las dos cosas, cada uno de estos casos lleva un ancla vieja y fuera
+# de la ventana que se mide. El ancla no cambia ninguna suma: solo declara desde
+# cuándo se ha mirado, que es justo lo que antes se daba por supuesto.
+ANCLA = LUNES - timedelta(days=30)
+
+
 def test_la_ventana_de_carga_incluye_el_dia_actual():
-    rides = classify_all([ride(LUNES, load=100)], CYCLING)
+    rides = classify_all([ride(ANCLA, load=999), ride(LUNES, load=100)], CYCLING)
     assert rolling_load(rides, LUNES, 3) == 100.0
     assert rolling_load(rides, LUNES - timedelta(days=1), 3) == 0.0
 
 
 def test_la_ventana_de_tres_dias_cubre_hoy_y_los_dos_anteriores():
     rides = classify_all(
-        [ride(LUNES - timedelta(days=i), load=10) for i in range(5)], CYCLING
+        [ride(ANCLA, load=999)]
+        + [ride(LUNES - timedelta(days=i), load=10) for i in range(5)],
+        CYCLING,
     )
     assert rolling_load(rides, LUNES, 3) == 30.0
     assert rolling_load(rides, LUNES, 7) == 50.0
 
 
 def test_load_series_devuelve_un_valor_por_dia():
-    rides = classify_all([ride(LUNES, load=100)], CYCLING)
+    rides = classify_all([ride(ANCLA, load=999), ride(LUNES, load=100)], CYCLING)
     serie = load_series(rides, LUNES, days=10, window_days=3)
     assert len(serie) == 10
     assert serie[LUNES] == 100.0
     assert serie[LUNES - timedelta(days=5)] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Un día que no se miró no es un día de sofá
+# ---------------------------------------------------------------------------
+#
+# EL FALLO: `sum([])` valía 0.0, así que un día anterior a la primera actividad
+# conocida daba una carga de cero idéntica a la de un día real sin bici. Los dos
+# ceros eran indistinguibles a partir de ahí.
+#
+# Lo que rompía no era el número, era la guarda de al lado. `min_days_required`
+# existe para no calcular un percentil con cuatro datos, y esos ceros la
+# cumplían de sobra: el 2026-03-15, sobre el histórico de verdad, la ventana de
+# 60 días de `load_3d_p90` llevaba 52 ceros de días sin ningún dato y 8 días
+# medidos. El percentil salía de los ceros y la primera salida real lo superaba
+# sin despeinarse.
+#
+# Y no lo cazó nadie porque el síntoma era invisible: en el replay de seis meses
+# `carga_acumulada` disparó 32 veces y se saltó CERO. Una regla que en 181 días
+# nunca dice "no sé" no es una regla robusta, es una regla que no está mirando
+# lo que cree. Tras el arreglo son 21 disparos y 24 saltadas.
+
+
+def test_un_dia_anterior_a_la_primera_salida_conocida_no_vale_cero():
+    """Cero significa 'miré y no hubo bici', y de ese día no se miró nada."""
+    rides = classify_all([ride(LUNES, load=100)], CYCLING)
+    # La ventana de 3 días que termina en LUNES empieza en LUNES-2, y de LUNES-2
+    # no se sabe nada: la primera -y única- observación es la del propio LUNES.
+    assert rolling_load(rides, LUNES, 3) is None
+    # En cambio la ventana de 1 día está observada entera y sí vale.
+    assert rolling_load(rides, LUNES, 1) == 100.0
+
+
+def test_sin_ninguna_salida_no_hay_carga_que_dar():
+    """Sin una sola observación no hay horizonte, y cero sería inventárselo."""
+    assert rolling_load([], LUNES, 3) is None
+
+
+def test_el_cero_de_un_dia_observado_sigue_siendo_un_cero():
+    """El arreglo no puede comerse los ceros de verdad, que son la mayoría."""
+    rides = classify_all([ride(ANCLA, load=50)], CYCLING)
+    # Días muy posteriores al ancla: observados, sin bici, carga cero de verdad.
+    assert rolling_load(rides, LUNES, 3) == 0.0
+    assert rolling_load(rides, LUNES, 7) == 0.0
+
+
+def test_los_dias_sin_mirar_no_le_cuentan_al_minimo_del_percentil():
+    """La consecuencia real: `min_days_required` vuelve a ser un mínimo de datos.
+
+    Es el test que habría cazado el fallo. Sin él, la serie llega llena de ceros
+    fabricados, el mínimo se cumple y el percentil se calcula contra la nada.
+    """
+    rides = classify_all([ride(LUNES, load=100)], CYCLING)
+    serie = load_series(rides, LUNES, days=90, window_days=3)
+    medidos = [v for v in serie.values() if v is not None]
+    # Ni uno. Con una sola observación no hay ninguna ventana de tres días
+    # cubierta de punta a punta, ni siquiera la que termina en el propio LUNES:
+    # empieza en LUNES-2 y de ese día no se sabe nada. Antes esta misma serie
+    # llegaba con 90 ceros.
+    assert medidos == [], "ninguna ventana de 3 días está observada entera"
+
+    valor, motivo = resolve_adaptive_threshold(
+        {"window_days": 60, "min_days_required": 30, "percentile": 90},
+        serie,
+        LUNES,
+    )
+    assert valor is None
+    assert motivo, "y tiene que decir por qué, no callarse"
+
+
+def test_la_serie_de_carga_cubre_la_ventana_que_pide_el_config():
+    """`adaptive_thresholds.*.window_days` manda; aquí había un 90 escrito a mano.
+
+    El 90 sobraba mientras la ventana más larga fuera de 60. Subirla a 120 o 180
+    -que es lo que pide el criterio de calcular los umbrales contra la propia
+    distribución- dejaba el percentil calculado sobre 90 días sin decir nada: ni
+    error, ni nota, ni forma de verlo desde fuera. El valor que se lee en el YAML
+    dejaba de ser el valor que se usa, otra vez.
+    """
+    from tests.conftest import REPO_ROOT
+
+    cfg = load_config(REPO_ROOT / "config.yaml")
+    rides = [ride(LUNES - timedelta(days=i), load=50) for i in range(0, 250, 3)]
+    mets = dias(LUNES, 250, hrv=60, rhr=50, sleep_min=420)
+
+    for ventana in (60, 120, 180):
+        c = copy.deepcopy(cfg)
+        c.raw["adaptive_thresholds"]["load_3d_p90"]["window_days"] = ventana
+        sig = build_signals(
+            c, LUNES, metrics=mets, rides=rides,
+            sessions=[], checkin_history=[], checkin=None,
+        )
+        serie = sig.history["load_3d"]
+        assert len(serie) >= ventana + 1, (
+            f"con window_days={ventana} la serie tiene {len(serie)} días: el "
+            f"percentil se estaría calculando sobre menos ventana de la pedida"
+        )
 
 
 # ---------------------------------------------------------------------------

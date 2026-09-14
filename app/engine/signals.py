@@ -453,8 +453,43 @@ def rolling_load(
     mensaje-, y el percentil adaptativo lo descarta de la ventana en vez de
     calibrarse contra un cero falso, que es lo que rebajaba el umbral para
     todos los días siguientes.
+
+    NO MIRAR NO ES NO ENTRENAR, Y ESTA FUNCIÓN LAS CONFUNDÍA
+    --------------------------------------------------------
+    Un día sin salidas daba `sum([]) == 0.0`, y eso está bien cuando el día se
+    miró y no hubo bici. Pero daba lo mismo -un cero perfectamente creíble-
+    para un día ANTERIOR a la primera actividad que se ha llegado a leer, que
+    es un día del que no se sabe absolutamente nada. Los dos ceros salían
+    idénticos de aquí, y a partir de ahí ya no había forma de distinguirlos.
+
+    Lo que eso rompía no era esta función, era la guarda de la de al lado.
+    `resolve_adaptive_threshold` exige `min_days_required` días para calcular
+    un percentil, y esa exigencia existe justamente para no calibrar contra
+    cuatro datos. Medido sobre el histórico real: el 2026-03-15 la ventana de
+    60 días de `load_3d_p90` llevaba 52 ceros de días sin ningún dato y 8 días
+    de verdad. El mínimo de 30 se cumplía de sobra, el percentil salía de los
+    ceros, y la primera salida real lo superaba sin despeinarse. En el replay
+    entero `carga_acumulada` disparó 32 veces de 181 y se saltó CERO: la guarda
+    que tenía que decir "no sé" no lo dijo ni una vez en seis meses.
+
+    Así que la ventana que empieza antes de la primera observación no vale
+    cero: vale `None`. Es el mismo criterio que ya se aplicaba a una salida con
+    carga desconocida, extendido al único caso que faltaba, y devuelve a
+    `min_days_required` su papel de mínimo de DATOS en vez de mínimo de
+    casillas rellenas.
+
+    El horizonte se deduce de las propias salidas porque es lo único que hay:
+    el volcado solo contiene actividades, así que de antes de la primera no se
+    puede afirmar nada. Se queda corto cuando el backfill miró más atrás y no
+    encontró nada -esos ceros sí eran reales y aquí se descartan-, y ese error
+    es el que se prefiere: retrasa el primer percentil unos días y nunca
+    fabrica uno.
     """
+    if not rides:
+        return None
     start = day - timedelta(days=window_days - 1)
+    if start < min(r.date for r in rides):
+        return None
     ventana = [r for r in rides if start <= r.date <= day]
     if any(not r.load_known for r in ventana):
         return None
@@ -865,8 +900,28 @@ def build_signals(
             )
 
     # --- carga acumulada ---------------------------------------------------
+    #
+    # CUÁNTA SERIE HAY QUE CONSTRUIR LO DICE EL CONFIG, NO UN 90 ESCRITO AQUÍ
+    # -----------------------------------------------------------------------
+    # Aquí ponía `days=max(history_days, 90)`. El 90 era de cuando el único
+    # consumidor de esta serie pedía 60 días de ventana, y sobraba. Pero quien
+    # decide cuántos días hacen falta es `adaptive_thresholds.*.window_days`, y
+    # esos viven en el YAML y se pueden subir: el día que alguien pusiera 120 o
+    # 180 -que es justo lo que pide el criterio de calcular los umbrales contra
+    # la propia distribución- `resolve_adaptive_threshold` habría recortado la
+    # ventana a los 90 días que hubiera, sin error y sin nota. Otra vez el valor
+    # que se lee no siendo el valor que se usa, y van unas cuantas.
+    #
+    # Se calcula en vez de fijarse, y el `+ 1` es porque la ventana del percentil
+    # termina AYER: para 60 días de ventana hacen falta 61 días de serie.
+    ventanas_pedidas = [
+        int(spec.get("window_days", 60))
+        for spec in adaptive_cfg.values()
+        if isinstance(spec, dict)
+    ]
+    dias_de_serie = max([history_days, 90, *(v + 1 for v in ventanas_pedidas)])
     for name, win in (("load_3d", 3), ("load_7d", 7)):
-        series = load_series(classified, day, days=max(history_days, 90), window_days=win)
+        series = load_series(classified, day, days=dias_de_serie, window_days=win)
         sig.values[name] = series.get(day)
         sig.history[name] = series
         if series.get(day) is None:

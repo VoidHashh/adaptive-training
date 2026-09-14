@@ -111,6 +111,11 @@ def show(title: str, sig: Signals, light: str) -> None:
     print(f"\n{title}")
     print(f"  luz={light:5s} baseline={str(r.baseline):9s} final={r.level}")
     print(f"  punto de partida        : {r.baseline_why or '(sin base)'}")
+    # Las dos frases van juntas y una debajo de otra a propósito: la de arriba
+    # es la auditoría -con fecha y percentiles- y la de abajo es lo único que
+    # llega al móvil. Si alguna vez la de abajo dice algo que la de arriba no
+    # sostiene, se ve aquí sin abrir el código.
+    print(f"  ...dicho en el mensaje  : {r.baseline_en_claro or '(nada)'}")
     print(f"  recortes (bajan nivel)  : {chain}")
     for n in r.texto_notas():
         print(f"  nota     (no baja nada) : {n}")
@@ -129,6 +134,17 @@ for i in range(7):
     niveles.add(r.level)
     print(f"   {d.strftime('%A'):<10} {d} -> {r.level}")
 print(f"   => {'OK, uno solo' if len(niveles) == 1 else 'FALLO, ' + str(niveles)}")
+
+# Este `FALLO` se imprimía y el guión salía con 0 de todas formas. Es la única
+# comprobación de verdad que hay aquí -las demás secciones son para leerlas- y
+# se tiraba a la basura justo después de calcularla. Se guarda y se cobra al
+# final, que es donde puede pararle los pies a algo.
+FALLOS: list[str] = []
+if len(niveles) != 1:
+    FALLOS.append(
+        f"el día de la semana cambia la recomendación: {sorted(niveles)}. "
+        f"Ha vuelto a entrar el calendario por algún sitio."
+    )
 
 print()
 print("=" * 78)
@@ -202,3 +218,23 @@ show(
     make_signals(HOY, rides=hist + [ride(HOY, "intensa")]),
     "green",
 )
+
+# La salida de hoy no puede cambiar el consejo de hoy, y esto es lo que lo
+# comprueba en vez de dejarlo a la vista para que alguien lo compare a ojo.
+sin_hoy = recommend_bike(CFG, make_signals(HOY, rides=hist), "green")
+con_hoy = recommend_bike(
+    CFG, make_signals(HOY, rides=hist + [ride(HOY, "intensa")]), "green"
+)
+if sin_hoy.level != con_hoy.level:
+    FALLOS.append(
+        f"la salida de HOY entra en su propio consejo: sin ella {sin_hoy.level}, "
+        f"con ella {con_hoy.level}"
+    )
+
+print()
+print("=" * 78)
+print("TODO OK" if not FALLOS else f"{len(FALLOS)} FALLOS:")
+for f in FALLOS:
+    print(f"  - {f}")
+print("=" * 78)
+sys.exit(1 if FALLOS else 0)
