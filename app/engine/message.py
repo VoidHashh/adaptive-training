@@ -390,6 +390,25 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     if decision.bike is not None and decision.bike.se_muestra:
         L.append("")
         L.append(f"🚴 {escapar_html(decision.bike.text())}")
+        # DE DÓNDE SALE EL NIVEL, EN CRISTIANO Y TODOS LOS DÍAS.
+        #
+        # Esta línea no existía y el número caía del cielo. El punto de partida
+        # ya no es una constante del YAML que uno pueda ir a mirar: es un
+        # cálculo contra el propio histórico que cambia cada día, así que sin
+        # esto el mensaje afirma «intensa» y no hay forma de saber por qué.
+        #
+        # Va en cursiva y sin viñeta a propósito: no es un hecho de contexto
+        # -esos van debajo, con `·`, y NO han entrado en la decisión-, es
+        # literalmente la razón del nivel de arriba. Mezclarla con las notas
+        # borraría la única distinción que este bloque se ha ganado a pulso.
+        #
+        # Y aquí es donde se ve el freno del parón largo, que es una de las dos
+        # cosas por las que existe la recomendación. Antes el mensaje ponía
+        # «Media» a secas después de seis semanas parado: el freno actuaba y no
+        # se veía. Ahora dice que llevas bastante más de lo que sueles esperar y
+        # que al volver toca volumen antes que carga.
+        if decision.bike.baseline_en_claro:
+            L.append(f"   <i>{escapar_html(decision.bike.baseline_en_claro)}</i>")
         # Los hechos de contexto van con viñeta y DEBAJO, separados del nivel
         # recomendado. Pegados a la misma línea se leerían como el motivo del
         # nivel, y no lo son: ninguno ha entrado en la decisión. Es la misma

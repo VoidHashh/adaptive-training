@@ -73,7 +73,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 from app.engine.signals import (
     ClassifiedRide,
@@ -110,6 +110,11 @@ class BikeRecommendation:
     # cálculo contra el histórico que cambia cada día, y sin esto no hay manera
     # de reconstruir después por qué el sistema dijo lo que dijo.
     baseline_why: str | None = None
+    # El mismo hecho que `baseline_why`, dicho para leerlo en el móvil: sin
+    # percentiles, sin decimales y sin fechas. Va al mensaje; `baseline_why` no.
+    # Ver el comentario largo al final de `_baseline_gaps` para por qué son dos
+    # frases y no una.
+    baseline_en_claro: str | None = None
     # `applies=False` tiene dos sabores muy distintos y confundirlos es lo que
     # hacía el calendario viejo: "hoy es miércoles y aquí no se habla" era un no
     # evento, así que no se decía nada y estaba bien. Ahora el único motivo
@@ -137,6 +142,7 @@ class BikeRecommendation:
             "duration_max": self.duration_max,
             "baseline": self.baseline,
             "baseline_why": self.baseline_why,
+            "baseline_en_claro": self.baseline_en_claro,
             "downgrades": [
                 {"from": a, "to": b, "why": why} for a, b, why in self.downgrades
             ],
@@ -144,7 +150,33 @@ class BikeRecommendation:
         }
 
     def text(self) -> str:
-        """Línea para el mensaje de Telegram."""
+        """Línea para el mensaje de Telegram.
+
+        EL MODO VERBAL ES LA MITAD DEL CONTENIDO
+        -----------------------------------------
+        Esto decía «Bici: Intensa (90-150 min). Series en Z4-Z5.», en
+        indicativo, como quien lee una agenda. Y el sistema no sabe si hoy se
+        sale en bici: eso depende del tiempo que haga, de las ganas y de con
+        quién se salga, tres cosas que no ve y no va a ver nunca. Anunciar en
+        indicativo algo que no se sabe es aparentar una certeza que no se tiene,
+        y encima invita a discutir con el mensaje en vez de con el cuerpo.
+
+        Así que condicional: **«Si sales hoy: intensa»**. Es exactamente el
+        mismo arreglo que se le hizo al bloque de fuerza cuando se quitó el
+        calendario -«Si vas al gimnasio hoy: Día 2»- y por el mismo motivo. Que
+        los dos bloques del mensaje usen el mismo modo verbal no es estética: si
+        uno sugiere y el otro ordena, el que ordena parece tener una razón mejor.
+
+        EL DESCANSO SE QUEDA EN INDICATIVO, Y ES A PROPÓSITO
+        ----------------------------------------------------
+        `descanso` solo puede venir del techo de un semáforo en rojo, o sea de
+        HRV, sueño, pulso de reposo y carga. Eso no es el sistema adivinando si
+        apetece salir: es lo único de todo este fichero que sí mide el cuerpo, y
+        es el sitio donde la certeza está ganada. Ponerle «si sales hoy» delante
+        lo ofrecería como una opción entre otras, que es lo contrario de lo que
+        significa un rojo. Misma distinción, y por el mismo razonamiento, que la
+        rama de `recovery` en `message.py`.
+        """
         if not self.applies:
             if self.skip_visible:
                 return (
@@ -157,7 +189,10 @@ class BikeRecommendation:
             if self.duration_max > self.duration_min
             else f"{self.duration_max} min"
         )
-        base = f"Bici: {self.label} ({rango}). {self.detail}"
+        if self.level == DESCANSO:
+            base = f"Bici: {self.label.lower()} ({rango}). {self.detail}"
+        else:
+            base = f"Si sales hoy: {self.label.lower()} ({rango}). {self.detail}"
         if self.downgrades:
             # Solo el motivo del último recorte: es el que manda. Los demás
             # quedan en el JSON de la decisión para quien quiera el detalle.
@@ -273,14 +308,15 @@ def recommend_bike(
     # las bandas sería castigar al mensaje por un problema que no es suyo.
     notas = _notas_de_contexto(rec, signals, cycling)
 
-    baseline, why, motivo_sin_base = _baseline_gaps(rec, signals, order)
-    if baseline is None:
+    base = _baseline_gaps(rec, signals, order)
+    if base.nivel is None:
         out = build(DESCANSO, DESCANSO, [], notas)
         out.applies = False
-        out.skip_reason = motivo_sin_base
+        out.skip_reason = base.motivo_sin_base
         out.skip_visible = True
         return out
 
+    baseline, why, en_claro = base.nivel, base.why, base.en_claro
     level = baseline
     downs: list[tuple[str, str, str]] = []
 
@@ -299,6 +335,7 @@ def recommend_bike(
     # --- 3. contexto: ya calculado arriba, y no recorta ---------------------
     out = build(level, baseline, downs, notas)
     out.baseline_why = why
+    out.baseline_en_claro = en_claro
     return out
 
 
@@ -350,12 +387,39 @@ def _notas_de_contexto(
     return notas
 
 
+class Baseline(NamedTuple):
+    """Lo que devuelve `_baseline_gaps`, con los campos por nombre.
+
+    POR QUÉ NO ES UNA TUPLA SUELTA, QUE ES LO QUE ERA
+    --------------------------------------------------
+    Era `tuple[str | None, str | None, str | None]` y le creció un cuarto campo
+    -`en_claro`, la frase que llega al móvil-. Los dos llamantes tenían que
+    cambiar a la vez, y uno se quedó atrás: `scripts/falsear_bici.py` seguía
+    haciendo `nivel, _why, _motivo = _baseline_gaps(...)` y reventaba con un
+    `ValueError: too many values to unpack` a mitad de la tabla.
+
+    No lo cazó nadie porque los 1849 tests estaban verdes: ningún test ejecuta
+    ese guión, y no puede, porque necesita la caché de actividades reales. O sea
+    que la batería que existe para falsar el punto de partida llevaba rota desde
+    el commit anterior y el único síntoma era un guión que nadie corrió ese día.
+
+    Con nombres, añadir un campo no rompe a quien lee los que ya había. No
+    arregla que el guión esté fuera de los tests -eso no tiene arreglo barato-,
+    pero quita de en medio el modo de fallo que lo tumbó.
+    """
+
+    nivel: str | None
+    why: str | None
+    en_claro: str | None
+    motivo_sin_base: str | None
+
+
 def _baseline_gaps(
     rec: dict[str, Any], signals: Signals, order: list[str]
-) -> tuple[str | None, str | None, str | None]:
+) -> Baseline:
     """Punto de partida a partir de los huecos entre salidas INTENSAS propias.
 
-    Devuelve `(nivel, por_qué, motivo_si_no_hay)`. Sigue el patrón de
+    Devuelve `(nivel, por_qué, en_claro, motivo_si_no_hay)`. Sigue el patrón de
     `resolve_adaptive_threshold`: cuando no se puede calcular algo con sentido,
     se dice por qué y NO se devuelve un valor por defecto. El valor por defecto
     aquí sería una constante inventada, que es exactamente lo que se acaba de
@@ -446,7 +510,7 @@ def _baseline_gaps(
     # consejo dependiera de lo que aún no se ha hecho.
     intensas = sorted({r.date for r in rides if r.level == "intensa" and r.date < hoy})
     if not intensas:
-        return None, None, (
+        return Baseline(None, None, None, 
             f"no hay ninguna salida intensa registrada antes de hoy en las "
             f"{len(rides)} salidas leídas de Garmin"
         )
@@ -460,7 +524,7 @@ def _baseline_gaps(
             else "solo 1 hueco" if len(huecos) == 1
             else f"solo {len(huecos)} huecos"
         )
-        return None, None, (
+        return Baseline(None, None, None, 
             f"{cuantos} entre intensas en los últimos {window} "
             f"días y hacen falta {min_gaps}: con menos, los percentiles serían "
             f"dos puntos sueltos y no una distribución"
@@ -485,26 +549,63 @@ def _baseline_gaps(
     # umbral degenerado de `resolve_adaptive_threshold`, y se trata igual: sin
     # bandas utilizables no se da punto de partida.
     if hi <= lo:
-        return None, None, (
+        return Baseline(None, None, None, 
             f"los percentiles de tus huecos entre intensas salen iguales "
             f"(p{p_low:g}={lo:.1f}, p{p_high:g}={hi:.1f}): la banda que dice "
             f"'intensa' no existiría y el sistema no volvería a proponer una"
         )
 
     dias = (hoy - intensas[-1]).days
+    # SIN ADJETIVOS DE MAGNITUD, Y NO ES UN DETALLE DE ESTILO.
+    #
+    # La primera versión de estas tres frases decía «bastante más de lo que
+    # sueles esperar» en la banda alta, y con `hi`=14 eso salía tal cual el día
+    # 14: catorce días no son «bastante más» que catorce. El adjetivo afirmaba
+    # una distancia que el número no sostenía, que es exactamente el defecto que
+    # estas frases vienen a arreglar, cometido dentro del arreglo.
+    #
+    # Así que se nombra la frontera y se deja que el lector compare. «Llevas 14
+    # días, y de 14 en adelante cuenta como volver de un parón» es verdad el día
+    # 14 y el día 40 sin cambiar una palabra, y de paso enseña la regla en vez
+    # de solo su resultado.
+    llevas = f"llevas {dias} {'día' if dias == 1 else 'días'} sin una salida intensa"
     if dias < lo:
         nivel, banda = niveles[0], f"por debajo de p{p_low:g} ({lo:.1f})"
+        claro = f"{llevas}, menos de los {lo:g} que sueles dejar pasar"
     elif dias < hi:
         nivel, banda = niveles[1], f"entre p{p_low:g} ({lo:.1f}) y p{p_high:g} ({hi:.1f})"
+        claro = f"{llevas}, que es lo que sueles dejar pasar entre una y otra"
     else:
         nivel, banda = niveles[2], f"por encima de p{p_high:g} ({hi:.1f})"
+        claro = (
+            f"{llevas}. De {hi:g} en adelante cuenta como volver de un parón: "
+            f"volumen antes que carga"
+        )
 
     why = (
         f"{dias} {'día' if dias == 1 else 'días'} desde la última intensa "
         f"({intensas[-1].isoformat()}), {banda} de tus {len(huecos)} huecos "
         f"de los últimos {window} días"
     )
-    return nivel, why, None
+    # DOS FRASES Y NO UNA, Y NO ES REDUNDANCIA.
+    #
+    # `why` es la auditoría: lleva la fecha exacta, los dos percentiles con su
+    # valor y sobre cuántos huecos se calcularon. Sirve para reconstruir dentro
+    # de un mes por qué el sistema dijo lo que dijo, y va al JSON de la decisión
+    # y al panel.
+    #
+    # `claro` es lo que se lee a las siete de la mañana en el móvil. Dice el
+    # MISMO hecho sin una sola cifra de jerga, porque «entre p40 (8.0) y p60
+    # (14.0) de tus 5 huecos» no informa a nadie: o se ignora, o peor, se lee
+    # como precisión. Un número con un decimal aparenta una exactitud que 5
+    # huecos no sostienen.
+    #
+    # Y la tercera rama es la que de verdad justifica esto. La banda alta es uno
+    # de los dos frenos por los que existe este bloque -no pedir series al
+    # volver de un parón-, y hasta ahora el mensaje enseñaba «Media» a secas: el
+    # freno actuaba y no se veía. Un freno invisible no se puede ni agradecer ni
+    # discutir, y el día que se rompa se romperá en silencio.
+    return Baseline(nivel, why, claro, None)
 
 
 def _intense_rides_this_weekend(signals: Signals, cycling: dict[str, Any]) -> int:

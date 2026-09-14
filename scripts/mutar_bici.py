@@ -133,6 +133,49 @@ MUTACIONES = [
         "decision.bike.applies",
         "sin_base or se_dice or bici",
     ),
+    # --- la certeza aparente del mensaje -----------------------------------
+    #
+    # Estas cinco son de lenguaje y no de cálculo, y son tan mutables como las
+    # otras: el nivel sale igual de bien con cualquiera de ellas puesta, así que
+    # el único sitio donde se pueden morir es un test que mire el texto. Si
+    # alguna sobrevive, es que el mensaje se puede volver a poner a mandar sin
+    # que nada chille.
+    (
+        "R. el consejo vuelve al indicativo: el sistema manda en vez de ofrecer",
+        "app/engine/bike_advisor.py",
+        '            base = f"Si sales hoy: {self.label.lower()} ({rango}). {self.detail}"',
+        '            base = f"Bici: {self.label} ({rango}). {self.detail}"',
+        "condicional",
+    ),
+    (
+        "S. el descanso del rojo pasa a ofrecerse como una opción más",
+        "app/engine/bike_advisor.py",
+        "        if self.level == DESCANSO:",
+        "        if False:",
+        "indicativo",
+    ),
+    (
+        "T. el nivel vuelve a caer del cielo: no se explica de dónde sale",
+        "app/engine/bike_advisor.py",
+        "    out.baseline_en_claro = en_claro",
+        "    pass",
+        "jerga or llega_al_movil or paron_largo_se_ve",
+    ),
+    (
+        "U. la explicación se calcula y no sale del móvil",
+        "app/engine/message.py",
+        "        if decision.bike.baseline_en_claro:",
+        "        if False:",
+        "llega_al_movil or notas_van_debajo",
+    ),
+    (
+        "V. el parón largo deja de decir por qué no toca apretar",
+        "app/engine/bike_advisor.py",
+        '            f"{llevas}. De {hi:g} en adelante cuenta como volver de un parón: "\n'
+        '            f"volumen antes que carga"',
+        'f"{llevas}"',
+        "paron_largo_se_ve",
+    ),
     # --- el recuento, que se perdió una vez entero -------------------------
     (
         "M. el recuento de intensas desaparece del mensaje",

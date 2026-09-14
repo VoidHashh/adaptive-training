@@ -910,12 +910,48 @@ def test_las_notas_de_la_bici_llegan_al_mensaje(cfg):
     assert d.bike.texto_notas(), "sin notas este test no prueba nada"
 
 
+def test_de_donde_sale_el_nivel_llega_al_movil(cfg):
+    """Calcular la explicación y no enseñarla es igual que no calcularla.
+
+    Mismo hueco que el de las notas, y por eso está pegado a él: hay tests que
+    comprueban que `baseline_en_claro` se calcula bien y tests que comprueban
+    que el mensaje escapa lo que pinta, y entre los dos cabe entero el caso de
+    que no se pinte. Con una diferencia que lo hace peor que en las notas: esta
+    frase es la ÚNICA forma que tiene el usuario de saber de dónde sale el
+    nivel, porque el punto de partida ya no es un número del YAML que se pueda
+    ir a mirar.
+
+    Si esto deja de salir, el mensaje vuelve a afirmar «intensa» a secas, que es
+    la definición de aparentar más certeza de la que se tiene.
+    """
+    from datetime import timedelta
+
+    sabado = LUNES + timedelta(days=5)
+    s = _con_bici(sabado, yesterday_ride_level="intensa")
+    d = decide(cfg, sabado, s, EngineState())
+
+    assert d.bike is not None and d.bike.applies
+    assert d.bike.baseline_en_claro, "sin explicacion este test no prueba nada"
+    txt = render_telegram(d, cfg)
+    assert d.bike.baseline_en_claro in txt, (
+        f"«{d.bike.baseline_en_claro}» se calcula y no sale del movil: el nivel "
+        f"vuelve a caer del cielo"
+    )
+
+
 def test_las_notas_van_debajo_del_nivel_y_no_pegadas_a_el(cfg):
     """La distinción entre recortar y contar tiene que verse en la pantalla.
 
     Si la nota compartiera línea con "Bici: intensa", se leería como el motivo
     del nivel. No lo es: ninguna nota ha entrado en la decisión. Van en líneas
     propias y con viñeta, que es lo que separa un dato de una justificación.
+
+    Ahora hay TRES cosas debajo del emoji y cada una dice algo distinto, así que
+    la tipografía tiene que distinguirlas o el mensaje vuelve a ser un montón:
+
+      🚴 Si sales hoy: ...        <- lo que se recomienda
+         <i>llevas 9 días...</i>  <- POR QUÉ (sí entró en la decisión)
+         · ayer hiciste una...    <- un hecho (NO entró en la decisión)
     """
     from datetime import timedelta
 
@@ -925,9 +961,27 @@ def test_las_notas_van_debajo_del_nivel_y_no_pegadas_a_el(cfg):
 
     lineas = txt.splitlines()
     i = next(n for n, l in enumerate(lineas) if "🚴" in l)
-    assert "salida intensa" not in lineas[i], "la nota se ha pegado al nivel"
-    assert "salida intensa" in lineas[i + 1]
-    assert lineas[i + 1].lstrip().startswith("·")
+    assert "hiciste una salida intensa" not in lineas[i], "la nota se ha pegado al nivel"
+
+    # La nota ya no es la línea de justo debajo: en medio va la procedencia del
+    # punto de partida. Se busca por la viñeta y no por posición a propósito,
+    # porque lo que este test defiende NO es el orden sino la distinción
+    # tipográfica. Atarlo a `i + 1` lo rompería cada vez que se añada una línea
+    # que no le incumbe, y un test que se rompe por motivos ajenos acaba
+    # relajado a mano hasta que deja de comprobar lo suyo.
+    bloque = lineas[i + 1 : i + 5]
+    con_vineta = [l for l in bloque if l.lstrip().startswith("·")]
+    assert con_vineta, f"la nota no sale con viñeta debajo del nivel: {bloque}"
+    assert any("hiciste una salida intensa" in l for l in con_vineta)
+
+    # Y la procedencia, que sí explica el nivel, va en cursiva y SIN viñeta.
+    claro = [l for l in bloque if "<i>" in l]
+    assert claro, f"el punto de partida no se explica debajo del nivel: {bloque}"
+    assert not claro[0].lstrip().startswith("·"), (
+        "la procedencia del nivel ha cogido la vineta de las notas: en la pantalla "
+        "pasaria a leerse como un hecho que no entro en la decision, y es justo al "
+        "reves"
+    )
 
 
 def test_el_dia_sin_base_de_bici_llega_al_movil(cfg):
@@ -1060,13 +1114,21 @@ class _Texto:
     interfaz real tiene que romperse, no fingir-, pero además abre un hueco de
     verdad: las notas son texto que acaba en un mensaje HTML, así que también
     hay que envenenarlas para comprobar que pasan por `escapar_html`.
+
+    Y volvió a pasar con `baseline_en_claro`, la frase que explica de dónde sale
+    el nivel. Mismo desenlace y misma lección: el doble reventó, se añadió el
+    campo, y de paso se envenenó, porque también es texto libre que se interpola
+    en HTML. Cada vez que este doble se rompe hay un sitio nuevo que escapar.
     """
 
-    def __init__(self, t: str, notas: list[str] | None = None):
+    def __init__(
+        self, t: str, notas: list[str] | None = None, en_claro: str | None = None
+    ):
         self._t = t
         self._notas = list(notas or [])
         self.applies = True
         self.skip_visible = False
+        self.baseline_en_claro = en_claro
 
     @property
     def se_muestra(self) -> bool:
@@ -1157,11 +1219,12 @@ def _envenenar_decision(d, cfg=None):
 
     # Bici, tendencia, recalibración, días sin fuerza y el bloque "Por qué".
     d.bike = _Texto(
-        f"Bici: intensa{VENENO}",
+        f"Si sales hoy: intensa{VENENO}",
         notas=[
             f"ayer hiciste una salida intensa{VENENO}",
             f"llevas 5 sesiones intensas esta semana{VENENO}",
         ],
+        en_claro=f"llevas 9 días sin una salida intensa{VENENO}",
     )
     d.bike.applies = True
     d.tendencia = _Lineas(f"Tendencia: seis días sin verde{VENENO}")

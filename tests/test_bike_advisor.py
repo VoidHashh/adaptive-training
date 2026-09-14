@@ -20,6 +20,7 @@ Hasta hace poco todo el módulo tenía un solo test, y era `d.bike is not None`.
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 import pytest
@@ -199,7 +200,7 @@ def test_un_miercoles_tambien_se_aconseja(cfg):
     rec = recommend_bike(cfg, _senales(MIERCOLES, dias_desde=DIAS_INTENSA), "green")
     assert rec.applies
     assert rec.day_name == "wednesday"
-    assert rec.text().startswith("Bici:")
+    assert rec.text().startswith("Si sales hoy:")
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +441,116 @@ def test_el_recorte_del_semaforo_se_explica_y_no_solo_se_aplica(cfg):
     assert (desde, hasta) == ("intensa", "descanso")
     assert "rojo" in motivo.lower()
     assert "descanso" in rec.text().lower()
+
+
+# ---------------------------------------------------------------------------
+# El mensaje no puede aparentar más certeza de la que tiene
+# ---------------------------------------------------------------------------
+#
+# Dicho por el usuario, y es la especificación de este bloque:
+#
+#   «no me molesta que no sea mejor predictor que decir siempre 'suave'. Mis
+#   salidas dependen del tiempo, de las ganas y de con quién salgo, cosas que el
+#   sistema no ve y no va a ver. Lo que quiero de él es exactamente lo que dices
+#   que compra: que no me mande apretar el día después de una intensa ni tras un
+#   parón largo, y que hable todos los días. Que el mensaje no aparente más
+#   certeza de la que tiene.»
+#
+# De ahí salen los tres tests de aquí abajo: el modo verbal, la procedencia del
+# número, y que el freno del parón se VEA en vez de solo actuar.
+
+
+@pytest.mark.parametrize("dias", [1, DIAS_SUAVE, DIAS_INTENSA, DIAS_MEDIA])
+def test_el_consejo_se_ofrece_en_condicional_y_no_se_manda(cfg, dias):
+    """El sistema no sabe si hoy se sale en bici, así que no puede anunciarlo.
+
+    Salir depende del tiempo, de las ganas y de con quién se salga: tres cosas
+    que no entran por ninguna parte y no van a entrar. «Bici: Intensa» en
+    indicativo afirma un plan que nadie ha hecho; «Si sales hoy: intensa» dice
+    lo mismo sin inventarse la premisa.
+
+    Se prueban las tres bandas y no una, porque el modo verbal es una propiedad
+    del mensaje entero. Un `if` que dejara una sola banda en indicativo sería
+    justo el tipo de cosa que pasa desapercibida: el día que saliera estaría
+    mandando, y los otros no.
+    """
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=dias), "green")
+    assert rec.applies
+    assert rec.text().startswith("Si sales hoy:"), (
+        f"con {dias} dias el mensaje anuncia en indicativo: {rec.text()!r}"
+    )
+
+
+def test_el_descanso_del_rojo_si_va_en_indicativo(cfg):
+    """La excepción, y es la que hace que la regla signifique algo.
+
+    `descanso` solo puede venir del techo de un semáforo en rojo, o sea de HRV,
+    sueño, pulso de reposo y carga. Eso es lo único aquí que mide el cuerpo: es
+    el sitio donde la certeza está ganada y donde el sistema sí tiene algo que
+    decir sin condicionales. «Si sales hoy: descanso» además no se entiende.
+
+    Si algún día esto empieza a decir «si sales hoy», el mensaje habrá pasado a
+    ofrecer el rojo como una opción entre otras.
+    """
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=DIAS_INTENSA), "red")
+    assert rec.level == "descanso"
+    assert not rec.text().startswith("Si sales hoy:")
+    assert rec.text().startswith("Bici:")
+
+
+def test_de_donde_sale_el_nivel_se_dice_sin_jerga(cfg):
+    """El punto de partida ya no se puede ir a mirar al YAML: hay que contarlo.
+
+    Con `baseline_by_weekday` el número estaba escrito en el config y uno podía
+    abrirlo. Ahora sale de un cálculo contra el propio histórico que cambia cada
+    día, así que un «intensa» sin explicación es un número caído del cielo.
+
+    Y la explicación que ya existía, `baseline_why`, no vale para el móvil:
+    dice «entre p40 (8.0) y p60 (14.0) de tus 5 huecos». Eso o se ignora o,
+    peor, se lee como precisión —un decimal sobre cinco huecos aparenta una
+    exactitud que no hay—. Por eso hay dos frases y esta prueba vigila que la
+    del mensaje no arrastre la jerga de la otra.
+    """
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=DIAS_INTENSA), "green")
+    claro = rec.baseline_en_claro
+    assert claro, "el nivel sale de un calculo y no se explica en ninguna parte"
+    assert str(DIAS_INTENSA) in claro, f"no dice cuantos dias llevas: {claro!r}"
+
+    bajo = claro.lower()
+    for jerga in ("percentil", "p40", "p60", "baseline", "gap", "ventana"):
+        assert jerga not in bajo, f"«{jerga}» es jerga y esto lo lee una persona: {claro!r}"
+    # Ni decimales: `8.0` sobre cinco huecos finge una precisión que no existe.
+    assert not re.search(r"\d+\.\d", claro), f"un decimal aqui aparenta exactitud: {claro!r}"
+
+    # Y la otra frase, la de auditoría, sigue llevando todo lo que esta no lleva.
+    assert rec.baseline_why and "p40" in rec.baseline_why, (
+        "la frase en claro no sustituye a la auditoria: las dos tienen que existir"
+    )
+
+
+def test_el_freno_del_paron_largo_se_ve_y_no_solo_actua(cfg):
+    """Uno de los dos motivos por los que existe este bloque, y era invisible.
+
+    «que no me mande apretar (...) tras un parón largo». El freno funcionaba
+    —la banda alta baja a 'media' en vez de pedir series— pero el mensaje
+    enseñaba «Media» a secas: actuaba sin decirse. Un freno que no se ve no se
+    puede ni agradecer ni discutir, y el día que se rompa se romperá en
+    silencio, que es el modo de fallo que este proyecto persigue.
+
+    Se comprueba en la frontera exacta además de en un parón largo. En la
+    frontera es donde una frase mal escrita se delata: la primera versión decía
+    «bastante más de lo que sueles esperar» y el día `DIAS_MEDIA` eso era falso.
+    """
+    for dias in (P_ALTO, DIAS_MEDIA, 60):
+        rec = recommend_bike(cfg, _senales(LUNES, dias_desde=dias), "green")
+        assert rec.level == "media", f"con {dias} dias la banda alta no actua"
+        claro = (rec.baseline_en_claro or "").lower()
+        assert "parón" in claro or "paron" in claro, (
+            f"con {dias} dias el freno del paron actua sin decirse: {claro!r}"
+        )
+        assert "volumen antes que carga" in claro, (
+            f"con {dias} dias no se dice POR QUE no toca apretar: {claro!r}"
+        )
 
 
 def test_en_ambar_baja_a_suave_pero_no_a_descanso(cfg):
