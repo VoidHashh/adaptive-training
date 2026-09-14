@@ -1170,6 +1170,58 @@ if _ESTATICOS.is_dir():
             headers={"Cache-Control": "no-cache"},
         )
 
-    app.mount("/", StaticFiles(directory=_ESTATICOS, html=True), name="pwa")
+    class _EstaticosQueSeRevalidan(StaticFiles):
+        """`StaticFiles` diciendo cuánto se puede fiar el navegador. Que no es solo.
+
+        EL FALLO QUE ARREGLA
+        --------------------
+        `StaticFiles` manda `ETag` y `Last-Modified` y NINGÚN `Cache-Control`. Sin
+        esa cabecera el navegador no se queda sin caché: se queda sin instrucción,
+        y entonces aplica «caducidad heurística» -reutiliza la respuesta sin
+        preguntar durante una fracción del tiempo que lleva sin cambiar el
+        fichero-. O sea que el navegador se inventa un plazo y no hay 304, no hay
+        petición y no hay forma de enterarse.
+
+        Encima de eso va el service worker, y ahí es donde duele. Su `fetch` está
+        escrito «primero la red» -y su comentario lo promete: que una versión
+        nueva del contenedor se note al primer arranque con cobertura-, pero
+        `fetch()` pasa por el caché HTTP del navegador como cualquier otra
+        petición. Con la caducidad heurística encima, «primero la red» se
+        convierte en «primero lo viejo», y el service worker ADEMÁS guarda esa
+        copia vieja en su propio caché. La promesa del comentario era falsa y no
+        había forma de verlo: la pantalla sale entera, bien pintada y anterior.
+
+        Se encontró desplegando el panel nuevo para mirarlo desde el móvil: el
+        contenedor servía el `metricas.js` de ahora, el navegador ejecutaba el de
+        antes y no había un solo error en ninguna consola.
+
+        POR QUÉ `no-cache` Y NO `no-store`
+        ----------------------------------
+        `no-cache` no quiere decir «no lo guardes»: quiere decir «guárdalo, pero
+        pregunta antes de usarlo». Como `StaticFiles` ya manda `ETag`, esa
+        pregunta se contesta casi siempre con un 304 sin cuerpo. Sale gratis y
+        sale siempre fresco. `no-store` obligaría a bajar la PWA entera en cada
+        arranque para no ganar nada.
+
+        Y NO ROMPE EL MODO SIN CONEXIÓN, que es la duda razonable: lo que sostiene
+        ese modo es el `CacheStorage` del service worker, que es otro almacén y no
+        mira esta cabecera. Sin red, el `fetch` de `sw.js` falla y se tira de ahí
+        igual que antes.
+
+        POR QUÉ AQUÍ Y NO EN UNA RUTA MÁS
+        ---------------------------------
+        Porque `/sw.js` ya tenía su `Cache-Control` puesto a mano, con el motivo
+        escrito al lado, y eso NO bastó: el razonamiento valía para los otros doce
+        ficheros del armazón y se quedó en el único donde alguien lo pensó. Poner
+        la cabecera en el sitio por el que salen todos es lo que impide que el
+        siguiente fichero nazca otra vez sin ella.
+        """
+
+        async def get_response(self, path: str, scope):  # type: ignore[no-untyped-def]
+            respuesta = await super().get_response(path, scope)
+            respuesta.headers["Cache-Control"] = "no-cache"
+            return respuesta
+
+    app.mount("/", _EstaticosQueSeRevalidan(directory=_ESTATICOS, html=True), name="pwa")
 else:  # pragma: no cover
     log.warning("no hay carpeta `static/`: la PWA no se sirve")

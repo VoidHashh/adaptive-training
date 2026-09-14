@@ -575,6 +575,44 @@ def test_el_armazon_se_sirve_de_verdad_por_la_url_con_la_que_se_cachea(cliente):
     )
 
 
+def test_todo_el_armazon_obliga_al_navegador_a_preguntar_antes_de_reusar(cliente):
+    """Sin `Cache-Control`, el navegador se inventa el plazo. Y se lo inventa largo.
+
+    Es la cabecera que no estaba y que dejó el panel nuevo invisible desde el
+    navegador con el contenedor ya reconstruido. `StaticFiles` manda `ETag` y
+    `Last-Modified` y nada más; sin una instrucción explícita el navegador aplica
+    caducidad heurística y reutiliza la respuesta SIN preguntar. No hay 304, no
+    hay petición, no hay nada que mirar.
+
+    Y encima va el service worker, que es lo que lo vuelve grave. Su `fetch` dice
+    «primero la red» en el código y en el comentario, pero `fetch()` pasa por el
+    caché HTTP; con la heurística delante, «primero la red» es «primero lo
+    viejo», y además guarda lo viejo en `CacheStorage`. La pantalla sale entera,
+    bien pintada y de antes de ayer.
+
+    `/sw.js` llevaba su `Cache-Control` puesto a mano desde hacía meses, con el
+    motivo escrito al lado. Los otros doce ficheros del armazón, no: el
+    razonamiento se quedó en el único sitio donde alguien lo pensó. Por eso esto
+    se comprueba sobre `ARMAZON` ENTERO y no sobre una lista escrita aquí, que
+    volvería a dejar fuera al siguiente.
+    """
+    for ruta in _lista(SW, "ARMAZON"):
+        cc = cliente.get(ruta).headers.get("cache-control", "")
+        assert cc, (
+            f"`{ruta}` se sirve sin `Cache-Control`. El navegador no se queda "
+            f"sin caché: se queda sin instrucción, y entonces se inventa cuánto "
+            f"tiempo puede reutilizarlo sin preguntar."
+        )
+        # `max-age` a secas es permiso para reutilizar sin preguntar durante ese
+        # rato, que es justo lo que no puede pasar con el armazón: el contenedor
+        # se reconstruye y el móvil sigue con el JavaScript de antes.
+        assert "no-cache" in cc or "no-store" in cc or "max-age=0" in cc, (
+            f"`{ruta}` manda `Cache-Control: {cc}`, que permite reutilizarlo sin "
+            f"revalidar. El armazón tiene que preguntar siempre: con `ETag` la "
+            f"pregunta se contesta con un 304 sin cuerpo y sale gratis."
+        )
+
+
 # ---------------------------------------------------------------------------
 # Las cinco vistas, pintadas de verdad
 # ---------------------------------------------------------------------------
