@@ -14,6 +14,7 @@ este sistema puede hacer daño sin dar un error:
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 from datetime import date, timedelta
 
 import pytest
@@ -654,6 +655,30 @@ def _entrenamiento_completo(
         "id": wid,
         "start_time": f"{day.isoformat()}T18:00:00Z",
         "title": "Sesión",
+        # `routine_id`, Y ES EL CAMPO QUE HACE QUE ESTO SEA UNA SESIÓN DEL PLAN
+        # ----------------------------------------------------------------------
+        # Sin esta línea, `routine_key_de` devolvía `None` para todos los
+        # entrenamientos de mentira de este módulo, y `None` no es una etiqueta
+        # que falte: es la etiqueta de «entrenamiento suelto». Consecuencias
+        # medidas, no supuestas, sobre la simulación de seis semanas:
+        #
+        #   - `WorkoutLog.routine_key` quedaba a NULL en las 42 filas, y el
+        #     filtro de rotación de `repository.py` -`routine_key.in_(...)`- no
+        #     encuentra NULL nunca, así que `state.last_strength` no se movía y
+        #     la rotación repetía `dia_1` los 42 días. Las seis semanas eran el
+        #     día 1 cuarenta y dos veces.
+        #   - las 42 filas se guardaban con `unplanned=True`, o sea que el doble
+        #     hacía exactamente lo que el plan pedía y el sistema lo anotaba como
+        #     hecho por libre.
+        #   - `all_sets_at_target` quedaba a NULL en las 42, porque solo se le
+        #     pone a la fila que sale de la rutina de fuerza del día.
+        #
+        # El plan lleva el id de Hevy de su rutina, así que se copia de ahí y no
+        # se inventa: un id a mano volvería a mentir en cuanto el `config.yaml`
+        # cambiara. Cuando el plan no tiene rutina -los `{"exercises": []}` de
+        # los tests de entrenamiento suelto- sale `None`, que ahí SÍ es lo que
+        # se quiere decir.
+        "routine_id": plan.get("hevy_routine_id"),
         "exercises": ejercicios,
     }
 
@@ -1221,11 +1246,28 @@ CHECKIN_TRANQUILO = {
 }
 
 
-def _seis_semanas(db, cfg, *, reconciliar: bool) -> Counter:
-    """Seis semanas de días verdes. Devuelve qué tipos de progresión hubo."""
+@dataclass
+class _Simulacion:
+    """Lo que pasó en las seis semanas, no solo lo que se quería mirar.
+
+    Existe porque la versión anterior devolvía únicamente el `Counter` de tipos
+    de progresión, y eso dejaba sin vigilar la premisa del propio test: que los
+    42 días sean 42 días distintos. No lo eran. Ver `_entrenamiento_completo`.
+    """
+
+    tipos: Counter
+    rutinas: Counter          # qué rutina se planificó cada día
+    filas: int                # entrenamientos registrados
+    sueltos: int              # cuántos se anotaron como fuera del plan
+    sin_veredicto: int        # cuántos quedaron sin cumplimiento evaluado
+
+
+def _seis_semanas(db, cfg, *, reconciliar: bool) -> _Simulacion:
+    """Seis semanas de días verdes. Devuelve qué pasó en ellas."""
     from app.repository import upsert_checkin
 
     tipos: Counter = Counter()
+    rutinas: Counter = Counter()
     for i in range(42):
         d = LUNES + timedelta(days=i)
         # El check-in es imprescindible y no un adorno: sin `lower_discomfort`
@@ -1240,14 +1282,22 @@ def _seis_semanas(db, cfg, *, reconciliar: bool) -> Counter:
         if res.decision.progression:
             for ch in res.decision.progression.changes:
                 tipos[ch.kind] += 1
-        if reconciliar:
-            plan = _plan_guardado(db, d)
-            if plan.get("exercises"):
+        plan = _plan_guardado(db, d)
+        if plan.get("exercises"):
+            rutinas[str(plan.get("routine"))] += 1
+            if reconciliar:
                 run_reconcile(
                     db, cfg, d,
                     workouts=[_entrenamiento_completo(plan, wid=f"w{i}", day=d)],
                 )
-    return tipos
+    filas = db.scalars(select(WorkoutLog)).all()
+    return _Simulacion(
+        tipos=tipos,
+        rutinas=rutinas,
+        filas=len(filas),
+        sueltos=sum(1 for f in filas if f.unplanned),
+        sin_veredicto=sum(1 for f in filas if f.all_sets_at_target is None),
+    )
 
 
 def test_sin_reconciliar_la_carga_no_sube_nunca(db, cfg):
@@ -1263,19 +1313,55 @@ def test_sin_reconciliar_la_carga_no_sube_nunca(db, cfg):
     en `test_repository.py` pasaba por culpa de eso, midiendo volumen y creyendo
     que medía memoria-.
     """
-    tipos = _seis_semanas(db, cfg, reconciliar=False)
-    assert tipos.get("load", 0) == 0, (
-        f"ha subido carga sin que nadie confirmara una sola sesión: {dict(tipos)}"
+    sim = _seis_semanas(db, cfg, reconciliar=False)
+    assert sim.tipos.get("load", 0) == 0, (
+        f"ha subido carga sin que nadie confirmara una sola sesión: {dict(sim.tipos)}"
     )
+    # Aquí la rotación NO avanza, y está bien que no avance: sin un solo
+    # entrenamiento registrado el motor no sabe que se haya hecho nada, así que
+    # sigue proponiendo la misma rutina. Se afirma para que quede escrito que es
+    # el comportamiento esperado de ESTE test y no el defecto que tenía el otro.
+    assert set(sim.rutinas) == {"dia_1"}, (
+        f"sin reconciliar nada la rotación ha avanzado sola: {dict(sim.rutinas)}"
+    )
+    assert sim.filas == 0
 
 
 def test_reconciliando_el_programa_progresa(db, cfg):
-    """La contraparte: con el bucle cerrado, seis semanas limpias suben peso."""
-    tipos = _seis_semanas(db, cfg, reconciliar=True)
-    assert tipos.get("load", 0) > 0, (
-        f"seis semanas completando todo y la carga no ha subido nunca: {dict(tipos)}"
+    """La contraparte: con el bucle cerrado, seis semanas limpias suben peso.
+
+    LAS TRES AFIRMACIONES DE ABAJO NO SON ADORNO, SON LA PREMISA
+    ------------------------------------------------------------
+    Este test estuvo en verde midiendo mucho menos de lo que su nombre dice.
+    `_entrenamiento_completo` no mandaba `routine_id`, así que `routine_key`
+    quedaba a NULL en las 42 filas, la rotación no avanzaba nunca y las «seis
+    semanas» eran el `dia_1` cuarenta y dos veces, todas anotadas como hechas
+    fuera del plan y sin cumplimiento evaluado. Con `load > 0` como única
+    comprobación, el test pasaba igual: daba 7 subidas en vez de 15.
+
+    O sea que lo que certificaba no era «el programa progresa», era «una rutina
+    de las tres progresa algo». Ahora se afirma también la premisa: que los 42
+    días sean 42 días del ciclo, que nada se registre como suelto y que todo
+    tenga veredicto. Si el doble vuelve a perder el `routine_id`, esto se pone
+    rojo en la línea que nombra la causa, no en la que mide la consecuencia.
+    """
+    sim = _seis_semanas(db, cfg, reconciliar=True)
+    assert sim.tipos.get("load", 0) > 0, (
+        f"seis semanas completando todo y la carga no ha subido nunca: {dict(sim.tipos)}"
     )
-    assert tipos.get("volume", 0) > 0
+    assert sim.tipos.get("volume", 0) > 0
+
+    assert set(sim.rutinas) == set(cfg.rotation_order()), (
+        f"seis semanas no han recorrido el ciclo entero: {dict(sim.rutinas)}"
+    )
+    assert sim.sueltos == 0, (
+        f"{sim.sueltos} de {sim.filas} sesiones hechas exactamente como pedía el "
+        f"plan se han registrado como hechas por libre"
+    )
+    assert sim.sin_veredicto == 0, (
+        f"{sim.sin_veredicto} de {sim.filas} sesiones se han quedado sin evaluar "
+        f"el cumplimiento, que es justo lo que abre o cierra la puerta de carga"
+    )
 
 
 # ---------------------------------------------------------------------------
