@@ -1,4 +1,54 @@
-"""Mide qué contesta Hevy a un `notes` mal tipado, SIN tocar ninguna rutina.
+"""Mide el contrato real de la API de Hevy SIN TOCAR NADA DE LA CUENTA.
+
+Ésta es LA herramienta y EL método para averiguar qué acepta y qué rechaza Hevy
+cuando haga falta saberlo. El día que haya que responder «¿se puede mandar X en
+el campo Y?», la respuesta se MIDE aquí; no se deduce de la documentación, no se
+recuerda de la última vez y no se supone por analogía con otro campo.
+
+EL MÉTODO: EL `routine_id` FANTASMA
+------------------------------------
+El PUT se manda contra un `routine_id` QUE NO EXISTE -un UUID v4 generado al
+vuelo-. Eso lo vuelve seguro, y no por convención sino por una propiedad medida
+de la API: **Hevy valida el cuerpo ANTES de buscar la rutina.** De ahí que sólo
+haya dos desenlaces, y que ninguno de los dos pueda modificar la cuenta:
+
+    400 + texto            ->  el cuerpo está mal, y el texto dice en qué.
+                               Ésa es la medida que se busca.
+    404 Routine not found  ->  el cuerpo pasó ENTERO y lo único que falló fue
+                               el id. O sea: ACEPTADO.
+
+Que un 404 se lea como «aceptado» es la parte contraintuitiva, y es justo la que
+hace que esto funcione.
+
+EL CONTROL NO ES OPCIONAL. La primera sonda manda un cuerpo BIEN FORMADO contra
+el mismo id inexistente. Si el control da 404 y la sonda da 400, la diferencia
+la produce el CUERPO y no el id, que es exactamente lo que hay que demostrar.
+Sin el control un 400 podría venir de cualquier otra cosa -la clave, la ruta, un
+id con formato inválido- y la tabla entera no probaría nada. Por eso, cuando se
+filtra por línea de órdenes, hay que incluir siempre "CONTROL".
+
+POR QUÉ NO SE PRUEBA CONTRA UNA RUTINA DE VERDAD, y no es por pereza: si Hevy
+resultara ACEPTAR lo que se está sondeando, el PUT habría reemplazado la rutina
+del usuario, porque el PUT de Hevy SUSTITUYE, no parchea. Una sonda que sólo es
+segura si la hipótesis es cierta no es una sonda: es la escritura otra vez.
+
+LÍMITES DE LO QUE ESTO PUEDE MEDIR
+-----------------------------------
+Distingue aceptado de rechazado, y nada más. NO puede decir qué VALOR queda
+guardado cuando algo se acepta, porque nunca llega a guardarse nada. Por eso lo
+de `Number([]) === 0` está dicho como lo que es -semántica de JavaScript, de la
+que se deduce el valor- y no como una medida. Si algún día hace falta medir el
+valor guardado de verdad, el camino es crear una rutina nueva de usar y tirar
+con POST, escribir ahí, leerla y borrarla; lo que no se hace nunca es usar para
+eso una rutina que le importe a alguien.
+
+CÓMO SE AMPLÍA. Se añade una tupla a `SONDAS` y se lanza filtrando por su
+etiqueta, con el control delante:
+
+    python scripts/sondeo_contrato_hevy.py "CONTROL" "lo que sea"
+
+Lo que NO se puede es ampliar la tabla de resultados a ojo. Lo que hay abajo
+está medido, no recordado.
 
 POR QUÉ HAY QUE MEDIRLO Y NO DEDUCIRLO
 --------------------------------------
@@ -47,10 +97,38 @@ DE BUSCAR LA RUTINA. Todo lo que dio 400 lo dio por el cuerpo:
     400  notes del ejercicio = []          Expected string, received array
     400  reps = 'ocho'                     Expected number, received nan
     400  index en el ejercicio             Unrecognized key(s) in object: 'index'
+    400  type = 'inventado'                Invalid set type
+    400  type = []                         Expected string, received array
     404  rest_seconds = '90'               ACEPTADO
     404  reps = True                       ACEPTADO
     404  reps = '8'                        ACEPTADO
     404  weight_kg = []                    ACEPTADO
+
+LOS SEIS CAMPOS NUMÉRICOS, UNO A UNO (ampliación del mismo día)
+----------------------------------------------------------------
+La tabla de arriba probaba dos campos numéricos y daba por hecho el resto. Son
+seis, y no se valida NI UNO: los seis aceptan lista, nulo y cadena.
+
+    404  rest_seconds = []      ACEPTADO      404  weight_kg = ''      ACEPTADO
+    404  weight_kg = []         ACEPTADO      404  reps = ''           ACEPTADO
+    404  distance_meters = []   ACEPTADO      404  weight_kg = '  '    ACEPTADO
+    404  duration_seconds = []  ACEPTADO      404  reps = None         ACEPTADO
+    404  custom_metric = []     ACEPTADO      404  rest_seconds = None ACEPTADO
+
+Lo único que da 400 es `reps = 'ocho'`, y no porque se valide el tipo sino
+porque `Number('ocho')` sale `NaN`.
+
+LA CADENA VACÍA ES EL CASO PEOR DE TODO EL CONTRATO. La acepta Hevy Y la acepta
+`_es_escalar` -es un `str` perfectamente válido-, y `Number('')` es 0. Era el
+único camino conocido a un peso de CERO KILOS que no veía ninguna de las dos
+capas, y un cero en un peso es un número plausible: no hay forma de distinguirlo
+de una barra vacía puesta a propósito. Lo tapa `_exigir_numero`, que exige
+número de verdad o nulo y rechaza las cadenas aunque Hevy las acepte.
+
+Y EL TIPO DE SERIE SÍ ESTÁ VALIDADO, que es la excepción que confirma la
+división: los campos de TEXTO los comprueba Hevy (`type` es un enumerado
+cerrado, «Invalid set type»), los NUMÉRICOS no los comprueba nadie más que
+nosotros.
 
 Tres conclusiones, y las tres cambian código:
 
@@ -80,7 +158,6 @@ puede es ampliar la tabla a ojo: lo de arriba está medido, no recordado.
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 import uuid
@@ -166,6 +243,29 @@ SONDAS: list[tuple[str, dict]] = [
     ("reps = '8' (texto donde van repeticiones)", con_serie(reps="8")),
     ("reps = 'ocho' (texto no numerico en repeticiones)", con_serie(reps="ocho")),
     ("weight_kg = [] (lista donde va el peso)", con_serie(weight_kg=[])),
+    # LA CADENA VACÍA, QUE ES LA PEOR DE TODAS
+    # -----------------------------------------
+    # `Number("")` es 0 en JavaScript, igual que `Number([])`. Si Hevy la acepta,
+    # un peso vacío se escribe como CERO KILOS. Y a diferencia de la lista, una
+    # cadena vacía SÍ pasa `_es_escalar` -es un `str`-, o sea que este es el
+    # único camino conocido a un cero silencioso que el guardia de casa no ve.
+    ("weight_kg = '' (cadena vacia donde va el peso)", con_serie(weight_kg="")),
+    ("reps = '' (cadena vacia donde van repeticiones)", con_serie(reps="")),
+    ("weight_kg = '  ' (espacios donde va el peso)", con_serie(weight_kg="  ")),
+    # Los campos numéricos que NO se midieron la primera vez. Sin ellos la tabla
+    # cubre dos de seis y el guardia se escribiría contra una muestra.
+    ("rest_seconds = [] (lista donde van segundos)", con_ejercicio(rest_seconds=[])),
+    ("distance_meters = [] (lista donde van metros)", con_serie(distance_meters=[])),
+    ("duration_seconds = [] (lista donde van segundos)", con_serie(duration_seconds=[])),
+    ("custom_metric = [] (lista donde va la metrica)", con_serie(custom_metric=[])),
+    ("weight_kg = None (nulo donde va el peso)", con_serie(weight_kg=None)),
+    ("reps = None (nulo donde van repeticiones)", con_serie(reps=None)),
+    ("rest_seconds = None (nulo donde van segundos)", con_ejercicio(rest_seconds=None)),
+    # El tipo de serie es TEXTO, y es el único campo de texto de la serie. Si
+    # admite cualquier cadena, una errata escribe una serie de un tipo que no
+    # existe; si está cerrado a una lista, hay que saberlo.
+    ("type = 'inventado' (un tipo de serie que no existe)", con_serie(type="inventado")),
+    ("type = [] (lista en el tipo de serie)", con_serie(type=[])),
     # El 400 que ya se conocía, para comparar la FORMA del mensaje.
     ("index en el ejercicio (el 400 ya conocido)", con_ejercicio(index=0)),
 ]
@@ -222,7 +322,7 @@ def main() -> int:
                     f"\n  ABORTADO: Hevy esta limitando el ritmo (429). Lo de "
                     f"arriba NO son medidas y no se pueden usar. Espera un rato "
                     f"y repite, filtrando por la sonda que haga falta:\n"
-                    f"      python scripts/sondeo_notas_hevy.py \"{etiqueta[:30]}\""
+                    f"      python scripts/sondeo_contrato_hevy.py \"{etiqueta[:30]}\""
                 )
                 return 3
             resultados.append((etiqueta, r.status_code, texto))

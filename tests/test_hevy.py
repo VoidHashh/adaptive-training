@@ -23,6 +23,8 @@ import pytest
 
 from app.integrations import hevy
 from app.integrations.hevy import (
+    _NUMERICOS_SERIE,
+    _SERIE_PUT,
     Backup,
     HevyClient,
     HevyError,
@@ -264,7 +266,7 @@ def test_el_cuerpo_construido_contra_el_config_real(cfg):
 # `BuiltSession.notes` es `list[str]` y `build_routine_payload` la pasaba tal
 # cual, así que el PUT salía con `"notes": []`. Hevy contesta
 # `400 Expected string, received array` -medido, ver
-# `scripts/sondeo_notas_hevy.py`- y la rutina se quedó como estaba desde el 8 de
+# `scripts/sondeo_contrato_hevy.py`- y la rutina se quedó como estaba desde el 8 de
 # septiembre.
 #
 # Ninguno de los tests de arriba podía verlo, porque el doble declaraba
@@ -406,7 +408,7 @@ def test_el_error_de_tipo_dice_QUE_CAMPO_es_cosa_que_hevy_no_hace():
 def test_un_valor_no_escalar_en_una_serie_se_para_aqui(campo, valor):
     """Hevy NO protege de esto: lo convierte en silencio.
 
-    Está medido (`scripts/sondeo_notas_hevy.py`): `weight_kg: []` no da 400,
+    Está medido (`scripts/sondeo_contrato_hevy.py`): `weight_kg: []` no da 400,
     pasa, y vale CERO. `reps: true` pasa, y vale 1. Son los dos casos peores del
     contrato entero -no hay error, hay un número plausible escrito en la rutina-
     y el único sitio donde se pueden parar es éste, antes de enviar.
@@ -428,8 +430,189 @@ def test_un_valor_no_escalar_en_una_serie_se_para_aqui(campo, valor):
         )
 
 
+# ---------------------------------------------------------------------------
+# Los campos numéricos, UNO A UNO
+# ---------------------------------------------------------------------------
+#
+# La tabla de arriba probaba `weight_kg` y `reps` y daba por hecho el resto. Son
+# seis campos numéricos en el PUT y NINGUNO lo valida Hevy -está medido contra
+# la API, los seis aceptan `[]` y `None`-, así que el único guardia que existe
+# es el de casa. Un guardia que sólo cubre dos de seis campos no es un guardia:
+# es una muestra. Aquí se cubren los seis, y cada uno con su test para que el
+# fallo diga qué campo se quedó sin proteger.
+
+_VALORES_QUE_SE_CONVIERTEN_EN_SILENCIO = [
+    # El valor, y en qué lo convierte `Number()` de JavaScript si llega a salir.
+    ([], "0"),
+    ("", "0"),
+    ("   ", "0"),
+    (True, "1"),
+    (False, "0"),
+    ({"a": 1}, "NaN pero sin garantia"),
+]
+
+
+@pytest.mark.parametrize("campo", list(_NUMERICOS_SERIE))
+@pytest.mark.parametrize("valor, convertido", _VALORES_QUE_SE_CONVIERTEN_EN_SILENCIO)
+def test_ningun_campo_numerico_de_la_serie_deja_pasar_un_valor_convertible(
+    campo, valor, convertido
+):
+    """Los cinco campos numéricos de la serie, contra los seis valores peligrosos.
+
+    POR QUÉ ESTÁN TODOS Y NO UNA MUESTRA. Hevy no valida ni uno solo de sus
+    campos numéricos: los convierte con `Number()`. O sea que el guardia local
+    no es una comprobación de más que duplica al servidor -como pasa con los
+    campos de texto-, es la ÚNICA que hay. Si uno de los cinco se queda fuera,
+    ese campo puede recibir una lista o una cadena vacía y escribirse como cero
+    sin que nada lo diga, ni aquí ni en Hevy ni en el mensaje de la mañana.
+
+    Y LA CADENA VACÍA ES LA QUE IMPORTA MÁS. `[]` ya lo paraba `_es_escalar`,
+    pero `''` es un escalar perfectamente válido y pasaba entero: Hevy la acepta
+    -medido- y `Number('')` es 0. Era el único camino conocido a un peso de cero
+    kilos que ninguna de las dos capas veía.
+    """
+    with pytest.raises(HevyError) as exc:
+        cuerpo_para_put(
+            {
+                "routine": {
+                    "title": "x",
+                    "notes": None,
+                    "exercises": [
+                        {
+                            "exercise_template_id": "A",
+                            "sets": [{"type": "normal", campo: valor}],
+                        }
+                    ],
+                }
+            }
+        )
+    texto = str(exc.value)
+    assert campo in texto, f"el error no dice qué campo era: {texto}"
+    assert "serie 0 del ejercicio 0" in texto, (
+        f"el error no dice qué serie de qué ejercicio: {texto}"
+    )
+
+
+@pytest.mark.parametrize("valor, convertido", _VALORES_QUE_SE_CONVIERTEN_EN_SILENCIO)
+def test_el_campo_numerico_del_ejercicio_tampoco_deja_pasar_nada_convertible(
+    valor, convertido
+):
+    """`rest_seconds` es el único numérico del ejercicio, y va por el mismo camino."""
+    with pytest.raises(HevyError, match="rest_seconds del ejercicio 0"):
+        cuerpo_para_put(
+            {
+                "routine": {
+                    "title": "x",
+                    "notes": None,
+                    "exercises": [
+                        {
+                            "exercise_template_id": "A",
+                            "rest_seconds": valor,
+                            "sets": [{"type": "normal", "reps": 8}],
+                        }
+                    ],
+                }
+            }
+        )
+
+
+def test_la_lista_de_numericos_cubre_todos_los_campos_numericos_del_contrato():
+    """El guardián de la lista: que no se añada un campo numérico sin protegerlo.
+
+    `_NUMERICOS_SERIE` y `_SERIE_PUT` son dos listas escritas a mano que tienen
+    que encajar. El día que Hevy añada un campo numérico nuevo -un RPE, un
+    tiempo bajo tensión- y alguien lo meta en `_SERIE_PUT` para que no lo
+    rechace el filtro de claves desconocidas, este test se cae y recuerda que
+    hay que decidir si es de los que se validan.
+
+    Sin esto, el campo nuevo entraría en el cuerpo sin guardia y con el
+    comportamiento por defecto de Hevy, que es convertir en silencio. El fallo
+    tardaría en verse lo que tarde en llegar un valor raro a ese campo.
+    """
+    texto = ("type",)  # el único campo de texto de la serie
+    sin_clasificar = set(_SERIE_PUT) - set(_NUMERICOS_SERIE) - set(texto)
+    assert not sin_clasificar, (
+        f"estos campos de `_SERIE_PUT` no están ni en `_NUMERICOS_SERIE` ni "
+        f"declarados como texto: {sorted(sin_clasificar)}. Hay que decidir de "
+        f"qué tipo son: si son numéricos y se quedan fuera, Hevy los convertirá "
+        f"en silencio y nadie lo verá."
+    )
+
+
+def test_un_numero_de_verdad_y_un_nulo_pasan_los_dos():
+    """Y el guardia no puede ser tan estricto que rompa los datos reales.
+
+    En la rutina real los seis campos son `int` o `None`: `distance_meters` y
+    `custom_metric` son `None` en las 32 series, y `weight_kg` es `None` en 9
+    -los ejercicios que van sin peso-. Si `None` no pasara, la reversión desde
+    cualquier copia de seguridad reventaría, que es peor que el fallo que se
+    quería evitar.
+    """
+    salida = cuerpo_para_put(
+        {
+            "routine": {
+                "title": "x",
+                "notes": None,
+                "exercises": [
+                    {
+                        "exercise_template_id": "A",
+                        "rest_seconds": 90,
+                        "sets": [
+                            {
+                                "type": "normal",
+                                "weight_kg": 62.5,      # un float
+                                "reps": 8,              # un int
+                                "distance_meters": None,
+                                "duration_seconds": None,
+                                "custom_metric": None,
+                            }
+                        ],
+                    }
+                ],
+            }
+        }
+    )
+    serie = salida["routine"]["exercises"][0]["sets"][0]
+    assert serie["weight_kg"] == 62.5 and serie["reps"] == 8
+    assert serie["distance_meters"] is None
+
+
+def test_un_cero_de_verdad_sigue_pasando():
+    """Un cero ESCRITO A PROPÓSITO no es lo mismo que un cero convertido.
+
+    Es la trampa de este guardia: se puso para evitar que un peso saliera como
+    cero por accidente, y sería muy fácil pasarse y prohibir el cero. Pero cero
+    kilos es un peso legítimo -barra vacía, movilidad, calentamiento- y el
+    motor puede mandarlo. Lo que se prohíbe es el TIPO equivocado, no el valor.
+    """
+    salida = cuerpo_para_put(
+        {
+            "routine": {
+                "title": "x",
+                "notes": None,
+                "exercises": [
+                    {
+                        "exercise_template_id": "A",
+                        "sets": [{"type": "normal", "weight_kg": 0, "reps": 12}],
+                    }
+                ],
+            }
+        }
+    )
+    assert salida["routine"]["exercises"][0]["sets"][0]["weight_kg"] == 0
+
+
 def test_un_valor_no_escalar_en_un_ejercicio_tambien():
-    with pytest.raises(HevyError, match="ejercicio 0 manda"):
+    """Se para, y lo dice el guardia de NÚMEROS, que es más específico.
+
+    Antes lo cazaba `_es_escalar` con «el ejercicio 0 manda rest_seconds=...
+    donde Hevy espera un valor simple». Ahora `_exigir_numero` llega primero y
+    dice además cuál es la regla del campo -«un número o nada»- y por qué
+    importa, que es lo que hace falta para arreglarlo. El aserto se cambia
+    porque el mensaje mejoró, no porque el comportamiento cambiara: sigue
+    reventando y sigue sin salir a la red.
+    """
+    with pytest.raises(HevyError, match="rest_seconds del ejercicio 0"):
         cuerpo_para_put(
             {
                 "routine": {

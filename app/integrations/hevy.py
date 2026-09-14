@@ -500,7 +500,7 @@ _SOLO_RESPUESTA = frozenset({"index", "title"})
 # exactamente qué campo tiene qué tipo. Un cuerpo mal tipado no se manda para
 # que lo rechacen: se para antes.
 #
-# LO QUE VALIDA HEVY Y LO QUE NO, MEDIDO (`scripts/sondeo_notas_hevy.py`)
+# LO QUE VALIDA HEVY Y LO QUE NO, MEDIDO (`scripts/sondeo_contrato_hevy.py`)
 # -----------------------------------------------------------------------
 # Sondeado el 2026-09-14 contra la API real, con un `routine_id` inexistente
 # para no tocar nada. Hevy valida el cuerpo ANTES de buscar la rutina, así que
@@ -577,6 +577,81 @@ def _exigir_texto_obligatorio(valor: Any, donde: str) -> None:
         )
 
 
+# Los campos que Hevy trata como números, medidos uno a uno contra la API real.
+# NO se valida ni uno solo en el servidor: los seis aceptan `[]`, `None` y
+# cadenas sin una queja. Están aquí en una lista, y no repartidos por el código,
+# para que añadir un campo numérico nuevo a `_SERIE_PUT` y olvidarse de
+# validarlo sea un despiste que se ve de un vistazo. Ver `_exigir_numero`.
+_NUMERICOS_EJERCICIO = ("rest_seconds",)
+_NUMERICOS_SERIE = (
+    "weight_kg",
+    "reps",
+    "distance_meters",
+    "duration_seconds",
+    "custom_metric",
+)
+
+
+def _exigir_numero(valor: Any, donde: str) -> None:
+    """Un campo numérico: un número de verdad, o nada. NADA DE CADENAS.
+
+    ESTE ES EL GUARDIA QUE NO TIENE PAREJA EN EL SERVIDOR, Y ESTÁ MEDIDO
+    ---------------------------------------------------------------------
+    Los campos de texto los valida Hevy: un array en `notes` o en `title` da 400
+    y la rutina se queda como estaba. Con los numéricos no pasa nada de eso. Se
+    sondearon los seis contra la API real y NINGUNO se valida:
+
+        rest_seconds = []       ACEPTADO      weight_kg = ''      ACEPTADO
+        weight_kg = []          ACEPTADO      reps = ''           ACEPTADO
+        distance_meters = []    ACEPTADO      weight_kg = '  '    ACEPTADO
+        duration_seconds = []   ACEPTADO      reps = True         ACEPTADO
+        custom_metric = []      ACEPTADO      reps = '8'          ACEPTADO
+        weight_kg = None        ACEPTADO      rest_seconds = '90' ACEPTADO
+
+    Lo único que da 400 es `reps = 'ocho'`, y no porque se valide el tipo sino
+    porque `Number('ocho')` es `NaN`. No hay validación: hay COERCIÓN, que es
+    otra cosa y bastante peor.
+
+    POR QUÉ LA COERCIÓN ES PEOR QUE EL RECHAZO. Un rechazo se nota: 400, la
+    rutina se queda como estaba, y el mensaje de la mañana lo dice. Una coerción
+    no se nota en ninguna parte, porque en JavaScript:
+
+        Number([])    -> 0        Number('')     -> 0
+        Number(null)  -> 0        Number('   ')  -> 0
+        Number(true)  -> 1        Number('8')    -> 8
+
+    Un peso mal tipado NO da error: se escribe en la rutina como CERO KILOS. Y
+    un cero en un peso es un número perfectamente plausible, así que no hay nada
+    -ni un log, ni un aviso, ni una excepción- que distinga «hoy toca barra
+    vacía» de «el valor se perdió por el camino». Se descubre en el gimnasio.
+
+    Y LAS CADENAS SE RECHAZAN AUNQUE HEVY LAS ACEPTE. `'60'` funciona: Hevy lo
+    convierte a 60 y el peso queda bien. Pero admitir cadenas obliga a admitir
+    `''`, porque es la MISMA comprobación (`isinstance(v, str)`), y `''` sale
+    cero. Ése es el único camino conocido a un cero silencioso que `_es_escalar`
+    NO ve, precisamente porque una cadena vacía es un escalar perfectamente
+    válido. Los datos reales de la rutina son `int` o `None` en los seis campos
+    -comprobado contra el GET-, así que cerrar la puerta a las cadenas no quita
+    nada que se use y tapa el último hueco.
+
+    El `None` SÍ se admite, y no es una concesión: es el valor de reposo de
+    verdad. En la rutina real `distance_meters` y `custom_metric` son `None` en
+    las 32 series, y `weight_kg` es `None` en 9 -los ejercicios sin peso-.
+    Prohibirlo rompería la reversión desde cualquier copia.
+    """
+    if valor is None:
+        return
+    if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+        raise HevyError(
+            f"{donde} tiene que ser un número o nada, y es "
+            f"{type(valor).__name__} ({valor!r}). OJO: Hevy NO rechaza esto "
+            f"-no valida ni uno solo de sus campos numéricos-, lo CONVIERTE con "
+            f"el `Number()` de JavaScript, y sale un número plausible que se "
+            f"escribe en la rutina sin que nadie diga nada. Por eso se para "
+            f"aquí: es el último sitio donde todavía es un fallo y no un peso."
+        )
+
+
 def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
     """El cuerpo exacto que acepta `PUT /v1/routines/{id}`.
 
@@ -614,6 +689,9 @@ def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
             )
         limpio = {k: v for k, v in ex.items() if k in _EJERCICIO_PUT and k != "sets"}
         _exigir_texto(limpio.get("notes"), f"las notas del ejercicio {i}")
+        for clave in _NUMERICOS_EJERCICIO:
+            if clave in limpio:
+                _exigir_numero(limpio[clave], f"{clave} del ejercicio {i}")
         for clave, valor in limpio.items():
             if not _es_escalar(valor):
                 raise HevyError(
@@ -632,6 +710,17 @@ def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
                     f"reconoce en un PUT: {sorted(sobra_s)}"
                 )
             limpia = {k: v for k, v in s.items() if k in _SERIE_PUT}
+            for clave in _NUMERICOS_SERIE:
+                if clave in limpia:
+                    _exigir_numero(
+                        limpia[clave], f"{clave} de la serie {j} del ejercicio {i}"
+                    )
+            # El tipo de serie es el ÚNICO campo de texto de la serie, y a
+            # diferencia de los numéricos éste SÍ lo valida Hevy: un tipo
+            # inventado da `400 Invalid set type` y un array da `400 Expected
+            # string, received array`. Aun así se comprueba aquí el tipo del
+            # dato, porque el 400 de Hevy no dice qué serie de qué ejercicio.
+            _exigir_texto(limpia.get("type"), f"el tipo de la serie {j} del ejercicio {i}")
             for clave, valor in limpia.items():
                 if not _es_escalar(valor):
                     raise HevyError(
@@ -646,7 +735,7 @@ def cuerpo_para_put(routine: dict[str, Any]) -> dict[str, Any]:
     # UNA RUTINA SIN EJERCICIOS NO SE PUEDE ESCRIBIR, Y ESTÁ MEDIDO
     # -------------------------------------------------------------
     # `exercises: []` devuelve 400, igual que si el campo falta
-    # (`scripts/sondeo_notas_hevy.py`). Y es alcanzable desde el motor: las
+    # (`scripts/sondeo_contrato_hevy.py`). Y es alcanzable desde el motor: las
     # retiradas por regla quitan ejercicios de la sesión, y nada garantiza que
     # quede alguno. El día que una combinación de reglas los quitara todos, esto
     # se iría a la red, volvería un 400 que no explica nada -«Required»- y el
@@ -777,7 +866,7 @@ def _titulo_de_rutina(session: Any, definicion: dict[str, Any]) -> str:
     «texto o nada», que da por bueno el nulo. O sea el gemelo exacto del fallo
     de `notes`, en el campo de al lado, esperando el día en que la cadena de
     reservas se agotara. Está medido que Hevy contesta 400 a `title: null` y 400
-    «Required» si falta (`scripts/sondeo_notas_hevy.py`).
+    «Required» si falta (`scripts/sondeo_contrato_hevy.py`).
 
     Se levanta aquí en vez de devolver un título inventado del tipo «Rutina»:
     una rutina que llega sin nombre por ninguna de las tres vías es un fallo de
@@ -813,7 +902,7 @@ def _notas_de_rutina(session: Any) -> str | None:
     estaba desde el 8 de septiembre, y el mensaje de la mañana dijo «la rutina
     NO se ha escrito en Hevy» sin poder añadir una palabra más.
 
-    Y NO ES UNA RECONSTRUCCIÓN, ESTÁ MEDIDO. `scripts/sondeo_notas_hevy.py`
+    Y NO ES UNA RECONSTRUCCIÓN, ESTÁ MEDIDO. `scripts/sondeo_contrato_hevy.py`
     manda ese mismo cuerpo a un `routine_id` inexistente y Hevy contesta
     `400 {"error":"Expected string, received array"}`, mientras que el mismo
     cuerpo con `notes` bien tipado llega hasta el 404 de «esa rutina no

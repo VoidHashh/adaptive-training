@@ -388,7 +388,7 @@ def _hevy_rechazaria(cuerpo: Any) -> FakeResponse | None:
     septiembre. Una lista blanca de nombres es la mitad de un contrato.
 
     LO QUE HAY AQUÍ ESTÁ MEDIDO, NO RECORDADO, igual que en el doble de
-    Telegram y por la misma razón. `scripts/sondeo_notas_hevy.py` lo sondea
+    Telegram y por la misma razón. `scripts/sondeo_contrato_hevy.py` lo sondea
     contra la API real usando un `routine_id` inexistente -Hevy valida el
     cuerpo ANTES de buscar la rutina, así que un cuerpo bueno llega al 404 y uno
     malo se queda en el 400, sin tocar nada-. El 2026-09-14:
