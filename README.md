@@ -368,14 +368,41 @@ git pull
 docker compose up -d --build
 ```
 
-Con el proxy temporal de las pruebas hay que repetir los dos `-f` **siempre**:
+Con el proxy temporal de las pruebas hacen falta los dos ficheros:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml up -d --build
 ```
 
-Un `docker compose up -d` a secas, por costumbre, recrea la aplicación con el
-bind mount de la raíz, y tiene **dos finales**. Aquí han pasado los dos.
+### Los dos `-f` ya no se pueden olvidar, y hizo falta llegar a esto
+
+Esto que sigue estuvo escrito aquí, en mayúsculas y con las consecuencias
+detalladas, **y aun así el comando corto rompió el estado dos veces**: el 12 de
+septiembre y otra vez el 13. La segunda, con esta misma página delante.
+
+Así que ya no depende de acordarse. El `.env` fija
+
+```
+COMPOSE_PATH_SEPARATOR=:
+COMPOSE_FILE=docker-compose.yml:docker-compose.pruebas-lan.yml
+```
+
+y `docker compose` lee esa variable de ahí, de modo que **`docker compose up -d`
+a secas ya usa los dos ficheros**. Comprobado con `docker compose config`, que
+sin un solo `-f` resuelve `source: datos-pruebas`.
+
+Dos avisos sobre ese apaño:
+
+- **Un `-f` explícito gana.** `docker compose -f docker-compose.yml up -d`
+  sigue montando el bind mount. Si se escribe un `-f`, hay que escribir los dos.
+- **`COMPOSE_FILE` no es un ajuste de la aplicación**, pero vive en el mismo
+  `.env` que los secretos, y ese fichero lo valida `Settings` con
+  `extra="forbid"`. Están declarados en `app/settings.py` como campos que no se
+  leen, justamente para que forbid siga cazando `DRY_RUM` sin rechazar esto.
+
+Lo que pasaba, que sigue pasando si se fuerza un `-f` suelto: un
+`docker compose up -d` con el compose de la raíz recrea la aplicación con el
+bind mount, y tiene **dos finales**. Aquí han pasado los dos.
 
 El ruidoso: en Windows la deja en bucle de reinicio
 (`sqlite3.OperationalError: disk I/O error`). El proxy sigue en pie —compose
@@ -397,6 +424,28 @@ mirar antes si el contenedor equivocado escribió algo** en el bind mount, porqu
 recrearlo «bien» cambia el directorio de datos debajo de los pies. El
 procedimiento, con el `wal_checkpoint` que hace falta para no perder el día, está
 en [`docs/primer-dia.md`](docs/primer-dia.md).
+
+### El `./data` de este PC no es la base de datos
+
+Consecuencia de lo anterior, y trampa por sí sola: en **este** PC el `./data` del
+disco no lo monta nadie, así que lo que haya dentro es un fósil. Llegó a tener
+siete ficheros con pinta de base de datos, y el que se llamaba `app.db` —el que
+cualquiera abriría— iba por las 58 actividades del 6 de septiembre y **cero
+decisiones**, mientras la de verdad tenía 59 hasta el día 12 y la decisión de esa
+misma mañana. Mirar el fichero para ver si el sistema había decidido contestaba
+«nunca ha decidido nada», y era mentira.
+
+Están apartados en `data/fosiles-del-host/`, con un `LEEME.txt` al lado. La real
+se mira donde está montada:
+
+```bash
+docker exec adaptive-training python -c "import sqlite3; \
+  print(sqlite3.connect('/app/data/app.db').execute( \
+  'select count(*), max(date) from decisions').fetchone())"
+```
+
+En Umbrel esto no aplica: allí `./data` **sí** es el directorio de datos, porque
+no hay superposición que lo sustituya.
 
 En Umbrel se publica una imagen nueva y se actualiza desde su interfaz;
 el procedimiento está en [`umbrel/README.md`](umbrel/README.md).

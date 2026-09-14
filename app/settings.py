@@ -96,6 +96,26 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
+    # --- No son ajustes de esta aplicación, y por eso están aquí -------------
+    #
+    # `docker compose` lee sus PROPIAS variables del mismo `.env` que este
+    # proceso, y `COMPOSE_FILE` es la que hace que el comando corto
+    # -`docker compose up -d app`- use los dos ficheros de compose en vez de
+    # solo el de la raíz. Sin eso, el compose de la raíz monta `./data` como
+    # bind mount de Windows en lugar del volumen nombrado, y el contenedor
+    # arranca contra otra base de datos. Pasó dos veces, con la advertencia ya
+    # escrita en un comentario del `.env`.
+    #
+    # El problema es que `extra="forbid"` -que existe para que `DRY_RUM` sea un
+    # error y no un ajuste inventado- también rechaza estas dos, y entonces
+    # revienta TODO arranque local: la CLI, los guiones y la batería entera.
+    #
+    # Así que se declaran. No se leen en ningún sitio y no deben leerse: están
+    # para que el fichero pueda ser compartido con `docker compose` sin que
+    # forbid pierda su trabajo, que es cazar erratas en las otras.
+    compose_file: str = ""
+    compose_path_separator: str = ""
+
     # --- Aplicación ---------------------------------------------------------
     config_path: Path = REPO_ROOT / "config.yaml"
     database_url: str = f"sqlite:///{(REPO_ROOT / 'data' / 'app.db').as_posix()}"
