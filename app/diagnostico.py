@@ -136,6 +136,20 @@ def probar_telegram(settings: Any, cfg: Any = None, *, texto: str | None = None)
         r.paso("envío", None, "no se intentó: no hay cliente")
         return r.como_dict()
 
+    # `build_client` no valida nada: monta el dataclass con lo que haya, y con
+    # el token vacío monta un cliente perfectamente construido que apunta a
+    # `https://api.telegram.org/bot/sendMessage`. Decir aquí «token y chat
+    # configurados» sin mirarlos era afirmar algo que este paso no había
+    # comprobado.
+    faltan = [
+        n for n, v in (("token", cliente.bot_token), ("chat", cliente.chat_id))
+        if not (v or "").strip()
+    ]
+    if faltan:
+        r.paso("credenciales", False, f"falta {' y '.join(faltan)} en la configuración")
+        r.paso("envío", None, "no se intentó: faltan credenciales")
+        return r.como_dict()
+
     r.paso("credenciales", True, "token y chat configurados")
 
     cuerpo = texto or TEXTO_POR_DEFECTO
@@ -145,17 +159,62 @@ def probar_telegram(settings: Any, cfg: Any = None, *, texto: str | None = None)
         r.paso("envío", False, "el mensaje no salió", str(exc))
         return r.como_dict()
 
-    # `SendResult` no es igual en todas las versiones del cliente, así que se
-    # lee con cuidado en vez de dar por hecha una forma: si mañana cambia, el
-    # botón dirá "enviado" igual en vez de reventar en el sitio equivocado.
-    partes = getattr(envio, "partes", None) or getattr(envio, "parts", None)
-    ok = getattr(envio, "ok", True)
-    detalle = "mensaje enviado"
-    if partes and partes > 1:
-        detalle += f", partido en {partes} trozos por longitud"
-    if ok is False:
-        r.paso("envío", False, "el cliente dice que no se envió", str(envio))
+    # SE LEEN LOS CAMPOS QUE `SendResult` TIENE DE VERDAD, Y SIN RED.
+    #
+    # Aquí había un `getattr(envio, "ok", True)` con un comentario que lo
+    # justificaba diciendo que `SendResult` «no es igual en todas las versiones
+    # del cliente». `SendResult` vive en este mismo repositorio, a un import de
+    # distancia, y sus campos son `sent`/`parts`/`reason`/`error`/`preview`/
+    # `plain_parts`. Nunca ha tenido un `ok`. El valor por defecto del `getattr`
+    # era `True`, así que la rama de fallo era inalcanzable y el botón decía
+    # «Telegram: todo correcto» en los tres casos en que el mensaje NO llega:
+    # con `send_enabled` en false, en `dry_run`, y cuando la API devuelve un
+    # error HTTP en todas las partes.
+    #
+    # Ese defecto es exactamente lo que este módulo existe para no tener. Un
+    # diagnóstico que miente en verde es peor que no tener diagnóstico: con el
+    # botón en rojo se investiga, y con el botón en verde se descarta Telegram
+    # como causa y se busca el fallo donde no está.
+    #
+    # Así que se leen por nombre y sin `default`. Si algún día `SendResult`
+    # cambia de forma, esto tiene que reventar con un `AttributeError` que se
+    # arregla en un minuto, no seguir adelante pintando verde.
+    if not envio.sent:
+        # `reason` explica el caso apagado -`send_enabled` en false, `dry_run`-
+        # y `error` el caso roto. Se enseñan los dos porque no son el mismo
+        # problema: uno se arregla en el YAML y el otro no.
+        r.paso(
+            "envío",
+            False,
+            envio.reason or "el cliente dice que no se envió",
+            envio.error,
+        )
         return r.como_dict()
+
+    if envio.error:
+        # `send` devuelve `sent=enviados > 0`, así que un mensaje largo cuya
+        # primera parte sale y cuya segunda revienta vuelve como enviado. Llegó
+        # A MEDIAS, y un mensaje de la mañana a medias es el que se lee entero
+        # creyendo que estaba entero.
+        r.paso(
+            "envío",
+            False,
+            f"el mensaje salió incompleto: {envio.parts} parte(s) de las que tocaban",
+            envio.error,
+        )
+        return r.como_dict()
+
+    detalle = "mensaje enviado"
+    if envio.parts > 1:
+        detalle += f", partido en {envio.parts} trozos por longitud"
+    if envio.plain_parts:
+        # No es un fallo -el texto llegó-, pero llegó sin formato porque
+        # Telegram rechazó el HTML, y eso se arregla antes de que le pase al
+        # mensaje de un lunes.
+        detalle += (
+            f". {envio.plain_parts} parte(s) fueron SIN formato: Telegram "
+            f"rechazó el HTML"
+        )
     r.paso("envío", True, detalle)
     return r.como_dict()
 

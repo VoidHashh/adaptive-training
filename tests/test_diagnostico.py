@@ -445,6 +445,63 @@ def test_un_config_sin_rutinas_declaradas_es_un_fallo(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# EL DOBLE DEVUELVE UN `SendResult` DE VERDAD, Y NO ES UN DETALLE
+# ----------------------------------------------------------------
+# Aquí había tres dobles que devolvían `type("R", (), {"ok": ..., "partes": ...})()`.
+# `SendResult` no tiene ni `ok` ni `partes`: tiene `sent`, `parts`, `reason`,
+# `error`, `preview` y `plain_parts`. Los tres tests pasaban -contra el doble- y
+# el de «un cliente que dice que no envió no se pinta verde» daba por probada
+# una rama que contra el cliente REAL era inalcanzable, porque el código leía
+# `getattr(envio, "ok", True)` y el valor por defecto era `True`.
+#
+# O sea que el test verde estaba certificando justo lo contrario de lo que
+# pasaba: con `send_enabled` en false, el botón decía «Telegram: todo correcto».
+#
+# Por eso el doble de abajo importa `SendResult` en vez de inventarse una forma,
+# y por eso lleva `bot_token` y `chat_id`: el `TelegramClient` real los tiene y
+# el diagnóstico ahora los mira.
+
+
+def _cli_falso(resultado, enviados=None, token="123:abc", chat="-100"):
+    """Un doble con la forma del `TelegramClient` real, ni más ni menos."""
+
+    class Cli:
+        bot_token = token
+        chat_id = chat
+
+        def send(self, texto):
+            if enviados is not None:
+                enviados.append(texto)
+            return resultado
+
+    return Cli()
+
+
+def _con_telegram(monkeypatch, cliente):
+    import app.integrations.telegram as t
+
+    monkeypatch.setattr(t, "build_client", lambda *a, **k: cliente)
+
+
+def test_el_doble_de_telegram_tiene_la_forma_del_cliente_real():
+    """El doble y el original, campo a campo.
+
+    Si `SendResult` gana o pierde un campo, este test se pone rojo antes de que
+    el resto de la batería empiece a certificar una forma que ya no existe. Es
+    la comprobación que faltaba las cuatro veces que un doble ha mentido.
+    """
+    from dataclasses import fields
+
+    from app.integrations.telegram import SendResult, TelegramClient
+
+    assert {f.name for f in fields(SendResult)} == {
+        "sent", "parts", "reason", "error", "preview", "plain_parts",
+    }
+    # Y el cliente: lo que el diagnóstico le lee tiene que existir de verdad.
+    for atributo in ("bot_token", "chat_id", "send_enabled", "send"):
+        assert hasattr(TelegramClient, atributo) or atributo in TelegramClient.__annotations__
+
+
 def test_telegram_manda_un_mensaje_de_verdad(monkeypatch):
     """Aquí no hay modo seco que valga: el mensaje ES la prueba.
 
@@ -452,16 +509,10 @@ def test_telegram_manda_un_mensaje_de_verdad(monkeypatch):
     el runner todas las mañanas. Lo que este botón tiene que demostrar es que
     LLEGA.
     """
+    from app.integrations.telegram import SendResult
+
     enviados = []
-
-    class Cli:
-        def send(self, texto):
-            enviados.append(texto)
-            return type("R", (), {"ok": True, "partes": 1})()
-
-    import app.integrations.telegram as t
-
-    monkeypatch.setattr(t, "build_client", lambda *a, **k: Cli())
+    _con_telegram(monkeypatch, _cli_falso(SendResult(sent=True, parts=1), enviados))
     d = dg.probar_telegram(object(), None)
 
     assert d["ok"] is True
@@ -469,32 +520,99 @@ def test_telegram_manda_un_mensaje_de_verdad(monkeypatch):
 
 
 def test_el_texto_propio_sustituye_al_de_por_defecto(monkeypatch):
+    from app.integrations.telegram import SendResult
+
     enviados = []
-
-    class Cli:
-        def send(self, texto):
-            enviados.append(texto)
-            return type("R", (), {"ok": True, "partes": 1})()
-
-    import app.integrations.telegram as t
-
-    monkeypatch.setattr(t, "build_client", lambda *a, **k: Cli())
+    _con_telegram(monkeypatch, _cli_falso(SendResult(sent=True, parts=1), enviados))
     dg.probar_telegram(object(), None, texto="hola")
     assert enviados == ["hola"]
 
 
-def test_un_cliente_que_dice_que_no_envio_no_se_pinta_verde(monkeypatch):
-    """`ok=False` en la respuesta es un no, aunque no haya excepción."""
+def test_con_los_envios_apagados_en_el_yaml_el_boton_no_se_pinta_verde(monkeypatch):
+    """El caso que el botón lleva desde siempre certificando al revés.
 
-    class Cli:
-        def send(self, texto):
-            return type("R", (), {"ok": False, "partes": 0})()
+    `integrations.telegram.send_enabled: false` devuelve `sent=False` con el
+    motivo escrito. El mensaje NO sale, y un diagnóstico que lo llama correcto
+    hace descartar Telegram como causa justo cuando Telegram es la causa.
+    """
+    from app.integrations.telegram import SendResult
 
-    import app.integrations.telegram as t
-
-    monkeypatch.setattr(t, "build_client", lambda *a, **k: Cli())
+    _con_telegram(monkeypatch, _cli_falso(SendResult(
+        sent=False, parts=1,
+        reason="integrations.telegram.send_enabled está en false",
+    )))
     d = dg.probar_telegram(object(), None)
+
     assert d["ok"] is False
+    assert "send_enabled" in _paso(d, "envío")["detalle"]
+
+
+def test_un_error_http_de_telegram_no_se_pinta_verde(monkeypatch):
+    from app.integrations.telegram import SendResult
+
+    _con_telegram(monkeypatch, _cli_falso(SendResult(
+        sent=False, parts=0, error="parte 1/1 devolvió 401: Unauthorized",
+    )))
+    d = dg.probar_telegram(object(), None)
+
+    assert d["ok"] is False
+    assert "401" in (_paso(d, "envío")["error"] or "")
+
+
+def test_un_mensaje_que_salio_a_medias_no_es_un_envio_correcto(monkeypatch):
+    """`sent=True` con `error` puesto: llegó una parte de tres.
+
+    `send` devuelve `sent=enviados > 0`, así que el booleano solo no basta. Un
+    mensaje de la mañana truncado se lee entero creyendo que estaba entero.
+    """
+    from app.integrations.telegram import SendResult
+
+    _con_telegram(monkeypatch, _cli_falso(SendResult(
+        sent=True, parts=1, error="parte 2/3 devolvió 500: Internal Server Error",
+    )))
+    d = dg.probar_telegram(object(), None)
+
+    assert d["ok"] is False
+    assert "incompleto" in _paso(d, "envío")["detalle"]
+
+
+def test_una_parte_sin_formato_se_cuenta_pero_no_es_un_fallo(monkeypatch):
+    """Telegram rechazó el HTML y la parte salió en plano. Llegó, pero se dice."""
+    from app.integrations.telegram import SendResult
+
+    _con_telegram(monkeypatch, _cli_falso(SendResult(sent=True, parts=2, plain_parts=1)))
+    d = dg.probar_telegram(object(), None)
+
+    assert d["ok"] is True
+    assert "SIN formato" in _paso(d, "envío")["detalle"]
+
+
+def test_sin_token_no_se_intenta_el_envio(monkeypatch):
+    """`build_client` monta el cliente con el token vacío sin protestar.
+
+    Decir «token y chat configurados» sin mirarlos era afirmar algo que el paso
+    no había comprobado: con el token vacío la petición se va a
+    `api.telegram.org/bot/sendMessage` y el fallo aparece un eslabón más allá,
+    contado como si fuera de la red.
+    """
+    from app.integrations.telegram import SendResult
+
+    _con_telegram(monkeypatch, _cli_falso(SendResult(sent=True, parts=1), token="  "))
+    d = dg.probar_telegram(object(), None)
+
+    assert d["ok"] is False
+    assert _paso(d, "credenciales")["ok"] is False
+    assert _paso(d, "envío")["ok"] is None
+
+
+def test_sin_chat_no_se_intenta_el_envio(monkeypatch):
+    from app.integrations.telegram import SendResult
+
+    _con_telegram(monkeypatch, _cli_falso(SendResult(sent=True, parts=1), chat=""))
+    d = dg.probar_telegram(object(), None)
+
+    assert d["ok"] is False
+    assert "chat" in _paso(d, "credenciales")["detalle"]
 
 
 def test_sin_cliente_de_telegram_el_envio_no_se_intenta(monkeypatch):
