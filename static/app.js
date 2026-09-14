@@ -480,6 +480,39 @@ async function comprobarSalud() {
         `fiarse de ella.`,
     });
   }
+  if (esc.pending_error) {
+    avisos.push({
+      clase: "mal",
+      titulo: "No se ha podido comprobar si quedó una escritura a medias.",
+      cuerpo: `El servidor dice: ${esc.pending_error}`,
+    });
+  }
+
+  // LA RUTINA HUÉRFANA. El único aviso de esta pantalla que describe lo que hay
+  // AHORA MISMO en otra aplicación, y el único que hay que leer antes de
+  // entrenar y no después. Pasa cuando el check-in llega tarde, anula lo que el
+  // respaldo de las 09:00 escribió, y la reversión no se puede hacer: en Hevy
+  // queda una sesión que el sistema ya ha decidido que hoy no toca.
+  //
+  // El texto viene ENTERO del servidor y se pinta tal cual. Es deliberado: el
+  // motivo se redactó para que sirva para actuar -«Abre Hevy y NO hagas Día 1:
+  // hoy toca Recuperación»- y lleva los títulos reales de las dos rutinas, que
+  // aquí no se conocen. Reescribirlo desde el JS sería inventarse una segunda
+  // versión de lo mismo, más pobre y capaz de contradecir a Telegram.
+  if (esc.stale_write) {
+    avisos.push({
+      clase: "mal",
+      titulo: "En Hevy hay una rutina que hoy NO toca.",
+      cuerpo: esc.stale_write,
+    });
+  }
+  if (esc.stale_error) {
+    avisos.push({
+      clase: "mal",
+      titulo: "No se ha podido comprobar qué quedó hoy en Hevy.",
+      cuerpo: `El servidor dice: ${esc.stale_error}`,
+    });
+  }
 
   if (s.dry_run) {
     avisos.push({

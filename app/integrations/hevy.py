@@ -831,6 +831,42 @@ def latest_backup(root: Path | str, routine_id: str) -> Backup | None:
     return leer_backup(ficheros[-1], routine_id)
 
 
+def first_backup_of_day(
+    root: Path | str, routine_id: str, dia: date
+) -> Backup | None:
+    """La copia MÁS ANTIGUA tomada el día `dia`. `None` si ese día no hay ninguna.
+
+    POR QUÉ LA MÁS ANTIGUA Y NO `latest_backup`
+    -------------------------------------------
+    Esto existe para deshacer TODO lo que se ha escrito hoy, no lo último. El
+    caso es el del check-in tardío: a las 09:00 el trabajo de respaldo decide
+    sin formulario y escribe `Día 1`; a las 10:30 llega el check-in, sale rojo,
+    y la sesión de hoy ya no toca Hevy. Lo que tiene que quedar en la app es lo
+    que había ANTES de las 09:00, porque la decisión de las 09:00 está anulada.
+
+    `latest_backup` daría la copia previa a la ÚLTIMA escritura del día, que si
+    hubo dos es el estado intermedio: `Día 1` puesto por la primera. Revertir a
+    eso y llamarlo reversión sería exactamente la clase de mentira que este
+    proyecto persigue —queda `Día 1`, y el mensaje dice que se ha devuelto—.
+
+    Se filtra POR EL NOMBRE DEL FICHERO, que `save_backup` escribe como
+    `AAAAMMDD-HHMMSS.json` a partir del mismo instante que guarda dentro en
+    `taken_at`. Ordenar alfabéticamente es ordenar por hora.
+
+    Si la copia más antigua del día no se puede leer se devuelve `None` y NO se
+    prueba con la siguiente. La siguiente describe el estado de después de la
+    primera escritura: restaurarla dejaría la rutina de hoy puesta mientras se
+    anuncia que se ha quitado. Mejor no poder revertir y decirlo.
+    """
+    carpeta = backup_dir(root, routine_id)
+    if not carpeta.is_dir():
+        return None
+    ficheros = sorted(carpeta.glob(f"{dia:%Y%m%d}-*.json"))
+    if not ficheros:
+        return None
+    return leer_backup(ficheros[0], routine_id)
+
+
 def pending_marker(root: Path | str) -> Path:
     return Path(root) / "hevy_backups" / PENDING_NAME
 
@@ -1150,6 +1186,29 @@ class HevyClient:
             backup=copia,
             reason=f"revertida al estado de {copia.taken_at:%Y-%m-%d %H:%M:%S}",
         )
+
+    def revert_to_day_start(self, routine_id: str, dia: date) -> WriteResult:
+        """Deja la rutina como estaba antes de la PRIMERA escritura de `dia`.
+
+        Para el check-in tardío: si por la mañana se escribió con una decisión
+        que luego quedó anulada, lo correcto no es escribir otra cosa encima
+        -la decisión nueva puede no tocar Hevy en absoluto- sino dejar la app
+        como si aquella escritura no hubiera ocurrido.
+
+        NO CAE HACIA `latest_backup` si no hay copia de hoy, y esa omisión es
+        deliberada. La copia más reciente de otro día describe un estado
+        anterior a la escritura de ESE día, o sea la rutina de la semana pasada.
+        Ponerla sería inventarse una reversión: se cambiaría la rutina por una
+        tercera cosa que no es ni la de hoy ni la de antes de hoy. Sin copia del
+        día se levanta `HevyError` y quien llame avisa.
+        """
+        copia = first_backup_of_day(self.data_root, routine_id, dia)
+        if copia is None:
+            raise HevyError(
+                f"no hay ninguna copia de la rutina {routine_id} tomada el "
+                f"{dia:%Y-%m-%d}: no se puede deshacer lo escrito hoy"
+            )
+        return self.restore(routine_id, copia)
 
 
 def build_client(settings: Any, config: Any = None) -> HevyClient:

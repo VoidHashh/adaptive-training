@@ -211,6 +211,7 @@ def cmd_ver(cfg: Any, args: argparse.Namespace) -> int:
                 "status": f.status,
                 "http": f.http_status,
                 "error": f.error,
+                "reason": f.reason,
                 "payload": json.loads(f.payload_json) if f.payload_json else None,
                 "written_at": f.written_at,
             }
@@ -228,6 +229,13 @@ def cmd_ver(cfg: Any, args: argparse.Namespace) -> int:
               f"   {e['written_at']:%H:%M:%S}")
         if e["error"]:
             print(f"      error: {e['error']}")
+        # El motivo va aunque no haya error, y ese es justo el caso que hacía
+        # falta: dos filas del mismo día -una `ok` y una `reverted`- se
+        # distinguen por el estado, pero POR QUÉ se deshizo la primera solo lo
+        # cuenta esto. Sin ello la columna sería un dato que se escribe y no
+        # lee nadie, que es la otra forma de tener una opción muerta.
+        elif e["reason"]:
+            print(f"      motivo: {e['reason']}")
 
     ultima = escrituras[0]
     copia = latest_backup(data_root(), rid)

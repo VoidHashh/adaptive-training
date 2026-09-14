@@ -44,10 +44,19 @@ def db():
 
 
 class HevyFalso:
-    def __init__(self, *, revienta: bool = False, escribe: bool = True):
+    def __init__(self, *, revienta: bool = False, escribe: bool = True,
+                 con_copia: bool = True):
         self.revienta = revienta
         self.escribe = escribe
+        # Si hay copia del día con la que deshacer lo escrito esta mañana.
+        # `False` es el caso feo: había que revertir y no se puede.
+        self.con_copia = con_copia
         self.llamadas: list[tuple[str, dict]] = []
+        self.reversiones: list[tuple[str, date]] = []
+        # Lo que la app enseñaría ahora mismo. Sin esto los tests comprueban que
+        # se llamó a la función correcta, que no es lo mismo que comprobar qué
+        # queda en Hevy, y lo que queda en Hevy es lo único que importa aquí.
+        self.contenido = "la rutina de la semana pasada"
 
     def write_routine(self, routine_id, payload, *, dry_run=False):
         self.llamadas.append((routine_id, payload))
@@ -55,9 +64,24 @@ class HevyFalso:
             raise RuntimeError("la API de Hevy ha devuelto 500")
         from app.integrations.hevy import WriteResult
 
+        if self.escribe:
+            self.contenido = (payload.get("routine") or {}).get("title") or "?"
         return WriteResult(
             written=self.escribe, routine_id=routine_id, reason="ok de mentira"
         )
+
+    def revert_to_day_start(self, routine_id, dia):
+        from app.integrations.hevy import HevyError, WriteResult
+
+        if not self.con_copia:
+            raise HevyError(
+                f"no hay ninguna copia de la rutina {routine_id} tomada el "
+                f"{dia:%Y-%m-%d}: no se puede deshacer lo escrito hoy"
+            )
+        self.reversiones.append((routine_id, dia))
+        self.contenido = "la rutina de la semana pasada"
+        return WriteResult(written=True, routine_id=routine_id,
+                           reason="revertida al estado de 2026-09-07 08:59:00")
 
 
 class TelegramFalso:
@@ -1281,3 +1305,284 @@ def test_sin_checkins_anteriores_la_mañana_sigue_funcionando(db, cfg):
     res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     assert res.decision is not None
     assert res.decision.signals.history["fatigue"] == {}
+
+
+# ---------------------------------------------------------------------------
+# El check-in tardío y lo que queda escrito en Hevy
+# ---------------------------------------------------------------------------
+#
+# La secuencia que abre este agujero es la normal, no una rara:
+#
+#     09:00  no ha llegado el check-in. El trabajo de respaldo decide con lo que
+#            hay -solo Garmin-, sale verde y ESCRIBE `Día 1` en Hevy.
+#     10:30  llega el check-in. Sale rojo. La sesión de hoy es recuperación, que
+#            no toca Hevy.
+#
+# La decisión se rehacía bien -dos filas en `decisions`, la de las 09:00 marcada
+# `is_current=False`- y aun así en Hevy se quedaba el `Día 1` entero, porque
+# `_escribir_hevy` veía que hoy no hay nada que escribir y se iba. Mirado solo,
+# ese salto es verdad. Mirado en secuencia, es falso: hoy SÍ se escribió algo, y
+# la decisión que lo escribió ya no vale.
+#
+# El resultado era un Telegram diciendo «Recuperación» y una app enseñando la
+# sesión fuerte, sin un solo aviso. Con una hernia L4-L5 el error va en la única
+# dirección que no se puede permitir.
+
+CHECKIN_ROJO = {"fatigue": 9, "mood": 2, "sleep_quality": 2, "training_desire": 1,
+                "yesterday_rpe": 10, "lower_discomfort": 8, "upper_discomfort": 7}
+CHECKIN_VERDE = {"fatigue": 2, "mood": 8, "sleep_quality": 8, "training_desire": 9,
+                 "yesterday_rpe": 3, "lower_discomfort": 0, "upper_discomfort": 0}
+
+
+def manana_sin_checkin(db, cfg, hevy, tg):
+    """Las 09:00: el trabajo de respaldo decide sin formulario y escribe."""
+    res = corre(db, cfg, hevy=hevy, tg=tg, source="fallback_0900")
+    db.flush()
+    assert res.hevy_status == "ok", "el montaje exige que a las 09:00 se escriba"
+    return res
+
+
+def checkin_tardio(db, cfg, hevy, tg, valores):
+    """Las 10:30: llega el formulario y la decisión se rehace."""
+    from app.repository import upsert_checkin
+
+    upsert_checkin(db, LUNES, dict(valores), config=cfg)
+    db.flush()
+    res = corre(db, cfg, hevy=hevy, tg=tg, source="checkin")
+    db.flush()
+    return res
+
+
+def test_un_checkin_rojo_tardio_deshace_lo_que_escribio_el_respaldo(db, cfg):
+    """Lo que queda en Hevy tiene que ser de la ÚLTIMA decisión, no de la primera.
+
+    Como la última no escribe nada, la única forma de cumplirlo es devolver la
+    rutina a como estaba antes de la primera escritura del día. El día queda
+    entonces idéntico a como habría quedado si el respaldo no hubiera corrido,
+    que es la propiedad que de verdad se persigue: el respaldo no puede empeorar
+    un día por haber actuado.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+    assert hevy.contenido == "Día 1"
+
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    assert res.decision.light == "red"
+    assert res.decision.session.write_to_hevy is False
+    assert res.hevy_status == "reverted"
+    assert [d for _, d in hevy.reversiones] == [LUNES]
+    assert hevy.contenido == "la rutina de la semana pasada", (
+        "en Hevy ha quedado la sesión de una decisión anulada: es exactamente el "
+        "fallo que este arreglo existe para cerrar"
+    )
+
+
+def test_la_reversion_queda_registrada_como_escritura_con_su_motivo(db, cfg):
+    """Una reversión es un toque a Hevy, y el histórico tiene que poder leerlo.
+
+    Sin fila, el registro del día diría que se puso `Día 1` y ahí se acabó la
+    historia. Y la fila tiene que hablar de la rutina que se REVIRTIÓ -`dia_1`-,
+    no de la sesión de hoy: sacar el nombre de `decision.session` dejaría escrito
+    que se revirtió «Recuperación», que no se tocó nunca.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+    checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    filas = db.scalars(select(HevyWrite).order_by(HevyWrite.id)).all()
+    assert [f.status for f in filas] == ["ok", "reverted"]
+
+    vuelta = filas[-1]
+    assert vuelta.date == LUNES
+    assert vuelta.routine_key == "dia_1", (
+        f"la fila de la reversión dice que se revirtió {vuelta.routine_key!r}, "
+        f"que no es la rutina que se escribió esta mañana"
+    )
+    assert vuelta.hevy_routine_id == filas[0].hevy_routine_id
+    assert vuelta.reason, "una reversión sin motivo es media auditoría"
+    assert "Día 1" in vuelta.reason and "Recuperación" in vuelta.reason
+    # Las dos filas apuntan a decisiones DISTINTAS. Es lo que permite reconstruir
+    # el orden: quién escribió y quién deshizo.
+    assert filas[0].decision_id != vuelta.decision_id
+
+
+def test_el_motivo_va_en_todas_las_filas_no_solo_en_las_que_fallan(db, cfg):
+    """`error` solo se rellena cuando algo se rompe, y con eso una fila normal
+    quedaba con el qué y sin el por qué."""
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+
+    fila = db.scalars(select(HevyWrite)).first()
+    assert fila.status == "ok"
+    assert fila.error is None, "no ha fallado nada, así que `error` va vacío"
+    assert fila.reason, "y aun así el motivo se guarda"
+
+
+def test_un_checkin_verde_tardio_reescribe_en_vez_de_deshacer(db, cfg):
+    """El control. Si la decisión nueva SÍ toca Hevy, se escribe encima y punto.
+
+    Hace falta como test propio porque el arreglo se metió en la rama del salto:
+    si por descuido alcanzara a este camino, el día verde acabaría con la rutina
+    de la semana pasada puesta. El mismo fallo, en la otra dirección.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_VERDE)
+
+    assert res.hevy_status == "ok"
+    assert hevy.reversiones == []
+    assert hevy.contenido == "Día 1"
+    assert len(hevy.llamadas) == 2, "dos escrituras el mismo día, y las dos cuentan"
+    assert [f.status for f in db.scalars(select(HevyWrite)).all()] == ["ok", "ok"]
+
+
+def test_sin_escritura_previa_el_salto_sigue_siendo_un_salto(db, cfg):
+    """Un día rojo normal, con el check-in a su hora, no toca Hevy ni para revertir.
+
+    Es la mitad que no se puede perder al arreglar la otra: revertir aquí
+    cambiaría la rutina sin motivo, un día en que nadie había escrito nada.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    assert res.decision.session.write_to_hevy is False
+    assert res.hevy_status == "skipped"
+    assert res.hevy_reason == "hoy la sesión no toca Hevy"
+    assert hevy.reversiones == [] and hevy.llamadas == []
+    assert hevy.contenido == "la rutina de la semana pasada"
+
+
+@pytest.mark.parametrize("dia_de_la_fila, espera", [
+    (LUNES, "reverted"),
+    (LUNES - timedelta(days=1), "skipped"),
+])
+def test_lo_escrito_ayer_no_se_deshace_hoy(db, cfg, dia_de_la_fila, espera):
+    """La ventana es el DÍA, y las dos mitades van juntas a propósito.
+
+    Sin el filtro por fecha, cualquier día de recuperación borraría la rutina
+    del día anterior por haberla encontrado en la tabla: una escritura de ayer
+    es el estado NORMAL de Hevy, no un resto que limpiar.
+
+    La primera versión de este test corría un `run_daily` de verdad el domingo y
+    pasaba SIN PROBAR NADA: el domingo no hay sesión de fuerza, así que nunca
+    llegaba a existir la escritura `ok` que el filtro tenía que descartar.
+    Quitar el filtro de fecha no lo rompía. Lo cazó la batería de mutaciones, y
+    es el mismo error de siempre -un test que pasa por el motivo equivocado-.
+
+    Ahora la fila se pone a mano y se prueban los dos días con el MISMO montaje,
+    así que lo único que puede explicar la diferencia de resultado es la fecha.
+    """
+    db.add(HevyWrite(date=dia_de_la_fila, routine_key="dia_1",
+                     hevy_routine_id="r1", status="ok", reason="de mentira"))
+    db.flush()
+
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    assert res.decision.session.write_to_hevy is False, "el montaje: hoy no escribe"
+    assert res.hevy_status == espera
+    assert bool(hevy.reversiones) is (espera == "reverted")
+
+
+@pytest.mark.parametrize("estado", ["dry_run", "read_only", "skipped"])
+def test_solo_se_deshace_lo_que_de_verdad_llego_a_hevy(db, cfg, estado):
+    """`dry_run` no tocó nada. `read_only` se paró antes del PUT. `skipped` ni lo
+    intentó. Deshacer cualquiera de ellos cambiaría la rutina por una TERCERA
+    cosa: ni la de hoy ni la de antes de hoy.
+
+    Se monta la fila a mano porque lo que se prueba es el criterio de lectura, no
+    cómo se llega a cada estado.
+    """
+    db.add(HevyWrite(date=LUNES, routine_key="dia_1", hevy_routine_id="r1",
+                     status=estado, reason="de mentira"))
+    db.flush()
+
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    assert res.hevy_status == "skipped"
+    assert hevy.reversiones == []
+
+
+def test_una_escritura_a_medias_no_se_deshace_a_ciegas(db, cfg):
+    """El caso incómodo: `error` puede haber llegado a medias, o no haber llegado.
+
+    Revertir sin saberlo es adivinar, y adivinar mal deja la rutina en un tercer
+    estado. Ese caso ya tiene su propio aviso -la marca de escritura pendiente
+    que `/api/health` publica como `pending_write`- y ese es mejor sitio para él.
+    """
+    db.add(HevyWrite(date=LUNES, routine_key="dia_1", hevy_routine_id="r1",
+                     status="error", error="500 de Hevy"))
+    db.flush()
+
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    assert res.hevy_status == "skipped"
+    assert hevy.reversiones == []
+
+
+def test_si_no_se_puede_deshacer_el_mensaje_dice_que_hacer(db, cfg):
+    """Enterarse no basta: la frase tiene que servir para actuar.
+
+    Aquí en Hevy NO falta nada, sobra. Hay puesta una rutina que el sistema ya ha
+    decidido que hoy no toca, así que el aviso de siempre -«tendrás que montarlo
+    a mano»- diría justo lo contrario de lo que hay que hacer. Tiene que nombrar
+    las dos: la que ha quedado y la que toca.
+    """
+    hevy, tg = HevyFalso(con_copia=False), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+
+    res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    assert res.hevy_status == "stale"
+    assert hevy.contenido == "Día 1", "el montaje: la reversión no ha podido ser"
+    assert "Día 1" in res.hevy_reason and "Recuperación" in res.hevy_reason
+    assert "NO hagas" in res.hevy_reason
+    assert any("Hevy" in p for p in res.problemas), (
+        "un estado que el usuario tiene que resolver a mano no puede quedarse "
+        "fuera de `problemas`"
+    )
+
+    texto = tg.enviados[-1]
+    assert texto.startswith("⚠️ <b>En Hevy ha quedado una rutina que hoy NO toca</b>")
+    assert "montarlo a mano" not in texto.split("\n\n")[0], (
+        "el aviso de «no se ha escrito» manda a hacer lo contrario de lo que "
+        "hay que hacer cuando lo que pasa es que sobra una rutina"
+    )
+    fila = db.scalars(select(HevyWrite).order_by(HevyWrite.id.desc())).first()
+    assert fila.status == "stale" and fila.error, "esto sí es una avería"
+
+
+def test_la_reversion_tambien_se_cuenta_aunque_salga_bien(db, cfg):
+    """Que la rutina de Hevy cambie sola entre las nueve y las once es de las
+    cosas de las que hay que enterarse, no descubrirlas abriendo la app."""
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+    checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
+
+    texto = tg.enviados[-1]
+    assert texto.startswith("↩️ <b>Hevy se ha devuelto a como estaba</b>")
+    assert "Día 1" in texto
+
+
+def test_en_ensayo_no_se_deshace_nada_pero_se_dice(db, cfg):
+    """`--dry-run` no puede tocar Hevy ni para arreglarlo. Y tiene que contar
+    qué habría hecho, que es para lo que sirve un ensayo."""
+    from app.repository import upsert_checkin
+
+    hevy, tg = HevyFalso(), TelegramFalso()
+    corre(db, cfg, hevy=hevy, tg=tg, source="fallback_0900")
+    db.flush()
+
+    upsert_checkin(db, LUNES, dict(CHECKIN_ROJO), config=cfg)
+    db.flush()
+    res = corre(db, cfg, hevy=hevy, tg=tg, source="checkin", dry_run=True)
+    db.flush()
+
+    assert res.hevy_status == "dry_run"
+    assert hevy.reversiones == []
+    assert "Se habría deshecho" in res.hevy_reason
+    assert "Día 1" in res.hevy_reason

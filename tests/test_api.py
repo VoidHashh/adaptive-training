@@ -16,7 +16,7 @@ import csv
 import io
 import json
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1918,3 +1918,183 @@ def test_health_dice_quien_hay_delante_de_la_puerta(cliente, monkeypatch):
     for puesto, esperado in (("ninguna", "ninguna"), ("proxy", "proxy"), ("", "sin_declarar")):
         monkeypatch.setattr(settings, "auth_front", puesto)
         assert cliente.get("/api/health").json()["auth_front"] == esperado
+
+
+# ---------------------------------------------------------------------------
+# La rutina huerfana en el healthcheck
+# ---------------------------------------------------------------------------
+
+
+def _fila_hevy(day, status, reason, **extra):
+    """Una fila de `hevy_writes` con lo mínimo para que el healthcheck la lea."""
+    from app.models import HevyWrite
+
+    campos = {
+        "date": day,
+        "routine_key": "dia_1",
+        "hevy_routine_id": "rid-1",
+        "status": status,
+        "reason": reason,
+    }
+    campos.update(extra)
+    return HevyWrite(**campos)
+
+
+def test_una_rutina_huerfana_de_hoy_sale_en_el_veredicto(cliente, db, cfg):
+    """La frase que hay que poder leer justo antes de entrenar.
+
+    Ya sale por Telegram, y no basta: un mensaje se lee una vez y a las nueve de
+    la mañana. Lo que hay en Hevy AHORA MISMO se mira en el móvil al llegar al
+    gimnasio, y es ahí donde tiene que estar el aviso.
+
+    Se comprueba que el texto llega ENTERO, no que haya "un problema". El motivo
+    se redactó para que sirva para actuar -«Abre Hevy y NO hagas X: hoy toca Y»-
+    y lleva los títulos reales de las dos rutinas; un veredicto que dijera
+    «revisar Hevy» y nada más no sirve para decidir qué hacer al llegar.
+    """
+    hoy = datetime.now(ZoneInfo(cfg.timezone)).date()
+    db.add(_fila_hevy(
+        hoy, "stale",
+        "esta mañana se escribió «Día 1» en Hevy con una decisión que ya no "
+        "vale, y hoy toca «Recuperación». No se ha podido deshacer. Abre Hevy "
+        "y NO hagas «Día 1»: hoy toca «Recuperación»",
+    ))
+    db.commit()
+
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["status"] == "revisar"
+    assert cuerpo["writes"]["stale_write"], "el bloque no trae la frase"
+    assert any("NO hagas «Día 1»" in p for p in cuerpo["problemas"]), (
+        f"el aviso no llega con lo que hay que hacer: {cuerpo['problemas']}"
+    )
+
+
+def test_la_huerfana_de_ayer_ya_no_avisa(cliente, db, cfg):
+    """Se pregunta por HOY, y por eso se apaga sola.
+
+    Mañana el trabajo de las 09:00 vuelve a escribir y lo que hubiera se pisa,
+    así que la fila `stale` de ayer ya no describe lo que hay en la app. Un
+    aviso que no se pueda cerrar nunca acaba encendido siempre, y un aviso
+    encendido siempre deja de leerse justo antes del día en que hacía falta.
+    """
+    hoy = datetime.now(ZoneInfo(cfg.timezone)).date()
+    db.add(_fila_hevy(hoy - timedelta(days=1), "stale", "lo de ayer"))
+    db.commit()
+
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["writes"]["stale_write"] is None
+    assert not any("lo de ayer" in p for p in cuerpo["problemas"])
+
+
+def test_si_despues_de_la_huerfana_se_reescribio_bien_no_se_avisa(cliente, db, cfg):
+    """Manda la ÚLTIMA fila del día, no la primera que sea `stale`.
+
+    La secuencia existe: a las 10:30 el check-in tardío sale rojo, la reversión
+    falla y queda `stale`; a las 13:00 el usuario rehace el check-in, sale verde
+    y se reescribe la rutina buena. En Hevy hay lo correcto, y avisar de que hay
+    una rutina huérfana sería mentir sobre el estado de otra aplicación.
+
+    Buscar «algún `stale` de hoy» daría el resultado contrario y seguiría
+    pareciendo razonable, que es lo que lo hace peligroso.
+    """
+    hoy = datetime.now(ZoneInfo(cfg.timezone)).date()
+    db.add(_fila_hevy(hoy, "stale", "quedó el Día 1 y no se pudo deshacer"))
+    db.commit()
+    db.add(_fila_hevy(hoy, "ok", "reescrita tras el segundo check-in"))
+    db.commit()
+
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["writes"]["stale_write"] is None, (
+        "se avisa de una rutina huérfana que ya se corrigió: el aviso no mira "
+        "la última escritura del día, sino cualquiera"
+    )
+
+
+def test_una_huerfana_sin_motivo_guardado_avisa_igual(cliente, db, cfg):
+    """El aviso no puede depender de que el motivo se escribiera.
+
+    `reason` es una columna añadida a posteriori, así que una fila `stale`
+    anterior a ella la tiene a NULL. Callarse en ese caso sería perder el aviso
+    entero por no tener el texto bonito, cuando el hecho -en Hevy hay algo que
+    hoy no toca- se sabe igual.
+    """
+    hoy = datetime.now(ZoneInfo(cfg.timezone)).date()
+    db.add(_fila_hevy(hoy, "stale", None))
+    db.commit()
+
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["status"] == "revisar"
+    assert cuerpo["writes"]["stale_write"], (
+        "una fila `stale` sin motivo no avisa de nada: el aviso cuelga del "
+        "texto en vez de colgar del estado"
+    )
+
+
+def test_un_dia_normal_no_inventa_huerfanas(cliente, db, cfg):
+    """El control. Sin esto, los tres de arriba pasarían con `stale_write` fijo."""
+    hoy = datetime.now(ZoneInfo(cfg.timezone)).date()
+    db.add(_fila_hevy(hoy, "ok", "rutina del día escrita"))
+    db.commit()
+
+    cuerpo = cliente.get("/api/health").json()
+    assert cuerpo["writes"]["stale_write"] is None
+    assert cuerpo["writes"]["stale_error"] is None
+
+
+def test_no_poder_mirar_la_huerfana_no_es_no_tenerla(cliente, db, monkeypatch):
+    """El fallo se cuenta, no se traga.
+
+    Un `except` que devolviera «no hay huérfana» haría que una base ilegible y
+    un día limpio se vieran EXACTAMENTE igual desde el móvil: healthcheck en
+    verde. Es el fallo silencioso de manual, y encima en el sitio cuyo trabajo
+    es no tenerlos.
+
+    Y se comprueba que `/api/health` sigue contestando 200: los dos compose
+    miran el código HTTP para decidir si el contenedor está enfermo, así que un
+    500 aquí cambiaría una degradación avisada por un bucle de reinicios -con
+    la base rota, reiniciar no arregla nada-.
+    """
+    from app import api as mod
+
+    def revienta(*_a, **_k):
+        raise RuntimeError("database disk image is malformed")
+
+    monkeypatch.setattr(db, "scalars", revienta)
+
+    r = cliente.get("/api/health")
+    assert r.status_code == 200, "un healthcheck que revienta dispara reinicios"
+    cuerpo = r.json()
+
+    assert cuerpo["writes"]["stale_write"] is None
+    assert cuerpo["writes"]["stale_error"], "no se dice que no se ha podido mirar"
+    assert cuerpo["status"] == "revisar"
+    assert any("malformed" in p for p in cuerpo["problemas"]), (
+        f"el motivo real no llega al veredicto: {cuerpo['problemas']}"
+    )
+
+
+def test_no_poder_leer_la_marca_de_escritura_tampoco_es_no_tenerla(cliente, monkeypatch):
+    """`pending_error` llevaba calculándose desde el principio y no lo leía nadie.
+
+    `_estado_escrituras` se toma la molestia de distinguir «no hay marca» de «no
+    se ha podido mirar si la hay», y esa distinción se perdía en
+    `_problemas_de_salud`, que solo miraba `pending_write`. Las dos salían como
+    un healthcheck en verde, o sea que el trabajo de distinguirlas no servía
+    para nada.
+    """
+    def revienta(_raiz):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("app.integrations.hevy.read_pending", revienta)
+
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["writes"]["pending_error"]
+    assert cuerpo["status"] == "revisar"
+    assert any("permission denied" in p for p in cuerpo["problemas"]), (
+        f"el motivo real no llega al veredicto: {cuerpo['problemas']}"
+    )

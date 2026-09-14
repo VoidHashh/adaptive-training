@@ -950,24 +950,39 @@ def test_la_pantalla_avisa_de_todo_lo_que_el_servidor_sabe_marcar():
 
     Se cruzan los BLOQUES, no las frases: el texto de cada aviso es cosa de la
     pantalla y tiene que poder reescribirse sin romper un test.
+
+    SE CUENTAN AVISOS, NO BLOQUES DEL JSON. Empezó siendo lo segundo, y se queda
+    corto en cuanto un bloque aprende a marcar dos cosas distintas: `writes`
+    marca cuatro -escritura a medias, marca ilegible, rutina huérfana de hoy, y
+    no haber podido mirar si la hay- y con el recuento por bloques bastaba con
+    que la pantalla pintase una de las cuatro para que el test diera por buenas
+    las otras tres sin haberlas mirado nunca.
     """
     from app.api import _problemas_de_salud
 
-    # Un estado en el que TODO está mal a la vez. Cada bloque lleva su marca
-    # para poder saber cuál de ellos generó cada frase.
+    # Un estado en el que TODO está mal a la vez. Cada aviso lleva su marca para
+    # poder saber cuál de ellos generó cada frase.
     todo_mal = {
         "secrets_missing": ["HEVY_API_KEY"],
         "dry_run": False,
-        "writes": {"pending_write": "rutina_dia_2"},
+        "writes": {
+            "pending_write": "rutina_dia_2",
+            "pending_error": "no se ha podido leer la marca",
+            "stale_write": "en Hevy quedó el Día 1 y hoy toca Recuperación",
+            "stale_error": "no se ha podido mirar si quedó una rutina huérfana",
+        },
         "scheduler": {"running": False, "jobs": {}, "error": None},
         "clock": {"matches": False, "error": None},
         "config_file": {"in_sync": False, "error": "x"},
     }
-    # Los bloques que el servidor sabe marcar, cada uno con la expresión con la
-    # que la pantalla tiene que estar leyéndolo.
+    # Cada cosa que el servidor sabe marcar, con la expresión con la que la
+    # pantalla tiene que estar leyéndola.
     bloques = {
         "secrets_missing": "secrets_missing",
-        "writes": "pending_write",
+        "escritura a medias": "pending_write",
+        "marca de escritura ilegible": "pending_error",
+        "rutina huerfana": "stale_write",
+        "huerfana no comprobable": "stale_error",
         "scheduler": "scheduler",
         "clock": "clock",
         "config_file": "config_file",
@@ -975,7 +990,7 @@ def test_la_pantalla_avisa_de_todo_lo_que_el_servidor_sabe_marcar():
 
     problemas = _problemas_de_salud(todo_mal)
     assert len(problemas) == len(bloques), (
-        "el servidor marca un número de problemas distinto del de bloques que "
+        "el servidor marca un número de problemas distinto del de avisos que "
         f"este test conoce ({problemas}): si se ha añadido uno nuevo, hay que "
         "añadirlo también a la pantalla y a esta lista"
     )
@@ -987,3 +1002,89 @@ def test_la_pantalla_avisa_de_todo_lo_que_el_servidor_sabe_marcar():
         "lo mira: el problema se calcula, se sirve por /api/health y no llega "
         "nunca al móvil, que es el único sitio donde se lee"
     )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_pantalla_pinta_de_verdad_cada_aviso_que_el_servidor_sabe_marcar(tmp_path):
+    """Lo mismo que el test de arriba, pero EJECUTANDO el JavaScript.
+
+    POR QUÉ NO BASTA EL CRUCE POR TEXTO. Una batería de mutaciones sobre el
+    aviso de la rutina huérfana mató ocho de diez y dejó vivas exactamente dos:
+    las que cambiaban `if (esc.stale_write) {` por `if (false) {` y dejaban el
+    cuerpo del bloque intacto. La expresión seguía escrita en el archivo -dentro
+    del bloque, en la línea que rellena el texto-, así que el `in codigo` daba
+    verdadero mientras el aviso no se pintaba nunca. Un guardián que sobrevive a
+    que se le mate lo que vigila no vigila.
+
+    El cruce por texto se queda igualmente, y no es duplicar: pilla el caso que
+    ocurrió de verdad -alguien añade un problema al servidor y no toca la
+    pantalla- sin depender de que haya `node` en la máquina. Éste pilla el otro,
+    que es el aviso escrito y desconectado.
+
+    Y NO SE BUSCA LA FRASE, SE BUSCA EL DATO. Lo que se comprueba es que el
+    valor que mandó el servidor aparezca en el HTML: los títulos y las
+    explicaciones son cosa de la pantalla y tienen que poder reescribirse. Para
+    la rutina huérfana eso es además lo único que sirve, porque el texto útil
+    -«Abre Hevy y NO hagas X: hoy toca Y»- viene entero del servidor y es el que
+    tiene que llegar al móvil sin recortar.
+    """
+    # Un `/api/health` con TODO encendido a la vez. Cada valor es único y
+    # reconocible para poder decir cuál de los avisos falta.
+    salud = {
+        "secrets_missing": ["CLAVE-QUE-FALTA"],
+        "dry_run": True,
+        "writes": {
+            "pending_write": "MARCA-A-MEDIAS",
+            "pending_error": "MARCA-ILEGIBLE",
+            "stale_write": "HUERFANA: abre Hevy y NO hagas «Día 1»",
+            "stale_error": "HUERFANA-NO-COMPROBABLE",
+        },
+        "scheduler": {"running": False, "jobs": {}, "error": "PLANIFICADOR-PARADO"},
+        # El reloj va SIN `error` a propósito: con él la pantalla lo repite y se
+        # queda sin ejercitar la rama que redacta la frase con los dos valores,
+        # que es la que de verdad sirve -dice en qué zona están las reglas y en
+        # cuál va el servidor, que es lo que hace falta para arreglarlo-.
+        "clock": {"matches": False, "error": None,
+                  "timezone": "Europe/Madrid", "offset": "+00:00"},
+        "config_file": {"in_sync": False, "error": "CONFIG-VIEJO"},
+    }
+    fichero = tmp_path / "health.json"
+    fichero.write_text(json.dumps(salud, ensure_ascii=False), encoding="utf-8")
+
+    r = subprocess.run(
+        ["node", "tests/salud_pwa.mjs", str(fichero)],
+        cwd=RAIZ, capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    assert r.returncode == 0, f"el arnés no terminó:\n{r.stdout}\n{r.stderr}"
+    # `app.js` escribe por consola al cargarse -el aviso del service worker-, así
+    # que el JSON es la ÚLTIMA línea, no la primera.
+    pintado = json.loads(r.stdout.strip().splitlines()[-1])
+
+    assert pintado["visible"], "la caja de avisos se queda oculta con todo en rojo"
+    html = pintado["html"]
+
+    esperado = {
+        "faltan credenciales": "CLAVE-QUE-FALTA",
+        "planificador": "PLANIFICADOR-PARADO",
+        "config del disco": "CONFIG-VIEJO",
+        "escritura a medias": "MARCA-A-MEDIAS",
+        "marca de escritura ilegible": "MARCA-ILEGIBLE",
+        "rutina huerfana": "abre Hevy y NO hagas",
+        "huerfana no comprobable": "HUERFANA-NO-COMPROBABLE",
+    }
+    faltan = [k for k, v in esperado.items() if v not in html]
+    assert not faltan, (
+        f"el servidor manda {faltan} y la pantalla no lo pinta. El HTML que sale "
+        f"es:\n{html}"
+    )
+
+    # El reloj es el raro: la pantalla redacta su propia frase con `timezone` y
+    # `offset` en vez de repetir el `error` del servidor, así que se comprueba
+    # por los dos valores que sí usa.
+    assert "Europe/Madrid" in html and "+00:00" in html, (
+        f"el aviso del reloj no llega con los datos con los que se arregla:\n{html}"
+    )
+
+    # Y que no se haya colado un `undefined` en medio de ninguna frase, que es
+    # como se lee una clave mal adivinada desde el móvil.
+    assert "undefined" not in html, f"hay una clave inventada en un aviso:\n{html}"

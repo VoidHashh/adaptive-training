@@ -527,7 +527,21 @@ class WorkoutLog(Base):
 
 
 class HevyWrite(Base):
-    """Auditoría de cada escritura en Hevy. Si la API falla, queda registrado."""
+    """Auditoría de cada escritura en Hevy. Si la API falla, queda registrado.
+
+    UN DÍA PUEDE TENER VARIAS FILAS, Y EL ORDEN ES EL DATO
+    -----------------------------------------------------
+    No hay `UNIQUE` sobre `date` y no debe haberlo. El check-in tardío hace que
+    un mismo día tenga dos toques a la misma rutina: el del trabajo de respaldo
+    de las 09:00, decidido sin formulario, y el de las 10:30 cuando el
+    formulario llega y cambia la decisión. El segundo puede ser una escritura
+    distinta o una REVERSIÓN -`status="reverted"`-, que es lo que pasa cuando la
+    decisión nueva no toca Hevy y hay que dejar la app como estaba.
+
+    Colapsar eso en una fila haría que el histórico dijera que la rutina se puso
+    una vez y ya. Lo que se querrá reconstruir cuando algo salga raro es
+    justamente la secuencia: qué se puso, cuándo, y por qué se quitó.
+    """
 
     __tablename__ = "hevy_writes"
 
@@ -537,9 +551,22 @@ class HevyWrite(Base):
 
     routine_key: Mapped[str | None] = mapped_column(String(64))
     hevy_routine_id: Mapped[str | None] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16))  # ok | error | skipped | dry_run
+    # ok | error | skipped | dry_run | read_only | reverted | stale
+    #
+    # `reverted`: se deshizo una escritura anterior del mismo día porque la
+    # decisión que la produjo ya no es la vigente. En Hevy quedó lo de antes.
+    # `stale`: había que deshacerla y NO se pudo. En Hevy ha quedado la rutina
+    # de una decisión anulada, y eso es lo peor que puede pasar aquí: la app
+    # enseña una sesión que el sistema ya ha dicho que hoy no toca.
+    status: Mapped[str] = mapped_column(String(16))
     http_status: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+    # El motivo, pase lo que pase. `error` solo se rellena cuando algo falla, y
+    # con eso una fila `reverted` o `skipped` no se podía distinguir de otra
+    # igual tomada por una razón distinta: quedaba el qué sin el por qué, que es
+    # media auditoría. Las filas anteriores a esta columna están a NULL, que es
+    # lo honesto: entonces no se guardaba.
+    reason: Mapped[str | None] = mapped_column(Text)
     payload_json: Mapped[str | None] = mapped_column(Text)
     written_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

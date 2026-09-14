@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from app.integrations.hevy import (
     HevyError,
     build_routine_payload,
     cuerpo_para_put,
+    first_backup_of_day,
     latest_backup,
     payload_diff,
     pending_marker,
@@ -401,6 +403,108 @@ def test_una_copia_sin_fecha_utilizable_tampoco_revienta(tmp_path, contenido):
     c, _ = cliente(tmp_path, [])
     with pytest.raises(HevyError, match="no hay ninguna copia"):
         c.restore("r1")
+
+
+def _copia_a_mano(raiz: Path, routine_id: str, cuando: str, payload: dict) -> Path:
+    """Escribe una copia con la hora que se le diga.
+
+    `save_backup` sella con `datetime.now()` al segundo, así que dos llamadas
+    seguidas caen en el mismo nombre de fichero y la segunda pisa a la primera.
+    Para probar «la más antigua del día» hacen falta copias de horas distintas,
+    y la única forma honesta de tenerlas es ponerlas.
+    """
+    carpeta = raiz / "hevy_backups" / routine_id
+    carpeta.mkdir(parents=True, exist_ok=True)
+    destino = carpeta / f"{cuando}.json"
+    marca = datetime.strptime(cuando, "%Y%m%d-%H%M%S")
+    destino.write_text(json.dumps({
+        "routine_id": routine_id,
+        "taken_at": marca.isoformat(timespec="seconds"),
+        "routine": payload,
+    }), encoding="utf-8")
+    return destino
+
+
+def test_la_primera_copia_del_dia_no_es_la_ultima(tmp_path):
+    """La distinción entera del check-in tardío está aquí.
+
+    Si un día hubo DOS escrituras, `latest_backup` da el estado intermedio: el
+    de después de la primera, o sea con la rutina de hoy ya puesta. Revertir a
+    eso y anunciarlo como reversión dejaría `Día 1` en Hevy mientras el mensaje
+    dice que se ha quitado, que es peor que no revertir: el aviso taparía el
+    problema en vez de enseñarlo.
+    """
+    antes = {**REMOTO, "title": "lo de la semana pasada"}
+    enmedio = {**REMOTO, "title": "Día 1, puesto a las 09:00"}
+    _copia_a_mano(tmp_path, "r1", "20260914-085900", antes)
+    _copia_a_mano(tmp_path, "r1", "20260914-103000", enmedio)
+
+    primera = first_backup_of_day(tmp_path, "r1", date(2026, 9, 14))
+    assert primera is not None
+    assert primera.payload == antes, (
+        "se ha cogido la copia de en medio: revertir a ella deja puesta la "
+        "rutina que se quería quitar"
+    )
+    assert latest_backup(tmp_path, "r1").payload == enmedio
+
+
+def test_una_copia_de_otro_dia_no_sirve_para_deshacer_hoy(tmp_path):
+    """Y NO se cae hacia `latest_backup`, que es la trampa cómoda.
+
+    La copia más reciente de ayer describe el estado anterior a la escritura de
+    AYER. Ponerla hoy no deshace nada: cambia la rutina por una tercera cosa que
+    no es ni la de hoy ni la de antes de hoy, y encima lo llama reversión.
+    """
+    _copia_a_mano(tmp_path, "r1", "20260913-090000", {**REMOTO, "title": "de ayer"})
+
+    assert first_backup_of_day(tmp_path, "r1", date(2026, 9, 14)) is None
+    assert latest_backup(tmp_path, "r1") is not None, "la de ayer sí está ahí"
+
+    c, doble = cliente(tmp_path, [])
+    with pytest.raises(HevyError, match="no hay ninguna copia"):
+        c.revert_to_day_start("r1", date(2026, 9, 14))
+    assert doble.llamadas == [], "no se ha tocado la red, que es lo importante"
+
+
+def test_si_la_primera_copia_del_dia_esta_rota_no_se_prueba_con_la_siguiente(tmp_path):
+    """La siguiente describe el estado de DESPUÉS de la primera escritura.
+
+    Restaurarla dejaría la rutina de hoy puesta mientras se anuncia que se ha
+    quitado. Mejor no poder revertir y decirlo: esa rama tiene su propio aviso,
+    y ese aviso dice qué hacer.
+    """
+    rota = _copia_a_mano(tmp_path, "r1", "20260914-085900", REMOTO)
+    _copia_a_mano(tmp_path, "r1", "20260914-103000", {**REMOTO, "title": "en medio"})
+    rota.write_text("{roto", encoding="utf-8")
+
+    assert first_backup_of_day(tmp_path, "r1", date(2026, 9, 14)) is None
+
+
+def test_deshacer_lo_de_hoy_devuelve_la_rutina_anterior(tmp_path):
+    """El camino completo, contra el contrato real del PUT.
+
+    `restore` limpia el cuerpo antes de mandarlo -una copia trae `index` y
+    `title` por ejercicio, y eso es un 400- y esa limpieza estuvo rota desde el
+    primer día porque sus tests usaban un doble que aceptaba cualquier cuerpo.
+    Aquí se mira lo que se manda, no solo que se mande.
+    """
+    antes = {**REMOTO, "title": "lo de la semana pasada"}
+    _copia_a_mano(tmp_path, "r1", "20260914-085900", antes)
+    _copia_a_mano(tmp_path, "r1", "20260914-103000", {**REMOTO, "title": "Día 1"})
+
+    c, doble = cliente(tmp_path, [FakeResponse(200, {"routine": antes})])
+    r = c.revert_to_day_start("r1", date(2026, 9, 14))
+
+    assert r.written is True
+    assert "revertida al estado de" in r.reason
+    ultima = doble.llamadas[-1]
+    assert (ultima["verb"], ultima["url"]) == ("put", "/v1/routines/r1")
+    enviado = ultima["json"]["routine"]
+    assert enviado["title"] == "lo de la semana pasada"
+    for ej in enviado.get("exercises") or []:
+        assert "index" not in ej and "title" not in ej, (
+            f"se manda un campo que Hevy no acepta en un PUT: {ej}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -63,7 +63,11 @@ class DailyResult:
 
     day: date
     decision: Any
-    hevy_status: str = "skipped"  # ok | error | skipped | dry_run | read_only
+    # ok | error | skipped | dry_run | read_only | reverted | stale
+    # Los dos últimos son del check-in tardío: `reverted` = se deshizo lo que
+    # había escrito una decisión anulada; `stale` = había que deshacerlo y no se
+    # pudo, así que en Hevy hay una rutina que hoy no toca.
+    hevy_status: str = "skipped"
     hevy_reason: str = ""
     telegram_status: str = "skipped"  # sent | error | skipped | dry_run
     telegram_reason: str = ""
@@ -319,8 +323,7 @@ def _escribir_hevy(
 
     s = decision.session
     if not (s.write_to_hevy and s.routine_key and s.hevy_routine_id):
-        res.hevy_status = "skipped"
-        res.hevy_reason = "hoy la sesión no toca Hevy"
+        _deshacer_lo_de_hoy(session, cfg, decision, fila, res, client, dry_run)
         return
 
     payload = build_routine_payload(s, cfg)
@@ -390,18 +393,175 @@ def _escribir_hevy(
     _anotar_hevy(session, decision, fila, res, payload)
 
 
-def _anotar_hevy(
-    session: Session, decision: Any, fila: Any, res: DailyResult, payload: dict
+def _escritura_viva_de_hoy(session: Session, day: date) -> Any | None:
+    """La última escritura del día que SÍ llegó a Hevy, si la hay.
+
+    SOLO CUENTA `ok`, y la lista de lo que no cuenta importa tanto como la de lo
+    que sí. `dry_run` no tocó nada. `read_only` tampoco -el interruptor la paró
+    antes del PUT-. `skipped` no lo intentó. Y `error` es el caso incómodo:
+    puede que llegara a medias, pero no se sabe, y deshacer a ciegas una
+    escritura que quizá no ocurrió cambiaría la rutina por una TERCERA cosa. Ese
+    caso ya tiene su propio aviso -la marca de escritura a medias que
+    `/api/health` publica como `pending_write`-, y es mejor sitio para él que
+    una reversión adivinada.
+
+    Se mira la más reciente porque es la que describe lo que hay ahora en Hevy.
+    Cuál fue la primera es otra pregunta, y la contesta la copia de seguridad.
+    """
+    return session.scalars(
+        select(HevyWrite)
+        .where(HevyWrite.date == day, HevyWrite.status == "ok")
+        .order_by(HevyWrite.id.desc())
+        .limit(1)
+    ).first()
+
+
+def _titulo_de(cfg: Any, routine_key: str | None) -> str:
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    entrada = ((raw.get("routines") or {}).get(routine_key or "") or {})
+    return str(entrada.get("title") or routine_key or "una rutina")
+
+
+def _deshacer_lo_de_hoy(
+    session: Session,
+    cfg: Any,
+    decision: Any,
+    fila: Any,
+    res: DailyResult,
+    client: Any,
+    dry_run: bool,
 ) -> None:
+    """Hoy la sesión no toca Hevy. Si algo se escribió antes, se deshace.
+
+    EL SALTO ERA LEGÍTIMO MIRADO SOLO Y FALSO MIRADO EN SECUENCIA
+    ------------------------------------------------------------
+    Aquí se ponía `skipped` con el motivo «hoy la sesión no toca Hevy» y se
+    volvía. Visto aisladamente es verdad: una sesión de recuperación o un día de
+    descanso no tienen rutina que escribir. Visto como secuencia es mentira, y
+    la secuencia ocurre:
+
+        09:00  no ha llegado el check-in. El trabajo de respaldo decide con
+               Garmin, sale verde y ESCRIBE `Día 1` en Hevy.
+        10:30  llega el check-in. Sale rojo. La sesión de hoy es recuperación,
+               que no toca Hevy. Se salta.
+
+    Resultado: un Telegram que dice «Recuperación» y una app que enseña el
+    `Día 1` entero. Nada avisaba de la discrepancia, y con una hernia L4-L5 el
+    error va en la única dirección que no se puede permitir: el día que el
+    sistema ha decidido que no se entrene fuerte es el día que la app tiene
+    puesta la sesión fuerte.
+
+    Lo que queda en Hevy tiene que corresponder a la ÚLTIMA decisión, no a la
+    primera. Como la última no escribe nada, la única forma de cumplirlo es
+    devolver la rutina a como estaba antes de la primera escritura de hoy. Eso
+    deja el día idéntico a como habría quedado si el respaldo no hubiera
+    corrido, que es exactamente lo que se quiere: el respaldo no puede empeorar
+    un día por haber actuado.
+
+    Y se registra como escritura. Una reversión es un toque a Hevy como
+    cualquier otro, y si no dejara fila el histórico diría que hoy se puso
+    `Día 1` y ahí se acabó la historia.
+    """
+    previa = _escritura_viva_de_hoy(session, decision.day)
+    if previa is None or not previa.hevy_routine_id:
+        # El salto de verdad: hoy no se ha escrito nada, así que no hay nada que
+        # deshacer. Este es el único que se calla, y ahora se calla por haber
+        # comprobado que puede, no por no haber mirado.
+        res.hevy_status = "skipped"
+        res.hevy_reason = "hoy la sesión no toca Hevy"
+        return
+
+    puesta = _titulo_de(cfg, previa.routine_key)
+    hoy = decision.session.title or "otra cosa"
+    rid = previa.hevy_routine_id
+
+    # La frase que hay que poder leer en el móvil y saber qué hacer. Se arma
+    # aquí una sola vez porque la usan los tres caminos de abajo, y decir lo
+    # mismo de tres formas distintas es como se acaba diciendo tres cosas.
+    situacion = (
+        f"esta mañana se escribió «{puesta}» en Hevy con una decisión que ya no "
+        f"vale, y hoy toca «{hoy}»"
+    )
+
+    if dry_run:
+        res.hevy_status = "dry_run"
+        res.hevy_reason = f"ensayo: {situacion}. Se habría deshecho"
+        _anotar_hevy(session, decision, fila, res, None,
+                     routine_key=previa.routine_key, hevy_routine_id=rid)
+        return
+
+    # Sin cliente no se puede deshacer, y eso NO es un salto. Es el caso peor
+    # con el añadido de que el sistema lo sabe y no puede arreglarlo.
+    if client is None or not hasattr(client, "revert_to_day_start"):
+        res.hevy_status = "stale"
+        res.hevy_reason = (
+            f"{situacion}. No se ha podido deshacer porque no hay cliente de "
+            f"Hevy. Abre Hevy y NO hagas «{puesta}»"
+        )
+        res.problemas.append(f"Hevy: {res.hevy_reason}")
+        _anotar_hevy(session, decision, fila, res, None,
+                     routine_key=previa.routine_key, hevy_routine_id=rid)
+        return
+
+    try:
+        r = client.revert_to_day_start(rid, decision.day)
+    except Exception as exc:  # noqa: BLE001
+        # Casi siempre: no hay copia del día, o la copia no se puede leer. Da
+        # igual cuál: el hecho que el usuario necesita es el mismo, y lo que
+        # tiene que hacer también.
+        res.hevy_status = "stale"
+        res.hevy_reason = (
+            f"{situacion}. No se ha podido deshacer ({exc}). Abre Hevy y NO "
+            f"hagas «{puesta}»: hoy toca «{hoy}»"
+        )
+        res.problemas.append(f"Hevy: {res.hevy_reason}")
+        log.exception("fallo deshaciendo la escritura de %s", decision.day)
+        _anotar_hevy(session, decision, fila, res, None,
+                     routine_key=previa.routine_key, hevy_routine_id=rid)
+        return
+
+    res.hevy_status = "reverted"
+    res.hevy_reason = (
+        f"{situacion}, así que Hevy se ha devuelto a como estaba antes "
+        f"({r.reason})"
+    )
+    _anotar_hevy(session, decision, fila, res,
+                 (r.backup.payload if r.backup else None),
+                 routine_key=previa.routine_key, hevy_routine_id=rid)
+
+
+def _anotar_hevy(
+    session: Session,
+    decision: Any,
+    fila: Any,
+    res: DailyResult,
+    payload: dict | None,
+    *,
+    routine_key: str | None = None,
+    hevy_routine_id: str | None = None,
+) -> None:
+    """Una fila por toque a Hevy, incluido el toque que deshace otro.
+
+    `routine_key` y `hevy_routine_id` se pueden forzar porque una reversión NO
+    habla de la sesión de hoy: habla de la rutina que se escribió esta mañana,
+    que es otra. Sacarlos de `decision.session` como hace el camino normal
+    dejaría la fila diciendo que se revirtió «Recuperación» -que no se tocó
+    nunca- en vez de `Día 1`.
+    """
     session.add(
         HevyWrite(
             decision_id=getattr(fila, "id", None),
             date=decision.day,
-            routine_key=decision.session.routine_key,
-            hevy_routine_id=decision.session.hevy_routine_id,
+            routine_key=(routine_key if routine_key is not None
+                         else decision.session.routine_key),
+            hevy_routine_id=(hevy_routine_id if hevy_routine_id is not None
+                             else decision.session.hevy_routine_id),
             status=res.hevy_status,
-            error=res.hevy_reason if res.hevy_status == "error" else None,
-            payload_json=repo._json(payload),
+            error=res.hevy_reason if res.hevy_status in ("error", "stale") else None,
+            # El motivo va SIEMPRE, no solo cuando algo falla. Es lo que hace
+            # que la secuencia del día se pueda leer entera meses después.
+            reason=res.hevy_reason or None,
+            payload_json=repo._json(payload) if payload is not None else None,
         )
     )
 
@@ -424,7 +584,24 @@ def _mandar_telegram(
     # mismo: en Hevy hay otra cosa. Que la causa sea una avería ("error") o el
     # interruptor de solo lectura ("read_only") cambia qué hacer después, y eso
     # lo cuenta `hevy_reason`, que va en la segunda línea.
-    if res.hevy_status in ("error", "read_only"):
+    if res.hevy_status == "stale":
+        # El peor de los estados y el que menos se parece a los demás: aquí NO
+        # falta nada en Hevy, sobra. Hay una rutina puesta que el sistema ya ha
+        # decidido que hoy no toca, y el aviso de abajo -«tendrás que montarlo a
+        # mano»- diría justo lo contrario de lo que hay que hacer.
+        texto = (
+            "⚠️ <b>En Hevy ha quedado una rutina que hoy NO toca</b>\n"
+            f"{escapar_html(res.hevy_reason)}\n\n"
+        ) + texto
+    elif res.hevy_status == "reverted":
+        # Salió bien, y aun así se cuenta. Que la rutina de Hevy cambie sola
+        # entre las nueve y las once es de las cosas que hay que enterarse de
+        # que han pasado, no descubrir abriendo la app.
+        texto = (
+            "↩️ <b>Hevy se ha devuelto a como estaba</b>\n"
+            f"{escapar_html(res.hevy_reason)}\n\n"
+        ) + texto
+    elif res.hevy_status in ("error", "read_only"):
         # `hevy_reason` es `str(excepción)` cuando el estado es "error", o sea
         # texto que viene de httpx o de la respuesta de Hevy, o sea texto con
         # ángulos dentro más a menudo de lo que parece. Sin escapar, Telegram

@@ -24,7 +24,7 @@
 /* La versión sube cada vez que cambia el armazón. Si no subiera, `activate` no
  * borraría nada -el nombre del caché sería el mismo- y un móvil con la versión
  * vieja abierta se quedaría con el `metricas.js` de antes contra una API nueva. */
-const VERSION = "v4";
+const VERSION = "v5";
 const CACHE = `armazon-${VERSION}`;
 
 /* TODO el armazón, no "lo principal".

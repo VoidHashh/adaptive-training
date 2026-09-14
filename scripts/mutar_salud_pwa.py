@@ -90,6 +90,84 @@ MUTACIONES = [
         "    except ZeroDivisionError as e:  # ya no atrapa lo que pasa de verdad",
         "zona_mal_escrita",
     ),
+    # -----------------------------------------------------------------------
+    # La rutina huérfana: lo que quedó en Hevy de una decisión anulada.
+    # -----------------------------------------------------------------------
+    (
+        "K. se mira cualquier día y la huérfana de ayer avisa hoy",
+        "app/api.py",
+        "            .where(HevyWrite.date == hoy)\n",
+        "\n",
+        "huerfana",
+    ),
+    (
+        "L. se mira la PRIMERA escritura del día en vez de la última",
+        "app/api.py",
+        ".order_by(HevyWrite.id.desc())",
+        ".order_by(HevyWrite.id.asc())",
+        "huerfana",
+    ),
+    (
+        "M. cualquier escritura del día cuenta como huérfana",
+        "app/api.py",
+        'if fila is None or fila.status != "stale":',
+        "if fila is None:",
+        "huerfana",
+    ),
+    (
+        "N. una fila `stale` anterior a la columna `reason` se calla",
+        "app/api.py",
+        'return (fila.reason or\n            "en Hevy quedó una rutina de una decisión anulada y no se ha "\n            "podido deshacer"), None',
+        "return fila.reason, None",
+        "huerfana",
+    ),
+    (
+        "O. no poder mirar la huérfana se traga y sale como que no la hay",
+        "app/api.py",
+        'return None, f"no se ha podido mirar si hoy quedó una rutina huérfana: {e}"',
+        "return None, None",
+        "huerfana",
+    ),
+    (
+        "P. la huérfana se calcula y no llega al veredicto",
+        "app/api.py",
+        '    if esc.get("stale_write"):',
+        "    if False:",
+        "huerfana or pantalla_avisa",
+    ),
+    (
+        "Q. no haber podido mirarla no llega al veredicto",
+        "app/api.py",
+        '    if esc.get("stale_error"):',
+        "    if False:",
+        "huerfana or pantalla_avisa",
+    ),
+    (
+        "R. la marca de escritura ilegible no llega al veredicto",
+        "app/api.py",
+        '    if esc.get("pending_error"):',
+        "    if False:",
+        "marca_de_escritura or pantalla_avisa",
+    ),
+    # Estas dos dejan el bloque del aviso ESCRITO y le matan la condición. Es
+    # la forma que tiene este proyecto de comprobar que el cruce por texto de
+    # `test_la_pantalla_avisa_de_todo...` no se conforma con que la palabra
+    # aparezca en el fichero: las dos sobrevivieron a la batería entera hasta
+    # que se añadió el arnés de Node que PINTA los avisos de verdad.
+    (
+        "S. el aviso de la huérfana está escrito y su condición es imposible",
+        "static/app.js",
+        "if (esc.stale_write) {",
+        "if (false) {",
+        "pantalla_pinta",
+    ),
+    (
+        "T. el aviso de la marca ilegible está escrito y no se pinta nunca",
+        "static/app.js",
+        "if (esc.pending_error) {",
+        "if (false) {",
+        "pantalla_pinta",
+    ),
 ]
 
 
@@ -102,11 +180,24 @@ def sustituir(texto: str, aguja: str, nuevo: str) -> str | None:
 
 
 def pytest(patron: str) -> tuple[bool, str]:
+    """Los dos ficheros, porque los guardianes viven repartidos.
+
+    Empezó mirando sólo `test_api.py`, que es donde están los tests del
+    endpoint. Los que cruzan el servidor con la pantalla -el que exige que cada
+    problema tenga su aviso, y el que ejecuta el JavaScript en Node para
+    comprobar que el aviso SE PINTA- están en `test_pwa.py`, y sin ellos las
+    mutaciones de `static/app.js` no tenían quien las matara.
+    """
     r = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/test_api.py", "-k", patron, "-q",
-         "--no-header", "-p", "no:cacheprovider"],
+        [sys.executable, "-m", "pytest", "tests/test_api.py", "tests/test_pwa.py",
+         "-k", patron, "-q", "--no-header", "-p", "no:cacheprovider"],
         cwd=RAIZ, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
+    # Un patrón que no selecciona NINGÚN test sale con código 5 y no con 0, o
+    # sea que no se confunde con "los tests pasaron". Aun así se dice, porque
+    # una mutación sin tests que la miren no es una mutación muerta.
+    if "no tests ran" in (r.stdout or ""):
+        return True, (r.stdout or "") + "\n  (el patrón no selecciona ningún test)"
     return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
 
 

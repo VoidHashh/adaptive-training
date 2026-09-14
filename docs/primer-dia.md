@@ -75,6 +75,9 @@ Lo que hay que leer en esa respuesta, y qué significa cada cosa:
 | `writes.hevy_write_enabled` | `true` | el config no ha entrado: Hevy no se escribirá |
 | `writes.telegram_send_enabled` | `true` | escribiría en Hevy sin avisar por Telegram → §2.3 |
 | `writes.pending_write` | `null` | hay una rutina en estado desconocido → §3 |
+| `writes.pending_error` | `null` | no se ha podido **mirar** si la hay, que no es lo mismo |
+| `writes.stale_write` | `null` | en Hevy hay ahora mismo una sesión que hoy **no** toca → abajo |
+| `writes.stale_error` | `null` | no se ha podido mirar si la hay |
 | `secrets_missing` | `[]` | arranca igual y luego no hace su trabajo |
 | `scheduler.running` | `true` con **4** trabajos | sirve la PWA, contesta `ok` y no decide nunca |
 | `clock.matches` | `true` | un check-in de madrugada se guarda con la fecha de ayer |
@@ -156,6 +159,31 @@ Se escribe **una vez por decisión, no una vez por día**. Volver a enviar el
 formulario del check-in decide otra vez y escribe otra vez (con su copia nueva).
 No hay nada que lo impida, y normalmente no importa: se escribe lo mismo. Importa
 si las respuestas cambian, porque entonces la rutina cambia también.
+
+**Y si la decisión nueva no escribe, se deshace la vieja.** La secuencia es
+ésta: a las 09:00 no ha llegado el check-in, el trabajo de respaldo decide con
+Garmin, sale verde y escribe el `Día 1`; a las 10:30 llega el check-in, sale
+rojo, y la sesión de hoy es recuperación, que no toca Hevy. Antes eso se
+saltaba -«hoy la sesión no toca Hevy»- y el día terminaba con un Telegram
+diciendo *Recuperación* y la app con el `Día 1` entero puesto. Ahora la rutina
+se devuelve a como estaba **antes de la primera escritura del día**, y el día
+queda idéntico a como habría quedado si el respaldo no hubiera corrido.
+
+Las dos cosas se anotan en `hevy_writes`, así que un día puede tener varias
+filas y **el orden es el dato**. Se ven con `app.rutina ver` (§ más abajo):
+
+| `status` | Qué pasó |
+|---|---|
+| `reverted` | se deshizo lo que se había escrito antes hoy |
+| `stale` | había que deshacerlo y **no se pudo** |
+
+`stale` es el único que deja trabajo pendiente para una persona, y por eso sale
+por tres sitios: la primera línea del Telegram, `writes.stale_write` en
+`/api/health`, y un aviso rojo en la pantalla del móvil. El texto es el mismo en
+los tres y está redactado para poder actuar, no sólo para enterarse: *«en Hevy
+ha quedado el Día 1 de una decisión anulada; abre Hevy y NO lo hagas: hoy toca
+Recuperación»*. El aviso se apaga solo al día siguiente, cuando el trabajo de
+las 09:00 vuelve a escribir.
 
 ### 2.2 Lee de Hevy
 
@@ -346,9 +374,17 @@ docker compose -f docker-compose.yml -f docker-compose.pruebas-lan.yml \
 ```
 
 Enseña las últimas escrituras con su estado (`ok`, `error`, `read_only`,
-`dry_run`) y el error si lo hubo —los intentos fallidos también se registran—, y
-debajo el **diff entre la copia previa y lo que se escribió**: qué ejercicio
-cambió, qué series, qué kilos.
+`dry_run`, `reverted`, `stale`) y el motivo de cada una —los intentos fallidos
+también se registran—, y debajo el **diff entre la copia previa y lo que se
+escribió**: qué ejercicio cambió, qué series, qué kilos.
+
+Los dos últimos estados son del **check-in tardío**. Si el trabajo de respaldo
+de las 09:00 escribió una rutina y luego el formulario cambia la decisión a un
+día que no toca Hevy, la escritura de la mañana se deshace: eso es `reverted`, y
+el día queda con dos filas —la que puso la rutina y la que la quitó— para que la
+secuencia se pueda reconstruir. `stale` es cuando había que deshacerla y no se
+pudo: en Hevy ha quedado una sesión que hoy no toca, y el Telegram de ese día lo
+dice arriba del todo con el nombre de las dos rutinas.
 
 **El texto exacto del Telegram que se envió:**
 

@@ -233,7 +233,11 @@ class CheckinIn(BaseModel):
 
 
 @app.get("/api/health")
-def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
+def health(
+    request: Request,
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
     """Sirve para el healthcheck de Docker y para ver qué falta.
 
     Devuelve `secrets_missing` en vez de esconderlo: un sistema arrancado a
@@ -268,7 +272,7 @@ def health(request: Request, cfg=Depends(get_config)) -> dict[str, Any]:
         # repartidos entre el `.env` y el YAML, y para saber si el sistema iba a
         # tocar algo hacia fuera había que abrir dos ficheros y acordarse de que
         # el que manda es el que se cargó al arrancar, no el que está en disco.
-        "writes": _estado_escrituras(cfg),
+        "writes": _estado_escrituras(cfg, s),
         # Sin esto, una aplicación sin planificador es indistinguible de una
         # sana: sirve la PWA, contesta 200, y no decide nunca. Se dice cuántos
         # trabajos hay y cuándo toca cada uno, porque "arrancado" tampoco basta:
@@ -351,11 +355,31 @@ def _problemas_de_salud(s: dict[str, Any]) -> list[str]:
         # Una escritura marcada y sin cerrar significa que se empezó a tocar
         # Hevy y no consta que terminara. Hay una copia previa esperando.
         p.append(f"hay una escritura a medias sin cerrar: {esc['pending_write']}")
+    if esc.get("pending_error"):
+        # Estaba calculándose y no lo leía nadie. `_estado_escrituras` se toma
+        # la molestia de distinguir «no hay marca» de «no se ha podido mirar si
+        # la hay», y luego esa distinción se perdía aquí: las dos salían como
+        # un healthcheck en verde. No saber es un problema, no una ausencia.
+        p.append(esc["pending_error"])
+    if esc.get("stale_write"):
+        # El check-in tardío que no se pudo deshacer. En Hevy hay AHORA MISMO
+        # una sesión que el sistema ya ha decidido que hoy no toca, y el único
+        # que puede arreglarlo es quien abra la app. Sale también por Telegram,
+        # pero un mensaje se lee una vez y a las nueve de la mañana; la pantalla
+        # se mira justo antes de entrenar, que es cuando importa.
+        #
+        # Se apaga solo al día siguiente, porque se pregunta por HOY. Un aviso
+        # que no se pueda cerrar nunca acaba siendo un aviso que no se lee.
+        p.append(esc["stale_write"])
+    if esc.get("stale_error"):
+        # Mismo motivo que `pending_error`: no haber podido mirar no es haber
+        # mirado y no haber encontrado nada.
+        p.append(esc["stale_error"])
 
     return p
 
 
-def _estado_escrituras(cfg) -> dict[str, Any]:
+def _estado_escrituras(cfg, s: Session) -> dict[str, Any]:
     """Qué puede tocar el sistema hacia fuera, y si hay algo a medias.
 
     LA MARCA PENDIENTE. `hevy.write_routine` escribe un fichero justo antes del
@@ -370,6 +394,13 @@ def _estado_escrituras(cfg) -> dict[str, Any]:
     que haya pasado algo. Si aparece `pending`, el sistema NO está sano aunque
     conteste 200, y por eso el `status` de arriba se queda en "ok" pero este
     bloque lo dice con todas las letras.
+
+    LA RUTINA HUÉRFANA (`stale_write`). El otro estado que hay que ver desde el
+    móvil sin haber pasado nada. Cuando el check-in tardío anula lo que el
+    respaldo de las 09:00 escribió y la reversión NO se puede hacer, en Hevy se
+    queda AHORA MISMO una sesión que el sistema ya ha decidido que hoy no toca.
+    Sale por Telegram, sí, pero un mensaje se lee una vez y a las nueve de la
+    mañana; la pantalla se mira justo antes de entrenar, que es cuando importa.
     """
     from app.integrations.hevy import read_pending
 
@@ -377,26 +408,81 @@ def _estado_escrituras(cfg) -> dict[str, Any]:
     hevy_cfg = ((raw.get("integrations") or {}).get("hevy") or {})
     tg_cfg = ((raw.get("integrations") or {}).get("telegram") or {})
 
+    salida: dict[str, Any] = {
+        "hevy_write_enabled": bool(hevy_cfg.get("write_enabled")),
+        "telegram_send_enabled": bool(tg_cfg.get("send_enabled")),
+        "pending_write": None,
+        "pending_error": None,
+        "stale_write": None,
+        "stale_error": None,
+    }
+
     try:
-        pendiente = read_pending(_raiz_de_datos())
+        # `None` cuando no hay nada a medias. Cuando lo hay, sale el contenido
+        # entero de la marca: rutina, fecha y hora del intento.
+        salida["pending_write"] = read_pending(_raiz_de_datos())
     except Exception as e:  # noqa: BLE001 - el healthcheck no puede caerse
         # Que no se pueda leer la marca es en sí mismo un dato: significa que no
         # se sabe si hay una escritura a medias. Se dice, en vez de contestar
         # que no hay ninguna, que es lo que haría un `except` silencioso.
-        return {
-            "hevy_write_enabled": bool(hevy_cfg.get("write_enabled")),
-            "telegram_send_enabled": bool(tg_cfg.get("send_enabled")),
-            "pending_write": None,
-            "pending_error": f"no se ha podido leer la marca de escritura: {e}",
-        }
+        salida["pending_error"] = f"no se ha podido leer la marca de escritura: {e}"
 
-    return {
-        "hevy_write_enabled": bool(hevy_cfg.get("write_enabled")),
-        "telegram_send_enabled": bool(tg_cfg.get("send_enabled")),
-        # `None` cuando no hay nada a medias. Cuando lo hay, sale el contenido
-        # entero de la marca: rutina, fecha y hora del intento.
-        "pending_write": pendiente,
-    }
+    salida["stale_write"], salida["stale_error"] = _rutina_huerfana(cfg, s)
+    return salida
+
+
+def _rutina_huerfana(cfg, s: Session) -> tuple[str | None, str | None]:
+    """La frase que hay que leer si hoy quedó en Hevy algo que no toca.
+
+    SE PREGUNTA POR HOY, Y SE APAGA SOLO MAÑANA. La fila `stale` de ayer ya no
+    describe el estado de la app: mañana el trabajo de las 09:00 vuelve a
+    escribir y lo que hubiera se pisa. Un aviso que no se pueda cerrar nunca
+    acaba siendo un aviso que no se lee, así que éste se cierra solo.
+
+    MANDA LA ÚLTIMA FILA DEL DÍA, NO LA PRIMERA QUE SEA `stale`. Un día puede
+    tener varias escrituras y el orden es el dato: si a las 10:30 la reversión
+    falló (`stale`) y a las 13:00 un segundo check-in salió verde y reescribió
+    (`ok`), en Hevy hay lo correcto y avisar sería mentir. Por eso se mira la
+    última y se compara su estado, en vez de buscar un `stale` cualquiera.
+
+    EL FALLO NO SE TRAGA, SE CUENTA. Un `except` que devolviera `(None, None)`
+    diría «no hay ninguna rutina huérfana» cuando lo que ha pasado es que no se
+    ha podido mirar, y las dos cosas se verían igual desde el móvil: un
+    healthcheck en verde. Por eso hay `stale_error`, y por eso sale en
+    `problemas` como cualquier otro.
+
+    Y SE DESHACE LA TRANSACCIÓN antes de volver. La sesión viene de
+    `session_scope`, que hace `commit()` al salir; si aquí se deja marcada por
+    un error y se sigue como si nada, el `commit()` de la salida revienta
+    DESPUÉS de haber construido la respuesta, fuera de este `try` y donde ya no
+    hay quien lo cuente.
+    """
+    from app.models import HevyWrite
+
+    try:
+        hoy = datetime.now(ZoneInfo(cfg.timezone)).date()
+        fila = s.scalars(
+            select(HevyWrite)
+            .where(HevyWrite.date == hoy)
+            .order_by(HevyWrite.id.desc())
+            .limit(1)
+        ).first()
+    except Exception as e:  # noqa: BLE001 - el healthcheck no puede caerse
+        try:
+            s.rollback()
+        except Exception:  # noqa: BLE001 - si ni eso, tampoco hay nada que hacer
+            pass
+        return None, f"no se ha podido mirar si hoy quedó una rutina huérfana: {e}"
+
+    if fila is None or fila.status != "stale":
+        return None, None
+    # El motivo se guardó ya redactado para que sirva para actuar -«Abre Hevy y
+    # NO hagas X: hoy toca Y»- y lleva los títulos reales de las dos rutinas. No
+    # se reescribe aquí: si esta pantalla dijera una cosa y Telegram otra sobre
+    # el mismo día, habría dos verdades sobre el mismo hecho y ninguna de fiar.
+    return (fila.reason or
+            "en Hevy quedó una rutina de una decisión anulada y no se ha "
+            "podido deshacer"), None
 
 
 def _raiz_de_datos() -> Path:
