@@ -1,4 +1,4 @@
-"""Recomendación de bici para el fin de semana.
+"""Recomendación de bici, todos los días.
 
 QUIÉN DECIDE, Y POR QUÉ ESTE FICHERO SOLO TIENE UN RECORTE
 ----------------------------------------------------------
@@ -16,8 +16,22 @@ el semáforo da ámbar o rojo por ahí, que es el camino honesto. Frenar porque
 una cuenta diga que se ha gastado un cupo no lo es: es la cuenta decidiendo en
 lugar del cuerpo.
 
-  1. `baseline_by_weekday`   punto de partida (sábado intensa, domingo media)
+  1. `baseline_from_gaps`    punto de partida, contra el propio histórico
   2. techo del semáforo      `actions.<luz>.bike_max`   <- EL ÚNICO RECORTE
+
+FUERA EL CALENDARIO: NI DÍAS ASIGNADOS NI PUNTO DE PARTIDA POR DÍA DE LA SEMANA
+-------------------------------------------------------------------------------
+Aquí había dos claves de calendario, `recommend_on: [saturday, sunday]` y
+`baseline_by_weekday: {saturday: intensa, sunday: media}`. La primera hacía que
+el sistema no dijese absolutamente nada de lunes a viernes, y la segunda daba
+por hecho lo que tocaba según el día del mes en que cayera. Medido sobre las 80
+salidas reales del último año de Garmin: el sistema calló en 30 de ellas (38%),
+seis de las cuales fueron intensas. Los miércoles: siete salidas, cero consejos.
+
+Ahora el punto de partida sale de comparar los días transcurridos desde la
+última salida intensa contra los percentiles de los huecos entre intensas del
+propio histórico. Los detalles y los números medidos están en `_baseline_gaps`,
+que es donde se calculan, y el razonamiento largo en `config.yaml`.
 
 LO QUE ANTES RECORTABA Y AHORA SOLO SE CUENTA
 ----------------------------------------------
@@ -63,8 +77,8 @@ from typing import Any
 
 from app.engine.signals import (
     ClassifiedRide,
-    IntensityCount,
     Signals,
+    percentile,
     previous_weekday,
 )
 
@@ -90,11 +104,31 @@ class BikeRecommendation:
     notas: list[str] = field(default_factory=list)
     applies: bool = True
     skip_reason: str | None = None
+    # De dónde salió `baseline`: los días desde la última intensa y las dos
+    # bandas contra las que se comparó. Se guarda porque el punto de partida ya
+    # NO es una constante escrita en el YAML que se pueda ir a mirar: es un
+    # cálculo contra el histórico que cambia cada día, y sin esto no hay manera
+    # de reconstruir después por qué el sistema dijo lo que dijo.
+    baseline_why: str | None = None
+    # `applies=False` tiene dos sabores muy distintos y confundirlos es lo que
+    # hacía el calendario viejo: "hoy es miércoles y aquí no se habla" era un no
+    # evento, así que no se decía nada y estaba bien. Ahora el único motivo
+    # posible de saltarse la bici -aparte de apagarla en el config- es que NO SE
+    # HAYA PODIDO calcular el punto de partida, y eso sí hay que decirlo: es el
+    # sistema reconociendo que hoy no tiene base para aconsejar, no el sistema
+    # callando porque no toca. Un fallo que no se ve es el fallo peligroso.
+    skip_visible: bool = False
+
+    @property
+    def se_muestra(self) -> bool:
+        """Si este bloque ocupa sitio en el mensaje, con nivel o con excusa."""
+        return self.applies or self.skip_visible
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "applies": self.applies,
             "skip_reason": self.skip_reason,
+            "skip_visible": self.skip_visible,
             "day": self.day_name,
             "level": self.level,
             "label": self.label,
@@ -102,6 +136,7 @@ class BikeRecommendation:
             "duration_min": self.duration_min,
             "duration_max": self.duration_max,
             "baseline": self.baseline,
+            "baseline_why": self.baseline_why,
             "downgrades": [
                 {"from": a, "to": b, "why": why} for a, b, why in self.downgrades
             ],
@@ -111,6 +146,11 @@ class BikeRecommendation:
     def text(self) -> str:
         """Línea para el mensaje de Telegram."""
         if not self.applies:
+            if self.skip_visible:
+                return (
+                    f"Bici: hoy no hay punto de partida ({self.skip_reason}). "
+                    f"No se inventa uno; si sales, sal por sensaciones."
+                )
             return ""
         rango = (
             f"{self.duration_min}-{self.duration_max} min"
@@ -151,20 +191,20 @@ def _cap(level: str, ceiling: str, order: list[str]) -> str:
     haber renombrado un nivel en la lista y no aquí-, el techo del semáforo
     dejaba de existir en silencio.
 
-    El día que se notaría es un ROJO. El punto de partida del sábado es
-    'intensa', el techo rojo tendría que bajarlo a 'descanso', y sin techo se
-    sale a hacer la intensa del sábado con el semáforo en rojo. La
-    recomendación además no lo mencionaría: sin recorte no hay `downgrades`,
-    así que el mensaje enseñaría "Bici: intensa" sin una sola pega, que es peor
-    que no decir nada.
+    El día que se notaría es un ROJO. Cuando el punto de partida sale 'intensa'
+    -porque los días desde la última caen en la banda media-, el techo rojo
+    tendría que bajarlo a 'descanso', y sin techo se sale a hacer series con el
+    semáforo en rojo. La recomendación además no lo mencionaría: sin recorte no
+    hay `downgrades`, así que el mensaje enseñaría "Bici: intensa" sin una sola
+    pega, que es peor que no decir nada.
 
     Dicho con precisión, hoy esto NO puede pasar por el camino del YAML:
     `config_loader` ya comprueba que los tres `actions.<luz>.bike_max` y los
-    `baseline_by_weekday` estén en `intensity_order`, y lo hace al arrancar, que
-    es donde mejor duele. (Aquí ponía también `after_intense_downgrade_to`, que
-    era el nivel al que se bajaba tras una intensa; esa clave ya no existe,
-    porque ese recorte se ha convertido en una nota que no toca el nivel. Se
-    deja dicho para que nadie la busque.)
+    tres niveles de `baseline_from_gaps` estén en `intensity_order`, y lo hace
+    al arrancar, que es donde mejor duele. (Aquí ponía también
+    `after_intense_downgrade_to`, que era el nivel al que se bajaba tras una
+    intensa, y `baseline_by_weekday`, el punto de partida por día de la semana;
+    ninguna de las dos existe ya. Se deja dicho para que nadie las busque.)
 
     Esta guarda es la segunda línea: sirve para el día que alguien llame a `_cap`
     con un techo que no venga del config, y sobre todo para que el modo de
@@ -222,15 +262,25 @@ def recommend_bike(
         out.skip_reason = "la recomendación de bici está desactivada en el config"
         return out
 
-    recommend_on = {str(d).lower() for d in (rec.get("recommend_on") or [])}
-    if day_name not in recommend_on:
-        out = build(DESCANSO, DESCANSO, [])
+    # NO HAY PUERTA DE DÍAS. Aquí estaba `recommend_on`, y de lunes a viernes
+    # devolvía `applies=False` sin más. Se ha ido con el calendario: si se sale
+    # un miércoles, se quiere consejo el miércoles.
+
+    # --- 1. punto de partida, contra el propio histórico ---------------------
+    # Las notas se calculan SIEMPRE, incluso si no hay punto de partida. Son
+    # hechos independientes del baseline -lo que se hizo ayer, lo que llevas
+    # esta semana- y perderlos el día que el histórico no llega para calcular
+    # las bandas sería castigar al mensaje por un problema que no es suyo.
+    notas = _notas_de_contexto(rec, signals, cycling)
+
+    baseline, why, motivo_sin_base = _baseline_gaps(rec, signals, order)
+    if baseline is None:
+        out = build(DESCANSO, DESCANSO, [], notas)
         out.applies = False
-        out.skip_reason = f"hoy es {day_name}; solo se recomienda en {sorted(recommend_on)}"
+        out.skip_reason = motivo_sin_base
+        out.skip_visible = True
         return out
 
-    # --- 1. punto de partida ------------------------------------------------
-    baseline = str((rec.get("baseline_by_weekday") or {}).get(day_name, "suave"))
     level = baseline
     downs: list[tuple[str, str, str]] = []
 
@@ -246,12 +296,21 @@ def recommend_bike(
     if capped != level:
         downgrade(capped, f"semáforo en {_light_es(light)}, techo {ceiling}")
 
-    # --- 3. contexto, que se cuenta y no recorta ----------------------------
-    #
-    # Todo lo que sigue son HECHOS. Ninguno toca `level`. Se emiten siempre que
-    # sean ciertos, con el nivel que sea y el semáforo que sea, porque un dato
-    # que solo se enseña cuando además te frena se lee como una justificación
-    # del frenazo y no como información.
+    # --- 3. contexto: ya calculado arriba, y no recorta ---------------------
+    out = build(level, baseline, downs, notas)
+    out.baseline_why = why
+    return out
+
+
+def _notas_de_contexto(
+    rec: dict[str, Any], signals: Signals, cycling: dict[str, Any]
+) -> list[str]:
+    """Hechos que se dicen y no recortan.
+
+    Ninguno toca el nivel. Se emiten siempre que sean ciertos, con el nivel que
+    sea y el semáforo que sea, porque un dato que solo se enseña cuando además
+    te frena se lee como una justificación del frenazo y no como información.
+    """
     notas: list[str] = []
 
     lookback = int(rec.get("lookback_days", 1))
@@ -267,11 +326,185 @@ def recommend_bike(
         cuantas = "1 salida intensa" if hechas == 1 else f"{hechas} salidas intensas"
         notas.append(f"llevas {cuantas} este fin de semana")
 
-    conteo: IntensityCount | None = signals.intense_count
-    if conteo is not None:
-        notas.append(conteo.linea())
+    # AQUÍ ESTABA EL RECUENTO SEMANAL DE INTENSAS, Y SE HA IDO AL MENSAJE.
+    #
+    # Estaba en las notas de la bici desde que dejó de ser un presupuesto, y con
+    # el calendario tenía su lógica: la bici solo hablaba sábado y domingo, así
+    # que el recuento salía aquí el fin de semana y en una línea suelta el resto
+    # de la semana. `message.py` elegía una de las dos para no repetirlo.
+    #
+    # Quitado el calendario, la bici habla todos los días y esa elección dejaba
+    # la línea suelta muerta: el recuento pasaba a salir SIEMPRE por aquí. Y eso
+    # destapó un acoplamiento que no se veía: la nota se fabrica cuando se
+    # construye la recomendación, así que el recuento solo aparecía en el
+    # mensaje si ya estaba en `signals` en ese momento. Calcularlo después
+    # -cualquier ruta que rellene `intense_count` más tarde- lo hacía desaparecer
+    # del mensaje entero, sin error y sin hueco. Un dato que se enseña todos los
+    # días no puede depender de en qué orden se han construido dos objetos.
+    #
+    # Ahora el recuento lo pinta `message.py` en su propia línea, incondicional,
+    # leyendo `signals.intense_count` en el momento de escribir. La distinción
+    # que importaba -que cuenta y no recorta- no se pierde: si acaso se ve
+    # mejor, porque ya ni siquiera vive dentro de la recomendación.
 
-    return build(level, baseline, downs, notas)
+    return notas
+
+
+def _baseline_gaps(
+    rec: dict[str, Any], signals: Signals, order: list[str]
+) -> tuple[str | None, str | None, str | None]:
+    """Punto de partida a partir de los huecos entre salidas INTENSAS propias.
+
+    Devuelve `(nivel, por_qué, motivo_si_no_hay)`. Sigue el patrón de
+    `resolve_adaptive_threshold`: cuando no se puede calcular algo con sentido,
+    se dice por qué y NO se devuelve un valor por defecto. El valor por defecto
+    aquí sería una constante inventada, que es exactamente lo que se acaba de
+    quitar al borrar `baseline_by_weekday`.
+
+    LAS TRES BANDAS, Y POR QUÉ LA TERCERA NO ES MONÓTONA
+    -----------------------------------------------------
+        días < p40          -> suave    (se acaba de hacer una)
+        p40 <= días < p60   -> intensa  (se está en ritmo y toca)
+        días >= p60         -> media    (vuelta de un parón: volumen, no carga)
+
+    La primera versión de esto sí era monótona -cuantos más días, más duro- y se
+    cayó con datos reales: los días desde la última intensa crecen sin tope, así
+    que durante un bloque suave largo el sistema gritaba INTENSA seis semanas
+    seguidas. Habría recomendado intensa en 52 de 88 salidas (59%) contra una
+    tasa real del 26%. Volver de un parón de dos meses pidiendo series es
+    justamente el consejo que no se le puede dar a una espalda con una hernia
+    L4-L5: ahí toca volumen antes que carga, y por eso la banda alta baja a
+    media.
+
+    POR QUÉ p40/p60 Y NO p25/p75: LA MASA NO ES LA ANCHURA
+    -------------------------------------------------------
+    Aquí ponía p25/p75, con el razonamiento de que la banda de en medio es "el
+    50% central de mis huecos, o sea la mitad de las veces". Es falso, y el
+    error es sutil porque confunde dos cosas que suenan igual:
+
+      - la MASA de la distribución de huecos: cuántos huecos caen dentro
+      - el TIEMPO que el contador de días pasa dentro de la banda
+
+    `dias` sube de uno en uno y se queda en cada banda tantos días como ANCHA
+    sea la banda, no tantos como probable sea. Con los huecos reales del usuario
+    -[26, 1, 26, 2, 5, 2, 10, 20, 55, 6, 8] en 180 días- p25 sale 3.5 y p75 sale
+    23: la banda de en medio mide 19 días de ancho y la de abajo 3, así que la
+    banda que dice «intensa» se come el eje del tiempo. Medido: decía intensa el
+    61% de las veces contra una tasa real del 21%, que es PEOR que el 59%
+    contra 26% por el que se tiró la versión monótona.
+
+    Y no lo cazó nadie durante un tiempo, porque los dos bordes de seguridad
+    seguían a cero y la coincidencia no se movía. `scripts/falsear_bici.py`
+    tiene desde entonces una guarda de tasa que habría matado a los dos.
+
+    p40/p60 es simétrico alrededor de la mediana y se puede enunciar sin mirar
+    el resultado: «intensa solo cuando los días desde la última caen en el
+    quinto central de tus propios huecos». Se elige por eso y no por ajustar
+    mejor; el ajuste son 36 salidas, y a esa escala la diferencia entre el 17%
+    y el 22% son dos salidas.
+
+    LO QUE ESTO NO ES, DICHO AQUÍ Y NO SOLO EN EL COMMIT
+    -----------------------------------------------------
+    No es un predictor mejor que decir siempre lo mismo. Medido sobre las 88
+    salidas reales del histórico, acierta el 30% de las veces; la constante
+    'suave' acierta el 38%. Está escrito aquí a propósito, porque el día que
+    alguien quiera defender este bloque con "es que se ajusta a tus datos" tiene
+    que tropezarse con el número. Lo que compra es otra cosa, y son los dos
+    extremos: cero «intensa» al día siguiente de una intensa (el calendario
+    producía 1) y cero «intensa» volviendo de un parón de 30+ días (el
+    calendario producía 5). `scripts/falsear_bici.py` vuelve a medirlo.
+    """
+    spec = rec.get("baseline_from_gaps")
+    if not isinstance(spec, dict):
+        raise BikeConfigError(
+            "falta `cycling.recommendation.baseline_from_gaps`. Sin él no hay "
+            "punto de partida, y no hay ninguno por defecto a propósito: el "
+            "defecto sería una constante inventada, que es lo que se acaba de "
+            "quitar al borrar `baseline_by_weekday`"
+        )
+
+    window = int(spec["window_days"])
+    min_gaps = int(spec["min_gaps"])
+    p_low = float(spec["percentile_low"])
+    p_high = float(spec["percentile_high"])
+    niveles = (
+        str(spec["level_below_low"]),
+        str(spec["level_between"]),
+        str(spec["level_above_high"]),
+    )
+    for nivel in niveles:
+        if nivel not in order:
+            raise BikeConfigError(
+                f"nivel de bici desconocido en baseline_from_gaps: '{nivel}' no "
+                f"está en intensity_order ({order})"
+            )
+
+    hoy = signals.day
+    rides: list[ClassifiedRide] = signals.rides or []
+    # ESTRICTAMENTE ANTERIORES A HOY. La salida de hoy todavía no ha ocurrido
+    # cuando se emite la recomendación por la mañana; contarla haría que el
+    # consejo dependiera de lo que aún no se ha hecho.
+    intensas = sorted({r.date for r in rides if r.level == "intensa" and r.date < hoy})
+    if not intensas:
+        return None, None, (
+            f"no hay ninguna salida intensa registrada antes de hoy en las "
+            f"{len(rides)} salidas leídas de Garmin"
+        )
+
+    desde = hoy - timedelta(days=window)
+    en_ventana = [d for d in intensas if desde <= d]
+    huecos = [(b - a).days for a, b in zip(en_ventana, en_ventana[1:])]
+    if len(huecos) < min_gaps:
+        cuantos = (
+            "ningún hueco" if not huecos
+            else "solo 1 hueco" if len(huecos) == 1
+            else f"solo {len(huecos)} huecos"
+        )
+        return None, None, (
+            f"{cuantos} entre intensas en los últimos {window} "
+            f"días y hacen falta {min_gaps}: con menos, los percentiles serían "
+            f"dos puntos sueltos y no una distribución"
+        )
+
+    lo = percentile(huecos, p_low)
+    hi = percentile(huecos, p_high)
+    if lo is None or hi is None:
+        # Inalcanzable con `huecos` no vacío, pero `percentile` puede devolver
+        # None y tragárselo aquí sería fabricar un baseline con un umbral que no
+        # existe. Si esta rama salta alguna vez, quiero saberlo.
+        raise BikeConfigError(
+            f"los percentiles de los huecos salen None sobre {huecos!r}"
+        )
+
+    # GUARDA CONTRA LA BANDA QUE DESAPARECE. Con huecos todos iguales -por
+    # ejemplo [7, 7, 7, 7]- los dos percentiles valen lo mismo sean los que
+    # sean, y entonces la condición
+    # `lo <= días < hi` no se cumple NUNCA: la banda intermedia, que es la única
+    # que dice "intensa", se evapora y el sistema no vuelve a recomendar una
+    # intensa jamás sin que nada lo indique. Es el mismo modo de fallo que el
+    # umbral degenerado de `resolve_adaptive_threshold`, y se trata igual: sin
+    # bandas utilizables no se da punto de partida.
+    if hi <= lo:
+        return None, None, (
+            f"los percentiles de tus huecos entre intensas salen iguales "
+            f"(p{p_low:g}={lo:.1f}, p{p_high:g}={hi:.1f}): la banda que dice "
+            f"'intensa' no existiría y el sistema no volvería a proponer una"
+        )
+
+    dias = (hoy - intensas[-1]).days
+    if dias < lo:
+        nivel, banda = niveles[0], f"por debajo de p{p_low:g} ({lo:.1f})"
+    elif dias < hi:
+        nivel, banda = niveles[1], f"entre p{p_low:g} ({lo:.1f}) y p{p_high:g} ({hi:.1f})"
+    else:
+        nivel, banda = niveles[2], f"por encima de p{p_high:g} ({hi:.1f})"
+
+    why = (
+        f"{dias} {'día' if dias == 1 else 'días'} desde la última intensa "
+        f"({intensas[-1].isoformat()}), {banda} de tus {len(huecos)} huecos "
+        f"de los últimos {window} días"
+    )
+    return nivel, why, None
 
 
 def _intense_rides_this_weekend(signals: Signals, cycling: dict[str, Any]) -> int:

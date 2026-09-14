@@ -399,12 +399,41 @@ def test_los_umbrales_adaptativos_marcan_el_minimo_de_cache():
     assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(90))[0] == 10, "90 > 60: basta"
 
 
-def test_sin_la_seccion_en_el_yaml_se_usan_los_valores_declarados():
+def test_la_ventana_de_la_bici_tambien_marca_el_minimo_de_cache():
+    """`dias_adaptativos` solo miraba `adaptive_thresholds` mientras esa era la
+    única sección que se calibraba contra el histórico. El punto de partida de
+    la bici es la segunda, y su ventana de huecos entre intensas es más larga
+    que cualquier percentil de carga.
+
+    Lo que hace falta entender de este fallo es que NO daba error. Con la caché
+    quedándose en los 60 días del percentil, `_baseline_gaps` habría encontrado
+    los huecos que caben en 60 días en vez de los de 180, habría sacado unos
+    percentiles más estrechos y habría recomendado con ellos tan tranquilo.
+    Menos datos de los que existen no devuelve un fallo: devuelve otro número.
+    """
+    bici = {**CFG_FETCH,
+            "cycling": {**CFG_FETCH.get("cycling", {}),
+                        "recommendation": {"baseline_from_gaps": {"window_days": 180}}}}
+    assert dias_adaptativos(bici) == 180
+    assert ventana_de_salidas(bici, LUNES, cache_de(120))[0] != 10, (
+        "una caché de 120 días no puede sostener una ventana de 180"
+    )
+
+
+def test_sin_la_seccion_en_el_yaml_se_usan_los_valores_declarados(cfg):
     """Los defectos del código son los mismos números que el YAML trae escritos.
     Un defecto distinto sería otra vez código y config diciendo cosas
-    diferentes, con el agravante de que aquí no se vería."""
-    assert ventana_de_salidas({}, LUNES, cache_de(180)) [0] == 10
-    assert ventana_de_salidas({}, LUNES, None)[0] == 90
+    diferentes, con el agravante de que aquí no se vería.
+
+    Y no se compara contra dos números copiados aquí a mano, porque así es como
+    esto se quedó afirmando `90` mientras el `config.yaml` subía a 210 para
+    poder sostener los 180 días de huecos de la bici: la prueba pasaba, y lo
+    que decía su propio docstring había dejado de ser verdad. Se compara
+    contra el YAML de verdad.
+    """
+    real = cfg.raw["cycling"]["fetch"]
+    assert ventana_de_salidas({}, LUNES, cache_de(180))[0] == real["lookback_days"]
+    assert ventana_de_salidas({}, LUNES, None)[0] == real["backfill_days"]
 
 
 def test_el_borde_del_agujero_esta_en_la_ventana_justa():

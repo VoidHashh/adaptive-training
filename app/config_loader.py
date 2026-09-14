@@ -32,6 +32,13 @@ from app.engine.rules import (
     RuleError,
     resolve_option,
 )
+# La MISMA función que usa el motor por la mañana para decidir cuántos días de
+# salidas hay que tener en caché. Se importa en vez de reimplementar el `max`
+# aquí: dos versiones del mismo criterio en dos ficheros divergen a la primera
+# ventana nueva, y el resultado sería un validador que aprueba una configuración
+# que la caché no puede sostener. Mismo motivo por el que `_option` se valida
+# llamando a `resolve_option` de arriba.
+from app.integrations.activity_cache import dias_adaptativos, ventanas_declaradas
 
 
 def _strip_accents(text: str) -> str:
@@ -770,20 +777,95 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # lee, que es exactamente lo que serían.
 
     rec = data["cycling"].get("recommendation", {})
-    for day, level in rec.get("baseline_by_weekday", {}).items():
-        require(day in WEEKDAYS, f"baseline_by_weekday: '{day}' no es un día válido")
-        require(level in order, f"baseline_by_weekday.{day}: '{level}' no está en intensity_order")
-    # `no_consecutive_intense` y `after_intense_downgrade_to` recortaban la
-    # salida del domingo si el sábado había sido intensa. Se han borrado: eso
-    # es una cuenta, no una señal del cuerpo, y ahora sale como nota. Van a la
-    # lista negra por lo mismo que las del recuento: reescribirlas aquí sería
-    # creer que se recupera un freno que ya no existe.
-    for muerta in ("no_consecutive_intense", "after_intense_downgrade_to"):
+
+    # --- punto de partida: bandas sobre los huecos del propio histórico -----
+    #
+    # Se valida entero y en el arranque porque el motor NO tiene valores por
+    # defecto para nada de esto: `_baseline_gaps` lee las siete claves con
+    # corchetes, a propósito, para que una que falte reviente donde se ve y no
+    # se sustituya por una constante silenciosa. Este bloque es lo que hace que
+    # reviente el lunes a las 6:00 dentro del contenedor en lugar de a las
+    # 6:00:01 en el mensaje de Telegram.
+    gaps = rec.get("baseline_from_gaps")
+    require(
+        isinstance(gaps, dict),
+        "falta cycling.recommendation.baseline_from_gaps. Es el punto de "
+        "partida de la bici y no hay ninguno por defecto: el defecto sería una "
+        "constante inventada, que es justo lo que se quitó al borrar "
+        "baseline_by_weekday.",
+    )
+    for clave in ("window_days", "min_gaps"):
+        valor = gaps.get(clave)
+        require(
+            isinstance(valor, int) and not isinstance(valor, bool) and valor > 0,
+            f"baseline_from_gaps.{clave} tiene que ser un entero positivo, "
+            f"y vale {valor!r}",
+        )
+    # `min_gaps` por debajo de 2 no es un mínimo: con un solo hueco, los dos
+    # percentiles son el mismo número -sean los que sean, que por eso no se
+    # nombran aquí- y la banda de 'intensa' no existe (el motor lo
+    # detecta y se niega a aconsejar, así que el efecto sería un sistema mudo
+    # con aspecto de estar configurado).
+    require(
+        int(gaps["min_gaps"]) >= 2,
+        f"baseline_from_gaps.min_gaps vale {gaps['min_gaps']}: con menos de 2 "
+        f"huecos los percentiles son el mismo punto y la banda intermedia -la "
+        f"única que propone 'intensa'- no puede existir.",
+    )
+    for clave in ("percentile_low", "percentile_high"):
+        valor = gaps.get(clave)
+        require(
+            isinstance(valor, (int, float)) and not isinstance(valor, bool)
+            and 0 <= float(valor) <= 100,
+            f"baseline_from_gaps.{clave} tiene que ser un percentil entre 0 y "
+            f"100, y vale {valor!r}",
+        )
+    require(
+        float(gaps["percentile_low"]) < float(gaps["percentile_high"]),
+        f"baseline_from_gaps: percentile_low ({gaps['percentile_low']}) tiene "
+        f"que ser menor que percentile_high ({gaps['percentile_high']}). Si son "
+        f"iguales o van al revés, la banda intermedia queda vacía y el sistema "
+        f"no vuelve a proponer una salida intensa nunca, sin decirlo.",
+    )
+    for clave in ("level_below_low", "level_between", "level_above_high"):
+        require(
+            gaps.get(clave) in order,
+            f"baseline_from_gaps.{clave}: '{gaps.get(clave)}' no está en "
+            f"intensity_order ({order})",
+        )
+
+    # `recommend_on` y `baseline_by_weekday` eran el calendario fijo aplicado a
+    # la bici: el primero callaba de lunes a viernes -30 de 80 salidas reales
+    # del último año sin una palabra, 6 de ellas intensas- y el segundo daba por
+    # hecho que el sábado toca intensa y el domingo media. `no_consecutive_intense`
+    # y `after_intense_downgrade_to` recortaban la salida del domingo si el
+    # sábado había sido intensa; eso es una cuenta, no una señal del cuerpo, y
+    # ahora sale como nota. Las cuatro van a la lista negra por lo mismo que las
+    # del recuento: reescribir cualquiera de ellas sería creer que se recupera
+    # algo que ya no existe, y no enterarse de que no hace nada.
+    muertas = {
+        "recommend_on": (
+            "la bici ya no tiene días asignados: se aconseja todos los días. "
+            "El punto de partida sale de baseline_from_gaps."
+        ),
+        "baseline_by_weekday": (
+            "el punto de partida ya no depende del día de la semana, sino de "
+            "los días transcurridos desde tu última salida intensa. Ver "
+            "baseline_from_gaps."
+        ),
+        "no_consecutive_intense": (
+            "la salida intensa de ayer ahora se cuenta y se dice, no recorta "
+            "la de hoy. Quien frena por acumulación es el semáforo."
+        ),
+        "after_intense_downgrade_to": (
+            "no hay recorte tras una intensa, así que no hay nivel al que "
+            "bajar. Quien frena por acumulación es el semáforo."
+        ),
+    }
+    for muerta, porque in muertas.items():
         require(
             muerta not in rec,
-            f"cycling.recommendation.{muerta} ya no existe. La salida intensa "
-            f"de ayer ahora se cuenta y se dice, no recorta la de hoy. Quien "
-            f"frena por acumulación es el semáforo.",
+            f"cycling.recommendation.{muerta} ya no existe: {porque}",
         )
 
     # --- clasificación de salidas ------------------------------------------
@@ -874,36 +956,58 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # solo error. La regla no dispara, no falla, y el mensaje de la mañana sale
     # igual de bonito con una señal menos.
     fetch = ((data.get("cycling") or {}).get("fetch") or {})
-    if fetch:
-        for clave in ("lookback_days", "backfill_days"):
-            v = fetch.get(clave)
-            require(
-                v is None or (isinstance(v, int) and v >= 1),
-                f"cycling.fetch.{clave}: '{v}' debe ser un entero >= 1",
-            )
-        corta = fetch.get("lookback_days")
-        larga = fetch.get("backfill_days")
-        if isinstance(corta, int) and isinstance(larga, int):
-            require(
-                corta <= larga,
-                f"cycling.fetch: lookback_days ({corta}) no puede ser mayor que "
-                f"backfill_days ({larga}). La corta es la relectura de cada "
-                f"mañana y la larga el histórico completo; al revés los nombres "
-                f"mienten y el 'backfill' dejaría huecos",
-            )
-        necesarios = max(
-            (int(s.get("window_days", 0)) for s in adaptive.values() if isinstance(s, dict)),
-            default=0,
+    declaradas_son_enteras = True
+    for clave in ("lookback_days", "backfill_days"):
+        v = fetch.get(clave)
+        bien = v is None or (isinstance(v, int) and v >= 1)
+        declaradas_son_enteras = declaradas_son_enteras and bien
+        require(bien, f"cycling.fetch.{clave}: '{v}' debe ser un entero >= 1")
+
+    # AQUÍ HABÍA UN `if fetch:` Y SE SALTABA LA COMPROBACIÓN ENTERA.
+    #
+    # Con la sección declarada no se notaba. Sin ella -borrarla es lo más fácil
+    # del mundo, y aparentemente inocuo porque "ya hay defectos"- el validador
+    # no miraba nada y el código se iba a sus defectos, que es exactamente el
+    # caso en el que más falta hace mirar: nadie ha escrito un número, así que
+    # nadie va a ir a revisarlo cuando la ventana de la bici cambie. Se valida
+    # el valor EFECTIVO, el que `ventana_de_salidas` va a usar, preguntándoselo
+    # a la misma función que se lo da a ella. (Solo si lo declarado es un
+    # entero: con un 'diez' escrito en el YAML el error ya está puesto arriba y
+    # resolver las ventanas reventaría con un `ValueError` que taparía el
+    # mensaje bueno con uno peor.)
+    corta = larga = None
+    if declaradas_son_enteras:
+        corta, larga = ventanas_declaradas(data)
+        require(
+            corta <= larga,
+            f"cycling.fetch: lookback_days ({corta}) no puede ser mayor que "
+            f"backfill_days ({larga}). La corta es la relectura de cada "
+            f"mañana y la larga el histórico completo; al revés los nombres "
+            f"mienten y el 'backfill' dejaría huecos",
         )
-        if isinstance(larga, int) and necesarios:
-            require(
-                larga >= necesarios,
-                f"cycling.fetch.backfill_days ({larga}) es menor que la ventana "
-                f"más larga de adaptive_thresholds ({necesarios} días). La caché "
-                f"de salidas nunca llegaría a cubrirla, así que los percentiles "
-                f"de carga se quedarían sin base y las reglas que los usan no se "
-                f"evaluarían ningún día, sin dar error",
-            )
+
+    # SE PREGUNTA A `dias_adaptativos`, NO SE VUELVE A CALCULAR AQUÍ.
+    #
+    # Esto era un `max(...)` sobre `adaptive_thresholds` escrito a mano, o
+    # sea una segunda copia de lo que decide `activity_cache.dias_adaptativos`.
+    # Dos copias del mismo criterio en dos ficheros aguantan exactamente
+    # hasta que a una se le añade algo: al meter la ventana de 180 días del
+    # punto de partida de la bici en la de `activity_cache`, esta se habría
+    # quedado validando solo los percentiles de carga y habría dado por bueno
+    # un `backfill_days: 90` que no puede llenar la ventana que la otra
+    # exige. El validador diría que sí y la caché pediría un backfill cada
+    # mañana sin conseguirlo nunca.
+    necesarios = dias_adaptativos(data)
+    if necesarios and larga is not None:
+        require(
+            larga >= necesarios,
+            f"cycling.fetch.backfill_days ({larga}) es menor que la ventana "
+            f"más larga de algo que se calibra contra el histórico "
+            f"({necesarios} días: adaptive_thresholds y el punto de partida "
+            f"de la bici). La caché de salidas nunca llegaría a cubrirla, así "
+            f"que esos cálculos se quedarían sin base -o peor, se harían "
+            f"sobre menos datos de los que existen- sin dar error",
+        )
 
     # --- el relleno hacia atrás del bienestar --------------------------------
     #
@@ -1816,6 +1920,41 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"tu propia distribución y no con un número escrito a mano.",
         )
     check_keys(finde, {"days"}, "cycling.weekend")
+
+    # `cycling.recommendation` no tenía lista blanca, y es el bloque del que
+    # más claves muertas han salido en este proyecto: `recommend_on`,
+    # `baseline_by_weekday`, `no_consecutive_intense`,
+    # `after_intense_downgrade_to`, y antes `weekly_limit`,
+    # `on_budget_exhausted`, `max_intense_rides_per_weekend` y
+    # `require_green_for_intense`. Ocho. Cada una se escribió creyendo que
+    # decidía algo. La lista negra de arriba las nombra una a una con su motivo,
+    # que es el mensaje útil; esto es la red por debajo, para la novena.
+    recomendacion = (data.get("cycling") or {}).get("recommendation") or {}
+    check_keys(
+        recomendacion,
+        {
+            "enabled",
+            "baseline_from_gaps",
+            "lookback_days",
+            "intensity_count",
+            "types",
+            "intensity_order",
+        },
+        "cycling.recommendation",
+    )
+    check_keys(
+        recomendacion.get("baseline_from_gaps") or {},
+        {
+            "window_days",
+            "min_gaps",
+            "percentile_low",
+            "percentile_high",
+            "level_below_low",
+            "level_between",
+            "level_above_high",
+        },
+        "cycling.recommendation.baseline_from_gaps",
+    )
 
     # Y con eso la sección queda cerrada: cualquier clave nueva aquí o es una
     # errata o es una opción que alguien ha escrito esperando que se lea.

@@ -847,6 +847,46 @@ def test_el_recuento_alto_tampoco_regaña(cfg):
         assert palabra not in linea, f"tono de reproche: '{palabra}' en {linea!r}"
 
 
+def _con_bici(day, **valores):
+    """Señales con histórico de salidas intensas suficiente para que la bici hable.
+
+    Desde que se quitó el calendario, el punto de partida de la bici sale de los
+    huecos entre salidas intensas propias, así que unas señales sin histórico ya
+    no producen recomendación.
+
+    EL HISTORIAL SE IMPORTA DE `test_bike_advisor`, NO SE COPIA
+    ------------------------------------------------------------
+    Aquí había una copia a mano de los huecos y del número de días, con un
+    comentario que decía «los mismos que en `test_bike_advisor`». Dejaron de
+    serlo en cuanto los percentiles del YAML pasaron de p25/p75 a p40/p60: allí
+    se recalcularon las fronteras y aquí se quedó un 7 que ya no caía en la
+    banda de 'intensa'. Los tests de este fichero no comprueban las bandas
+    -comprueban que lo que decide la bici llega al móvil- así que habrían
+    seguido en verde describiendo un escenario que no era el que decían.
+
+    Importar el fixture de verdad cuesta una dependencia entre módulos de test y
+    ahorra que este bloque vuelva a caducar en silencio. Es el mismo trato que
+    `falsear_bici.py` hace con `_baseline_gaps`: llamar a lo real en vez de
+    reimplementarlo al lado.
+    """
+    from app.engine.signals import ClassifiedRide, Ride
+
+    from tests.test_bike_advisor import DIAS_INTENSA, _fechas_intensas
+
+    s = sig_completa(day, **valores)
+    s.rides = [
+        ClassifiedRide(
+            ride=Ride(date=d, duration_s=7200),
+            level="intensa",
+            source="test",
+            load=100.0,
+            load_estimated=False,
+        )
+        for d in _fechas_intensas(day, DIAS_INTENSA)
+    ]
+    return s
+
+
 def test_las_notas_de_la_bici_llegan_al_mensaje(cfg):
     """Las notas existen PARA esto, y nada más lo comprobaba.
 
@@ -859,11 +899,8 @@ def test_las_notas_de_la_bici_llegan_al_mensaje(cfg):
     """
     from datetime import timedelta
 
-    from app.engine.signals import IntensityCount
-
     sabado = LUNES + timedelta(days=5)
-    s = sig_completa(sabado, yesterday_ride_level="intensa")
-    s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
+    s = _con_bici(sabado, yesterday_ride_level="intensa")
     d = decide(cfg, sabado, s, EngineState())
 
     assert d.bike is not None and d.bike.applies
@@ -882,32 +919,83 @@ def test_las_notas_van_debajo_del_nivel_y_no_pegadas_a_el(cfg):
     """
     from datetime import timedelta
 
-    from app.engine.signals import IntensityCount
-
     sabado = LUNES + timedelta(days=5)
-    s = sig_completa(sabado)
-    s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
+    s = _con_bici(sabado, yesterday_ride_level="intensa")
     txt = render_telegram(decide(cfg, sabado, s, EngineState()), cfg)
 
     lineas = txt.splitlines()
     i = next(n for n, l in enumerate(lineas) if "🚴" in l)
-    assert "sesiones intensas" not in lineas[i], "la nota se ha pegado al nivel"
-    assert "sesiones intensas" in lineas[i + 1]
+    assert "salida intensa" not in lineas[i], "la nota se ha pegado al nivel"
+    assert "salida intensa" in lineas[i + 1]
     assert lineas[i + 1].lstrip().startswith("·")
 
 
-def test_el_recuento_no_se_repite_el_sabado(cfg):
-    """Sale como nota de la bici; repetirlo ocho palabras más abajo gasta
-    pantalla y hace que parezca que son dos cosas distintas."""
+def test_el_dia_sin_base_de_bici_llega_al_movil(cfg):
+    """El día que la bici no tiene punto de partida, eso TIENE que leerse.
+
+    Lo encontró `scripts/mutar_bici.py`: cambiar en `message.py` la pregunta
+    `decision.bike.se_muestra` por la vieja `decision.bike.applies` dejaba toda
+    la batería en verde. Y esa mutación no es teórica, es volver a la línea que
+    había antes. Su efecto: el día sin histórico suficiente el bloque de bici
+    desaparece del mensaje sin hueco y sin error, y el usuario no distingue
+    «hoy no toca bici» de «hoy el sistema no sabe».
+
+    Los tests que había comprobaban la RECOMENDACIÓN -que `applies` es False,
+    que `skip_reason` está puesto, que `text()` devuelve la frase-. Ninguno
+    comprobaba que la frase saliera del móvil, que es para lo único que existe.
+    """
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
+
+    assert d.bike is not None
+    assert not d.bike.applies, "sin salidas en las señales no puede haber base"
+    assert d.bike.se_muestra, "y aun así el bloque ocupa sitio, con su excusa"
+
+    txt = render_telegram(d, cfg)
+    assert "🚴" in txt, "el bloque de bici ha desaparecido del mensaje"
+    assert "no hay punto de partida" in txt
+    assert d.bike.skip_reason and d.bike.skip_reason in txt, (
+        "el motivo se calcula y no sale del móvil"
+    )
+
+
+def test_el_recuento_no_se_repite(cfg):
+    """Vive en UN solo sitio, y este test es lo que impide que vuelva a dos.
+
+    Estuvo repartido entre las notas de la bici -fines de semana- y una línea
+    suelta -el resto-, con un `if` eligiendo cuál de los dos. Eso aguantó hasta
+    que la bici empezó a hablar todos los días: entonces la línea suelta dejó de
+    salir nunca y el recuento pasó a depender de que `intense_count` ya
+    estuviera puesto cuando se construyó la recomendación. Si no lo estaba,
+    desaparecía del mensaje sin error y sin hueco.
+    """
     from datetime import timedelta
 
     from app.engine.signals import IntensityCount
 
     sabado = LUNES + timedelta(days=5)
-    s = sig_completa(sabado)
+    s = _con_bici(sabado)
     s.intense_count = IntensityCount(used=5, detail=[], week_start=LUNES)
     txt = render_telegram(decide(cfg, sabado, s, EngineState()), cfg)
     assert txt.count("sesiones intensas esta semana") == 1
+
+
+def test_el_recuento_sale_aunque_se_calcule_despues_de_decidir(cfg):
+    """El acoplamiento exacto que tenía esto, escrito como test.
+
+    `decide()` construye la recomendación de bici; si el recuento se pintara
+    desde las notas de esa recomendación, rellenar `intense_count` después -que
+    es lo que hacen varias rutas- lo borraría del mensaje entero. El número se
+    lee en el momento de escribir, y por eso sale igual.
+    """
+    from datetime import timedelta
+
+    from app.engine.signals import IntensityCount
+
+    sabado = LUNES + timedelta(days=5)
+    d = decide(cfg, sabado, _con_bici(sabado), EngineState())
+    assert d.bike.applies, "sin recomendación de bici el test no prueba nada"
+    d.signals.intense_count = IntensityCount(used=4, detail=[], week_start=LUNES)
+    assert "4 sesiones intensas esta semana" in render_telegram(d, cfg)
 
 
 def test_las_salidas_sin_clasificar_salen_en_la_misma_linea(cfg):
@@ -977,6 +1065,12 @@ class _Texto:
     def __init__(self, t: str, notas: list[str] | None = None):
         self._t = t
         self._notas = list(notas or [])
+        self.applies = True
+        self.skip_visible = False
+
+    @property
+    def se_muestra(self) -> bool:
+        return self.applies or self.skip_visible
 
     def text(self) -> str:
         return self._t

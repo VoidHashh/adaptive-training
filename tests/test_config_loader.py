@@ -13,6 +13,7 @@ from datetime import date, datetime
 import pytest
 
 from app.config_loader import Config, ConfigError, _validate, compute_hash, load_config
+from app.integrations.activity_cache import dias_adaptativos
 
 from tests.conftest import REPO_ROOT
 
@@ -834,15 +835,45 @@ def test_un_backfill_mas_corto_que_el_percentil_no_arranca(cfg_copia):
     cfg_copia.raw["cycling"]["fetch"]["backfill_days"] = 30
     err = errores(cfg_copia.raw)
     assert "backfill_days" in err
-    assert "60" in err, "hay que decir contra qué ventana se está comparando"
+    # La ventana contra la que se compara no se escribe a mano aquí: es la que
+    # decida `dias_adaptativos`, y el día que aparezca una tercera cosa que se
+    # calibre contra el histórico esta prueba tiene que seguir el cambio en vez
+    # de fallar por un número viejo. Estaba puesto un "60" -el percentil de
+    # carga- y la ventana de 180 de la bici lo dejó obsoleto al instante.
+    assert str(dias_adaptativos(cfg_copia.raw)) in err, (
+        "hay que decir contra qué ventana se está comparando"
+    )
     assert "sin dar error" in err, "y por qué importa: el fallo sería mudo"
+
+
+def test_el_backfill_del_config_real_cubre_la_ventana_de_la_bici(cfg):
+    """Guarda del `config.yaml` de verdad, no de una copia manipulada: los 180
+    días de huecos entre intensas solo existen si la caché los tiene. Con un
+    backfill corto `_baseline_gaps` no falla, calcula OTRA COSA -menos huecos,
+    percentiles más estrechos- y nadie se entera."""
+    assert cfg.raw["cycling"]["fetch"]["backfill_days"] >= dias_adaptativos(cfg.raw)
 
 
 def test_una_ventana_corta_mayor_que_el_backfill_no_arranca(cfg_copia):
     """Con los nombres al revés el 'backfill' dejaría huecos, que es justo lo
     contrario de lo que promete."""
-    cfg_copia.raw["cycling"]["fetch"]["lookback_days"] = 200
+    cfg_copia.raw["cycling"]["fetch"]["lookback_days"] = (
+        cfg_copia.raw["cycling"]["fetch"]["backfill_days"] + 1
+    )
     assert "lookback_days" in errores(cfg_copia.raw)
+
+
+def test_borrar_cycling_fetch_no_desactiva_la_comprobacion(cfg_copia):
+    """El `if fetch:` que había aquí convertía borrar la sección en la manera
+    de saltarse el validador. Y es el caso peor: sin números escritos manda el
+    defecto del código, que nadie va a revisar cuando cambie la ventana de la
+    bici. Se comprueba el valor efectivo, no el declarado."""
+    cfg_copia.raw["cycling"].pop("fetch", None)
+    cfg_copia.raw["cycling"]["recommendation"]["baseline_from_gaps"][
+        "window_days"
+    ] = 5000
+    err = errores(cfg_copia.raw)
+    assert "backfill_days" in err and "5000" in err
 
 
 @pytest.mark.parametrize("clave", ["lookback_days", "backfill_days"])

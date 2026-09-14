@@ -181,12 +181,28 @@ def save_cache(path: Path | str, frescas: Sequence[dict[str, Any]]) -> int:
 
 
 def dias_adaptativos(cfg: Any) -> int:
-    """El histórico más largo que le hace falta a algún umbral adaptativo.
+    """El histórico más largo que le hace falta a algo que se calibra solo.
 
     Sale del config y no de una constante porque es lo que la caché existe
     para alimentar: `load_3d_p90` y `load_7d_p90` son percentiles sobre una
     ventana de `window_days`. Subir esa ventana en el YAML y dejar la caché
     corta es la forma silenciosa de apagar las dos reglas que la usan.
+
+    ESTA FUNCIÓN SOLO MIRABA `adaptive_thresholds`, Y ESO ERA UNA TRAMPA
+    --------------------------------------------------------------------
+    El nombre dice "adaptativos" y el cuerpo decía "los de esa sección". Mientras
+    la única cosa que se calibraba contra el histórico viviera ahí, coincidían;
+    en cuanto apareció la segunda -el punto de partida de la bici, que necesita
+    180 días de huecos entre salidas intensas- dejaron de coincidir, y el modo
+    de fallo era el peor posible: la caché se habría quedado en los 60 días del
+    percentil de carga, `_baseline_gaps` habría encontrado menos huecos de los
+    que hay de verdad, y habría calculado percentiles más estrechos -o se habría
+    declarado sin base- sin que nada dijera que el problema era la caché y no el
+    histórico. Un número que se calcula sobre menos datos de los que existen no
+    da error: da otro número.
+
+    Así que ahora se recorre TODO lo que se calibra contra el propio histórico.
+    Si aparece un tercer sitio, va aquí; esa es la única instrucción.
     """
     raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
     ventanas = [
@@ -194,7 +210,43 @@ def dias_adaptativos(cfg: Any) -> int:
         for spec in (raw.get("adaptive_thresholds") or {}).values()
         if isinstance(spec, dict)
     ]
+
+    # El punto de partida de la bici: percentiles sobre los huecos entre salidas
+    # intensas de los últimos `window_days`. Se lee con `.get` en cadena y no con
+    # corchetes a propósito: esta función la llaman rutas que no han pasado por
+    # `validate_config` (scripts, tests), y reventar aquí convertiría un cálculo
+    # de ventana en un fallo de arranque. La clave obligatoria se exige donde
+    # toca, en el validador y en `_baseline_gaps`.
+    gaps = ((raw.get("cycling") or {}).get("recommendation") or {}).get(
+        "baseline_from_gaps"
+    )
+    if isinstance(gaps, dict):
+        ventanas.append(int(gaps.get("window_days", 0)))
+
     return max(ventanas, default=0)
+
+
+def ventanas_declaradas(cfg: Any) -> tuple[int, int]:
+    """Las dos ventanas de `cycling.fetch` YA RESUELTAS, con sus defectos.
+
+    Existe para que el validador compruebe el número que se va a usar y no el
+    que está escrito, que no siempre son el mismo: si la sección entera falta
+    del YAML, aquí no hay nada que validar y el código tira de estos defectos
+    tan campante. Ese hueco era real -el validador se saltaba el bloque con un
+    `if fetch:`-, y con la ventana de 180 días de la bici encima habría dejado
+    la caché en `backfill_days` por defecto sin decir nada: histórico corto,
+    percentiles calculados sobre menos huecos de los que existen, y un backfill
+    inútil cada madrugada porque `cubiertos < necesarios` no dejaría de ser
+    cierto nunca.
+
+    Los defectos son los mismos números que el `config.yaml` trae escritos, a
+    propósito. Un defecto distinto del YAML es código y config diciendo cosas
+    diferentes, con el agravante de que solo se nota cuando alguien borra la
+    sección, que es justo cuando nadie está mirando.
+    """
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    fetch = ((raw.get("cycling") or {}).get("fetch") or {})
+    return int(fetch.get("lookback_days", 10)), int(fetch.get("backfill_days", 210))
 
 
 def ventana_de_salidas(
@@ -232,10 +284,7 @@ def ventana_de_salidas(
     salida, que solo dice cuándo se salió en bici por última vez: quien no monta
     en tres semanas dispararía un backfill cada mañana sin que falte nada.
     """
-    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
-    fetch = ((raw.get("cycling") or {}).get("fetch") or {})
-    corta = int(fetch.get("lookback_days", 10))
-    larga = int(fetch.get("backfill_days", 90))
+    corta, larga = ventanas_declaradas(cfg)
 
     if cache is None or not cache.available:
         motivo = cache.describe() if cache is not None else "sin caché en memoria"

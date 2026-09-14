@@ -382,7 +382,12 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             L.append(f"• {nombre_r}{hasta}")
 
     # --- bici ---------------------------------------------------------------
-    if decision.bike is not None and decision.bike.applies:
+    # `se_muestra` y no `applies`. Son cosas distintas desde que se quitó el
+    # calendario: `applies=False` ya no significa "hoy no es día de bici" -eso
+    # era un no evento y por eso no se decía-, sino "no se ha podido calcular el
+    # punto de partida contra tu histórico". Eso sí se dice, con su motivo, y
+    # con las notas de contexto debajo igual que cualquier otro día.
+    if decision.bike is not None and decision.bike.se_muestra:
         L.append("")
         L.append(f"🚴 {escapar_html(decision.bike.text())}")
         # Los hechos de contexto van con viñeta y DEBAJO, separados del nivel
@@ -403,8 +408,22 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # justificación del frenazo; y justamente ahora que no frena nada es cuando
     # tiene que estar todos los días.
     #
-    # Se salta los fines de semana porque ahí ya sale como nota de la bici y
-    # repetirlo ocho palabras más abajo solo gasta pantalla.
+    # AQUÍ HABÍA UN `and not ya_en_la_bici`, Y ERA UNA BOMBA DE RELOJERÍA
+    # ---------------------------------------------------------------------
+    # El recuento vivía en dos sitios: como nota de la bici los fines de semana
+    # y como esta línea el resto de días, y esta condición elegía uno para no
+    # repetirlo. Mientras la bici solo hablara sábado y domingo funcionaba.
+    #
+    # Al quitar el calendario, la bici habla todos los días, así que esta línea
+    # dejaba de salir NUNCA y el recuento pasaba a depender enteramente de la
+    # nota. Y la nota se fabrica cuando se construye la recomendación, o sea
+    # antes: cualquier ruta que rellenara `intense_count` después de `decide()`
+    # perdía el recuento del mensaje entero, sin error, sin hueco y sin que nada
+    # se pareciera a un fallo. Un dato que se enseña todos los días no puede
+    # depender del orden en que se construyen dos objetos.
+    #
+    # Ahora el recuento sale de aquí y solo de aquí, leyendo la señal en el
+    # momento de escribir. La bici ya no lo lleva en sus notas.
     #
     # Se lee con punto y no con `getattr(..., None)` a propósito. `signals` es
     # un campo obligatorio de `DayDecision` e `intense_count` es un campo de
@@ -414,8 +433,7 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # existe para que no pase. El None legítimo -una ruta que no construye
     # señales- sigue teniendo su sitio: es el valor por defecto del campo.
     conteo = decision.signals.intense_count
-    ya_en_la_bici = decision.bike is not None and decision.bike.applies
-    if conteo is not None and not ya_en_la_bici:
+    if conteo is not None:
         L.append("")
         L.append(f"🔥 {escapar_html(conteo.linea().capitalize())}")
 

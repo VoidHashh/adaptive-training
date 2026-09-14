@@ -1065,7 +1065,18 @@ cycling:
   fetch:
     lookback_days: 10       # ventana que se re-lee cada mañana, por si el Edge
                             # sincronizó tarde o una salida se editó a posteriori
-    backfill_days: 90       # solo en el primer arranque
+
+    # Sube de 90 a 210 porque el punto de partida de la bici
+    # (`recommendation.baseline_from_gaps`) mira 180 días de huecos entre
+    # salidas intensas, y una caché de 90 no puede sostener esa ventana. No es
+    # que fallara: es que habría calculado los percentiles sobre la mitad de los
+    # huecos que existen y habría dado OTRO número, sin decir nada. Los 30 de
+    # margen son para que el arranque no quede justo en el filo.
+    #
+    # Esto no se puede desincronizar en silencio: el validador compara este
+    # número contra `dias_adaptativos()`, que es la misma función que usa la
+    # caché, y se niega a arrancar si se queda corto.
+    backfill_days: 210      # solo en el primer arranque
 
   # ---------------------------------------------------------------------------
   # Clasificación de cada salida: SUAVE / MEDIA / INTENSA
@@ -1156,10 +1167,10 @@ cycling:
     days: [saturday, sunday]
 
   # ---------------------------------------------------------------------------
-  # Recomendación de bici (sábado y domingo)
+  # Recomendación de bici (todos los días)
   # ---------------------------------------------------------------------------
   # Pipeline determinista, en este orden:
-  #   1. `baseline_by_weekday` da el tipo de partida
+  #   1. `baseline_from_gaps` da el tipo de partida, contra el propio histórico
   #   2. se recorta al techo `actions.<semáforo>.bike_max`   <- ÚNICO RECORTE
   #   3. se añaden hechos de contexto que NO recortan: la intensa de ayer, las
   #      intensas ya hechas este fin de semana y el recuento de la semana
@@ -1176,11 +1187,124 @@ cycling:
   # lugar del cuerpo, y se ha quitado entero.
   recommendation:
     enabled: true
-    recommend_on: [saturday, sunday]
 
-    baseline_by_weekday:
-      saturday: intensa
-      sunday: media
+    # --- Punto de partida: bandas sobre los huecos entre salidas intensas ----
+    #
+    # QUÉ SE HA BORRADO Y POR QUÉ
+    # ---------------------------
+    # Aquí vivían `recommend_on: [saturday, sunday]` y `baseline_by_weekday:
+    # {saturday: intensa, sunday: media}`. Eran el calendario fijo aplicado a la
+    # bici: daban por hecho que se sale en fin de semana y callaban el resto de
+    # la semana. Medido sobre las 80 salidas reales del último año de Garmin:
+    # el sistema NO dijo nada en 30 de ellas (38%), y 6 de esas 30 fueron
+    # intensas. Los miércoles: 7 salidas, cero consejos. Las dos claves están
+    # en la lista negra de más abajo para que no puedan volver en silencio.
+    #
+    # QUÉ HACE LO NUEVO
+    # -----------------
+    # Se miran los huecos en días entre salidas INTENSAS consecutivas dentro de
+    # `window_days`, y se comparan los días transcurridos desde la última
+    # intensa contra los percentiles de esa distribución propia:
+    #
+    #   días < p40              -> suave    (se acaba de hacer una)
+    #   p40 <= días < p60       -> intensa  (se está en el ritmo propio y toca)
+    #   días >= p60             -> media    (vuelta de un parón: volumen, no carga)
+    #
+    # La tercera banda NO es monótona, y es deliberado. La primera versión sí lo
+    # era (`días >= p50 -> intensa`) y se cayó con datos reales: como los días
+    # desde la última intensa crecen sin tope, durante un bloque suave largo el
+    # sistema gritaba INTENSA seis semanas seguidas. Habría recomendado intensa
+    # en 52 de 88 salidas (59%) cuando la tasa real es del 26%.
+    #
+    # POR QUÉ p40/p60 Y NO p25/p75, QUE ES LO QUE HABÍA AQUÍ
+    # ------------------------------------------------------
+    # Porque p25/p75 repetía el fallo de la versión monótona, con otra forma y
+    # sin que se notara. El razonamiento que lo puso era "la banda de en medio
+    # es el 50% central de mis huecos, o sea la mitad de las veces". Es falso, y
+    # el error está en confundir dos cosas distintas:
+    #
+    #   - la MASA de la distribución de huecos (cuántos huecos caen dentro)
+    #   - el TIEMPO que los días-desde-la-última pasan dentro de la banda
+    #
+    # El contador de días sube 1, 2, 3... y se queda en cada banda tantos días
+    # como ANCHA sea la banda, no tantos como probable sea. Con huecos reales
+    # muy dispersos -los del usuario en 180 días son [26, 1, 26, 2, 5, 2, 10,
+    # 20, 55, 6, 8]- sale p25=3.5 y p75=23: la banda de en medio mide 19 días
+    # de ancho y la de abajo 3. Resultado medido sobre sus salidas reales:
+    #
+    #   percentiles     % de veces que dice INTENSA     tasa real del usuario
+    #   p25/p75                    61%                          21%
+    #   p35/p55                    22%                          21%
+    #   p40/p60                    17%                          21%
+    #
+    # 61% contra 21% es PEOR que el 59% contra 26% por el que se tiró la
+    # versión monótona. Y era invisible: los dos bordes de seguridad seguían a
+    # cero y la tabla de coincidencia no se movía, así que nada chillaba.
+    #
+    # Ese 21% es la tasa sobre el histórico ENTERO. La guarda de
+    # `falsear_bici.py` no usa ese número: recalcula la tasa real sobre las
+    # mismas salidas en las que el esquema tuvo base, que hoy son 36 y dan 19%.
+    # Es un punto y medio de diferencia y da igual para la conclusión, pero se
+    # deja escrito porque comparar el porcentaje del esquema -medido solo en los
+    # días en que habla- contra la tasa del histórico completo -que incluye los
+    # días en que calla- es dividir por cosas distintas y llamarlo comparación.
+    #
+    # p40/p60 es simétrico alrededor de la mediana: "intensa solo cuando los
+    # días desde la última caen en el quinto central de tus propios huecos, o
+    # sea cuando estás justo en tu ritmo". Se elige así, y no por ser el que
+    # mejor ajusta, porque el ajuste son 36 salidas y a esa escala la diferencia
+    # entre el 17% y el 22% son dos salidas. Una regla que se puede enunciar sin
+    # mirar el resultado aguanta mejor que un número pescado de una tabla.
+    # Comprobado además en las dos mitades del histórico por separado, donde
+    # p25/p75 daba 79% y 41% -inestable además de alto- y p40/p60 da 21% y 12%.
+    #
+    # LO QUE ESTO **NO** ES
+    # ---------------------
+    # No es un predictor mejor. Medido con `--garmin 400` (88 salidas reales):
+    #
+    #   esquema                      coincide  callado  INT tras 1d  INT tras parón
+    #   viejo (sat/sun)                   30%       35            1               5
+    #   nuevo (3 bandas)                  30%       14            0               0
+    #   constante 'media'                 34%        0            0               0
+    #   constante 'suave'                 38%        0            0               0
+    #
+    # Acertar lo que se hizo NO mejora respecto a decir siempre lo mismo, y
+    # queda escrito aquí porque ocultarlo sería exactamente el fallo que este
+    # proyecto lleva meses persiguiendo. Lo que sí compra, y es por lo que está:
+    # los dos extremos. Cero «intensa» al día siguiente de una intensa (el
+    # calendario producía 1) y cero «intensa» volviendo de un parón de 30+ días
+    # (el calendario producía 5, con una hernia L4-L5 de por medio). Y habla
+    # todos los días, que era el encargo.
+    #
+    # `scripts/falsear_bici.py` vuelve a correr esta tabla contra los datos
+    # reales, llamando al `_baseline_gaps` de verdad y no a una copia de estas
+    # bandas. Sale con error si alguna de las dos columnas de la derecha deja de
+    # ser cero, Y TAMBIÉN si la tasa de «intensa» se despega de la tasa real del
+    # usuario. Esa segunda guarda no estaba y por eso p25/p75 pasó: una batería
+    # que no mide lo que puede fallar da el visto bueno igual que una que sí.
+    #
+    # La tabla de arriba se midió con 400 días. Sin argumentos el guión lee la
+    # caché de disco, que hoy son ~180 días y da otros números: menos histórico
+    # detrás de cada fecha significa más días sin base y un `coincide` distinto.
+    # No son resultados contradictorios, son ventanas distintas; para comparar
+    # con esta tabla hay que pasarle los mismos 400 días.
+    #
+    # LOS NÚMEROS
+    # -----------
+    # `window_days: 180` sale de medir la estabilidad de los percentiles: con 60
+    # o 90 días no hay huecos suficientes en los bloques flojos; con 365 la
+    # ventana arrastra una temporada entera y deja de describir el momento.
+    # `min_gaps: 4` es el mínimo para que p40 y p60 no sean dos puntos sueltos.
+    # Por debajo de eso NO se inventa un valor por defecto: la recomendación se
+    # marca como no aplicable con su motivo escrito, y se dice en el mensaje.
+    baseline_from_gaps:
+      window_days: 180
+      min_gaps: 4
+      percentile_low: 40
+      percentile_high: 60
+      level_below_low: suave
+      level_between: intensa
+      level_above_high: media
 
     # Ventana de `yesterday_ride_level`, que hoy solo alimenta una NOTA («ayer
     # hiciste una salida intensa»). Con 1, también cuenta el viernes de cara al
