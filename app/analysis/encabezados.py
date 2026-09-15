@@ -229,6 +229,36 @@ def de_auditoria(v: dict[str, Any]) -> dict[str, Any]:
     return e
 
 
+def de_umbral(v: dict[str, Any]) -> dict[str, Any]:
+    """La moneda es la SALIDA con su antes y su después, no el día.
+
+    El denominador son las salidas que se han podido medir más las que se han
+    caído por faltarles un dato, y NO los días de la ventana anteriores a que
+    hubiera bici. Esos van contados aparte en el payload: sumarlos aquí haría
+    que pedir dos años en vez de seis meses empeorara el encabezado sin que
+    hubiera pasado nada, y un estado que empeora por mirar más lejos es
+    exactamente la clase de número que enseña a no hacer caso del encabezado.
+    """
+    if "salidas" not in v:
+        raise KeyError(
+            "el encabezado del umbral esperaba 'salidas' en el payload y no "
+            "está; sin él diría 'Todavía no' con la vista llena"
+        )
+    s = v["salidas"] or {}
+    medidas = int(s.get("medidas") or 0)
+    perdidas = sum(int(x or 0) for x in (s.get("fuera") or {}).values())
+    return _encabezado(
+        pregunta=(
+            "¿A partir de cuánta bici te pasa factura al día siguiente, y "
+            "cuántos días dura la factura?"
+        ),
+        vivos=medidas,
+        posibles=medidas + perdidas,
+        unidad=("salida medida", "salidas medidas"),
+        falta="salir en bici y dormir con el reloj la noche de antes y la de después",
+    )
+
+
 def de_percepcion(v: dict[str, Any]) -> dict[str, Any]:
     if "contador" not in v:
         raise KeyError(
@@ -262,6 +292,7 @@ POR_VISTA = {
     "ranking-ejercicios": de_ranking_ejercicios,
     "auditoria": de_auditoria,
     "percepcion": de_percepcion,
+    "umbral": de_umbral,
 }
 
 
@@ -272,6 +303,19 @@ def poner(nombre: str, payload: dict[str, Any]) -> dict[str, Any]:
     dejaría la vista nueva sin encabezado, funcionando perfectamente y sin que
     nadie se entere, que es el patrón que este panel entero está intentando
     dejar atrás.
+
+    Por lo mismo se exige que el payload se identifique. `vista` NO se pone aquí
+    a partir de `nombre` porque no son el mismo dato: `nombre` es el trozo de la
+    URL -"ranking-ejercicios"- y `vista` es el identificador del payload
+    -"ranking_ejercicios"-. Escribir uno encima del otro renombraría una vista
+    en la respuesta sin que nadie hubiera tocado la respuesta. Así que solo se
+    comprueba que esté, que es lo que hacía falta: dos vistas habían llegado
+    hasta aquí sin declararse y nadie se enteró.
     """
+    if "vista" not in payload:
+        raise KeyError(
+            f"el payload de '{nombre}' no dice qué vista es. Todas las demás "
+            f"llevan 'vista', y la pantalla y los tests cuentan con ella"
+        )
     payload["encabezado"] = POR_VISTA[nombre](payload)
     return payload

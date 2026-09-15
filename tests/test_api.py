@@ -1958,6 +1958,138 @@ def test_una_respuesta_desconocida_en_el_ranking_es_un_400_con_la_lista(cliente)
     assert "lower_discomfort" in r.json()["detail"]
 
 
+def test_umbral_contesta_con_todo_lo_que_hace_falta_para_pintar(cliente, db):
+    """La vista 6 entera por la puerta de la API, con la PWA sin hacer cuentas.
+
+    Lo importante de este test no es que salga 200: es que salgan TODAS las
+    piezas que `pintarUmbral` va a buscar. Si el endpoint se dejara una, la
+    pantalla no daría error -el navegador pinta `undefined` tan tranquilo- y el
+    fallo llegaría al móvil disfrazado de hueco.
+    """
+    _sembrar_metricas(db)
+    r = cliente.get("/api/metrics/umbral?dias=90")
+    assert r.status_code == 200
+    d = r.json()
+
+    assert d["vista"] == "umbral"
+    assert d["metodo"] == "spearman"
+    assert d["ventana"]["dias"] == 90
+
+    e = d["encabezado"]
+    assert "a partir de cuánta bici" in e["pregunta"].lower()
+    assert e["estado"] in {"con_datos", "flojo", "sin_datos"}
+    assert "salidas medidas" in e["resumen"]
+    # La moneda del encabezado es la salida, no el día: con 40 salidas en una
+    # ventana de 90 días, `de` NO puede ser 90.
+    #
+    # Y son 39 de 40, no 40 de 40: la salida de ayer todavía no tiene la HRV de
+    # la mañana siguiente, porque esa mañana es hoy. Se cae del numerador y
+    # sigue contando en el denominador, que es exactamente lo que tiene que
+    # pasar: es un dato que va a llegar, no un dato que falte.
+    assert e["n"] == 39
+    assert e["de"] == 40
+    assert d["salidas"]["fuera"]["sin_hrv_despues"] == 1
+
+    # Las dos preguntas, cada una con su parte del payload.
+    assert set(d["umbral"]) >= {"tramos", "frontera", "retardo", "na"}
+    assert {c["titulo"] for c in d["recuperacion"]["curvas"]}
+    assert len(d["recuperacion"]["curvas"]) == 2
+    assert d["recuperacion"]["aislamiento"] == 2
+    assert set(d["grafica"]) >= {"puntos", "salidas", "rango", "corte", "altura_corte"}
+
+    # Y el recuento de descartes, que es lo que hace creíble a todo lo demás.
+    assert d["salidas"]["medidas"] == 39
+    assert set(d["salidas"]["fuera"]) == {
+        "sin_carga",
+        "sin_hrv_antes",
+        "sin_hrv_despues",
+    }
+    assert set(d["salidas"]["sin_cobertura"]) == {"antes", "despues"}
+
+
+def test_con_bici_todos_los_dias_el_umbral_dice_por_que_no_hay_curva(cliente, db):
+    """Ninguna salida está aislada, y eso se escribe en vez de salir un cero.
+
+    `_sembrar_metricas` mete una salida CADA día. Con `DIAS_AISLAMIENTO` a dos,
+    ni una sola salida tiene los dos días limpios que la curva necesita, así que
+    la respuesta correcta no es una curva plana en cero -que se leería como "la
+    bici no te hace nada"- sino el motivo escrito.
+    """
+    _sembrar_metricas(db)
+    d = cliente.get("/api/metrics/umbral?dias=90").json()
+
+    assert d["salidas"]["aisladas"] == 0
+    for c in d["recuperacion"]["curvas"]:
+        assert c["n_salidas"] == 0
+        assert c["na"], c["titulo"]
+        assert "aislada" in c["na"]
+        # Ni un cero de relleno en ninguna barra.
+        assert all(b["media"] is None for b in c["por_dia"])
+        # `na` y `aviso` son excluyentes: con un motivo escrito no hay además un
+        # aviso de muestra corta sobre una curva que no existe.
+        assert c["aviso"] is None
+
+
+def test_el_umbral_acepta_pearson_y_se_nota(cliente, db):
+    _sembrar_metricas(db)
+    d = cliente.get("/api/metrics/umbral?dias=90&metodo=pearson").json()
+    assert d["metodo"] == "pearson"
+    fr = d["umbral"]["frontera"]
+    if fr["continua"] is not None:
+        assert fr["continua"]["metodo"] == "pearson"
+
+
+def _rutas_de_metricas(*, con_parametro: str | None = None) -> list[str]:
+    """Las rutas de métricas SACADAS de la app, no escritas a mano aquí.
+
+    Una lista a mano de rutas es un agujero con forma de test verde: se añade una
+    vista, se olvida meterla en la lista, y los tres tests de abajo siguen
+    pasando sin haberla mirado nunca. Ya pasó con los dos contadores de
+    `test_pwa.py`, y `/api/metrics/umbral` habría entrado por la misma puerta.
+
+    Con `con_parametro` se filtra por lo que la firma DECLARA, que es justo la
+    distinción que ya estaba escrita en prosa: las vistas que correlacionan
+    llevan `metodo` y las que cuentan disparos no. Derivarla de la firma en vez
+    de repetirla quiere decir que quitarle el `metodo` a una vista mueve el test
+    solo, en lugar de dejarlo comprobando un mando que ya no existe.
+    """
+    rutas = []
+    for r in app.routes:
+        camino = getattr(r, "path", "")
+        if not camino.startswith("/api/metrics/") or "GET" not in getattr(
+            r, "methods", set()
+        ):
+            continue
+        if con_parametro is not None and con_parametro not in {
+            p.name for p in getattr(r, "dependant", None).query_params
+        }:
+            continue
+        rutas.append(camino)
+    assert rutas, "no se ha encontrado ninguna ruta de métricas en la app"
+    return sorted(rutas)
+
+
+def test_las_rutas_de_metricas_derivadas_son_las_que_hay(cliente):
+    """El derivador tiene que fallar si se rompe, no devolver una lista vacía.
+
+    Sin esto, un cambio en FastAPI que dejara `dependant` en otro sitio haría que
+    los filtros de abajo no encontraran nada y los bucles pasaran de largo sin
+    comprobar ni una ruta. Un test que no mira nada pasa siempre.
+    """
+    todas = _rutas_de_metricas()
+    assert len(todas) >= 7
+    assert "/api/metrics/umbral" in todas
+
+    # Las que correlacionan llevan `metodo`; `auditoria` y `percepcion` no, y eso
+    # está razonado en sus propios tests. Aquí solo se comprueba que el filtro
+    # separa de verdad en dos grupos y ninguno se queda vacío.
+    con = _rutas_de_metricas(con_parametro="metodo")
+    assert "/api/metrics/auditoria" not in con
+    assert "/api/metrics/percepcion" not in con
+    assert "/api/metrics/umbral" in con
+    assert 0 < len(con) < len(todas)
+
+
 def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     """Una sección de métricas vacía NO es un error: es el primer día.
 
@@ -1965,16 +2097,20 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     justo cuando lo útil es ver qué falta y cuánto. Sale un 200 con las siete
     parejas y su motivo, que es lo que se pidió: nada oculto, nada aplazado.
     """
-    for ruta in (
-        "/api/metrics/concordancia",
-        "/api/metrics/desfase",
-        "/api/metrics/impacto",
-        "/api/metrics/ranking-ejercicios",
-        "/api/metrics/auditoria",
-        "/api/metrics/percepcion",
-    ):
+    from app.analysis.encabezados import POR_VISTA
+
+    for ruta in _rutas_de_metricas():
         r = cliente.get(ruta)
         assert r.status_code == 200, ruta
+        # Y con la base vacía, que es cuando más falta hace, cada respuesta dice
+        # qué vista es. Dos de ellas llegaron a contestar 200 sin decirlo.
+        assert r.json().get("vista"), ruta
+        # El encabezado lo llevan todas menos la portada, que no necesita uno
+        # porque ES un encabezado entera. La excepción se saca del registro y no
+        # se escribe aquí: si algún día la portada pasara a llevarlo, este test
+        # empieza a exigírselo solo.
+        if ruta.rsplit("/", 1)[-1] in POR_VISTA:
+            assert r.json().get("encabezado"), ruta
     d = cliente.get("/api/metrics/concordancia").json()
     assert len(d["pares"]) == 7
     assert all(p["na"] for p in d["pares"])
@@ -2036,12 +2172,7 @@ def test_un_metodo_inventado_se_rechaza_en_vez_de_caer_en_uno_por_defecto(client
     cosa y calcular otra distinta pondría "kendall" encima de un número que no
     lo es.
     """
-    for ruta in (
-        "/api/metrics/concordancia",
-        "/api/metrics/desfase",
-        "/api/metrics/impacto",
-        "/api/metrics/ranking-ejercicios",
-    ):
+    for ruta in _rutas_de_metricas(con_parametro="metodo"):
         r = cliente.get(f"{ruta}?metodo=kendall")
         assert r.status_code == 400, ruta
         assert "kendall" in r.json()["detail"]
@@ -2056,14 +2187,7 @@ def test_pearson_se_puede_pedir_y_se_nota(cliente, db):
 
 def test_una_ventana_absurda_se_rechaza(cliente):
     """Cuatro días no dan para nada y cinco años no existen."""
-    for ruta in (
-        "/api/metrics/concordancia",
-        "/api/metrics/desfase",
-        "/api/metrics/impacto",
-        "/api/metrics/ranking-ejercicios",
-        "/api/metrics/auditoria",
-        "/api/metrics/percepcion",
-    ):
+    for ruta in _rutas_de_metricas():
         assert cliente.get(f"{ruta}?dias=4").status_code == 422, ruta
         assert cliente.get(f"{ruta}?dias=5000").status_code == 422, ruta
 

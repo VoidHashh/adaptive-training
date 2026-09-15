@@ -1132,6 +1132,36 @@ def metrics_percepcion(
     return poner("percepcion", vista_percepcion(s, dias=dias))
 
 
+@app.get("/api/metrics/umbral")
+def metrics_umbral(
+    dias: int = Query(180, ge=7, le=730),
+    metodo: str = Query("spearman"),
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Vista 6: a partir de cuánta bici se nota, y cuántos días dura.
+
+    Es la única vista que contesta con un NÚMERO DE CARGA en vez de con una `r`,
+    y ésa es toda su razón de existir. Impacto ya dice que la carga y la HRV van
+    de la mano; lo que no dice -y no puede decir, porque una correlación no
+    tiene esa forma- es a partir de qué cifra empieza a notarse. Sin ese número
+    la relación es cierta y no sirve para decidir nada el domingo por la mañana.
+
+    Lleva `metodo` porque los cortes sí se contrastan: cada candidato compara
+    dos grupos y eso sale de `correlacion`, igual que en las otras vistas.
+
+    `cfg` se pasa a la vista aunque hoy no lo mire. Es a propósito y está
+    explicado en `vista_umbral`: el día que las bandas salgan del YAML, esta
+    función no se toca.
+    """
+    from app.analysis.encabezados import poner
+    from app.analysis.series import comprobar_series
+    from app.analysis.umbral import vista_umbral
+
+    comprobar_series(cfg)
+    return poner("umbral", vista_umbral(s, cfg, dias=dias, metodo=_metodo(metodo)))
+
+
 @app.post("/api/probar/telegram")
 def probar_telegram_endpoint(
     texto: str | None = None,

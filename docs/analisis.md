@@ -22,7 +22,7 @@ existe en Garmin Connect y hacerlo otra vez peor no ayuda a nadie.
 
 ## Estado
 
-Implementada. Una portada y cinco vistas, siete endpoints, todos **solo de
+Implementada. Una portada y seis vistas, ocho endpoints, todos **solo de
 lectura** bajo `/api/metrics/`:
 
 | Vista | Endpoint | Módulo |
@@ -34,6 +34,7 @@ lectura** bajo `/api/metrics/`:
 | 3b. Ranking de ejercicios | `/api/metrics/ranking-ejercicios` | `analysis/impacto.py` |
 | 4. Auditoría | `/api/metrics/auditoria` | `analysis/auditoria.py` |
 | 5. Percepción | `/api/metrics/percepcion` | `analysis/rendimiento.py` |
+| 6. Umbral de la bici | `/api/metrics/umbral` | `analysis/umbral.py` |
 
 El front es `static/metricas.html` + `static/metricas.js`, que no escribe a mano
 ni un deslizador ni una regla: todo lo que se puede elegir se rellena de lo que
@@ -104,6 +105,113 @@ Lo que la mañana prometía frente a lo que de verdad salió: la decisión del m
 contra el resultado registrado después. Es la única vista que mira hacia
 adelante desde la decisión en vez de hacia atrás desde el dato.
 
+### 6. Umbral de la bici
+
+Dos preguntas, y la segunda se calcula **sobre la respuesta de la primera**: a
+partir de cuánta carga de bici baja la HRV de la mañana siguiente, y cuántos días
+dura esa bajada. Por eso van en ese orden en la pantalla y las dos por encima del
+pliegue, sin `plegable`: la duración de una factura que no se ha establecido que
+exista no significa nada.
+
+Es la única vista que nace de una sospecha del usuario y no de una columna: «me
+suena que a partir de 150 lo noto». El trabajo del panel aquí no es confirmarla
+—eso lo hace cualquier cosa— sino ponerle un número, un `n` y una corrección
+alrededor para que se pueda mirar si no.
+
+**El corte se busca, no se fija.** Los candidatos salen de los propios deciles de
+sus salidas, nunca de constantes: la vista prueba cada uno, se queda con el que
+más separa, y publica **cuántos ha mirado** junto con los dos vecinos del
+ganador. Ese «10 miradas» es lo que convierte el número en honesto: buscar el
+mejor de diez cortes y luego contar su `p` como si se hubiera elegido antes de
+mirar es la forma más limpia de fabricar un hallazgo. Va a la misma tanda de
+Benjamini-Hochberg que el resto de la aplicación.
+
+**Los vecinos importan más que el número.** El corte sale con tres cifras
+significativas porque es un cuantil de la muestra, y la pantalla lo redondea a
+entero y dice a continuación de cuáles son los candidatos de al lado. El escalón
+está *por ahí*, no exactamente ahí, y un número con coma en grande invita a la
+lectura contraria.
+
+#### La regla que enseñó esta vista: la regla mide, y también estorba
+
+La primera versión partía las salidas en **cuartiles** y decía que el corte
+estaba en 174. La segunda, en **quintiles**, decía 191. Los dos números eran
+correctos y ninguno era el dato: eran dónde caía la raya de la regla que se
+había usado para medir. Con deciles —los dos, el de la búsqueda y el del
+dibujo— sale **150,8**, que es lo que el usuario decía.
+
+La lección no es «usa deciles». Es que **una partición gruesa mide el ancho de
+sus propias bandas** y no hay nada en el resultado que avise. Lo que sí avisa es
+poner al lado los candidatos vecinos y el recuento de miradas, que es lo que se
+hace ahora.
+
+#### Escalón o cuesta: la pregunta que la vista contesta sin números
+
+Junto al corte va **siempre** una correlación continua carga↔HRV, de la misma
+tanda de corrección, y una frase que compara las dos banderas de significación:
+
+- El corte aguanta y la continua no → **escalón**. Por debajo del corte el cuerpo
+  no distingue una salida de otra; lo que cuenta es pasarlo, no cuánto.
+- La continua aguanta y el corte no → **cuesta**. El «umbral» es entonces un
+  sitio por donde partir, no una frontera, y publicarlo como frontera convertiría
+  en hallazgo una elección de dónde cortar.
+- Las dos, o ninguna, se dicen también, con lo que cada caso significa.
+
+Esa frase **no lleva un solo número dentro, y no es estilo**: lo que compara son
+dos «aguanta / no aguanta», no dos magnitudes. Meter ahí la `r` de la continua
+invitaría a leerla como la fuerza del efecto cuando lo que se está diciendo es de
+qué **forma** es. La `r` va al lado, con su barra, donde se compara con las demás
+`r` de la aplicación.
+
+#### El resto de la pantalla
+
+- **Los tramos** son los cuartiles de carga con su media y su mitad central. La
+  banda que queda a caballo del corte se marca y se explica: promedia salidas de
+  los dos lados, así que puede leerse en contra del hallazgo sin contradecirlo.
+  Está medido —la banda partida daba **+1,54** justo debajo de un corte que dice
+  −7,7— y sin la explicación al lado eso es una pantalla que se desmiente sola.
+
+  Esa marca se decide contra los bordes **ya redondeados**, los mismos que salen
+  impresos. El cuartil 25 vale 43,75 por dentro y se publica como 43,8, y
+  `vista_umbral` no le pasa a los tramos la frontera de dentro sino la que
+  `frontera` publica, que también viene redondeada. Comparándola contra el borde
+  crudo se marcaría como partida una banda cuyo `desde_carga` impreso **es** el
+  corte: los dos números estarían bien por separado y se desmentirían el uno al
+  otro en la misma fila, que es la peor forma de tener razón. El aviso tiene que
+  ser verdad sobre la tabla **tal como está escrita**, porque esa es la única
+  tabla que se ve.
+
+  Y por debajo de `N_MINIMO_TRAMO` no sale media: sale el motivo. La media de una
+  salida es esa salida otra vez, con otro nombre y con la misma pinta que una
+  media de treinta. Los bordes son cuartiles de **carga**, no de cuántas salidas
+  caen en cada banda, así que un tramo escuchimizado no es una esquina rara sino
+  lo normal en los extremos.
+- **La recuperación** solo usa salidas **aisladas** (`DIAS_AISLAMIENTO`): con otra
+  salida al lado, el día +2 ya no mide la recuperación de la primera. Un día sin
+  bici dentro de la cobertura es un cero de verdad y cuenta como aislamiento; un
+  día sin fila es un hueco y **no** cuenta. Esa distinción es la que hace que la
+  curva signifique algo.
+- **Las gráficas** las dibuja `graficos.js` y no calcula ni un número: la HRV en
+  el tiempo con las salidas marcadas y la raya del corte, y la curva de días +1 a
+  +4 con el cero marcado.
+
+#### Los dos huecos que la vista dice en vez de callar
+
+Ninguno devuelve un cero de relleno; los dos devuelven el motivo escrito.
+
+- **Ventana más larga que el histórico**, partida en dos frases que no son la
+  misma noticia. Los días de **antes** de la primera salida son historia que no
+  existe y no va a existir. Los de **después** de la última son el reloj sin
+  sincronizar, o sea lo único de los dos sobre lo que se puede hacer algo hoy.
+  Contarlos juntos escribía «3 días de la ventana son de antes de la bici» sobre
+  tres días de la semana pasada: decía lo contrario de la verdad y además escondía
+  el caso arreglable.
+- **La línea plana.** El dibujo escala el eje a lo medido, así que una ventana con
+  todas las noches iguales no tiene alto contra el que dibujar y el navegador
+  devolvería una cadena vacía. Un hueco sin motivo en mitad de la pantalla es
+  justo el fallo silencioso que este panel persigue, y ningún test de los que
+  comprueban que no se pinta `undefined` lo vería.
+
 ## El encabezado de cada vista (`analysis/encabezados.py`)
 
 Cada endpoint de `/api/metrics/` -menos la portada, que es un encabezado de
@@ -151,6 +259,25 @@ El registro `POR_VISTA` se comprueba contra la **tabla de rutas de la
 aplicación**, no contra una lista escrita al lado: una vista nueva sin
 encabezado rompe el test el día que se escribe, y un encabezado cuya vista ya no
 existe también.
+
+### El payload tiene que decir qué vista es
+
+Por el mismo motivo, `poner()` se niega a poner encabezado a un payload que no
+lleve `vista`. Dos vistas —Umbral y Percepción— habían llegado a producción sin
+declararse y nadie se enteró, porque el que no dice quién es se lee igual de bien
+que el que sí. La pantalla y los tests cuentan con esa etiqueta.
+
+Lo que **no** se hace es rellenarla: `payload["vista"] = nombre` parece el arreglo
+obvio y es un renombrado silencioso. `nombre` es el trozo de la URL
+—`ranking-ejercicios`, con guion— y `vista` es el identificador del payload
+—`ranking_ejercicios`, con subrayado—. No son el mismo dato, y escribir uno
+encima del otro cambiaría la respuesta sin que nadie hubiera tocado la respuesta.
+Se comprueba que esté, que es lo único que hacía falta.
+
+Con la misma lógica, el payload de Umbral publica su `metodo`. El endpoint lo
+acepta y lo valida, así que si no viajara de vuelta habría un mando en el panel
+que se puede mover, que cambia el cálculo, y del que no hay forma de comprobar
+desde fuera que lo haya cambiado.
 
 ### El desplegable de Impacto ya no se estrena vacío
 

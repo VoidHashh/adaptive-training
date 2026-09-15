@@ -690,6 +690,20 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
 .tabla td { padding: 0.3rem 0.4rem 0.3rem 0; border-bottom: 1px solid var(--borde); }
 .tabla tr:last-child td { border-bottom: 0; }
 
+/* La fila señalada de una tabla: el tramo que se lleva dentro el corte, o el
+ * candidato que ganó.
+ *
+ * Con una barra a la izquierda y el fondo un punto más claro, NO con negrita ni
+ * con color de texto. En una tabla de números alineados, cambiarle el peso a una
+ * fila la hace parecer más grande; y el color de texto ya significa otra cosa en
+ * esta aplicación -naranja es «va a peor»-, así que usarlo aquí para decir
+ * «mira ésta» diría dos cosas a la vez con la misma tinta. */
+.tabla tr.parte td {
+  background: var(--caja);
+  box-shadow: inset 2px 0 0 var(--acento);
+}
+.tabla tr.parte td:first-child { padding-left: 0.5rem; }
+
 /* El motivo dentro de una fila de tabla. Envuelve: es prosa, no una cifra, y
  * cortarlo con `ellipsis` dejaría fuera justo la parte que explica. */
 .tabla .motivo {

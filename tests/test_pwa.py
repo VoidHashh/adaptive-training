@@ -224,6 +224,16 @@ HUELLAS_DEL_ARMAZON = {
     # sea que funciona, y justamente por eso no se notaría: lo único que faltaría
     # es poder elegir otra cosa, que es todo lo que se pidió.
     "v9": "b28b496ae5508b6805e85f7e3c248944946d63f8c3bd5debe4cc35c0370c33ce",
+    # v10: la pantalla del umbral de la bici. Vista nueva entera -`comun.js` por
+    # la barra, `graficos.js` por los dos dibujos, `metricas.js` por la vista y
+    # `styles.css` por la fila señalada de las tablas-, o sea cuatro de los
+    # cuatro archivos de JavaScript y CSS del armazón.
+    #
+    # Y aquí el móvil viejo falla de la peor forma de las tres: la barra de abajo
+    # es la de antes, sin «Umbral», así que a la pantalla NO SE LLEGA. No sale
+    # rota, no sale vacía, no sale a medias; sencillamente no está, y desde el
+    # teléfono eso es indistinguible de que no se haya hecho todavía.
+    "v10": "993517bf1516739d131152012f9d48ccbf2a92a23435a2232fea021fd16bd7de",
 }
 
 
@@ -863,7 +873,7 @@ def _sembrar(ses) -> None:
 
 
 def _payloads(cliente) -> dict[str, object]:
-    """Las siete respuestas de verdad, tal cual las recibe el móvil."""
+    """Las ocho respuestas de verdad, tal cual las recibe el móvil."""
     rutas = {
         "portada": ("/api/metrics/portada", {}),
         "concordancia": ("/api/metrics/concordancia", {}),
@@ -871,6 +881,7 @@ def _payloads(cliente) -> dict[str, object]:
         "impacto": ("/api/metrics/impacto", {}),
         "auditoria": ("/api/metrics/auditoria", {}),
         "percepcion": ("/api/metrics/percepcion", {}),
+        "umbral": ("/api/metrics/umbral", {}),
     }
     salida = {}
     for nombre, (url, extra) in rutas.items():
@@ -943,6 +954,36 @@ def _payloads(cliente) -> dict[str, object]:
             f"que llenar las cuatro, porque la casilla vacía manda `pct` a "
             f"`None` y es otra rama distinta de la que se persigue."
         )
+
+    # LA PANTALLA DEL UMBRAL, TAMBIÉN POR LA RAMA BUENA.
+    #
+    # El mismo argumento de arriba, y ésta es la vista más expuesta a él:
+    # `pintarUmbral` tiene cuatro sitios por los que puede irse por el camino
+    # corto -la tabla de tramos, la frontera, cada curva y la gráfica-, y cada
+    # uno se lleva por delante un puñado de claves sin que nadie se entere. Con
+    # un sembrado sin bici esta pantalla pinta cuatro motivos escritos, no se
+    # lee ni un número, y el arnés la daría por buena.
+    u = salida["umbral"]
+    assert not u["umbral"]["na"], (
+        f"los tramos del umbral vienen por la rama de «no hay bastante» "
+        f"({u['umbral']['na']!r}): el sembrado no tiene salidas de bici con HRV "
+        f"la mañana de antes y la de después."
+    )
+    assert u["umbral"]["frontera"]["carga"] is not None, (
+        f"la frontera no encuentra corte ({u['umbral']['frontera']['na']!r}). "
+        f"Sin corte no se leen ni `vecinos`, ni `miradas`, ni la lectura, ni el "
+        f"escalón, que son media pantalla."
+    )
+    llenas = [c for c in u["recuperacion"]["curvas"] if not c["na"]]
+    assert llenas, (
+        "las dos curvas de recuperación vienen con el motivo escrito: el "
+        "sembrado no deja ni una salida aislada. Así no se pinta una sola barra "
+        "y no se leen ni `por_dia`, ni `escala`, ni `vuelve_el_dia`."
+    )
+    assert not u["grafica"]["na"], (
+        f"la gráfica del umbral no se dibuja ({u['grafica']['na']!r}), así que "
+        f"no se leen ni `puntos`, ni `salidas`, ni `altura_corte`."
+    )
     return salida
 
 
@@ -1015,9 +1056,25 @@ def test_los_renderizadores_no_leen_ni_una_clave_que_el_backend_no_mande(
         f"la PWA no pinta limpio contra los payloads de verdad:\n"
         f"{r.stdout}\n{r.stderr}"
     )
-    # Que las seis se hayan pintado de verdad, y no que el andamio se haya
-    # callado por haberlas saltado todas.
-    assert r.stdout.count("ok ") == 6, f"no se pintaron las seis vistas:\n{r.stdout}"
+    # QUE SE HAYAN PINTADO TODAS, y "todas" se cuenta desde `metricas.js`.
+    #
+    # Aquí ponía un 6 escrito a mano, y ese 6 tenía que subir a mano cada vez que
+    # se añadía una vista. Lo que protege este `assert` es que el andamio no se
+    # calle habiéndoselas saltado, y con el número escrito el fallo más probable
+    # -añadir la vista a `metricas.js` y olvidarla en la lista `VISTAS` de
+    # `render_pwa.mjs`- dejaba el andamio pintando las de siempre y este test en
+    # verde, porque el 6 tampoco se había tocado. Dos listas escritas a mano
+    # comparadas contra un número escrito a mano no comprueban nada.
+    #
+    # Contando las claves reales de `VISTAS` en `metricas.js`, el olvido en el
+    # andamio se pone rojo solo.
+    cuantas = len(_claves_de_objeto(METRICAS, "VISTAS"))
+    assert cuantas, "no encuentro las claves de VISTAS en metricas.js"
+    assert r.stdout.count("ok ") == cuantas, (
+        f"`metricas.js` tiene {cuantas} vistas y el andamio solo ha pintado "
+        f"{r.stdout.count('ok ')}. Casi siempre es una vista nueva que falta en "
+        f"la lista `VISTAS` de `tests/render_pwa.mjs`:\n{r.stdout}"
+    )
 
 
 def test_las_pantallas_de_la_nav_llevan_a_algo_que_existe():
@@ -1029,10 +1086,21 @@ def test_las_pantallas_de_la_nav_llevan_a_algo_que_existe():
     marca como activa una pestaña que no es la que se ve.
     """
     pantallas = re.findall(r'href: "([^"]+)"', COMUN)
-    assert len(pantallas) == 7, f"esperaba siete pantallas, encontré {pantallas}"
-
     vistas = set(_claves_de_objeto(METRICAS, "VISTAS"))
     assert vistas, "no encuentro las claves de VISTAS en metricas.js"
+
+    # Una por vista, más el check-in. El número NO se escribe: se cuenta desde
+    # `VISTAS`, que es la lista de la que depende de verdad. Escrito -y estuvo
+    # escrito- había que subirlo a mano con cada pantalla nueva, y un test que
+    # hay que editar para que siga pasando acaba editándose sin mirar qué decía.
+    assert len(pantallas) == len(vistas) + 1, (
+        f"la barra tiene {len(pantallas)} enlaces y `VISTAS` tiene "
+        f"{len(vistas)} vistas más el check-in: {pantallas}"
+    )
+    assert "/" in pantallas, (
+        "la barra ha perdido el enlace al check-in, que es la única pantalla "
+        "que no es una métrica y la que se abre todas las mañanas"
+    )
 
     for href in pantallas:
         if href == "/":

@@ -147,23 +147,33 @@ async function pedir(ruta, parametros = {}) {
 // La navegación
 // ---------------------------------------------------------------------------
 
-/* Las siete pantallas, en el orden en que tienen sentido.
+/* Las ocho pantallas, en el orden en que tienen sentido.
  *
  * El check-in va primero porque es lo que se abre a las siete de la mañana. La
  * portada va justo detrás porque es la respuesta a la pregunta que se hace al
  * salir de él -«¿y entonces cómo voy?»- y porque es la única que no obliga a
  * elegir nada para enseñar algo.
  *
- * Las cinco de detalle van después, en el orden en que se leen: primero si lo
+ * Las seis de detalle van después, en el orden en que se leen: primero si lo
  * que noto coincide con el reloj, luego si coincide con retraso, luego qué le
- * hace cada cosa al cuerpo, luego qué ha hecho el motor con todo eso, y al final
- * lo que dicen los números frente a lo que parecía.
+ * hace cada cosa al cuerpo, luego A PARTIR DE CUÁNTO se lo hace, luego qué ha
+ * hecho el motor con todo eso, y al final lo que dicen los números frente a lo
+ * que parecía.
+ *
+ * El umbral va pegado a Impacto y no al final porque son la misma pregunta en
+ * dos mitades: Impacto dice que la carga y la HRV van juntas, y el umbral dice
+ * la cifra. Separadas por dos pantallas, la segunda se lee como otro tema.
  *
  * LAS ETIQUETAS CORTAS NO SON EL NOMBRE TÉCNICO DE LA VISTA. En una barra de
- * siete botones en un móvil caben ocho caracteres, y «Concordancia» ahí no dice
+ * ocho botones en un móvil caben ocho caracteres, y «Concordancia» ahí no dice
  * nada que ayude a decidir si tocarlo. Dicen QUÉ SE VA A VER: «Coincide»,
  * «Retraso», «Efecto», «Motor», «Real». El nombre largo y técnico sigue entero
  * en el título de la pantalla, que es donde hay sitio para explicarlo.
+ *
+ * «Umbral» se sale de esa regla y es la excepción que la confirma: no es la
+ * palabra del código, es la suya. Así lo llamó él -«el umbral de 150»- antes de
+ * que existiera la vista, y traducirlo a «Cuánto» sería quitarle el nombre que
+ * ya tiene en su cabeza para ponerle uno más llano que nadie ha usado nunca.
  */
 const PANTALLAS = [
   { href: "/", etiqueta: "Check-in", corta: "Hoy" },
@@ -171,6 +181,7 @@ const PANTALLAS = [
   { href: "/metricas.html#concordancia", etiqueta: "Concordancia", corta: "Coincide" },
   { href: "/metricas.html#desfase", etiqueta: "Desfase", corta: "Retraso" },
   { href: "/metricas.html#impacto", etiqueta: "Impacto", corta: "Efecto" },
+  { href: "/metricas.html#umbral", etiqueta: "El umbral de la bici", corta: "Umbral" },
   { href: "/metricas.html#auditoria", etiqueta: "Auditoría", corta: "Motor" },
   { href: "/metricas.html#percepcion", etiqueta: "Percepción", corta: "Real" },
 ];

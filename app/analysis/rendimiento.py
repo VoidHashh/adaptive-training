@@ -1229,6 +1229,10 @@ def vista_percepcion(
         motivos[clave] = motivos.get(clave, 0) + 1
 
     return {
+        # Se declara la vista como todas las demás. Va sin `metodo`, y eso está
+        # razonado en el endpoint: aquí no se correlaciona nada, se restan dos
+        # percentiles ya guardados.
+        "vista": "percepcion",
         "ventana": {
             "desde": desde.isoformat(),
             "hasta": hasta.isoformat(),

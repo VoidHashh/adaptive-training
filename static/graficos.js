@@ -413,6 +413,259 @@ function reglaPercentiles(percepcionPct, rendimientoPct, ancho = 300, alto = 62)
 }
 
 // ---------------------------------------------------------------------------
+// La HRV en el tiempo, con las salidas debajo
+// ---------------------------------------------------------------------------
+
+/* Media año de HRV y, en su propio carril, cada salida como un palo.
+ *
+ * Es el dibujo que contesta "¿se ve?" antes de que ninguna media diga nada. Las
+ * dos señales van en carriles SEPARADOS y no superpuestas a propósito: pintar la
+ * carga sobre la HRV obliga a dos ejes verticales distintos en la misma caja, y
+ * dos ejes en una caja de 160 píxeles en un móvil es donde nacen las lecturas
+ * inventadas -"mira cómo baja justo cuando sube el palo"- que el ojo ve tanto si
+ * están como si no.
+ *
+ * SIN EJE NUMÉRICO, y no por falta de sitio. Un eje de milisegundos invita a leer
+ * valores absolutos de una HRV, que no significan nada fuera de esta persona. Lo
+ * que sí va dibujado es la BANDA de lo normal -sus propios cuartiles-, que es la
+ * referencia que sí se puede leer: dentro de la banda es un día como otro
+ * cualquiera, fuera no. Los números de la banda van en la prosa de al lado, donde
+ * se leen una vez, y no repetidos en el borde de la caja.
+ *
+ * La línea gruesa es la media móvil que manda el servidor. Los puntos sueltos de
+ * detrás son la medida cruda de cada noche, tenues: sin ellos, una línea suave
+ * sobre una señal que salta diez milisegundos cada noche parece un dato mucho más
+ * firme de lo que es.
+ *
+ * Los días sin medir no se unen, igual que en `serieTemporal`, y por lo mismo.
+ */
+function hrvConSalidas(g, ancho = 320, alto = 160) {
+  if (!g || !g.puntos || !g.puntos.length) return "";
+  const rango = g.rango;
+  if (!rango || rango.length !== 2 || rango[0] === rango[1]) return "";
+
+  // Tres carriles: la HRV arriba, un respiro, y las salidas abajo. Las salidas
+  // crecen HACIA ARRIBA desde su base, que es como se lee "cuánto fue" sin
+  // pensar.
+  const arrH = 6, altoH = 92;          // carril de la HRV
+  const baseS = alto - 16, altoS = 40; // carril de las salidas
+  const izq = 2, der = 2;
+  const w = ancho - izq - der;
+
+  const aNum = (iso) => {
+    const [a, m, d] = String(iso).split("-").map(Number);
+    return Date.UTC(a, m - 1, d) / 86400000;
+  };
+  const t0 = aNum(g.puntos[0].fecha);
+  const t1 = aNum(g.puntos[g.puntos.length - 1].fecha);
+  const span = t1 === t0 ? 1 : t1 - t0;
+  const x = (iso) => izq + ((aNum(iso) - t0) / span) * w;
+  const y = (v) => arrH + (1 - (v - rango[0]) / (rango[1] - rango[0])) * altoH;
+
+  const piezas = [];
+
+  // La banda de lo normal, detrás de todo.
+  if (g.banda && g.banda.desde !== null && g.banda.hasta !== null) {
+    const yA = y(g.banda.hasta), yB = y(g.banda.desde);
+    piezas.push(
+      `<rect x="${izq}" y="${yA.toFixed(1)}" width="${w}" ` +
+      `height="${Math.max(yB - yA, 1).toFixed(1)}" fill="${AZUL}" opacity="0.10">` +
+      `<title>${escapar(
+        `lo normal en ti: de ${g.banda.desde} a ${g.banda.hasta} ms`,
+      )}</title></rect>`,
+    );
+  }
+
+  // La medida cruda de cada noche, tenue y sin unir.
+  for (const p of g.puntos) {
+    if (p.valor === null || p.valor === undefined) continue;
+    piezas.push(
+      `<circle cx="${x(p.fecha).toFixed(1)}" cy="${y(p.valor).toFixed(1)}" ` +
+      `r="0.9" fill="${TENUE}" opacity="0.55"/>`,
+    );
+  }
+
+  // Y encima la media móvil, que es la que se sigue con el ojo.
+  let camino = "";
+  let previo = null;
+  for (const p of g.puntos) {
+    if (p.suave === null || p.suave === undefined) { previo = null; continue; }
+    const n = aNum(p.fecha);
+    const seguido = previo !== null && n - previo === 1;
+    camino += `${seguido ? "L" : "M"}${x(p.fecha).toFixed(1)},${y(p.suave).toFixed(1)}`;
+    previo = n;
+  }
+  if (camino) {
+    piezas.push(
+      `<path d="${camino}" fill="none" stroke="${AZUL}" stroke-width="2" ` +
+      `stroke-linejoin="round" stroke-linecap="round"/>`,
+    );
+  }
+
+  // El suelo del carril de abajo, que es lo que convierte los palos en palos y
+  // no en marcas flotando.
+  piezas.push(
+    `<line x1="${izq}" y1="${baseS}" x2="${ancho - der}" y2="${baseS}" ` +
+    `stroke="${REJILLA}" stroke-width="1"/>`,
+  );
+
+  // La raya del umbral cruzando el carril, con su altura ya calculada en el
+  // servidor. Es la que hace que el dibujo conteste la pregunta de la vista:
+  // los palos que la pasan son los que cuestan un día.
+  if (g.altura_corte !== null && g.altura_corte !== undefined) {
+    const yC = baseS - Number(g.altura_corte) * altoS;
+    piezas.push(
+      `<line x1="${izq}" y1="${yC.toFixed(1)}" x2="${ancho - der}" ` +
+      `y2="${yC.toFixed(1)}" stroke="${NARANJA}" stroke-width="1" ` +
+      `stroke-dasharray="4 3" opacity="0.8"><title>${escapar(
+        `el escalón: ${g.corte} de carga`,
+      )}</title></line>`,
+    );
+  }
+
+  for (const s of g.salidas || []) {
+    const h = Math.max(Number(s.altura) * altoS, 1);
+    // `dura` viene en tres estados y los tres se pintan distinto: `true` es una
+    // salida por encima del escalón, `false` por debajo, y `null` es que no se
+    // encontró escalón -entonces no hay dos clases de salida y se pintan todas
+    // igual, en vez de fingir una distinción que esta ventana no sostiene-.
+    const color = s.dura === true ? NARANJA : s.dura === false ? TENUE : AZUL;
+    piezas.push(
+      `<rect x="${(x(s.fecha) - 0.9).toFixed(1)}" ` +
+      `y="${(baseS - h).toFixed(1)}" width="1.8" height="${h.toFixed(1)}" ` +
+      `fill="${color}" opacity="${s.dura === false ? "0.7" : "0.95"}">` +
+      `<title>${escapar(`${s.fecha}: ${s.carga} de carga`)}</title></rect>`,
+    );
+  }
+
+  // Las dos fechas de los extremos. No son un eje: son el ancla sin la cual
+  // media año de línea no se sabe dónde empieza.
+  piezas.push(
+    `<text x="${izq}" y="${alto - 3}" fill="${TENUE}" font-size="9">` +
+    `${escapar(fechaMinima(g.puntos[0].fecha))}</text>`,
+    `<text x="${ancho - der}" y="${alto - 3}" fill="${TENUE}" font-size="9" ` +
+    `text-anchor="end">${escapar(
+      fechaMinima(g.puntos[g.puntos.length - 1].fecha),
+    )}</text>`,
+  );
+
+  return (
+    `<svg class="g-hrv" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `role="img" aria-label="la HRV a lo largo de la ventana con las salidas ` +
+    `de bici marcadas debajo">` + piezas.join("") + `</svg>`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// La curva de recuperación
+// ---------------------------------------------------------------------------
+
+/* Cuánto se movió la HRV el día +1, +2, +3 y +4 de una salida.
+ *
+ * El cero va dibujado, etiquetado y ES LA REFERENCIA: aquí no se mide una HRV,
+ * se mide un cambio respecto de la noche anterior a la salida. Una barra hacia
+ * abajo es "peor que antes de salir" y una hacia arriba es "mejor". Sin la línea
+ * del cero rotulada, la altura de una barra no significa nada.
+ *
+ * Cada barra lleva su BIGOTE entre cuartiles, y ésa es la pieza que impide la
+ * lectura fácil. Cuatro medias solas dibujan una curva de recuperación preciosa;
+ * con los bigotes se ve que el día +1 baja seis milisegundos de media con
+ * salidas que fueron de −7,5 a −5, y que el día +3 tiene un recorrido tan ancho
+ * que su media es casi una anécdota. Las dos cosas son el mismo dato y solo una
+ * de las dos se puede presumir.
+ *
+ * Y NO HAY BARRA HUECA aquí, que en el resto del panel significa "no aguanta la
+ * corrección". Estas medias no llevan contraste ninguno -el servidor manda
+ * `significativa: null` a propósito- y pintarlas huecas diría que suspendieron un
+ * examen al que no se presentaron.
+ */
+function barrasRecuperacion(curva, ancho = 300, alto = 130) {
+  const dias = (curva && curva.por_dia) || [];
+  if (!dias.length) return "";
+  const escala = Number(curva.escala);
+  if (!escala || !isFinite(escala)) return "";
+
+  const arr = 10, aba = 26;
+  const h = alto - arr - aba;
+  const yCero = arr + h / 2;
+  const izq = 22, der = 6;
+  const w = ancho - izq - der;
+  const paso = w / dias.length;
+  const anchoBarra = Math.min(paso * 0.5, 26);
+  // Media caja para la escala entera: una barra de `escala` llega justo al
+  // borde, y ninguna se sale.
+  const y = (v) => yCero - (Number(v) / escala) * (h / 2);
+
+  const piezas = [
+    `<line x1="${izq - 6}" y1="${yCero}" x2="${ancho - der}" y2="${yCero}" ` +
+    `stroke="${TENUE}" stroke-width="1"/>`,
+    `<text x="0" y="${yCero - 4}" fill="${TENUE}" font-size="9">igual</text>`,
+    `<text x="0" y="${yCero + 11}" fill="${TENUE}" font-size="9">que</text>`,
+    `<text x="0" y="${yCero + 21}" fill="${TENUE}" font-size="9">antes</text>`,
+  ];
+
+  dias.forEach((d, i) => {
+    const cx = izq + paso * i + paso / 2;
+    piezas.push(
+      `<text x="${cx.toFixed(1)}" y="${alto - 12}" fill="${TENUE}" ` +
+      `font-size="10" text-anchor="middle">+${escapar(d.dia)}</text>`,
+    );
+
+    if (d.media === null || d.media === undefined) {
+      // El día sin media se dice con palabras, no con una barra de altura cero
+      // -que se leería como "ese día no se movió"-.
+      piezas.push(
+        `<text x="${cx.toFixed(1)}" y="${(yCero + 4).toFixed(1)}" ` +
+        `fill="${TENUE}" font-size="9" text-anchor="middle">·` +
+        `<title>${escapar(d.na || "sin media")}</title></text>`,
+      );
+      return;
+    }
+
+    const yV = y(d.media);
+    const color = colorSigno(d.media);
+    piezas.push(
+      `<rect x="${(cx - anchoBarra / 2).toFixed(1)}" ` +
+      `y="${Math.min(yV, yCero).toFixed(1)}" width="${anchoBarra.toFixed(1)}" ` +
+      `height="${Math.max(Math.abs(yV - yCero), 1).toFixed(1)}" ` +
+      `fill="${color}" rx="1.5"><title>${escapar(
+        `día +${d.dia}: ${d.frase}` +
+        (d.p25 !== null && d.p25 !== undefined
+          ? ` · la mitad central entre ${d.p25} y ${d.p75}`
+          : "") +
+        ` · ${d.n}`,
+      )}</title></rect>`,
+    );
+
+    if (d.p25 === null || d.p25 === undefined) return;
+    const yA = y(d.p75), yB = y(d.p25);
+    const ala = Math.min(anchoBarra * 0.3, 6);
+    piezas.push(
+      `<line x1="${cx.toFixed(1)}" y1="${yA.toFixed(1)}" x2="${cx.toFixed(1)}" ` +
+      `y2="${yB.toFixed(1)}" stroke="${TENUE}" stroke-width="1.2"/>` +
+      `<line x1="${(cx - ala).toFixed(1)}" y1="${yA.toFixed(1)}" ` +
+      `x2="${(cx + ala).toFixed(1)}" y2="${yA.toFixed(1)}" stroke="${TENUE}" ` +
+      `stroke-width="1.2"/>` +
+      `<line x1="${(cx - ala).toFixed(1)}" y1="${yB.toFixed(1)}" ` +
+      `x2="${(cx + ala).toFixed(1)}" y2="${yB.toFixed(1)}" stroke="${TENUE}" ` +
+      `stroke-width="1.2"/>`,
+    );
+  });
+
+  piezas.push(
+    `<text x="${ancho - der}" y="${alto - 1}" fill="${TENUE}" font-size="9" ` +
+    `text-anchor="end">días después de la salida</text>`,
+  );
+
+  return (
+    `<svg class="g-recuperacion" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `role="img" aria-label="cuánto cambia la HRV cada día después de una ` +
+    `salida, con el recorrido de la mitad central">` +
+    piezas.join("") + `</svg>`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Serie temporal
 // ---------------------------------------------------------------------------
 

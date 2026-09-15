@@ -36,6 +36,7 @@ const RUTAS = {
   ranking: "/api/metrics/ranking-ejercicios",
   auditoria: "/api/metrics/auditoria",
   percepcion: "/api/metrics/percepcion",
+  umbral: "/api/metrics/umbral",
 };
 
 /* LOS TÍTULOS SON LO QUE SE VE, NO CÓMO SE LLAMA LA VISTA POR DENTRO.
@@ -85,6 +86,16 @@ const VISTAS = {
     titulo: "Lo que esperabas y lo que salió",
     subtitulo: "Sesión a sesión, la mañana frente al resultado",
     pintar: pintarPercepcion,
+  },
+  // El título es la pregunta de verdad y no «El umbral de la bici», que es como
+  // se pidió la vista: «umbral» es la palabra del hallazgo, no la de la duda que
+  // lleva a abrir esta pantalla. El menú de abajo sí la lleva -ahí hace falta
+  // una etiqueta corta y reconocible-, y aquí arriba, con sitio para una frase,
+  // gana la frase.
+  umbral: {
+    titulo: "Cuánta bici te pasa factura",
+    subtitulo: "Tus salidas partidas por carga, contra la HRV del día siguiente",
+    pintar: pintarUmbral,
   },
 };
 
@@ -1351,6 +1362,330 @@ function tarjetaSesion(s, titulo) {
     `${num(s.percepcion_pct, 0)}) · hiciste ${num(s.rendimiento, 1)} (percentil ` +
     `${num(s.rendimiento_pct, 0)}) · ${entero(s.n_base)} sesiones detrás</p>` +
     (piezas ? `<p class="ficha">${piezas}</p>` : "") +
+    `</article>`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vista 6: el umbral de la bici
+// ---------------------------------------------------------------------------
+
+/* DOS PREGUNTAS, Y VAN EN ESTE ORDEN.
+ *
+ * Primero a partir de cuánta bici se nota, y después cuánto dura lo que se nota.
+ * El orden no es de maquetación: la segunda pregunta se calcula SOBRE la
+ * respuesta de la primera -la curva de arriba es la de las salidas por encima
+ * del corte-, así que leerlas al revés deja un «cuesta un día» flotando sin
+ * saber un día de qué.
+ *
+ * Y cada una va con su control al lado, arriba y sin plegar. El de la primera es
+ * la relación suave entre carga y HRV: si esa aguanta la corrección y el corte
+ * no, lo que hay es una cuesta y el umbral es un punto cualquiera de ella. El de
+ * la segunda es cuántas salidas aisladas hay detrás, que casi siempre son pocas.
+ * Los dos dicen «esto podría no ser nada», y por eso están donde se leen y no
+ * detrás de un triángulo que hay que tocar.
+ */
+async function pintarUmbral(dias) {
+  const d = await pedir(RUTAS.umbral, { dias });
+
+  const partes = [
+    encabezadoVista(d.encabezado),
+    pintarCobertura(d.cobertura, d.ventana),
+    `<p class="ficha">${escapar(d.salidas.resumen)}</p>`,
+    seccionFrontera(d),
+    seccionTramos(d.umbral),
+    plegableCandidatos(d.umbral.frontera),
+    seccionRecuperacion(d.recuperacion, d.sin_p),
+    // El convenio es la letra pequeña de TODA la pantalla -contra qué se compara
+    // cada número- y por eso va al final y una sola vez, en vez de repetido en
+    // cada tarjeta o escondido donde no se lea.
+    `<p class="aviso tenue">${escapar(d.convenio)}</p>`,
+  ];
+
+  $("vista").innerHTML = partes.join("");
+}
+
+/* La ficha de un resumen del servidor: cuántas salidas hay detrás y entre qué
+ * valores está la mitad central.
+ *
+ * El recorrido va SIEMPRE que haya media, y no es adorno. Una media de −9 ms con
+ * las salidas repartidas entre −10 y −8, y una media de −9 ms con las salidas
+ * repartidas entre −40 y +20, son el mismo número contando dos cosas que no se
+ * parecen en nada. Sin el recorrido, la segunda se lee como la primera.
+ *
+ * `na` y `aviso` no salen nunca juntos porque el servidor no los manda juntos: o
+ * no hay número, o lo hay y puede llevar advertencia. */
+function fichaResumen(r) {
+  if (r.media === null || r.media === undefined) return bloqueNa(r.na);
+  return (
+    `<p class="ficha">${cuenta(r.n, "salida", "salidas")} · la mitad central ` +
+    `entre ${num(r.p25)} y ${num(r.p75)} ms</p>` +
+    (r.aviso ? `<p class="aviso">${escapar(r.aviso)}</p>` : "")
+  );
+}
+
+function seccionFrontera(d) {
+  const f = d.umbral.frontera;
+  const g = d.grafica;
+
+  // El dibujo se pinta HAYA O NO HAYA corte. Sin corte no lleva la raya naranja
+  // ni los palos de dos colores, y sigue contando lo mismo que contaría un
+  // cuaderno: cuándo saliste y qué hizo la HRV. Esconderlo porque el análisis no
+  // ha encontrado nada dejaría la pantalla sin lo único que no depende de que el
+  // análisis encuentre algo.
+  const dibujo =
+    `<article class="tarjeta">` +
+    (g.na ? bloqueNa(g.na) : hrvConSalidas(g) + pieGrafica(g)) +
+    `</article>`;
+
+  const titulo = `<h2 class="grupo">A partir de cuánta bici se nota</h2>`;
+
+  if (f.na) {
+    return (
+      titulo +
+      `<article class="tarjeta">${bloqueNa(f.na)}</article>` +
+      dibujo +
+      bloqueContinua(f)
+    );
+  }
+
+  const c = f.corte;
+  return (
+    titulo +
+    // Grande, como el contador de percepción, porque es el número que se venía a
+    // buscar. Y redondeado a entero igual que lo redondea la frase del servidor:
+    // pintar aquí «150,8» debajo de una lectura que dice «de 151 para arriba»
+    // sería enseñar dos umbrales distintos en dos renglones seguidos. El valor
+    // sin redondear está en la ficha, que es donde se mira cuando importa.
+    `<section class="contador">` +
+    `<p class="enorme">${num(f.carga, 0)}</p>` +
+    `<p class="pie">de carga de entreno en una salida</p>` +
+    `<p class="ficha">el corte cae exactamente en ${num(f.carga, 1)} · ` +
+    `${cuenta(c.n_debajo, "salida", "salidas")} por debajo · ` +
+    `${entero(c.n_encima)} por encima</p>` +
+    `</section>` +
+    `<article class="tarjeta">` +
+    `<p class="lectura">${escapar(f.lectura)}</p>` +
+    `<div class="retardo">` +
+    `<div class="linea"><label>Por debajo de ${num(f.carga, 0)}</label>` +
+    `<output class="valor">${num(c.debajo.media)}</output></div>` +
+    fichaResumen(c.debajo) +
+    `</div>` +
+    `<div class="retardo">` +
+    `<div class="linea"><label>De ${num(f.carga, 0)} para arriba</label>` +
+    `<output class="valor">${num(c.encima.media)}</output></div>` +
+    fichaResumen(c.encima) +
+    `</div>` +
+    (c.diferencia !== null && c.diferencia !== undefined
+      ? `<p class="medias">Diferencia: <b>${num(c.diferencia)}</b> ms` +
+        `${c.p_corregida !== null && c.p_corregida !== undefined
+          ? ` · p corregida ${num(c.p_corregida, 3)}` : ""}` +
+        `${c.significativa === true ? " · aguanta la corrección" : ""}` +
+        `${c.significativa === false ? " · no aguanta la corrección" : ""}</p>`
+      : "") +
+    ficha(c) +
+    `</article>` +
+    dibujo +
+    bloqueContinua(f)
+  );
+}
+
+/* El pie del dibujo: qué es cada cosa de las que se ven.
+ *
+ * Una gráfica sin leyenda con tres trazos distintos obliga a adivinar cuál es
+ * cuál, y adivinar mal aquí es leer la media móvil como si fueran las medidas.
+ * Los números del pie -el suavizado, el máximo, el rango- los manda el servidor;
+ * aquí solo se nombran. */
+function pieGrafica(g) {
+  const trozos = [];
+  if (g.suavizado) {
+    trozos.push(`la línea es la media de ${cuenta(g.suavizado, "día", "días")}`);
+  }
+  if (g.rango) trozos.push(`de ${num(g.rango[0], 1)} a ${num(g.rango[1], 1)} ms`);
+  if (g.banda) {
+    trozos.push(`la franja es tu mitad central, ${num(g.banda.desde, 1)}–` +
+      `${num(g.banda.hasta, 1)}`);
+  }
+  if (g.carga_maxima !== null && g.carga_maxima !== undefined) {
+    trozos.push(`el palo más alto es ${num(g.carga_maxima, 0)} de carga`);
+  }
+  trozos.push(`${cuenta(g.n, "noche medida", "noches medidas")}`);
+  return (
+    `<p class="ficha">${escapar(trozos.join(" · "))}</p>` +
+    (g.corte !== null && g.corte !== undefined
+      ? `<p class="explica">La raya de puntos es el corte. Los palos que la ` +
+        `pasan van en naranja; los que no, apagados.</p>`
+      : "")
+  );
+}
+
+/* EL CONTROL, Y VA ARRIBA AUNQUE ESTROPEE EL HALLAZGO.
+ *
+ * Un corte siempre se puede encontrar: parte los días por donde sea y una de las
+ * dos mitades saldrá más baja que la otra. Lo que distingue un umbral de una
+ * raya arbitraria es que la relación SUAVE -cuanta más carga, peor- no explique
+ * ya lo mismo. Por eso la correlación continua va aquí, con su barra, y no
+ * dentro del plegable de los candidatos: es lo que dice si el número grande de
+ * arriba significa algo.
+ *
+ * La frase la escribe el servidor en `escalon`, que es quien tiene las dos
+ * correcciones de la misma tanda delante. Aquí se compararían dos booleanos y
+ * saldría la misma frase hoy, y el día que cambiara la regla de corrección esta
+ * pantalla seguiría diciendo lo de antes. */
+function bloqueContinua(f) {
+  const k = f.continua;
+  if (!k) return "";
+  return (
+    `<article class="tarjeta">` +
+    `<h3>¿Escalón o cuesta?</h3>` +
+    `<p class="explica">Lo mismo sin partir por ningún sitio: la carga de cada ` +
+    `salida contra la HRV del día siguiente, tal cual.</p>` +
+    barraR(k) +
+    (k.r !== null && k.r !== undefined
+      ? `<p class="cifra">r = <b>${num(k.r)}</b></p>`
+      : bloqueNa(k.na)) +
+    ficha(k) +
+    (k.p_corregida !== null && k.p_corregida !== undefined
+      ? `<p class="ficha">p corregida ${num(k.p_corregida, 3)}` +
+        `${k.significativa === true ? " · aguanta la corrección" : ""}` +
+        `${k.significativa === false ? " · no aguanta la corrección" : ""}</p>`
+      : "") +
+    (f.escalon ? `<p class="lectura">${escapar(f.escalon)}</p>` : "") +
+    `</article>`
+  );
+}
+
+/* LA TABLA DE TRAMOS SE PARTE POR CUARTILES Y EL CORTE SE BUSCA POR DECILES, y
+ * eso hay que decirlo donde se ve.
+ *
+ * Son dos reglas distintas a propósito -lo explica la cabecera de `umbral.py`- y
+ * no tienen por qué coincidir: la tabla es para ver la forma de la cosa de punta
+ * a punta, y el corte es para encontrar el escalón. Pero sin avisar, la tabla
+ * puede decir «de 92 a 174 la HRV sube» justo encima de una frase que dice «de
+ * 151 para arriba baja 7 ms», y las dos serían verdad y parecerían reñidas.
+ *
+ * La marca la calcula el SERVIDOR (`parte_la_frontera`). Compararla aquí -«¿cae
+ * el corte entre estos dos bordes?»- sería la misma cuenta hecha dos veces en
+ * dos sitios, y el día que una de las dos cambiara de criterio sobre los bordes
+ * la marca se pondría en la fila de al lado sin que nada fallara. */
+function seccionTramos(u) {
+  const titulo = `<h2 class="grupo">La forma entera, tramo a tramo</h2>`;
+  if (u.na) return titulo + bloqueNa(u.na);
+
+  const parte = u.tramos.some((t) => t.parte_la_frontera);
+
+  return (
+    titulo +
+    `<article class="tarjeta">` +
+    `<p class="explica">Tus salidas repartidas en cuatro grupos del mismo tamaño ` +
+    `por carga, y lo que hizo la HRV la mañana de después de cada uno. Esta tabla ` +
+    `se parte en cuatro y el corte de arriba se busca en diez: son dos reglas ` +
+    `distintas y no tienen por qué caer en el mismo sitio.</p>` +
+    (parte
+      ? `<p class="explica">Por eso hay una fila señalada, y por eso su media ` +
+        `puede ir en contra de lo de arriba: ese tramo tiene dentro salidas de ` +
+        `los dos lados del corte, y su media las promedia juntas. No se contradice ` +
+        `con el hallazgo, es que está contando otra cosa.</p>`
+      : "") +
+    `<table class="tabla"><thead><tr><th>Tramo</th><th>Salidas</th>` +
+    `<th>HRV al día siguiente</th><th>Mitad central</th></tr></thead><tbody>` +
+    u.tramos.map((t) => (
+      `<tr${t.parte_la_frontera ? ' class="parte"' : ""}>` +
+      `<td>${escapar(t.etiqueta)}${t.parte_la_frontera
+        ? ` <span class="sub">— parte a caballo del corte</span>` : ""}</td>` +
+      `<td>${entero(t.n)}</td>` +
+      (t.media === null || t.media === undefined
+        ? `<td class="motivo" colspan="2">${escapar(t.na || "")}</td>`
+        : `<td>${num(t.media)} ms${t.aviso ? " *" : ""}</td>` +
+          `<td>${num(t.p25)} a ${num(t.p75)}</td>`) +
+      `</tr>`
+    )).join("") +
+    `</tbody></table>` +
+    (u.tramos.some((t) => t.aviso)
+      ? `<p class="ficha">* muy pocas salidas en ese tramo para fiarse de la ` +
+        `media. El número está, y está marcado.</p>`
+      : "") +
+    (parte
+      ? ""
+      : `<p class="ficha">El corte de arriba cae justo en un borde de la tabla, ` +
+        `o fuera de ella: ningún tramo se lo lleva dentro.</p>`) +
+    `</article>`
+  );
+}
+
+/* Los cortes que PERDIERON, con sus números.
+ *
+ * Van plegados porque son nueve filas de estadística y no es lo que se viene a
+ * mirar, pero van. Enseñar solo el ganador de una búsqueda entre nueve es la
+ * forma más limpia de que un empate parezca un hallazgo: si el de 116 y el de
+ * 147 separan casi lo mismo, eso se ve aquí y en ningún otro sitio. */
+function plegableCandidatos(f) {
+  const lista = f.candidatos || [];
+  if (!lista.length) return "";
+  return plegable(
+    `Los ${lista.length} cortes que se han probado`,
+    `<p class="explica">Cada fila es «y si el corte estuviera aquí». El ganador ` +
+    `es el que más separa las dos mitades en valor absoluto, y la corrección se ` +
+    `ha hecho sobre todos a la vez -y sobre la relación suave- para que sepa ` +
+    `cuántas veces se ha mirado.</p>` +
+    `<table class="tabla"><thead><tr><th>Corte</th><th>Debajo</th><th>Encima</th>` +
+    `<th>Diferencia</th><th>p corregida</th></tr></thead><tbody>` +
+    lista.map((c) => (
+      `<tr${f.carga !== null && c.carga === f.carga ? ' class="parte"' : ""}>` +
+      `<td>${num(c.carga, 0)}</td>` +
+      `<td>${entero(c.n_debajo)}</td>` +
+      `<td>${entero(c.n_encima)}</td>` +
+      `<td>${num(c.diferencia)}</td>` +
+      `<td>${num(c.p_corregida, 3)}` +
+      `${c.significativa === true ? " ✓" : ""}</td>` +
+      `</tr>`
+    )).join("") +
+    `</tbody></table>`,
+  );
+}
+
+function seccionRecuperacion(rec, sinP) {
+  const curvas = (rec && rec.curvas) || [];
+  return (
+    `<h2 class="grupo">Y cuánto dura</h2>` +
+    `<p class="explica">${escapar(rec.nota)}</p>` +
+    curvas.map(bloqueCurva).join("") +
+    `<p class="aviso tenue">${escapar(sinP)}</p>`
+  );
+}
+
+function bloqueCurva(c) {
+  const dias = c.por_dia || [];
+  return (
+    `<article class="tarjeta">` +
+    `<h3>${escapar(c.titulo)}</h3>` +
+    (c.na
+      ? bloqueNa(c.na)
+      : barrasRecuperacion(c) +
+        (c.lectura ? `<p class="lectura">${escapar(c.lectura)}</p>` : "") +
+        // El día en que vuelve va aparte de la lectura aunque la lectura ya lo
+        // diga: es el número que se busca, y en la frase está en medio.
+        (c.vuelve_el_dia !== null && c.vuelve_el_dia !== undefined
+          ? `<p class="cifra">De vuelta el día <b>+${entero(c.vuelve_el_dia)}</b></p>`
+          : "") +
+        `<table class="tabla"><thead><tr><th>Día</th><th>HRV</th>` +
+        `<th>Salidas</th><th>Mitad central</th></tr></thead><tbody>` +
+        dias.map((d) => (
+          `<tr><td>+${entero(d.dia)}</td>` +
+          (d.media === null || d.media === undefined
+            ? `<td class="motivo" colspan="3">${escapar(d.na || "")}</td>`
+            : `<td>${num(d.media)} ms</td><td>${entero(d.n)}</td>` +
+              `<td>${num(d.p25)} a ${num(d.p75)}</td>`) +
+          `</tr>`
+        )).join("") +
+        `</tbody></table>`) +
+    `<p class="ficha">${cuenta(c.n_salidas, "salida aislada", "salidas aisladas")}` +
+    `${c.desde_carga !== null && c.desde_carga !== undefined
+      ? ` de ${num(c.desde_carga, 0)} de carga para arriba` : ""}</p>` +
+    // El aviso de la curva ENTERA, no el de cada barra. Las cuatro barras salen
+    // de las mismas salidas: son una foto de cuatro salidas mirada cuatro veces,
+    // no cuatro medidas independientes.
+    (c.aviso ? `<p class="aviso">${escapar(c.aviso)}</p>` : "") +
     `</article>`
   );
 }

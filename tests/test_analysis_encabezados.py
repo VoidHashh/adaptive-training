@@ -311,9 +311,28 @@ def test_percepcion_en_un_sistema_recien_arrancado_no_divide_por_cero():
 
 
 def test_poner_mete_el_encabezado_dentro_del_payload():
-    p = E.poner("concordancia", {"pares": [{"r": 0.5}]})
+    p = E.poner("concordancia", {"vista": "concordancia", "pares": [{"r": 0.5}]})
     assert p["encabezado"]["n"] == 1
     assert p["pares"] == [{"r": 0.5}]
+
+
+def test_un_payload_que_no_dice_que_vista_es_revienta():
+    """La otra mitad del mismo portero, y la que faltaba.
+
+    `poner` ya se negaba a colocar un encabezado que no supiera hacer. No se
+    negaba a colocárselo a un payload que no se identifica, y por ese lado se
+    colaron dos: `percepcion` y `umbral` llegaron a contestar 200 sin decir qué
+    vista eran. Es el agujero de siempre -algo que falta y no da error- solo que
+    mirando hacia el otro lado.
+
+    No se arregla poniendo `vista` desde `nombre`, y merece la pena dejarlo
+    escrito: son datos distintos. `nombre` es el trozo de URL
+    -"ranking-ejercicios"- y `vista` el identificador del payload
+    -"ranking_ejercicios"-. Copiando uno en el otro se renombraría una vista en
+    la respuesta sin que nadie hubiera tocado la respuesta.
+    """
+    with pytest.raises(KeyError, match="vista"):
+        E.poner("concordancia", {"pares": [{"r": 0.5}]})
 
 
 def test_una_vista_sin_encabezado_revienta_en_vez_de_pasar_de_largo():

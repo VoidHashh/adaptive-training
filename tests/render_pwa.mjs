@@ -97,6 +97,7 @@ const RUTAS = {
   ranking: "/api/metrics/ranking-ejercicios",
   auditoria: "/api/metrics/auditoria",
   percepcion: "/api/metrics/percepcion",
+  umbral: "/api/metrics/umbral",
 };
 
 const contexto = {
@@ -151,6 +152,7 @@ for (const f of ["static/comun.js", "static/graficos.js", "static/metricas.js"])
 
 const VISTAS = [
   "portada", "concordancia", "desfase", "impacto", "auditoria", "percepcion",
+  "umbral",
 ];
 
 /* Lo que delata una clave mal adivinada que SÍ acaba impresa.
