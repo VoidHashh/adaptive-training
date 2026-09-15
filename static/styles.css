@@ -260,6 +260,94 @@ input[type="range"]::-moz-range-thumb {
   color: var(--texto);
 }
 
+/* --- qué se va a hacer hoy ---------------------------------------------- */
+
+/* Misma caja que una pregunta, porque es lo mismo: una cosa que se contesta
+ * pulsando. Lo que cambia es que aquí las opciones son cinco y no dos, así que
+ * van en columna: con cinco en rejilla, los títulos -«Día 2 · Tirón»- se
+ * partirían en dos líneas y el ancho de cada botón dependería de lo largo que
+ * fuera el nombre de la rutina en el `config.yaml`. */
+#selector { margin-top: 1.4rem; }
+
+.selector {
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-radius: 0.65rem;
+  padding: 0.85rem 0.9rem 0.9rem;
+  margin-bottom: 0.7rem;
+}
+
+/* Y NO se pinta el borde discontinuo de `.pregunta.sin-contestar`.
+ *
+ * Aquí no contestar no es un hueco: el motor planifica la propuesta y escribe
+ * esa rutina igual. Un borde de "te falta esto" sobre la única cosa del
+ * formulario que se puede dejar en blanco a propósito acabaría enseñando a
+ * pulsar la opción marcada para que dejara de avisar, y entonces lo que se
+ * recogería sería el trámite y no la intención. */
+
+.selector .opciones {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+
+/* Todas las opciones del mismo tamaño, color y peso, por lo mismo que los dos
+ * botones de Sí/No: la que más se ve es la que más se pulsa, y lo que se quiere
+ * saber es qué se va a hacer, no cuál botón era más cómodo. */
+.selector .opciones button {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.5rem;
+  width: 100%;
+  padding: 0.75rem 0.7rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  text-align: left;
+}
+
+.selector .opciones button .titulo { font-weight: 600; }
+
+/* LAS DOS MARCAS, Y NO SE PARECEN.
+ *
+ * `.propuesta` es lo que el sistema va a hacer si nadie toca nada: una etiqueta
+ * de texto, sin fondo. `.elegida` es lo que ha pulsado un dedo: el mismo acento
+ * que en las preguntas, y el único de los dos que viaja en el envío.
+ *
+ * Que se distingan es el diseño entero de este bloque. Pintar la propuesta con
+ * el acento sería preseleccionarla de verdad, y entonces "no lo he mirado" y
+ * "he elegido justo lo que tocaba" se verían idénticos en la pantalla que
+ * GENERA el dato -que es el sitio donde esa diferencia se pierde para siempre-. */
+.selector .opciones button.propuesta { border-color: var(--tenue); }
+
+.selector .opciones button .toca {
+  color: var(--tenue);
+  font-size: 0.78rem;
+  text-transform: lowercase;
+}
+
+.selector .opciones button.elegida {
+  border-color: var(--acento);
+  /* El acento en crudo, no un `color-mix`: el motivo entero está arriba, en los
+   * botones de Sí/No, y es el mismo iPhone sin actualizar. */
+  background: rgba(76, 141, 255, 0.22);
+}
+
+/* Lo que lleva parado. Tenue y en la misma línea: es un apunte, no un aviso.
+ *
+ * El sitio donde esto se dice de verdad es el mensaje de la mañana; aquí solo
+ * está para que la información esté delante en el momento de elegir. Con el
+ * color de error se leería como una regañina por saltarse un día, que es
+ * justamente lo que el encargo pedía que no pasara. */
+.selector .opciones button .parado {
+  color: var(--tenue);
+  font-size: 0.78rem;
+}
+
 /* --- comentarios y envío ------------------------------------------------ */
 
 .comentarios { display: block; margin: 1.1rem 0 0.9rem; }

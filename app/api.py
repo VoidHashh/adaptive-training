@@ -41,6 +41,8 @@ from sqlalchemy.orm import Session
 from app import repository as repo
 from app.config_loader import load_config
 from app.db import get_session, init_db
+from app.engine.rotacion import pendientes as rutinas_pendientes
+from app.engine.session_builder import orden_de_rotacion, siguiente_en_rotacion
 from app.models import Decision as DecisionRow
 from app.models import WorkoutLog
 from app.settings import settings
@@ -234,6 +236,24 @@ class CheckinIn(BaseModel):
     # dos listas del config, no solo contra `checkin_sliders`.
     wants_to_train: bool | None = None
     will_train: bool | None = None
+
+    # El selector de sesión. Una CADENA, que es lo que lo hace distinto de todo
+    # lo de arriba, y por eso no está en `checkin_sliders` ni en
+    # `checkin_preguntas`: esas dos listas son las que acaban en `signals.values`,
+    # donde todo tiene que ser número o booleano.
+    #
+    # Sin `Literal[...]` con las cinco opciones a mano, y no por pereza. Las
+    # opciones salen de `rotation.order`, que está en el `config.yaml`: fijarlas
+    # aquí las pondría en un segundo sitio capaz de decir algo distinto, y el día
+    # que el ciclo creciera a cuatro días la pantalla ofrecería el `dia_4` y esto
+    # lo rechazaría con un 422 que nadie sabría leer. Quien valida el valor es
+    # `repo.upsert_checkin` contra `config_loader.opciones_selector`, que es la
+    # misma función que dibuja las opciones. Aquí solo se comprueba que es texto.
+    #
+    # `None` es el tercer estado otra vez: «no he tocado el selector». No
+    # significa «no voy a entrenar» ni «haré lo propuesto»; significa que nadie
+    # ha dicho nada, y ese día la rotación propone como siempre.
+    chosen_session: str | None = None
 
     comments: str | None = None
     # Permite rehacer el check-in de ayer sin mentirle a la fecha.
@@ -690,9 +710,92 @@ def checkin_today(
         # de esta respuesta a mirar el tipo antes de nada, y el día que alguien se
         # olvide pintaría una barra de 1 a 10 para «¿Vas a entrenar hoy?».
         "preguntas": cfg.raw.get("checkin_preguntas", []),
+        "selector": _selector_de_hoy(s, cfg, day),
         "comment_label": (cfg.raw.get("checkin_comment") or {}).get(
             "label", "Comentarios"
         ),
+    }
+
+
+def _selector_de_hoy(s: Session, cfg: Any, day: date) -> dict[str, Any]:
+    """Las opciones del selector, con su título, la propuesta y lo que lleva parado.
+
+    TODO ESTO SE RESUELVE AQUÍ Y NO EN LA PANTALLA, y es la misma regla que ya
+    gobierna los deslizadores: la PWA no lleva escrita ni una opción. Si las
+    llevara, añadir un `dia_4` al ciclo dejaría la pantalla ofreciendo tres
+    mientras el sistema rota entre cuatro, y nadie se enteraría hasta mirar por
+    qué el cuarto día no sale nunca.
+
+    Las opciones salen de `cfg.opciones_selector()`, que es LA MISMA función que
+    usa `repo.upsert_checkin` para validar lo que llega. Que dibuje y valide la
+    misma lista es lo que impide la peor discordancia posible aquí: una pantalla
+    que ofrece algo que el guardado rechaza.
+
+    LOS TÍTULOS. Las rutinas del ciclo se nombran como en `config.raw["routines"]`
+    -«Día 1», no `dia_1`-; las que no son fuerza traen el suyo escrito en
+    `checkin_selector.sin_fuerza`. Una clave sin título se nombra con la clave:
+    feo pero cierto, como en `message._titulo_rutina`, y nunca un hueco.
+
+    LA PROPUESTA VIAJA APARTE DE LO CONTESTADO. Va en `propuesta` y no en
+    `values`, porque `values` es lo que dijo el usuario y la propuesta no la ha
+    dicho nadie. Mezclarlas haría que la pantalla abriera con el selector
+    contestado sin que nadie lo hubiera tocado, y a partir de ahí «declaraste
+    Día 2» se escribiría en el historial de todas las mañanas en que el
+    formulario se envió sin mirar el selector. Es exactamente el aplastamiento de
+    los tres estados que el resto de este formulario se construyó para evitar,
+    hecho en el único sitio donde después no hay forma de deshacerlo.
+
+    `pendiente` marca las rutinas que llevan más de una vuelta sin hacerse, y se
+    filtran las caducadas por el mismo motivo por el que el mensaje de la mañana
+    también las calla: una marca que sale todos los días durante meses deja de
+    informar. Ver `CADUCA_TRAS` en `app/engine/rotacion.py`.
+    """
+    orden = orden_de_rotacion(cfg)
+    sesiones = repo.sesiones_del_ciclo(s, orden, hasta=day)
+
+    # LA PROPUESTA SE CALCULA COMO LA CALCULA `decide`, con la misma función pura
+    # y sobre el mismo dato: la última sesión del ciclo EJECUTADA. No se lee de la
+    # decisión guardada de hoy, y eso es deliberado: a las 07:00 puede no haber
+    # ninguna, y entonces la pantalla se quedaría sin decir qué toca justo el día
+    # en que se abre antes de que el sistema haya decidido nada.
+    ultima = sesiones[0][0] if sesiones else None
+    propuesta = siguiente_en_rotacion(cfg, ultima) if orden else None
+
+    paradas = {
+        p.clave: p
+        for p in rutinas_pendientes(orden, sesiones)
+        if not p.caducada
+    }
+
+    rutinas = cfg.raw.get("routines") or {}
+    etiquetas = {
+        str(o["key"]): str(o.get("label") or o["key"])
+        for o in ((cfg.raw.get("checkin_selector") or {}).get("sin_fuerza") or [])
+        if o.get("key")
+    }
+
+    opciones = []
+    for clave in cfg.opciones_selector():
+        parada = paradas.get(clave)
+        opciones.append({
+            "key": clave,
+            "label": etiquetas.get(
+                clave, str((rutinas.get(clave) or {}).get("title") or clave)
+            ),
+            "es_fuerza": clave in orden,
+            # Cuántas sesiones de fuerza van desde la última vez, o `None` si no
+            # lleva parada. `None` y no 0: un cero diría «hecha hoy mismo».
+            "pendiente": parada.sesiones_desde if parada else None,
+            "ultima_vez": parada.ultima_vez.isoformat() if parada else None,
+        })
+
+    sel = cfg.selector()
+    return {
+        "key": str(sel.get("key") or "chosen_session"),
+        "label": str(sel.get("label") or "¿Qué vas a hacer hoy?"),
+        "nota": sel.get("nota") or None,
+        "propuesta": propuesta,
+        "opciones": opciones,
     }
 
 

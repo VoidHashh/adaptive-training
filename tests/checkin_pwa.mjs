@@ -230,11 +230,32 @@ function parsear(html) {
 /* Selectores simples sobre UN elemento: `tag`, `.clase`, `[attr]`,
  * `[attr="valor"]` y cualquier combinación pegada. No hay descendientes ni
  * comas porque `app.js` no los usa; si algún día los usa, esto revienta en vez
- * de devolver la lista vacía, que es lo que haría pasar un test en verde. */
+ * de devolver la lista vacía, que es lo que haría pasar un test en verde.
+ *
+ * Y ESO NO SE CUMPLÍA. Decía "revienta" y no reventaba: con
+ * `.pregunta input[type="range"]` consumía `.pregunta`, se saltaba el espacio,
+ * leía `[type="range"]` como si fuera del MISMO elemento -que no tiene ese
+ * atributo- y devolvía `false` sin llegar nunca a la parte que no entiende. El
+ * resultado era el peor posible: `rangos_en_preguntas` daba 0 SIEMPRE, con lo
+ * que la línea que comprobaba que las preguntas no se pintan como deslizadores
+ * llevaba desde el primer día sin poder ponerse roja.
+ *
+ * Lo miro ahora porque el selector nuevo tiene la misma forma -un bloque con
+ * botones dentro- y se habría escrito igual.
+ */
 function casa(el, sel) {
   const re = /^([A-Za-z][\w-]*)|\.([\w-]+)|\[([\w-]+)(?:="([^"]*)")?\]/;
   let resto = sel.trim();
   if (!resto) return false;
+  // Antes de mirar nada: un descendiente o una coma se cantan aquí. Después ya
+  // es tarde, porque el primer trozo que no case devuelve `false` y la lista
+  // vacía se lee igual que "no hay ninguno".
+  if (/[\s,>+~]/.test(resto)) {
+    throw new Error(
+      `selector con descendientes o comas, que este arnés no sabe resolver: ` +
+      `${sel}. Recorre los bloques y busca dentro de cada uno.`,
+    );
+  }
   while (resto) {
     const m = re.exec(resto);
     if (!m) throw new Error(`selector que este arnés no entiende: ${sel}`);
@@ -402,6 +423,12 @@ for (const a of guion.acciones || []) {
     const input = fila.querySelector("input");
     input.value = String(a.valor);
     disparar(input, "input");
+  } else if (a.tipo === "elegir") {
+    const bloque = contexto.document.querySelector(`.selector[data-key="${a.key}"]`);
+    if (!bloque) throw new Error(`no hay ningún selector pintado con la clave ${a.key}`);
+    const boton = bloque.querySelector(`[data-opcion="${a.opcion}"]`);
+    if (!boton) throw new Error(`el selector no ofrece la opción '${a.opcion}'`);
+    disparar(boton, "click");
   } else if (a.tipo === "enviar") {
     disparar(elemento("formulario"), "submit", { preventDefault() {} });
     await drenar();
@@ -434,6 +461,55 @@ function elegidas() {
   return fuera;
 }
 
+/* El selector, leído del DOM y con las DOS marcas por separado.
+ *
+ * `elegida` es la que ha pulsado un dedo y `propuesta` la que el servidor dice
+ * que toca. Se informan aparte porque la única forma de demostrar que no se
+ * confunden es poder mirarlas una al lado de la otra: una `propuesta` que
+ * también saliera como `elegida` sería el formulario declarando por su cuenta,
+ * y en el DOM eso son dos clases distintas sobre el mismo botón.
+ */
+function seleccion() {
+  const bloque = buscarTodo(".selector")[0];
+  if (!bloque) return null;
+  const botones = bloque.querySelectorAll("[data-opcion]");
+  const marcadas = botones
+    .filter((b) => b.classList.contains("elegida"))
+    .map((b) => b.dataset.opcion);
+  if (marcadas.length > 1) {
+    throw new Error(`el selector tiene ${marcadas.length} opciones elegidas a la vez`);
+  }
+  return {
+    key: bloque.dataset.key,
+    opciones: botones.map((b) => b.dataset.opcion),
+    etiquetas: botones.map((b) => b.querySelector(".titulo").textContent),
+    elegida: marcadas[0] || null,
+    propuesta:
+      botones.filter((b) => b.classList.contains("propuesta"))
+             .map((b) => b.dataset.opcion)[0] || null,
+    // Y con qué PALABRAS se dice. `propuesta` de ahí arriba es una clase, y una
+    // clase solo la lee una hoja de estilos: si mañana desapareciera el texto,
+    // `propuesta` seguiría informando de una marca que en pantalla no dice nada.
+    // Quitar el rótulo dejaba la suite verde hasta que esto existió.
+    toca: Object.fromEntries(
+      botones
+        .filter((b) => b.querySelector(".toca"))
+        .map((b) => [b.dataset.opcion, b.querySelector(".toca").textContent]),
+    ),
+    // Las opciones que llevan el apunte de lo que llevan paradas, y el texto
+    // entero de cada una: lo que se ve al ir a elegir.
+    parados: Object.fromEntries(
+      botones
+        .filter((b) => b.querySelector(".parado"))
+        .map((b) => [b.dataset.opcion, b.querySelector(".parado").textContent]),
+    ),
+    sin_contestar: bloque.classList.contains("sin-contestar"),
+    aria: Object.fromEntries(
+      botones.map((b) => [b.dataset.opcion, b.getAttribute("aria-pressed")]),
+    ),
+  };
+}
+
 const faltan = elemento("faltan");
 
 console.log(JSON.stringify({
@@ -443,9 +519,30 @@ console.log(JSON.stringify({
   html_preguntas: elemento("preguntas").innerHTML,
   sin_contestar: buscarTodo(".pregunta.sin-contestar").map((p) => p.dataset.key),
   elegidas: elegidas(),
-  // Un `<input type=range>` dentro de una pregunta sería el fallo de haberlas
-  // metido por el camino de los deslizadores.
-  rangos_en_preguntas: buscarTodo('.pregunta input[type="range"]').length,
+  selector: seleccion(),
+  // Un `<input type=range>` dentro de una pregunta -o del selector- sería el
+  // fallo de haberlos metido por el camino de los deslizadores.
+  //
+  // En dos pasos y no con `.pregunta input[...]`: ese selector lleva un espacio,
+  // y ahora `casa` lo rechaza a gritos en vez de devolver `false` para todo. Lo
+  // hacía, y por eso este número fue 0 durante toda la vida del arnés.
+  rangos_en_preguntas: buscarTodo(".pregunta")
+    .concat(buscarTodo(".selector"))
+    .reduce((n, b) => n + b.querySelectorAll('input[type="range"]').length, 0),
+  // EL ARNÉS MIRÁNDOSE A SÍ MISMO, y sí, es un test de un test: el aviso de
+  // `casa` es lo único que separa "no hay ninguno" de "no sé buscarlo", y
+  // mientras no reventaba de verdad se comió una línea entera de la suite
+  // durante toda su vida sin que nada se pusiera rojo. Un guardia que protege
+  // contra assertions muertas no puede ser él mismo una assertion muerta, así
+  // que sale por el mismo cable que todo lo demás y hay un test que lo mira.
+  arnes_rechaza_descendientes: (() => {
+    try {
+      casa(elemento("preguntas"), '.pregunta input[type="range"]');
+      return false;
+    } catch {
+      return true;
+    }
+  })(),
   aria: Object.fromEntries(
     buscarTodo("[data-respuesta]").map((b) => [
       `${b.padre.padre.dataset.key}.${b.dataset.respuesta}`,

@@ -29,7 +29,7 @@ from sqlalchemy.pool import StaticPool
 from app import repository as repo
 from app.api import app, get_config, _estado_del_reloj
 from app.db import get_session
-from app.models import Base
+from app.models import Base, WorkoutLog
 from app.settings import settings
 from tests.conftest import LUNES, dias
 from tests.dobles import doble_de
@@ -688,6 +688,205 @@ def test_las_preguntas_viajan_a_la_pwa_como_lista_propia(cliente, cfg):
     assert not {s["key"] for s in cuerpo["sliders"]} & set(claves)
 
 
+# ---------------------------------------------------------------------------
+# El selector de sesión, tal y como sale hacia la pantalla
+# ---------------------------------------------------------------------------
+#
+# LO QUE SE PROTEGE AQUÍ ES QUE LA PANTALLA NO SE INVENTE NADA Y NO DECIDA NADA.
+#
+# «No se invente nada»: ni una opción escrita a mano en el JavaScript. Las cinco
+# salen del `config.yaml` -tres del ciclo, dos de `sin_fuerza`- por la misma
+# función que valida lo que se guarda, así que la pantalla no puede ofrecer algo
+# que el guardado vaya a rechazar.
+#
+# «No decida nada»: la propuesta viaja en su propio campo y NUNCA dentro de
+# `values`. `values` es lo que contestó el usuario. Si la propuesta entrara ahí,
+# el formulario abriría con el selector ya contestado por el sistema, y a partir
+# de esa mañana el histórico no podría distinguir «elegí el Día 2» de «no miré el
+# selector». Es el mismo aplastamiento de tres estados en dos que las preguntas
+# de Sí/No evitan con dos botones, cometido en el único sitio donde después no
+# hay forma de deshacerlo.
+
+
+def _hizo(db, claves, *, desde=LUNES):
+    """Historial de fuerza, de más reciente a más antiguo, uno cada dos días."""
+    for i, k in enumerate(claves):
+        db.add(WorkoutLog(
+            date=desde - timedelta(days=2 * i),
+            routine_key=k,
+            hevy_workout_id=f"w{i}-{k}",
+        ))
+    db.flush()
+
+
+def test_las_opciones_del_selector_son_las_del_config_y_no_las_del_javascript(
+    cliente, cfg
+):
+    """Las cinco salen del YAML, con el título con el que se leen en el móvil.
+
+    Escritas en el JavaScript, añadir un `dia_4` al ciclo dejaría la pantalla
+    ofreciendo tres opciones mientras el sistema rota entre cuatro, y el cuarto
+    día no se podría declarar nunca. Es el mismo fallo que ya se pagó una vez con
+    el calendario fijo, que estaba impecable y sencillamente no nombraba `dia_3`.
+    """
+    sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+
+    assert [o["key"] for o in sel["opciones"]] == cfg.opciones_selector()
+    # Con el título de leer, no con la clave. `dia_2` en la pantalla del móvil es
+    # el identificador crudo asomando por donde no debe.
+    por_clave = {o["key"]: o for o in sel["opciones"]}
+    assert por_clave["dia_2"]["label"] == "Día 2"
+    assert por_clave["bici"]["label"] == "Bici"
+    # Y quién es fuerza y quién no, porque de eso depende lo que la pantalla diga
+    # debajo: elegir «bici» no prescribe sesión.
+    assert por_clave["dia_2"]["es_fuerza"] is True
+    assert por_clave["bici"]["es_fuerza"] is False
+
+
+def test_la_propuesta_es_la_que_el_motor_va_a_planificar(cliente, db, cfg):
+    """La misma rutina que saldría escrita en Hevy si no se toca el selector.
+
+    Este es EL test del bloque. La pantalla calcula la propuesta por su cuenta
+    -`siguiente_en_rotacion` sobre lo último ejecutado- y `decide` la calcula por
+    la suya. Son dos caminos, y el día que uno se desvíe el formulario dirá que
+    hoy toca el Día 3 y en Hevy aparecerá el Día 1, sin que nada falle.
+
+    Así que no se comprueba contra una constante escrita aquí: se comprueba
+    contra lo que el motor planifica de verdad cuando se le envía el check-in.
+    """
+    _hizo(db, ["dia_2", "dia_1"])
+
+    sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+    assert sel["propuesta"] == "dia_3", "después del Día 2 toca el Día 3"
+
+    cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
+    fila = repo.current_decision(db, LUNES)
+    planificada = json.loads(fila.planned_session_json)["routine"]
+    assert planificada == sel["propuesta"], (
+        "la rutina que la pantalla anuncia como propuesta no es la que el motor "
+        "ha planificado: dos caminos distintos para el mismo número"
+    )
+
+
+def test_la_propuesta_no_se_cuela_entre_lo_contestado(cliente, db):
+    """Viaja aparte, y `values` sigue vacío mientras nadie toque nada.
+
+    Si la propuesta entrara en `values`, `recuperar()` la pintaría como respuesta
+    al abrir el formulario y el selector saldría contestado sin que nadie lo
+    hubiera tocado. El día siguiente, el aviso de haber entrenado otra cosa diría
+    «declaraste Día 3» sobre una mañana en la que nadie declaró nada.
+    """
+    _hizo(db, ["dia_2"])
+
+    cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
+
+    assert cuerpo["selector"]["propuesta"] == "dia_3"
+    assert cuerpo["values"] == {}, (
+        f"la propuesta se ha colado entre lo contestado: {cuerpo['values']}"
+    )
+    assert "chosen_session" not in cuerpo["values"]
+
+
+def test_el_dia_que_lleva_mas_de_una_vuelta_parado_sale_marcado(cliente, db):
+    """La marca del selector y la línea del mensaje cuentan lo mismo.
+
+    Y tiene que ser el mismo cálculo, no dos parecidos: el mensaje de la mañana
+    dice «Día 1: han pasado 6 sesiones» y el selector marca esa misma opción. Si
+    cada uno contara por su cuenta, un día dirían cosas distintas sobre la misma
+    rutina y no habría forma de saber cuál miente.
+    """
+    # dia_1 al fondo, dia_2 y dia_3 recientes: el Día 1 lleva una vuelta y una
+    # sesión más sin hacerse, que es el umbral entero de `rotacion.pendientes`.
+    _hizo(db, ["dia_3", "dia_2", "dia_3", "dia_2", "dia_1"])
+
+    sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+    por_clave = {o["key"]: o for o in sel["opciones"]}
+
+    assert por_clave["dia_1"]["pendiente"] == 4
+    assert por_clave["dia_1"]["ultima_vez"] == str(LUNES - timedelta(days=8))
+    # Y las demás no. Marcarlas todas sería no marcar ninguna.
+    assert por_clave["dia_2"]["pendiente"] is None
+    assert por_clave["dia_3"]["pendiente"] is None
+    assert por_clave["bici"]["pendiente"] is None
+
+
+def test_una_rotacion_normal_no_marca_ninguna_opcion(cliente, db):
+    """El control, y sin él lo de arriba no demuestra nada.
+
+    Una marca que saliera siempre no distinguiría el caso que quiere señalar:
+    sería decoración fija al lado de las cinco opciones.
+    """
+    _hizo(db, ["dia_3", "dia_2", "dia_1"])
+
+    sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+    assert all(o["pendiente"] is None for o in sel["opciones"]), (
+        f"algo sale marcado en una rotación limpia: {sel['opciones']}"
+    )
+
+
+def test_la_marca_caduca_pero_la_opcion_sigue_estando(cliente, db):
+    """Al caducar deja de marcarse, y nunca deja de poder elegirse.
+
+    Las dos mitades importan. La primera porque una marca que sale todas las
+    mañanas durante meses deja de informar y empieza a sonar a reproche por pura
+    insistencia; es la misma caducidad que aplica el mensaje del día.
+
+    La segunda es la que de verdad no se puede romper: lo que caduca es DECIRLO,
+    nunca lo que se puede elegir. Un selector que escondiera el Día 1 por llevar
+    mucho parado haría imposible volver a hacerlo, que es exactamente lo
+    contrario de lo que la marca persigue.
+    """
+    # Siete sesiones sin el Día 1: por encima de `len(orden) + CADUCA_TRAS`.
+    _hizo(db, ["dia_3", "dia_2"] * 4 + ["dia_1"])
+
+    sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+    por_clave = {o["key"]: o for o in sel["opciones"]}
+
+    assert por_clave["dia_1"]["pendiente"] is None, "la marca tenía que haber caducado"
+    assert "dia_1" in por_clave, "la opción no se puede esconder nunca"
+
+
+def test_el_selector_llega_con_su_enunciado_y_su_nota(cliente, cfg):
+    """El texto sale del config, como el de las preguntas y el de los comentarios.
+
+    La nota no es decorativa: es la que evita el malentendido de leer el selector
+    como «apúntame el entreno». Escrita en el JavaScript, cambiarla en el YAML no
+    cambiaría nada de lo que se lee en el móvil.
+    """
+    sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+
+    assert sel["key"] == cfg.raw["checkin_selector"]["key"]
+    assert sel["label"] == cfg.raw["checkin_selector"]["label"]
+    assert sel["nota"] and "lo que registres en Hevy" in sel["nota"]
+
+
+def test_lo_elegido_se_guarda_y_vuelve_a_la_pantalla(cliente, db):
+    """El viaje entero de una cadena, que es el tipo nuevo de este formulario."""
+    r = cliente.post(
+        "/api/checkin", json={"day": str(LUNES), "fatigue": 4, "chosen_session": "dia_2"}
+    )
+    assert r.status_code == 200, r.text
+
+    cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
+    assert cuerpo["values"]["chosen_session"] == "dia_2"
+    assert repo.get_checkin(db, LUNES).chosen_session == "dia_2"
+
+
+def test_una_sesion_que_no_esta_en_el_selector_se_rechaza(cliente):
+    """Un `dia_4` en un ciclo de tres no se guarda callando.
+
+    Y es el rechazo que más falta hace de los tres del formulario, porque es el
+    único invisible: un deslizador fuera de rango sigue siendo un número que se
+    ve raro, pero una elección inventada se guarda, no coincide con ninguna
+    rutina, y el sistema se comporta igual que si no hubieras contestado.
+    """
+    r = cliente.post(
+        "/api/checkin", json={"day": str(LUNES), "chosen_session": "dia_4"}
+    )
+    assert r.status_code == 400, f"se ha colado con un {r.status_code}"
+    assert "dia_4" in r.json()["detail"]
+
+
 def test_enviar_el_checkin_decide_el_dia_en_ese_momento(cliente, db):
     """Las dos cosas van juntas a propósito.
 
@@ -761,16 +960,26 @@ def test_los_deslizadores_del_config_y_del_modelo_coinciden(cfg):
     Las dos listas tienen que ser la misma, y este test es lo único que lo
     sostiene el día que se toque una de ellas.
 
-    Se compara contra la UNIÓN de las dos secciones del check-in. Aquí, y solo
-    aquí, deslizadores y preguntas de Sí/No son lo mismo: campos que la PWA
-    manda y que el modelo tiene que dejar pasar. La frontera entre ellos -quién
-    puede mover el semáforo- vive en `config_loader`, y meterla también en este
-    test haría que la asimetría que sí importa se colara por el hueco.
+    Se compara contra la UNIÓN de las TRES secciones del check-in. Aquí, y solo
+    aquí, deslizadores, preguntas de Sí/No y selector son lo mismo: campos que la
+    PWA manda y que el modelo tiene que dejar pasar. Es exactamente la misma
+    unión que admite `repo.upsert_checkin`, y no por casualidad: los dos
+    contestan la misma pregunta -qué puede llegar del formulario- desde los dos
+    extremos del cable.
+
+    La frontera entre los tres -quién puede mover el semáforo, quién llega a
+    `signals.values`- vive en `config_loader`, y meterla también en este test
+    haría que la asimetría que sí importa se colara por el hueco.
     """
     from app.api import CheckinIn
 
     del_config = {s["key"] for s in cfg.raw.get("checkin_sliders", [])}
     del_config |= {p["key"] for p in cfg.raw.get("checkin_preguntas", [])}
+    # El selector llega por el mismo cable aunque no sea ni un deslizador ni una
+    # pregunta. Sin él aquí, quitarlo de `CheckinIn` daría verde: `extra="forbid"`
+    # rechazaría el envío entero con un 422 el día que se tocara el selector, y
+    # se perdería también el resto del check-in.
+    del_config |= {(cfg.raw.get("checkin_selector") or {})["key"]}
     del_modelo = set(CheckinIn.model_fields) - {"comments", "day"}
 
     assert del_modelo == del_config, (

@@ -38,6 +38,30 @@
  *
  * Con dos botones, no haber pulsado ninguno no se parece a ninguna respuesta, y
  * lo que se manda es que falta.
+ *
+ * Y UNA TERCERA VEZ, PARA EL SELECTOR DE QUÉ SE VA A HACER HOY
+ * ------------------------------------------------------------
+ * El servidor manda una PROPUESTA -la rutina que va a escribir en Hevy si nadie
+ * toca nada- y ésta NO se pinta como respuesta. Se pinta como lo que es: una
+ * etiqueta que dice «lo que toca hoy» sobre una opción que sigue sin elegir.
+ *
+ * El orden se pidió así: «preseleccionado con la propuesta del sistema». Y
+ * preseleccionar de verdad -meterla en `estado.valores` al abrir- habría sido
+ * una línea más corta y habría hecho lo mismo en todo salvo en una cosa: cada
+ * mañana que se enviara el formulario sin mirar el selector guardaría
+ * `chosen_session: "dia_3"`, o sea una declaración que nadie hizo. Es el mismo
+ * aplastamiento de los tres estados que las dos preguntas de arriba se
+ * construyeron para evitar, y aquí tiene una consecuencia concreta: el aviso de
+ * la mañana siguiente distingue «declaraste el Día 3 y entrenaste el Día 1» de
+ * «tocaba el Día 3 y entrenaste el Día 1», y son dos frases distintas porque
+ * significan dos cosas distintas.
+ *
+ * Lo que se entrena no cambia: sin elección, el motor planifica la propuesta.
+ * Lo único que cambia es si el histórico sabe que la elegí o solo que no dije
+ * nada, y eso, una vez inventado, no se puede deshacer mirando.
+ *
+ * Por eso el selector es OPCIONAL: no contestarlo no deja el botón gris. Es el
+ * único hueco del formulario donde no contestar es un camino previsto.
  */
 
 const API = {
@@ -70,9 +94,11 @@ const estado = {
   dia: null,         // el día SEGÚN EL SERVIDOR, nunca el del móvil
   sliders: [],       // los del config.yaml, tal cual llegan
   preguntas: [],     // las de Sí/No, en su lista aparte y por el mismo motivo
-  // key -> número o booleano, SOLO de los contestados. Un mismo diccionario
-  // para los dos tipos porque el cuerpo que se envía es uno solo y el backend
-  // valida la UNIÓN de las dos listas; lo que no se mezcla es cómo se pintan.
+  selector: null,    // qué se va a hacer hoy: las rutinas del ciclo, bici, otro
+  // key -> número, booleano o cadena, SOLO de los contestados. Un mismo
+  // diccionario para los tres tipos porque el cuerpo que se envía es uno solo y
+  // el backend valida la UNIÓN de las tres listas; lo que no se mezcla es cómo
+  // se pintan.
   valores: {},
   comentarios: "",
   etiquetaComentarios: "Comentarios",
@@ -118,12 +144,18 @@ async function arrancar() {
   // obligaría a mirar el tipo antes de pintar nada, y el día que se olvidara
   // saldría una barra de 0 a 10 para «¿Vas a entrenar hoy?».
   estado.preguntas = datos.preguntas || [];
+  // Y una tercera cosa, por tercera vez por el mismo motivo. `null` cuando el
+  // servidor no lo manda: un `|| {}` dejaría un selector vacío pintado, que se
+  // lee como "hoy no hay nada que elegir" en vez de como "esta pantalla es más
+  // vieja que el servidor".
+  estado.selector = datos.selector || null;
   if (datos.comment_label) estado.etiquetaComentarios = datos.comment_label;
   $("etiqueta-comentarios").textContent = estado.etiquetaComentarios;
 
   pintarSliders();
   pintarPreguntas();
-  // Después de pintar LAS DOS, no entre medias: `recuperar` llama a `fijar`,
+  pintarSelector();
+  // Después de pintar LAS TRES, no entre medias: `recuperar` llama a `fijar`,
   // que busca en el DOM la fila de cada clave. Con las preguntas sin pintar,
   // las respuestas ya enviadas hoy -o el borrador- se perderían en silencio
   // por la salida de "una clave que ya no está en el config".
@@ -282,6 +314,124 @@ function pintarPreguntas() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Qué se va a hacer hoy
+// ---------------------------------------------------------------------------
+
+/* Un botón por opción, y la propuesta MARCADA PERO NO ELEGIDA.
+ *
+ * Las dos marcas de este bloque son distintas a propósito y no deben poder
+ * confundirse mirando:
+ *
+ *   - `.propuesta` es lo que el sistema va a escribir en Hevy si nadie toca
+ *     nada. La pone el servidor, no se puede quitar y no cuenta como respuesta.
+ *   - `.elegida` es lo que ha pulsado un dedo. Es la única de las dos que entra
+ *     en `estado.valores` y viaja en el POST.
+ *
+ * Pintarlas iguales -que es lo que pasaría preseleccionando de verdad- haría
+ * que "no lo he tocado" y "he elegido justo lo que tocaba" se vieran idénticos,
+ * y son el mismo par de estados que el resto de esta pantalla se dedica a no
+ * aplastar.
+ *
+ * La marca de parado sale de `pendiente`, que el servidor ya manda filtrado: si
+ * una rutina lleva tanto tiempo sin hacerse que ha caducado, el número
+ * desaparece y la opción sigue en su sitio, pulsable igual. Eso es literal del
+ * encargo -«que al caducar solo cambie la línea del mensaje, nunca lo que puedo
+ * elegir»- y es la diferencia entre un recordatorio y una regañina.
+ */
+function pintarSelector() {
+  const cont = $("selector");
+  cont.innerHTML = "";
+  // Un servidor que no manda selector -uno viejo, o el día que se quite del
+  // config- deja el hueco vacío y el formulario entero sigue funcionando. Lo
+  // que no hace es inventarse una lista de rutinas.
+  if (!estado.selector) return;
+
+  const sel = estado.selector;
+  const bloque = document.createElement("div");
+  bloque.className = "selector sin-contestar";
+  bloque.dataset.key = sel.key;
+
+  const id = `se-${escapar(sel.key)}`;
+  const opciones = (sel.opciones || []).map((o) => {
+    const parado = o.pendiente !== null && o.pendiente !== undefined
+      ? `<span class="parado">${escapar(cuenta(o.pendiente, "sesión", "sesiones"))}` +
+        ` sin hacerlo${o.ultima_vez ? `, desde el ${escapar(fechaMinima(o.ultima_vez))}` : ""}` +
+        `</span>`
+      : "";
+    return (
+      // Sin `aria-pressed` aquí, y no es un olvido: lo pone `pintarEleccion` al
+      // final de esta misma función. Escrito también en la plantilla habría DOS
+      // sitios diciendo si un botón está pulsado, y el de aquí es el que nadie
+      // vuelve a mirar: el día que los dos no coincidan, gana el que se ejecuta
+      // después y el otro se queda mintiendo en el archivo.
+      `<button type="button" data-opcion="${escapar(o.key)}"` +
+      ` class="${o.key === sel.propuesta ? "propuesta" : ""}">` +
+        `<span class="titulo">${escapar(o.label || o.key)}</span>` +
+        (o.key === sel.propuesta
+          ? `<span class="toca">lo que toca hoy</span>`
+          : "") +
+        parado +
+      `</button>`
+    );
+  }).join("");
+
+  bloque.innerHTML = `
+    <p class="enunciado" id="${id}">${escapar(sel.label || sel.key)}</p>
+    ${sel.nota ? `<p class="nota-pregunta">${escapar(sel.nota)}</p>` : ""}
+    <div class="opciones" role="group" aria-labelledby="${id}">${opciones}</div>
+  `;
+
+  for (const boton of bloque.querySelectorAll("[data-opcion]")) {
+    boton.addEventListener("click", () => {
+      // El valor sale del BOTÓN, igual que el booleano de las preguntas sale de
+      // cuál se pulsó. Aquí además es lo único que garantiza que lo que se
+      // envía sea una de las claves que el servidor ofreció: cualquier otra la
+      // rechaza `upsert_checkin`, y desde el móvil un 422 del check-in entero
+      // es indistinguible de una avería.
+      estado.valores[sel.key] = boton.dataset.opcion;
+      bloque.classList.remove("sin-contestar");
+      pintarEleccion(sel.key);
+      revisar();
+      // No sobra porque el clic del selector puede ser el ÚNICO toque de la
+      // mañana: se abre el formulario, se elige el Día 2, suena el teléfono y
+      // se sale de la app. Sin esta línea eso se pierde entero, y la batería de
+      // mutación ya enseñó que un `guardarBorrador()` que falta no pone rojo a
+      // nadie salvo que haya un test que lo pida.
+      guardarBorrador();
+    });
+  }
+
+  cont.appendChild(bloque);
+
+  // Y QUIÉN SALE MARCADO LO DECIDE `pintarEleccion`, también -sobre todo- cuando
+  // no hay nada elegido. El `aria-pressed="false"` de la plantilla es el estado
+  // inicial; mientras fuera además la ÚNICA razón por la que la propuesta no
+  // aparece elegida al abrir, esa garantía dependía de que nadie llamara aquí, y
+  // no de la comparación que la decide.
+  //
+  // No es teórico: la batería de mutación cambió esa comparación por «sin elegir
+  // se marca la propuesta» y la suite entera siguió verde, porque esa rama no se
+  // ejecutaba jamás. Con esta línea, la comparación pasa por aquí todas las
+  // mañanas y el test que dice que nadie ha elegido nada puede ponerse rojo.
+  pintarEleccion(sel.key);
+}
+
+/* Cuál opción está elegida. `v === o` y no `if (v)`, por lo mismo de siempre:
+ * sin elegir, `v` es `undefined` y no se marca ninguna. La `.propuesta` no se
+ * toca aquí -la pone el servidor y se queda-, así que elegir otra deja las dos
+ * marcas a la vista: la que tocaba y la que he dicho. */
+function pintarEleccion(key) {
+  const bloque = document.querySelector(`.selector[data-key="${CSS.escape(key)}"]`);
+  if (!bloque) return;
+  const v = estado.valores[key];
+  for (const boton of bloque.querySelectorAll("[data-opcion]")) {
+    const puesto = v === boton.dataset.opcion;
+    boton.classList.toggle("elegida", puesto);
+    boton.setAttribute("aria-pressed", String(puesto));
+  }
+}
+
 /* Poner un valor que viene de fuera: lo ya enviado hoy, o el borrador del móvil.
  *
  * Reparte por el TIPO DE PREGUNTA -mirando qué hay pintado con esa clave-, y
@@ -291,6 +441,30 @@ function pintarPreguntas() {
  */
 function fijar(key, valor) {
   const escapada = CSS.escape(key);
+
+  const eleccion = document.querySelector(`.selector[data-key="${escapada}"]`);
+  if (eleccion) {
+    // `String(valor)` haría de un `false` guardado la cadena "false" y de un 0
+    // la cadena "0": dos rutinas que no existen, y un check-in entero rechazado
+    // con un 422 que desde el móvil se lee como avería del servidor.
+    if (typeof valor !== "string") return;
+    // Y que sea una de las que HOY hay en pantalla. Un `dia_4` guardado en el
+    // borrador de ayer y quitado del ciclo esta mañana no pinta ningún botón:
+    // se vería un selector sin elegir mandando una rutina que ya no existe.
+    //
+    // `for...of` y no `[...].some()`: en un navegador de verdad esto es una
+    // `NodeList`, que se recorre pero no tiene `some`. El arnés de los tests
+    // devuelve un array y se habría tragado la diferencia.
+    let existe = false;
+    for (const b of eleccion.querySelectorAll("[data-opcion]")) {
+      if (b.dataset.opcion === valor) existe = true;
+    }
+    if (!existe) return;
+    estado.valores[key] = valor;
+    eleccion.classList.remove("sin-contestar");
+    pintarEleccion(key);
+    return;
+  }
 
   const pregunta = document.querySelector(`.pregunta[data-key="${escapada}"]`);
   if (pregunta) {
@@ -358,6 +532,12 @@ function pintarRespuesta(key) {
  * Se respeta `optional` en las dos listas por el mismo motivo por el que no hay
  * ninguna pregunta escrita a mano aquí: quien decide qué es obligatorio es el
  * `config.yaml`. Hoy ninguna de las dos lo lleva.
+ *
+ * EL SELECTOR NO ENTRA EN LA CUENTA, y eso es una decisión, no un olvido. No
+ * contestarlo es un camino previsto: el motor planifica la propuesta y escribe
+ * esa rutina en Hevy exactamente igual. Exigirlo pondría el botón gris hasta
+ * pulsar una opción, y eso enseñaría a pulsar la marcada para desbloquearlo: el
+ * dato recogido dejaría de ser la intención y pasaría a ser el trámite.
  */
 function revisar() {
   const faltan = [...estado.sliders, ...estado.preguntas]

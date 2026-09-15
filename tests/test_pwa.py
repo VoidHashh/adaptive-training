@@ -216,6 +216,14 @@ HUELLAS_DEL_ARMAZON = {
     # falta justo lo que se pidió. Sin subir el número, eso dura hasta que al
     # teléfono le dé por revalidar solo.
     "v8": "cd6bc73ac83d1225403ac52439b6eb8e87f5963bcbdace02ccf4dc494f94f6ef",
+    # v9: el selector de qué se va a hacer hoy. Toca otra vez los tres archivos
+    # que se abren todas las mañanas -`index.html`, `app.js` y `styles.css`-, y
+    # aquí el móvil viejo falla de la forma callada: la API ya manda `selector`
+    # y el JavaScript de antes lo tira a la basura sin decir nada. El formulario
+    # se ve entero, se envía, se decide y escribe la rutina de la rotación. O
+    # sea que funciona, y justamente por eso no se notaría: lo único que faltaría
+    # es poder elegir otra cosa, que es todo lo que se pidió.
+    "v9": "b28b496ae5508b6805e85f7e3c248944946d63f8c3bd5debe4cc35c0370c33ce",
 }
 
 
@@ -1214,10 +1222,46 @@ def _hoy(**cambios) -> dict:
             {"key": "wants_to_train", "label": "¿Te apetece entrenar hoy?"},
             {"key": "will_train", "label": "¿Vas a entrenar hoy?"},
         ],
+        "selector": _selector(),
         "comment_label": "Comentarios",
     }
     base.update(cambios)
     return base
+
+
+def _selector(propuesta: str = "dia_3", **parados) -> dict:
+    """El `selector` de `/api/checkin/today`, con la forma que manda el endpoint.
+
+    `parados` marca opciones como paradas: `_selector(dia_1=7)` es el Día 1 siete
+    sesiones sin hacerse. El endpoint de verdad ya manda `pendiente: null` en las
+    caducadas -filtra igual que el mensaje de la mañana-, así que aquí una opción
+    sin número es a la vez "está al día" y "lleva tanto que ya no se nombra". Que
+    la pantalla no distinga las dos es justo lo que se quiere: el encargo dice
+    que al caducar cambie la línea del mensaje, no lo que se puede elegir.
+    """
+    def opcion(clave: str, etiqueta: str, fuerza: bool) -> dict:
+        n = parados.get(clave)
+        return {
+            "key": clave,
+            "label": etiqueta,
+            "es_fuerza": fuerza,
+            "pendiente": n,
+            "ultima_vez": "2026-08-20" if n else None,
+        }
+
+    return {
+        "key": "chosen_session",
+        "label": "¿Qué vas a hacer hoy?",
+        "nota": "Lo que de verdad cuenta es lo que registres en Hevy.",
+        "propuesta": propuesta,
+        "opciones": [
+            opcion("dia_1", "Día 1 · Empuje", True),
+            opcion("dia_2", "Día 2 · Tirón", True),
+            opcion("dia_3", "Día 3 · Pierna", True),
+            opcion("bici", "Bici", False),
+            opcion("otro", "Otro", False),
+        ],
+    }
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
@@ -1492,6 +1536,495 @@ def test_un_valor_guardado_del_tipo_que_no_es_no_pinta_nada(tmp_path):
     assert salida["enviar_deshabilitado"] is True
     assert "Fatiga" in salida["faltan"]
     assert "¿Vas a entrenar hoy?" in salida["faltan"]
+
+
+# ---------------------------------------------------------------------------
+# El selector de qué se va a hacer hoy
+# ---------------------------------------------------------------------------
+#
+# LO QUE SE PROTEGE AQUÍ ES QUE LA PROPUESTA NO SE CONVIERTA EN UNA RESPUESTA.
+#
+# El encargo dice "preseleccionado con la propuesta del sistema", y la lectura
+# literal -meterla en `estado.valores` al abrir- es una línea más corta y hace lo
+# mismo en todo salvo en una cosa: cada mañana que se envíe el formulario sin
+# mirar el selector guardaría `chosen_session: "dia_3"`, una declaración que
+# nadie hizo. Lo que se entrena no cambia -sin elección, el motor planifica la
+# propuesta y escribe esa misma rutina-, así que el fallo no se ve por ningún
+# lado: la rutina de Hevy es la correcta, el mensaje es el correcto, y la única
+# consecuencia aparece meses después, el día que se mire la columna para contar
+# cuántas veces me desvié y salga que elegí explícitamente todos los días.
+#
+# Es exactamente el aplastamiento de los tres estados contra el que están las dos
+# preguntas de Sí/No, en el mismo archivo y en la misma pantalla. Aquí es más
+# fácil de cometer porque la interfaz que lo comete es la que se pidió.
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_propuesta_se_ve_marcada_pero_no_cuenta_como_elegida(tmp_path):
+    """EL TEST DE ESTE BLOQUE. Las dos marcas existen y son distintas.
+
+    Se abre el formulario, se contesta todo lo demás y se envía SIN TOCAR el
+    selector. Tienen que pasar las tres cosas a la vez:
+
+      - el Día 3 se ve marcado como lo que toca hoy, porque si no se viera la
+        pantalla no diría lo que el sistema va a hacer;
+      - ninguna opción está elegida, porque nadie ha pulsado ninguna;
+      - `chosen_session` NO viaja en el POST, ni como cadena ni como `null`.
+
+    La tercera es la que importa y es la que no se ve mirando la pantalla.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 3},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "si"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+        {"tipo": "enviar"},
+    ])
+
+    sel = salida["selector"]
+    assert sel is not None, "el selector no se ha pintado"
+    assert sel["propuesta"] == "dia_3", (
+        "la propuesta del servidor no se ve por ninguna parte: la pantalla no "
+        "dice qué rutina va a escribir el sistema si no se toca nada"
+    )
+    assert sel["elegida"] is None, (
+        f"la propuesta se ha pintado como respuesta ({sel['elegida']!r}). Es la "
+        f"preselección literal, y convierte cada mañana sin tocar el selector "
+        f"en una declaración que nadie hizo."
+    )
+    assert sel["aria"] == {
+        "dia_1": "false", "dia_2": "false", "dia_3": "false",
+        "bici": "false", "otro": "false",
+    }
+
+    cuerpo = salida["cuerpo"]
+    assert cuerpo is not None, "el formulario no llegó a enviarse"
+    assert "chosen_session" not in cuerpo, (
+        f"el selector sin tocar ha viajado igualmente: {cuerpo['chosen_session']!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_no_tocar_el_selector_no_deja_el_boton_gris(tmp_path):
+    """El único hueco del formulario donde no contestar es un camino previsto.
+
+    Y por eso va en su propio test en vez de quedarse implícito en el de arriba.
+    Exigirlo sería lo natural -es una pregunta más- y rompería el dato que se
+    quiere recoger: con el botón gris hasta pulsar una opción, se pulsaría la
+    marcada para desbloquearlo y lo que quedaría apuntado sería el trámite.
+
+    Lo que lo hace seguro es que no contestar tiene un camino: el motor planifica
+    la propuesta y escribe esa rutina en Hevy exactamente igual.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 5},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "si"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+    ])
+
+    assert salida["enviar_deshabilitado"] is False
+    assert salida["faltan"] is None, (
+        f"el selector se está pidiendo como obligatorio: {salida['faltan']!r}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_elegir_otra_rutina_viaja_como_la_clave_y_deja_ver_cuál_tocaba(tmp_path):
+    """El caso que motivó todo esto: tocaba el Día 1 y hago el Día 2.
+
+    Lo que sale por el cable es la CLAVE -`dia_2`- y no la etiqueta que se lee en
+    pantalla. Mandar «Día 2 · Tirón» no daría error aquí: lo daría en el
+    servidor, donde `upsert_checkin` valida contra las opciones del config, y
+    desde el móvil un 422 del check-in entero se lee como una avería.
+
+    Y la marca de la propuesta SIGUE PUESTA sobre el Día 1 después de elegir el
+    Día 2. Es deliberado: las dos cosas son ciertas a la vez -tocaba aquello y
+    voy a hacer esto- y son justo las dos que el aviso del día siguiente
+    necesita distinguir.
+    """
+    salida = _rellenar(tmp_path, _hoy(selector=_selector(propuesta="dia_1")), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 6},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "si"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+        {"tipo": "elegir", "key": "chosen_session", "opcion": "dia_2"},
+        {"tipo": "enviar"},
+    ])
+
+    cuerpo = salida["cuerpo"]
+    assert cuerpo["chosen_session"] == "dia_2", (
+        f"lo elegido ha salido como {cuerpo['chosen_session']!r}; el servidor "
+        f"espera la clave del config, no lo que se lee en el botón"
+    )
+    sel = salida["selector"]
+    assert sel["elegida"] == "dia_2"
+    assert sel["propuesta"] == "dia_1", (
+        "elegir otra cosa ha borrado la marca de lo que tocaba: en pantalla ya "
+        "no se puede ver de qué me estoy desviando"
+    )
+    assert sel["aria"]["dia_2"] == "true" and sel["aria"]["dia_1"] == "false"
+    assert sel["sin_contestar"] is False
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_bici_es_una_opcion_como_las_demas(tmp_path):
+    """«Hice algo» tiene que poder decirse sin que cuente como «no contesté».
+
+    Bici y Otro no son rutinas y no mueven el ciclo, pero son respuestas, y en
+    esta pantalla se pulsan igual que las otras tres. El día que se pintaran
+    aparte -o peor, que no se pintaran- todo lo que no fuera una de las tres
+    rutinas volvería a caer en el silencio, que es de donde se sacaron.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 4},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "no"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+        {"tipo": "elegir", "key": "chosen_session", "opcion": "bici"},
+        {"tipo": "enviar"},
+    ])
+
+    assert salida["cuerpo"]["chosen_session"] == "bici"
+    assert salida["selector"]["elegida"] == "bici"
+    # Y la propuesta sigue siendo la rutina que el sistema va a escribir en Hevy
+    # de todas formas, que es el motivo por el que elegir «Bici» no la borra: si
+    # acabo yendo al gimnasio, la rutina tiene que estar puesta.
+    assert salida["selector"]["propuesta"] == "dia_3"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_las_opciones_son_las_del_servidor_y_no_las_del_javascript(tmp_path):
+    """Ni una rutina escrita a mano en la pantalla.
+
+    La misma regla que ya rige para los deslizadores y las preguntas, y aquí con
+    más motivo: la lista sale de `rotation.order`, la misma de la que el motor
+    saca qué toca hoy. Escrita a mano, añadir un `dia_4` al ciclo dejaría el
+    formulario ofreciendo tres opciones mientras el sistema rota entre cuatro, y
+    el día que propusiera el Día 4 no habría forma de aceptarlo.
+
+    Se sirven SEIS, y una de ellas no existe en el proyecto.
+    """
+    sel = _selector(propuesta="dia_4")
+    sel["opciones"].append({
+        "key": "dia_4", "label": "Día 4 · Inventado",
+        "es_fuerza": True, "pendiente": None, "ultima_vez": None,
+    })
+    salida = _rellenar(tmp_path, _hoy(selector=sel), [
+        {"tipo": "elegir", "key": "chosen_session", "opcion": "dia_4"},
+    ])
+
+    visto = salida["selector"]
+    assert visto["opciones"] == [
+        "dia_1", "dia_2", "dia_3", "bici", "otro", "dia_4"
+    ], "la pantalla no pinta las opciones que le manda el servidor"
+    assert "Día 4 · Inventado" in visto["etiquetas"]
+    assert visto["propuesta"] == "dia_4", (
+        "la propuesta que el servidor manda no se pinta si no es una de las que "
+        "la pantalla esperaba: eso es tenerlas escritas a mano"
+    )
+    assert visto["elegida"] == "dia_4"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_lo_que_lleva_parado_se_ve_al_ir_a_elegir(tmp_path):
+    """La línea (e) del encargo, en el momento en que sirve para algo.
+
+    El sitio donde esto se dice es el mensaje de la mañana. Aquí está por otra
+    razón: el mensaje se lee a las siete y el selector se toca al salir de casa,
+    y entre las dos cosas se olvida. Tenerlo delante mientras se elige es lo que
+    convierte el apunte en algo que se puede usar.
+
+    Va sobre la opción y solo sobre ella. Un aviso arriba del bloque diciendo
+    «llevas siete sesiones sin hacer el Día 1» sería una regañina; el mismo dato
+    al lado del botón que lo arregla es información.
+    """
+    salida = _rellenar(
+        tmp_path, _hoy(selector=_selector(propuesta="dia_2", dia_1=7)), [],
+    )
+
+    parados = salida["selector"]["parados"]
+    assert list(parados) == ["dia_1"], (
+        f"el apunte de lo que lleva parado está sobre {list(parados)}; solo lo "
+        f"lleva el Día 1"
+    )
+    assert "7 sesiones sin hacerlo" in parados["dia_1"]
+    # La fecha, con el mismo formato que el mensaje de Telegram: dos sitios
+    # distintos contando lo mismo tienen que poder leerse a la vez.
+    assert "20/8" in parados["dia_1"]
+    # Y sigue pulsándose como cualquier otra: el apunte no la destaca ni la
+    # estorba.
+    assert salida["selector"]["elegida"] is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_una_rutina_caducada_pierde_el_apunte_pero_no_el_boton(tmp_path):
+    """Literal del encargo: al caducar cambia la línea, nunca lo que puedo elegir.
+
+    El endpoint ya manda `pendiente: null` en las caducadas -filtra igual que el
+    mensaje de la mañana-, así que lo que se comprueba aquí es que la pantalla no
+    añada nada por su cuenta: sin número, la opción se pinta exactamente igual
+    que las que están al día.
+
+    Una rutina que llevo dos meses sin hacer es la que más fácil es que quiera
+    elegir hoy. Esconderla, apagarla o ponerle un aviso encima sería convertir el
+    caducado en un castigo, y el sistema no está para eso.
+    """
+    salida = _rellenar(tmp_path, _hoy(selector=_selector(propuesta="dia_2")), [
+        {"tipo": "elegir", "key": "chosen_session", "opcion": "dia_1"},
+    ])
+
+    visto = salida["selector"]
+    assert visto["parados"] == {}, (
+        f"la pantalla se ha inventado un apunte de parada: {visto['parados']}"
+    )
+    assert "dia_1" in visto["opciones"], "la caducada ha desaparecido del selector"
+    assert visto["elegida"] == "dia_1", "la caducada no se deja elegir"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_elegir_y_nada_mas_ya_guarda_el_borrador(tmp_path):
+    """El clic del selector puede ser el único toque de la mañana.
+
+    Se abre el formulario, se elige el Día 2, suena el teléfono y se sale de la
+    app. Sin `guardarBorrador()` en el manejador eso se pierde entero, y la
+    batería de mutación ya enseñó -con el deslizador- que una llamada que falta
+    ahí no pone rojo a nadie salvo que haya un test que la pida.
+
+    Y LA VUELTA, que es la mitad que importa: ese mismo borrador abierto en una
+    pantalla nueva. Es donde `recuperar()` llama a `fijar()`, y donde un valor de
+    otro tipo se convertiría en una rutina inventada.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "elegir", "key": "chosen_session", "opcion": "dia_2"},
+    ])
+
+    borrador = salida["borrador"]
+    assert borrador is not None, "elegir una rutina no ha guardado nada en el móvil"
+    assert borrador["valores"] == {"chosen_session": "dia_2"}
+
+    vuelta = _rellenar(tmp_path, _hoy(), [], borrador=borrador)
+    assert vuelta["selector"]["elegida"] == "dia_2"
+    assert vuelta["valores"] == '{"chosen_session":"dia_2"}'
+    # La propuesta sigue siendo la del servidor de HOY, no la del borrador: el
+    # borrador guarda lo que contesté, no lo que el sistema proponía ayer.
+    assert vuelta["selector"]["propuesta"] == "dia_3"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_una_eleccion_guardada_que_ya_no_se_ofrece_no_pinta_nada(tmp_path):
+    """El día que una rutina sale del ciclo con un borrador sin enviar encima.
+
+    Es el hermano del test de los tipos cruzados, y es alcanzable por el mismo
+    camino: el borrador llama a `fijar()` con lo que haya guardado, sin mirar, y
+    el `config.yaml` se puede editar entre una mañana y otra.
+
+    Sin la comprobación, `estado.valores.chosen_session` valdría `dia_4`, no se
+    pintaría ningún botón -porque no existe- y el envío se iría con una rutina
+    que el servidor no conoce. `upsert_checkin` lo rechaza, y lo que se ve en el
+    móvil es «el servidor ha rechazado el check-in (422)» sobre un formulario en
+    el que todo parecía correcto.
+
+    Los otros dos valores cruzados -un número y un booleano- están aquí por lo de
+    siempre: `String(false)` es "false" y `String(0)` es "0", dos rutinas que no
+    existen y ningún error por el camino.
+    """
+    for guardado in ("dia_4", 0, False):
+        salida = _rellenar(tmp_path, _hoy(), [], borrador={
+            "day": "2026-09-15",
+            "valores": {"chosen_session": guardado},
+            "comentarios": "",
+        })
+        assert salida["valores"] == "{}", (
+            f"un `chosen_session` de {guardado!r} se ha colado en el check-in: "
+            f"{salida['valores']}"
+        )
+        assert salida["selector"]["elegida"] is None
+        assert salida["selector"]["sin_contestar"] is True
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_lo_ya_elegido_hoy_vuelve_a_la_pantalla(tmp_path):
+    """Reabrir el formulario después de enviarlo no borra la elección.
+
+    Es la misma vuelta que ya se comprueba para las preguntas, y con la misma
+    consecuencia si falla: el selector saldría en blanco y el siguiente envío
+    mandaría `chosen_session` sin contestar, borrando la declaración de esta
+    mañana y dejando en el histórico un día en el que no se eligió nada.
+    """
+    hoy = _hoy(
+        submitted=True,
+        values={"fatigue": 4, "will_train": True, "chosen_session": "dia_1"},
+        comments="las piernas cansadas",
+        selector=_selector(propuesta="dia_3"),
+    )
+    salida = _rellenar(tmp_path, hoy, [])
+
+    assert salida["selector"]["elegida"] == "dia_1"
+    assert salida["selector"]["propuesta"] == "dia_3"
+    assert salida["selector"]["sin_contestar"] is False
+    assert salida["elegidas"] == {"wants_to_train": None, "will_train": "si"}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_servidor_sin_selector_no_rompe_el_formulario(tmp_path):
+    """La pantalla nueva contra una API vieja, que es el orden en que se despliega.
+
+    El contenedor se recrea y el móvil abre lo que tenga cacheado; durante un
+    rato la pantalla puede ser más nueva que el servidor. Sin este camino,
+    `datos.selector` sería `undefined`, `sel.opciones` reventaría dentro de
+    `arrancar()` -que es `async`- y la excepción se quedaría en una promesa que
+    nadie mira: «Cargando…» para siempre, sin un solo error legible.
+
+    Lo que hace es no pintar nada. NO pintar un selector vacío: eso se leería
+    como "hoy no hay nada que elegir".
+    """
+    salida = _rellenar(tmp_path, _hoy(selector=None), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 5},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "si"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+        {"tipo": "enviar"},
+    ])
+
+    assert salida["selector"] is None, "se ha pintado un selector sin opciones"
+    assert salida["cuerpo"] == {
+        "fatigue": 5, "wants_to_train": True, "will_train": True
+    }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_propuesta_se_dice_con_palabras_y_no_solo_con_un_borde(tmp_path):
+    """Que la marca de lo que toca se LEA, y no solo se pinte.
+
+    `class="propuesta"` es un borde: lo entiende la hoja de estilos y nadie más.
+    Quitar el rótulo dejaba la pantalla con las cinco opciones visualmente casi
+    iguales -un borde algo más claro en una de ellas- y con eso el formulario
+    deja de contestar la pregunta que justifica que el selector sea opcional: si
+    no toco nada, ¿qué se va a escribir en Hevy? Sin esa respuesta a la vista, no
+    tocar nada pasa de ser una decisión informada a ser un salto al vacío.
+
+    La batería de mutación borró el rótulo y la suite entera siguió verde.
+    """
+    salida = _rellenar(tmp_path, _hoy(selector=_selector(propuesta="dia_2")), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 5},
+    ])
+
+    sel = salida["selector"]
+    assert list(sel["toca"]) == ["dia_2"], (
+        f"el rótulo de lo que toca hoy está en {list(sel['toca'])} y la "
+        f"propuesta es {sel['propuesta']!r}: o no se dice, o se dice de más"
+    )
+    assert sel["toca"]["dia_2"].strip(), (
+        "el botón de la propuesta lleva el hueco del rótulo pero sin texto: en "
+        "pantalla eso es no decir nada"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_lo_que_viaja_es_la_clave_del_boton_sin_respaldos(tmp_path):
+    """Pulsar una opción manda ESA opción, aunque su clave sea rara.
+
+    Parece una obviedad y no lo es: `boton.dataset.opcion || sel.propuesta` es
+    una línea que cualquiera escribiría para «curarse en salud», y hace algo muy
+    distinto de lo que parece. Una clave vacía -un `config.yaml` mal editado- deja
+    de mandar la basura que se pulsó y manda la propuesta, o sea la mutación de
+    siempre disfrazada de prudencia: una declaración que nadie hizo, y encima en
+    el día en que la pantalla estaba rota, que es cuando menos se va a mirar.
+
+    Mandar la cadena vacía es peor a corto plazo -el servidor la rechaza con un
+    422- y muchísimo mejor a largo: el fallo se ve el primer día.
+    """
+    sel = _selector(propuesta="dia_3")
+    sel["opciones"].append({
+        "key": "", "label": "Sin clave", "es_fuerza": False,
+        "pendiente": None, "ultima_vez": None,
+    })
+    salida = _rellenar(tmp_path, _hoy(selector=sel), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 5},
+        {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+        {"tipo": "elegir", "key": "chosen_session", "opcion": ""},
+        {"tipo": "enviar"},
+    ])
+
+    enviado = salida["cuerpo"].get("chosen_session")
+    assert enviado != "dia_3", (
+        "pulsar un botón sin clave ha declarado la propuesta. Lo que viaja tiene "
+        "que ser lo que se pulsó, siempre, sin valores de respaldo"
+    )
+    assert enviado == "", f"ha viajado {enviado!r} en vez de la clave del botón"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_borrador_con_una_lista_dentro_no_se_convierte_en_rutina(tmp_path):
+    """La coerción más traicionera de JavaScript, en el sitio donde más duele.
+
+    `String(["dia_2"])` es `"dia_2"`. No `"[\\"dia_2\\"]"` ni `"[object Array]"`:
+    exactamente la clave de una rutina de verdad, indistinguible de haberla
+    pulsado. Una lista de un elemento se convierte en ese elemento y ya está.
+
+    Por eso `fijar()` mira el TIPO antes que nada, y por eso ese `typeof` no
+    sobra aunque justo debajo se compruebe que el valor es una de las opciones en
+    pantalla: esa segunda comprobación no ve la diferencia. Para ella `["dia_2"]`
+    coercionado ya es `dia_2`, una opción perfectamente válida, y pinta el botón.
+
+    El borrador del móvil es JSON que escribió una versión anterior de esta misma
+    pantalla. Es el único sitio del formulario donde entra un dato con forma
+    libre, y entra directo a `fijar()`.
+    """
+    salida = _rellenar(
+        tmp_path, _hoy(), [{"tipo": "deslizar", "key": "fatigue", "valor": 5}],
+        borrador={
+            "day": "2026-09-15",
+            "valores": {"chosen_session": ["dia_2"]},
+            "comentarios": "",
+        },
+    )
+
+    sel = salida["selector"]
+    assert sel["elegida"] is None, (
+        f"una lista guardada en el borrador se ha pintado como la rutina "
+        f"{sel['elegida']!r} elegida a dedo"
+    )
+    assert json.loads(salida["valores"]).get("chosen_session") is None, (
+        "la lista ha entrado en `estado.valores`: de ahí sale el cuerpo del POST"
+    )
+
+
+def test_el_arnes_no_se_traga_un_selector_con_espacios(tmp_path):
+    """Un test del arnés, a propósito, y solo para esto.
+
+    `casa()` prometía en su comentario que reventaría con un selector que no sabe
+    resolver, «en vez de devolver la lista vacía, que es lo que haría pasar un
+    test en verde». No lo hacía. Durante toda la vida del arnés,
+    `.pregunta input[type="range"]` devolvió `false` en silencio, y la línea que
+    comprueba que las preguntas no se pintan como deslizadores contó siempre cero
+    sin poder contar otra cosa.
+
+    Lo que hace que eso no vuelva a pasar es este aviso, así que el aviso tiene
+    que estar vivo. Un guardia contra assertions muertas que sea él mismo una
+    assertion muerta no protege de nada, y se quedaría así igual de callado.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [])
+
+    assert salida["arnes_rechaza_descendientes"] is True, (
+        "`casa()` vuelve a tragarse un selector con descendientes y a devolver "
+        "una lista vacía. Todo lo que se busque así contará cero para siempre"
+    )
+
+
+def test_el_html_tiene_donde_pintar_el_selector():
+    """El hueco que `pintarSelector()` necesita, comprobado sin `node`.
+
+    Mismo motivo que el de las preguntas: sin el `<div id="selector">`,
+    `$("selector")` da `null`, la primera línea de `pintarSelector` revienta
+    dentro de un `async` y lo que se ve en el móvil es un «Cargando…» eterno.
+    """
+    html = (ESTATICOS / "index.html").read_text(encoding="utf-8")
+    assert 'id="selector"' in html, "falta el hueco del selector en index.html"
+    # Y en su sitio: DESPUÉS de las preguntas. «¿Vas a entrenar hoy?» decide si
+    # hay sesión y esto decide cuál; al revés, se estaría eligiendo rutina para
+    # un día que a lo mejor se contesta que no.
+    assert (
+        html.index('id="preguntas"')
+        < html.index('id="selector"')
+        < html.index('id="comentarios"')
+    )
 
 
 def test_el_html_tiene_donde_pintar_las_preguntas():

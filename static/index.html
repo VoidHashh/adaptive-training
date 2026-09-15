@@ -69,6 +69,31 @@
     -->
     <div id="preguntas"></div>
 
+    <!--
+      El selector de qué se va a hacer hoy: Día 1 / Día 2 / Día 3 / Bici / Otro.
+
+      Va DESPUÉS de las preguntas, y ese sitio es una consecuencia de lo que
+      significa. «¿Vas a entrenar hoy?» decide si hay sesión; esto decide CUÁL.
+      Puesto antes, se estaría eligiendo rutina para un día que a lo mejor se
+      contesta que no, y la pregunta de arriba se leería como una confirmación
+      de lo de abajo en vez de al revés.
+
+      Las opciones NO están escritas aquí, igual que no lo están los
+      deslizadores ni las preguntas, y aquí importa más que en ningún otro
+      hueco: la lista sale de `rotation.order` del `config.yaml`, que es la
+      misma de la que el motor saca qué toca hoy. Escrita a mano, añadir un
+      `dia_4` al ciclo dejaría una pantalla ofreciendo tres opciones mientras el
+      sistema rota entre cuatro, y el día que propusiera el Día 4 no habría
+      forma de aceptarlo.
+
+      Lo que el servidor manda aparte -y no dentro de `values`- es la PROPUESTA.
+      Se pinta marcada como lo que toca hoy, no como respuesta: si viniera
+      contestada, cada mañana en la que nadie tocara el selector se guardaría
+      una declaración que nadie hizo, y el aviso del día siguiente diría
+      «declaraste Día 3» sobre un día en el que no se declaró nada.
+    -->
+    <div id="selector"></div>
+
     <label class="comentarios">
       <span id="etiqueta-comentarios">Comentarios</span>
       <textarea id="comentarios" rows="3"
