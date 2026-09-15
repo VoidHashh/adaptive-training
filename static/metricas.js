@@ -311,6 +311,58 @@ function cabeceraBloque(b) {
   );
 }
 
+/* Las cuatro casillas de «¿te apetece?» contra «¿vas a entrenar?».
+ *
+ * Esto NO es decoración de la línea de discordancia: es la mitad de la línea. El
+ * número solo -«el 30 % de los días no coincidieron»- junta dos cosas opuestas,
+ * «me apetecía y no fui» y «no me apetecía y fui», y los dos repartos extremos
+ * dan exactamente el mismo 30 % describiendo a dos personas distintas. Por eso
+ * el servidor manda `tabla` pegada al número y por eso aquí se pinta siempre que
+ * venga: si algún día alguien decide que ocupa mucho y la mete detrás de un
+ * plegable, lo que queda a la vista es el dato que no se puede leer solo.
+ *
+ * LAS CUATRO SIEMPRE, INCLUIDAS LAS DE CERO. Una casilla vacía que no se pinta
+ * se lee como «esto no me pasa»; pintada con su total al lado se lee como lo que
+ * es. Es el mismo cuidado que `num()` tiene aquí al lado con el cero contra la
+ * raya, aplicado a un recuento.
+ *
+ * Y el orden es el que manda el servidor, sin tocar. Ordenarlo aquí -las más
+ * llenas primero, por ejemplo- haría que la casilla de arriba a la izquierda
+ * cambiara de significado según el mes, y una tabla de dos por dos que se
+ * reordena sola no se puede comparar consigo misma de un día para otro.
+ */
+function tablaDiscordancia(t) {
+  if (!t) return "";
+  if (t.na) {
+    return (
+      `<div class="casillas">` +
+      `<p class="explica">${escapar(t.titulo)}</p>` +
+      bloqueNa(t.na) +
+      `<p class="ficha">${escapar(t.ficha)}</p></div>`
+    );
+  }
+
+  const filas = t.celdas.map((c) => (
+    // `discordante` lo decide el servidor, igual que `valencia`. Recalcularlo
+    // aquí con un `c.apetece !== c.voy` sería tener en el navegador una segunda
+    // copia de la regla, que es la que se quedaría vieja.
+    `<tr class="${c.discordante ? "discorde" : ""}">` +
+    `<td>${escapar(c.etiqueta)}</td>` +
+    `<td>${entero(c.n)}</td>` +
+    `<td>${pct(c.pct, 1)}</td></tr>`
+  )).join("");
+
+  return (
+    `<div class="casillas">` +
+    `<p class="explica">${escapar(t.titulo)}</p>` +
+    (t.aviso ? `<p class="aviso tenue">${escapar(t.aviso)}</p>` : "") +
+    `<table class="tabla"><thead><tr><th>Lo que pasó</th><th>Días</th>` +
+    `<th>%</th></tr></thead><tbody>${filas}</tbody></table>` +
+    (t.lectura ? `<p class="explica">${escapar(t.lectura)}</p>` : "") +
+    `<p class="ficha">${escapar(t.ficha)}</p></div>`
+  );
+}
+
 function bloqueComoVoy(b) {
   if (!b) return "";
   if (b.estado === "vacio" || !b.lineas || !b.lineas.length) {
@@ -326,6 +378,13 @@ function bloqueComoVoy(b) {
         `<div class="linea-portada sin-dato">` +
         `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
         `<div class="lectura-portada">${escapar(l.na)}</div>` +
+        // La tabla va TAMBIÉN aquí, y no es simetría por simetría: el `na` de
+        // esta línea dice que la última SEMANA no se puede situar dentro del
+        // histórico, y la tabla no habla de la semana, habla de la ventana
+        // entera. El servidor la manda por las tres salidas a propósito -está
+        // escrito en el docstring de `_linea_de_serie`- y este `return` la
+        // tiraba. Se veía una portada perfecta a la que le faltaba lo pedido.
+        tablaDiscordancia(l.tabla) +
         `</div>`
       );
     }
@@ -357,6 +416,10 @@ function bloqueComoVoy(b) {
       (detalle.length
         ? `<div class="ficha-portada">${escapar(detalle.join(" · "))}</div>`
         : "") +
+      // Once de las doce líneas no la traen, y la que la trae no se entiende sin
+      // ella. Va DENTRO de la línea y no al final del bloque para que se lea
+      // pegada a su número y no como una tabla suelta al pie de la portada.
+      tablaDiscordancia(l.tabla) +
       `</div>`
     );
   }).join("");
@@ -530,7 +593,13 @@ async function pintarConcordancia(dias) {
     `escala ${escapar(s.unidad)} · ` +
     `${s.sentido === "alto_peor" ? "alto = peor" : "alto = mejor"}` +
     `${s.desplazamiento_dias ? ` · desplazada ${cuenta(s.desplazamiento_dias, "día", "días")}` : ""}` +
-    `</p></div>`
+    `</p>` +
+    // La misma tabla que en la portada y por el mismo motivo, pero aquí importa
+    // más: esta es la pantalla donde la serie se CORRELACIONA con otras, y una
+    // correlación con un binario que junta dos cosas opuestas hay que leerla
+    // sabiendo cuál de las dos la está moviendo.
+    tablaDiscordancia(s.tabla) +
+    `</div>`
   )).join("");
 
   partes.push(plegable(

@@ -611,6 +611,34 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
   min-width: 8rem;
 }
 
+/* Las cuatro casillas de «¿te apetece?» contra «¿vas a entrenar?».
+ *
+ * Va con una barra a la izquierda y metida hacia dentro porque NO es una tabla
+ * más de la pantalla: es la continuación de la línea que tiene encima. Suelta y
+ * a la misma altura que el resto se leería como un bloque independiente, y lo
+ * que dice solo tiene sentido pegado a su número.
+ *
+ * Y sin `margin-top` grande a propósito: cuanto más lejos esté del porcentaje al
+ * que corrige, más fácil es leer el porcentaje sin ella, que es exactamente lo
+ * que no puede pasar. */
+.casillas {
+  margin: 0.45rem 0 0.2rem;
+  padding-left: 0.7rem;
+  border-left: 2px solid var(--borde);
+}
+.casillas .explica { margin: 0.2rem 0; }
+.casillas .ficha { margin-top: 0.35rem; }
+
+/* Las dos filas que NO coinciden, marcadas y nada más.
+ *
+ * Marcadas, no coloreadas de rojo ni de verde: ninguna de las cuatro casillas es
+ * la buena. Ir sin ganas no es virtud ni es terquedad hasta que se mire qué pasó
+ * después, y eso lo contesta la vista 3 con datos, no esta tabla con un color.
+ * El resalte dice «estas dos son de las que habla el porcentaje de arriba», que
+ * es información, y se para ahí. */
+.casillas .discorde td { color: var(--texto); font-weight: 600; }
+.casillas tbody tr:not(.discorde) td { color: var(--tenue); }
+
 /* --- plegables ----------------------------------------------------------- */
 
 .pliegue {

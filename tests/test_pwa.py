@@ -208,6 +208,14 @@ HUELLAS_DEL_ARMAZON = {
     # un móvil que estuvo sin cobertura se quedaría con el formulario de antes,
     # sin las preguntas, y no habría nada que lo dijera.
     "v7": "7c82f876e4881b9470a7719e87999eea6e486bec71659c7067d58d994be3fbcd",
+    # v8: la otra mitad de las dos preguntas. La v7 las metió en el formulario
+    # -que es donde se contestan- y esta las saca en la ficha: la tabla de las
+    # cuatro casillas, en `metricas.js` y `styles.css`. Aquí el móvil viejo no
+    # se rompe, que es peor: la API ya manda `tabla` y el JavaScript de antes la
+    # tira a la basura sin decir nada, así que la pantalla se ve entera y le
+    # falta justo lo que se pidió. Sin subir el número, eso dura hasta que al
+    # teléfono le dé por revalidar solo.
+    "v8": "cd6bc73ac83d1225403ac52439b6eb8e87f5963bcbdace02ccf4dc494f94f6ef",
 }
 
 
@@ -623,8 +631,47 @@ def test_todo_el_armazon_obliga_al_navegador_a_preguntar_antes_de_reusar(cliente
 # Las cinco vistas, pintadas de verdad
 # ---------------------------------------------------------------------------
 
-HOY = date(2026, 9, 11)
+# El último día sembrado. Va anclado a HOY DE VERDAD y no a una fecha escrita,
+# porque la API no sabe nada de esta constante: llama a `date.today()`. Estuvo
+# clavada en el 11 de septiembre de 2026, y cuatro días después la portada ya
+# pintaba sus doce líneas por la rama de "solo 3 de los últimos 7 días traen
+# este dato" -el sembrado se había quedado fuera de la ventana de la semana- sin
+# que nada se pusiera rojo. Una semana más y habrían sido cero días: el arnés
+# habría seguido en verde pintando doce veces "no hay bastante", que es
+# exactamente el vacío que este archivo existe para no dar por bueno.
+HOY = date.today()
 DIAS = 120
+
+# Las dos preguntas de Sí/No, repartidas en ciclo. La lista no es decorativa:
+# la tabla de discordancia tiene CUATRO casillas y una rama entera de "no hay
+# bastante", y si el sembrado deja cualquiera de las cuatro a cero, el
+# renderizador se pinta igual pero sin haber leído `pct` -que es `None` cuando
+# la casilla está vacía- ni `discordante` en el caso que importa. Sembrando las
+# cuatro, el arnés de Node lee de verdad todas las claves de cada celda.
+#
+# Hay también días con UNA sola contestada y días con NINGUNA, porque el tercer
+# estado -"no me lo han dicho"- no es un `False` y tiene que llegar al conteo de
+# `sin_las_dos`, que es el denominador que la ficha enseña.
+#
+# En trece días, para que el ciclo no cuadre con el 7 de la fuerza ni con el 3
+# de la bici: si cuadrara, "los días que entreno" y "los días que digo que voy a
+# entrenar" serían el mismo conjunto y las correlaciones saldrían perfectas por
+# construcción, que es la forma más silenciosa de que un test deje de mirar.
+_LAS_DOS_PREGUNTAS = [
+    (True, True),  # lo corriente: apetece y va
+    (True, True),
+    (False, True),  # discordancia: no apetece y va igual
+    (True, True),
+    (True, False),  # discordancia: apetece y no va
+    (False, False),  # ni apetece ni va
+    (True, True),
+    (None, None),  # el día que no contestó nada
+    (True, True),
+    (False, True),
+    (True, None),  # contestó una y no la otra
+    (None, False),
+    (False, False),
+]
 
 
 def _sembrar(ses) -> None:
@@ -644,6 +691,7 @@ def _sembrar(ses) -> None:
     """
     for i in range(DIAS):
         d = HOY - timedelta(days=i)
+        apetece, voy = _LAS_DOS_PREGUNTAS[i % len(_LAS_DOS_PREGUNTAS)]
         ses.add(
             DailyMetrics(
                 date=d,
@@ -665,6 +713,8 @@ def _sembrar(ses) -> None:
                 sleep_quality=5 + (i % 4),
                 training_desire=4 + (i % 5),
                 yesterday_rpe=5 + (i % 4),
+                wants_to_train=apetece,
+                will_train=voy,
             )
         )
 
@@ -838,7 +888,76 @@ def _payloads(cliente) -> dict[str, object]:
     )
     assert r.status_code == 200, f"ranking → {r.status_code} {r.text[:400]}"
     salida["ranking"] = r.json()
+
+    # LA LÍNEA DE LA DISCORDANCIA, POR LA RAMA BUENA.
+    #
+    # La línea puede traer su tabla y salir igualmente con `na` -"solo 3 de los
+    # últimos 7 días traen este dato"-, y el `na` manda en el renderizador: se
+    # pinta el motivo y poco más. Eso es lo que pasaba con `HOY` clavado a una
+    # fecha escrita, y mirar solo la tabla no lo habría visto.
+    linea = _linea_de_la_portada(salida["portada"])
+    assert linea and not linea["na"], (
+        f"la línea de discordancia de la portada sale por la rama de «no hay "
+        f"bastante» ({(linea or {}).get('na')!r}). Casi siempre significa que "
+        f"el sembrado ha quedado fuera de la ventana de la última semana, y "
+        f"entonces la portada entera se pinta sin un solo número y este test "
+        f"la da por buena."
+    )
+
+    # LA TABLA DE LAS CUATRO CASILLAS, CON LAS CUATRO LLENAS.
+    #
+    # Mismo motivo que el `assert` del ranking, y descubierto igual de tarde: el
+    # arnés pasaba en verde con el sembrado que no contestaba las dos preguntas,
+    # porque entonces `tabla` llega con `na` puesto, el renderizador se va por la
+    # rama corta y `celdas` no se llega a leer. Una vista que pinta "no hay
+    # bastante" supera todas las comprobaciones de `render_pwa.mjs` sin haber
+    # mirado ni una de las claves que se quieren vigilar.
+    #
+    # Se mira aquí, en el payload, y no en el HTML: si el sembrado deja de llenar
+    # las casillas, lo que hay que arreglar es el sembrado, y el mensaje tiene
+    # que decir eso y no "falta una palabra en la pantalla".
+    for donde, tabla in (
+        ("portada", _tabla_de_la_portada(salida["portada"])),
+        ("concordancia", _tabla_de_la_vista(salida["concordancia"])),
+    ):
+        assert tabla is not None, (
+            f"`{donde}` no trae la tabla de discordancia: o el sembrado no "
+            f"contesta las dos preguntas, o el servidor ha dejado de mandarla"
+        )
+        assert not tabla["na"], (
+            f"la tabla de `{donde}` viene por la rama de «no hay bastante» "
+            f"({tabla['na']!r}). Así el renderizador no lee ni `celdas` ni "
+            f"`pct` ni `discordante`, y este test aprueba sin haberlos mirado."
+        )
+        vacias = [c["etiqueta"] for c in tabla["celdas"] if not c["n"]]
+        assert not vacias, (
+            f"en `{donde}` hay casillas a cero: {vacias}. El sembrado tiene "
+            f"que llenar las cuatro, porque la casilla vacía manda `pct` a "
+            f"`None` y es otra rama distinta de la que se persigue."
+        )
     return salida
+
+
+def _linea_de_la_portada(payload: dict) -> dict | None:
+    """La línea de «cómo voy» que lleva la tabla de discordancia, o `None`."""
+    for linea in payload["como_voy"]["lineas"]:
+        if linea.get("tabla"):
+            return linea
+    return None
+
+
+def _tabla_de_la_portada(payload: dict) -> dict | None:
+    """La tabla de discordancia dentro de «cómo voy», o `None`."""
+    linea = _linea_de_la_portada(payload)
+    return linea["tabla"] if linea else None
+
+
+def _tabla_de_la_vista(payload: dict) -> dict | None:
+    """La tabla de discordancia dentro de la lista de series, o `None`."""
+    for serie in payload["series"]:
+        if serie.get("tabla"):
+            return serie["tabla"]
+    return None
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")

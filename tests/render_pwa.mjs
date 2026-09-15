@@ -161,6 +161,89 @@ const VISTAS = [
  */
 const SOSPECHOSOS = ["undefined", "NaN", "[object Object]"];
 
+/* Lo que cada vista TIENE que haber pintado.
+ *
+ * El `Proxy` de arriba caza una clave LEÍDA que no existe. No caza la contraria
+ * -una clave que el backend manda y el renderizador tira a la basura-, y esa
+ * también ha pasado aquí: la API llevaba un commit entero mandando `tabla` con
+ * las cuatro casillas y `metricas.js` no la miraba. La pantalla se veía entera,
+ * sin un `undefined`, sin una rama al revés, y le faltaba exactamente lo que se
+ * había pedido. Ni este arnés ni ningún otro test se movieron.
+ *
+ * No es la lista de todo lo que se pinta: eso sería una captura de pantalla, y
+ * se rompería cada vez que alguien cambiara una coma. Es la lista corta de lo
+ * que, si desaparece, desaparece callando.
+ */
+const EXIGIDOS = {
+  // `class="casillas"` es el contenedor de la tabla de las dos preguntas;
+  // `discorde` es la clase de las filas donde apetecer y entrenar no
+  // coincidieron, que solo se pinta por la rama con datos. Los dos juntos
+  // distinguen "la tabla está" de "la tabla dice que no hay bastante".
+  //
+  // Aquí van solo las marcas de ESTRUCTURA, las que no viajan en el payload.
+  // El texto de la tabla lo comprueba `tablaMalPintada`, comparándolo contra lo
+  // que mandó el servidor en vez de contra una frase escrita aquí.
+  portada: ['class="casillas"', "discorde"],
+  concordancia: ['class="casillas"', "discorde"],
+};
+
+/* La tabla de las dos preguntas, comparada con lo que el servidor mandó.
+ *
+ * `EXIGIDOS` sabe si una palabra está o no está. Esto sabe DÓNDE está, y hace
+ * falta por dos motivos que la batería de mutaciones enseñó en verde:
+ *
+ *   - quitar la ficha -«93 días con las dos contestadas · 27 con solo una»- no
+ *     ponía nada rojo, y es justo el denominador que impide leer el 30 % como
+ *     un 30 % de todos los días;
+ *   - reordenar las cuatro casillas en el navegador tampoco, y una tabla de dos
+ *     por dos que se reordena sola deja de poderse comparar consigo misma de un
+ *     mes para otro: la casilla de arriba cambia de significado sin que cambie
+ *     ni un número. El comentario de `tablaDiscordancia` lo prohíbe y no lo
+ *     ataba nadie.
+ *
+ * Se compara contra el PAYLOAD y no contra una lista escrita aquí. Lo que se
+ * vigila es que el navegador no toque lo que le dan, no cuál es el texto: así
+ * reescribir una etiqueta en `preguntas.py` no obliga a tocar este archivo, y
+ * en cambio pintarla en otro sitio sí se ve.
+ */
+function tablasDelPayload(clave) {
+  const p = payloads[clave];
+  if (!p) return [];
+  const lineas = clave === "portada" ? (p.como_voy || {}).lineas : p.series;
+  return (lineas || []).map((l) => l.tabla).filter(Boolean);
+}
+
+/* El MISMO `escapar` que usa el renderizador, sacado del contexto.
+ *
+ * Reescribirlo aquí sería tener dos versiones de la regla de escapado, y la
+ * copia de este archivo solo se usaría para comparar: el día que a la ficha le
+ * entrara un `&` o unas comillas, la comparación fallaría y el mensaje diría
+ * "el servidor mandó `ficha` y no está en la pantalla" estando. */
+const escapar = vm.runInContext("escapar", contexto);
+
+function tablaMalPintada(clave, html) {
+  for (const t of tablasDelPayload(clave)) {
+    if (t.na) continue;
+    for (const [campo, texto] of [["ficha", t.ficha], ["lectura", t.lectura]]) {
+      if (texto && !html.includes(escapar(texto))) {
+        return `el servidor mandó \`${campo}\` y no está en la pantalla: "${texto}"`;
+      }
+    }
+    const donde = t.celdas.map((c) => html.indexOf(escapar(c.etiqueta)));
+    const perdida = t.celdas.find((c, i) => donde[i] < 0);
+    if (perdida) return `la casilla "${perdida.etiqueta}" no se pinta`;
+    for (let i = 1; i < donde.length; i++) {
+      if (donde[i] < donde[i - 1]) {
+        return (
+          `las casillas salen en otro orden que el del payload: ` +
+          `"${t.celdas[i].etiqueta}" antes que "${t.celdas[i - 1].etiqueta}"`
+        );
+      }
+    }
+  }
+  return null;
+}
+
 let fallos = 0;
 for (const v of VISTAS) {
   vistaEnCurso = v;
@@ -182,6 +265,21 @@ for (const v of VISTAS) {
   }
   if (!html) {
     console.log(`FALLO ${v}: no se pintó nada`);
+    fallos++;
+    continue;
+  }
+  const faltan = (EXIGIDOS[v] || []).filter((s) => !html.includes(s));
+  if (faltan.length) {
+    console.log(
+      `FALLO ${v}: pintó ${html.length} bytes y en ninguno aparece ` +
+      faltan.join(", "),
+    );
+    fallos++;
+    continue;
+  }
+  const malPintada = tablaMalPintada(v, html);
+  if (malPintada) {
+    console.log(`FALLO ${v}: ${malPintada}`);
     fallos++;
     continue;
   }
