@@ -27,10 +27,31 @@ envía. El trabajo de las 09:00 solo actúa si a esa hora no hay check-in: decid
 con lo que haya de Garmin y lo dice. Por eso su `source` es `fallback_0900` y no
 `checkin`; que la diferencia quede registrada importa el día que haya que
 explicar por qué el semáforo de un martes salió sin la mitad de las señales.
+
+...Y POR QUÉ ADEMÁS RECOMPUTA
+-----------------------------
+Había un segundo caso que el fallback no cubría y que en la práctica es el
+NORMAL, no el raro. El check-in dispara la decisión en el acto; si se rellena a
+las 06:23 y el reloj todavía no ha subido la noche, Garmin contesta vacío y el
+día se decide con la HRV, las pulsaciones y el sueño sin evaluar. A las 09:00 el
+reloj ya ha sincronizado, pero el trabajo se suprimía por la única razón de que
+existía check-in.
+
+Eso confundía dos cosas distintas: «ya tengo tu respuesta» y «ya tengo todos los
+datos». La primera es motivo para no atropellar la decisión; la segunda es la
+que de verdad importa, y no se estaba mirando.
+
+Ahora, si hay check-in, se mira la decisión vigente: si alguna regla quedó SIN
+EVALUAR por un dato de Garmin ausente, se vuelve a pedir el wellness. Y solo si
+el dato ha llegado de verdad se decide otra vez, con `source="recompute"` -no
+`fallback_0900`, que sería mentir sobre un día que sí tuvo check-in-. Si a las
+09:00 sigue sin haber dato, no se escribe nada: una segunda decisión idéntica
+marcada con otra fuente estropea el registro sin arreglar la mañana.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
@@ -43,6 +64,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from app import repository as repo
 from app.db import session_scope
+from app.engine.decision import DecisionAnulada
 from app.integrations.telegram import escapar_html
 from app.runner import run_aviso_percepcion, run_daily, run_reconcile
 
@@ -58,6 +80,64 @@ MARGEN_S = 3600
 # fuera 0 competiría con el arranque; si fueran diez minutos, un contenedor que
 # se reinicia a menudo no llegaría nunca a ejecutarla.
 RETRASO_BACKFILL_S = 90
+
+# Las cinco medidas que vienen del reloj. Si una regla se saltó porque faltaba
+# alguna de estas, el problema NO es que falte la respuesta del usuario: es que
+# a esa hora Garmin no tenía la noche, y volver a preguntarle un rato después
+# puede arreglarlo.
+#
+# Deliberadamente NO están aquí las derivadas (`hrv_ratio`, `rhr_delta`,
+# `hrv_baseline`, `rhr_baseline`). Una base que falta no la arregla refrescar el
+# dato de hoy: le faltan días de historia, y meterla en esta lista convertiría
+# cada mañana de una instalación recién estrenada en una recomputación
+# garantizada que nunca puede salir bien. Además viajan acompañadas -la regla
+# `fc_reposo_disparada` se salta con `["rhr", "rhr_delta"]`, no con `rhr_delta`
+# a secas-, así que mirar las directas ya las cubre.
+MEDIDAS_DE_GARMIN = frozenset(
+    {"hrv", "rhr", "sleep_min", "sleep_score", "body_battery"}
+)
+
+
+def _medidas_que_faltaban(fila: Any) -> set[str]:
+    """Qué medidas del reloj dejaron reglas sin evaluar en la decisión vigente.
+
+    Se lee de `skipped_rules_json`, que el motor ya guardaba: cada regla saltada
+    trae la lista de señales que le faltaron. Aquí no se distingue una regla de
+    otra, solo interesa el conjunto de medidas ausentes.
+
+    Devuelve un conjunto vacío si no hay fila, si el JSON no se puede leer o si
+    lo que faltaba no venía del reloj (el caso de un día sin check-in, donde lo
+    ausente es `fatigue` o `lower_discomfort` y volver a preguntar a Garmin no
+    arregla nada).
+    """
+    if fila is None or not getattr(fila, "skipped_rules_json", None):
+        return set()
+    try:
+        saltadas = json.loads(fila.skipped_rules_json)
+    except (ValueError, TypeError):
+        # Un JSON ilegible no se convierte en «no faltaba nada»: se dice y se
+        # sigue sin recomputar. Inventar una recomputación sobre un registro que
+        # no se entiende es peor que dejar la mañana como está.
+        log.warning("decisión de %s: skipped_rules_json ilegible", fila.date)
+        return set()
+    if not isinstance(saltadas, list):
+        return set()
+    fuera: set[str] = set()
+    for regla in saltadas:
+        if not isinstance(regla, dict):
+            continue
+        for señal in regla.get("missing") or []:
+            if señal in MEDIDAS_DE_GARMIN:
+                fuera.add(str(señal))
+    return fuera
+
+
+def _lo_que_llego(metrics: list, day: date, medidas: set[str]) -> set[str]:
+    """De las medidas que faltaban, cuáles trae ya la lectura nueva."""
+    hoy = next((m for m in metrics or [] if getattr(m, "date", None) == day), None)
+    if hoy is None:
+        return set()
+    return {m for m in medidas if getattr(hoy, m, None) is not None}
 
 # El histórico de salidas ya NO se pide con una constante: sale de
 # `cycling.fetch` a través de `ventana_de_salidas`, que elige entre la ventana
@@ -93,27 +173,65 @@ def job_decision(
     dry_run: bool = False,
     solo_si_falta_checkin: bool = True,
 ) -> Any:
-    """Decide el día. Por defecto solo si el check-in no ha llegado.
+    """Decide el día. Por defecto solo si el check-in no ha llegado, o si la
+    decisión que hay se tomó sin datos del reloj y ahora sí los hay.
 
     `solo_si_falta_checkin` evita el atropello: si a las 09:00 el usuario ya
     rellenó el formulario a las 07:40, la decisión buena ya está tomada y
     volver a tomarla la sustituiría por otra igual pero marcada como
     `fallback_0900`. El registro diría que ese día se decidió sin check-in
     teniéndolo, que es exactamente lo contrario de lo que pasó.
+
+    La excepción -ver la cabecera del módulo- es la decisión CIEGA: la que se
+    tomó con reglas sin evaluar porque a esa hora Garmin no tenía la noche. Esa
+    sí se vuelve a tomar, y solo cuando el dato que faltaba ha llegado.
     """
     day = day or date.today()
     with session_scope() as s:
+        recomputando: set[str] = set()
         if solo_si_falta_checkin and repo.get_checkin(s, day) is not None:
-            log.info("decisión de %s: ya hay check-in, el fallback no actúa", day)
-            return None
+            previa = repo.current_decision(s, day)
+            recomputando = _medidas_que_faltaban(previa)
+            if not recomputando:
+                log.info("decisión de %s: ya hay check-in, el fallback no actúa", day)
+                return None
+            log.info(
+                "decisión de %s: hay check-in, pero se decidió sin %s; se "
+                "vuelve a pedir el wellness",
+                day, ", ".join(sorted(recomputando)),
+            )
 
         metrics, rides = (fetch or _fetch_garmin)(cfg, day)
+
+        anulacion = None
+        if recomputando:
+            llegado = _lo_que_llego(metrics, day, recomputando)
+            if not llegado:
+                # Sigue sin haber dato. Se deja la mañana como está: escribir
+                # una segunda decisión idéntica solo para cambiarle la fuente
+                # ensucia el histórico y no evalúa ni una regla más.
+                log.info(
+                    "decisión de %s: el wellness sigue sin llegar (%s); no se "
+                    "recomputa",
+                    day, ", ".join(sorted(recomputando)),
+                )
+                return None
+            anulacion = DecisionAnulada(
+                anterior=previa.light,
+                decidida_a=previa.computed_at,
+                fuente_anterior=previa.source,
+                medidas=sorted(llegado),
+                sin_llegar=sorted(recomputando - llegado),
+            )
+            source = "recompute"
+
         return run_daily(
             s, cfg, day,
             metrics=metrics, rides=rides,
             hevy_client=hevy_client, telegram_client=telegram_client,
             client_errors=client_errors,
             dry_run=dry_run, source=source,
+            anulacion=anulacion,
         )
 
 

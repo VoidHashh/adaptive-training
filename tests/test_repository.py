@@ -849,7 +849,11 @@ def test_sin_guardar_el_estado_no_se_mueve_absolutamente_nada(db, cfg):
     assert con_rutina, "el escenario ya no tiene ni una sesión de fuerza; rehazlo"
     assert not any(p.gate_open for p in con_rutina)
     motivos = {p.gate_reason for p in con_rutina}
-    assert any("no hay registro" in m for m in motivos), motivos
+    assert any("primera vez que el sistema ve" in m for m in motivos), motivos
+    assert all(p.estreno for p in con_rutina), (
+        "sin estado guardado toda rutina se estrena todos los días, que es "
+        "precisamente la amnesia que este test vigila"
+    )
 
 
 # ---------------------------------------------------------------------------

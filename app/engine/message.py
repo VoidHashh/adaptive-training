@@ -38,8 +38,9 @@ que el día que lo tenga, el mensaje de las 06:30 siga saliendo.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.engine.luces import NOMBRE_LUZ as _NOMBRE_LUZ
 from app.engine.sets import warmup_flags
@@ -240,6 +241,128 @@ def _lineas_sueltos(sueltos: list[dict[str, Any]]) -> list[str]:
     return L
 
 
+# Cómo se llama cada medida del reloj DENTRO DE UNA FRASE, con su artículo.
+#
+# SEGUNDA COPIA A PROPÓSITO. La primera es `GARMIN` en `app/analysis/series.py`,
+# que además lleva unidades, rango y dirección. No se importa de allí porque
+# `series.py` arrastra `app.models` y `app.repository`, y el motor no abre la
+# base de datos: media docena de docstrings de `decision.py` se apoyan en que
+# `decide` es una función pura, y esa propiedad no se rompe por ahorrar cinco
+# cadenas.
+#
+# Que haya dos copias no significa que puedan separarse: `test_message.py`
+# compara este diccionario con el de `series.py` y se pone rojo si difieren.
+EN_FRASE = {
+    "hrv": "la variabilidad",
+    "rhr": "el pulso en reposo",
+    "sleep_min": "lo que duermes",
+    "sleep_score": "la nota de sueño",
+    "body_battery": "el Body Battery",
+}
+
+
+def _enumerar(claves: list[str]) -> str:
+    """"la variabilidad, el pulso en reposo y la nota de sueño"."""
+    nombres = [EN_FRASE.get(c, c) for c in claves]
+    if not nombres:
+        return ""
+    if len(nombres) == 1:
+        return nombres[0]
+    return f"{', '.join(nombres[:-1])} y {nombres[-1]}"
+
+
+def _concordar(claves: list[str], singular: str, plural: str) -> str:
+    """El verbo que le toca a la enumeración, que unas mañanas es de una medida
+    y otras de tres.
+
+    Sin esto salía "la variabilidad y la nota de sueño no se pudo evaluar". Es
+    una falta pequeña y es justo la línea que avisa de que el semáforo de hace
+    dos horas ya no vale: el sitio donde peor sienta que el mensaje suene a
+    plantilla mal rellenada.
+    """
+    return singular if len(claves) == 1 else plural
+
+
+def _lineas_anulacion(decision: Any, tz: str | None) -> list[str]:
+    """El aviso de que esta decisión deja sin efecto la de hace un rato.
+
+    Se pinta SIEMPRE que ha habido recomputación, no solo cuando cambia el
+    color. El motivo es que la recomputación manda un segundo mensaje del mismo
+    día: si llegara sin explicarse, el usuario tendría dos semáforos en el móvil
+    y ninguna forma de saber cuál manda. Un mensaje duplicado y mudo es peor que
+    uno que se presenta.
+
+    Lo que sí cambia con el color es el tono y el sitio. Si cambia, esto es la
+    noticia del día y va en negrita justo debajo de la cabecera; si no cambia,
+    es un acuse de recibo en cursiva.
+    """
+    a = getattr(decision, "anulacion", None)
+    if a is None:
+        return []
+
+    # `computed_at` se guarda en UTC y aquí se lee una hora de reloj de pared.
+    # Sin convertir, el mensaje de las 09:00 diría "anula la de las 04:23" y el
+    # usuario no reconocería su propio check-in de las 06:23.
+    #
+    # El "de las" se monta DESPUÉS de saber la hora y no antes: `_hora_local`
+    # devuelve cadena vacía cuando no puede resolver la zona, y con el prefijo
+    # puesto por delante el mensaje salía "anula la decisión de las , que salió
+    # verde". Renunciar a la hora es aceptable; enseñar el hueco no.
+    reloj = _hora_local(getattr(a, "decidida_a", None), tz)
+    hora = f" de las {reloj}" if reloj else ""
+
+    anterior = _NOMBRE_LUZ.get(a.anterior, a.anterior)
+    medidas = list(a.medidas)
+    llegado = _enumerar(medidas)
+    cola = ""
+    if a.sin_llegar:
+        falta = list(a.sin_llegar)
+        cola = (
+            f" {_concordar(falta, 'Sigue', 'Siguen')} sin llegar "
+            f"{_enumerar(falta)}, así que esta decisión tampoco está completa."
+        )
+
+    if a.cambia_el_color(decision.light):
+        return [
+            f"♻️ <b>Esto anula la decisión{escapar_html(hora)}, que salió "
+            f"{escapar_html(anterior)}.</b> A esa hora el reloj todavía no había "
+            f"subido la noche y {escapar_html(llegado)} "
+            f"{_concordar(medidas, 'no se pudo', 'no se pudieron')} evaluar. "
+            f"{_concordar(medidas, 'Con el dato ya puesto', 'Con los datos ya puestos')}"
+            f", el semáforo cambia.{escapar_html(cola)}"
+        ]
+    return [
+        f"♻️ <i>Recalculado con {escapar_html(llegado)}, que a la hora del "
+        f"check-in todavía no {_concordar(medidas, 'estaba', 'estaban')}. El "
+        f"semáforo no cambia.{escapar_html(cola)}</i>"
+    ]
+
+
+def _hora_local(cuando: Any, tz: str | None) -> str:
+    """HH:MM en la hora del usuario, a partir de un sello guardado en UTC.
+
+    `decisions.computed_at` es UTC y sin `tzinfo` -lo escribe SQLite-, así que
+    hay que ponérselo antes de convertir: un `astimezone()` sobre un ingenuo lo
+    interpretaría como hora local y no movería nada, que es exactamente el fallo
+    de dos horas por el que se leyó una vez las 04:30 del registro como un
+    evento distinto de las 06:30. Aquí ese fallo no sería mío: sería un mensaje
+    diciéndole al usuario que anula un check-in que él recuerda haber mandado
+    dos horas después.
+
+    La zona sale del `config.yaml` y no de una constante. Si no se puede
+    resolver se devuelve cadena vacía y la frase se queda sin la hora, que es
+    peor mensaje pero no es un mensaje FALSO.
+    """
+    if not tz:
+        return ""
+    try:
+        if cuando.tzinfo is None:
+            cuando = cuando.replace(tzinfo=timezone.utc)
+        return cuando.astimezone(ZoneInfo(tz)).strftime("%H:%M")
+    except (AttributeError, ValueError, OSError, ZoneInfoNotFoundError):
+        return ""
+
+
 def render_telegram(decision: Any, config: Any = None) -> str:
     """El mensaje completo del día."""
     raw = (config.raw if hasattr(config, "raw") else config) or {}
@@ -266,6 +389,12 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         f"{EMOJI[luz]} <b>{fmt_date(decision.day).capitalize()} — "
         f"{NOMBRE_LUZ[luz]}</b>"
     )
+
+    # Justo debajo de la cabecera y antes que nada más, incluida la descarga: si
+    # el semáforo de hace dos horas ya no vale, eso se lee ANTES que la sesión
+    # que ese semáforo condiciona. Ponerlo al final, entre los apuntes, sería
+    # dejar que se lea el plan del día creyendo que es el primero.
+    L.extend(_lineas_anulacion(decision, raw.get("timezone")))
 
     if decision.deload.active:
         # El motivo va aquí, pegado al aviso, y no suelto entre los apuntes:
@@ -604,10 +733,16 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             L.append("• Ninguna regla ha saltado hoy")
 
         if decision.progression and not decision.progression.gate_open:
-            L.append(
-                f"• Progresión cerrada: "
-                f"{escapar_html(decision.progression.gate_reason)}"
-            )
+            # "Progresión cerrada: primera vez que el sistema ve el Día 2" son
+            # dos malas noticias donde no hay ninguna. El rótulo se quita
+            # cuando lo único que pasa es que la rutina se estrena hoy: el
+            # motivo ya se explica solo y no necesita que lo presenten como una
+            # puerta que se cierra.
+            motivo = escapar_html(decision.progression.gate_reason)
+            if getattr(decision.progression, "estreno", False):
+                L.append(f"• {motivo[:1].upper()}{motivo[1:]}")
+            else:
+                L.append(f"• Progresión cerrada: {motivo}")
 
         # El resto de apuntes del motor. No son degradaciones -por eso van
         # aquí y no arriba- pero tampoco eran visibles en ninguna parte: solo

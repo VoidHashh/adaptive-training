@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Sequence
 
 from app.engine.bike_advisor import BikeRecommendation, recommend_bike
@@ -185,6 +185,23 @@ class EngineState:
             comp[k] = None if valor is None else bool(valor)
         return comp, clean
 
+    def estrenada(self, routine_key: str) -> bool:
+        """Si el sistema ha llegado a registrar alguna sesión de esta rutina.
+
+        Se mira sobre `compliance` ENTERO y no sobre la proyección de
+        `for_routine`, que solo trae las claves de los ejercicios de hoy. La
+        diferencia importa el día que se renombra un ejercicio: con la
+        proyección, una rutina con dos años de historia y todas las claves
+        cambiadas se leería como recién estrenada.
+
+        `apply_session_result` escribe una entrada por cada ejercicio de la
+        rutina en cada reconciliación, así que no haber ni una significa que
+        ninguna sesión de esta rutina ha llegado nunca a registrarse. Que se
+        haya entrenado o no es otra pregunta, y esta función no la contesta:
+        contesta la del sistema, que es la que decide.
+        """
+        return any(rk == routine_key for rk, _ in self.compliance)
+
 
 @dataclass
 class DeloadStatus:
@@ -203,6 +220,46 @@ class DeloadStatus:
             "start": self.start.isoformat() if self.start else None,
             "end": self.end.isoformat() if self.end else None,
             "shifted": self.shifted,
+        }
+
+
+@dataclass
+class DecisionAnulada:
+    """La decisión de esta mañana que esta otra deja sin efecto, y por qué.
+
+    Existe por un caso muy concreto: el check-in rellenado a las 06:23, antes de
+    que el reloj haya subido la noche. Ese día se decide con la HRV, las
+    pulsaciones y el sueño sin evaluar, y a las 09:00 -cuando el dato ya está-
+    se vuelve a decidir. Si de eso sale otro color, el usuario tiene derecho a
+    enterarse de que el mensaje de hace dos horas ya no vale, y a saber qué dato
+    lo ha cambiado.
+
+    NO la produce `decide`: la cuelga `run_daily` con lo que le pasa el
+    scheduler, igual que `load_adoptions` o `tendencia`. `decide` es una función
+    pura y no sabe -ni tiene por qué- que antes hubo otra decisión.
+
+    `sin_llegar` no es decoración. Que la recomputación haya rescatado la HRV no
+    significa que haya rescatado el sueño, y una decisión que sigue coja tiene
+    que decir en qué sigue coja; si no, el mensaje de las 09:00 se leería como
+    definitivo cuando no lo es.
+    """
+
+    anterior: str
+    decidida_a: datetime | None = None
+    fuente_anterior: str | None = None
+    medidas: list[str] = field(default_factory=list)
+    sin_llegar: list[str] = field(default_factory=list)
+
+    def cambia_el_color(self, ahora: str) -> bool:
+        return self.anterior != ahora
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "anterior": self.anterior,
+            "decidida_a": self.decidida_a.isoformat() if self.decidida_a else None,
+            "fuente_anterior": self.fuente_anterior,
+            "medidas": list(self.medidas),
+            "sin_llegar": list(self.sin_llegar),
         }
 
 
@@ -279,6 +336,11 @@ class DayDecision:
     # No entra en ninguna decisión ni la cambia. Es mantenimiento del sistema
     # contado por el único canal que se lee todos los días.
     recalibracion: Any = None
+    # La decisión de esta misma mañana que esta deja sin efecto, cuando la hay.
+    # Un `DecisionAnulada`; ver su docstring. La cuelga `run_daily` con lo que
+    # le pasa `job_decision`, por el mismo motivo que los tres campos de arriba:
+    # `decide` no abre la base de datos y no sabe qué se decidió antes.
+    anulacion: Any = None
 
     @property
     def weekday(self) -> str:
@@ -316,6 +378,7 @@ class DayDecision:
             "recalibracion": (
                 self.recalibracion.to_dict() if self.recalibracion else None
             ),
+            "anulacion": self.anulacion.to_dict() if self.anulacion else None,
         }
 
 
@@ -326,6 +389,18 @@ def _progression_dict(plan: ProgressionPlan | None) -> dict[str, Any] | None:
         "routine": plan.routine_key,
         "gate_open": plan.gate_open,
         "gate_reason": plan.gate_reason,
+        # Sí, esto duplica `gate_reason`: la frase ya dice que es un estreno.
+        # Pero la frase se lee y el booleano se CONSULTA. "¿Cuántas de las
+        # puertas cerradas de septiembre fueron estrenos y cuántas averías?" se
+        # contesta filtrando esta clave; con solo la prosa habría que buscar
+        # subcadenas contra un texto que para entonces puede estar reescrito,
+        # que es justo la fragilidad por la que `estreno` existe como campo.
+        #
+        # Y hay que ponerlo AQUÍ además de en `ProgressionPlan.to_dict`, porque
+        # esta función es una segunda proyección escrita a mano y es la que
+        # acaba en `decisions.progression_json`. Un campo nuevo en el plan no
+        # llega solo: el test de serialización pilló este hueco.
+        "estreno": plan.estreno,
         "sets_allowed": plan.sets_allowed,
         "sets_reason": plan.sets_reason,
         "reps_allowed": plan.reps_allowed,
@@ -648,6 +723,10 @@ def decide(
         deload_active=deload.active,
         last_routine_light=state.last_routine_light.get(routine_key),
         current_sets=state.current_sets,
+        # Solo para redactar el motivo de la puerta: una rutina que el sistema
+        # no ha visto nunca no es una avería, y el mensaje no tiene por qué
+        # sonar como si lo fuera.
+        rutina_estrenada=state.estrenada(routine_key),
         # La cola de los cupos, acotada a esta rutina: `plan_progression`
         # trabaja con claves de ejercicio a secas.
         sessions_since_progress={

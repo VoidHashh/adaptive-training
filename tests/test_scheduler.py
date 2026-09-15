@@ -134,6 +134,211 @@ def test_el_fallback_avisa_por_telegram(en_memoria, cfg):
 
 
 # ---------------------------------------------------------------------------
+# La recomputación de las 09:00
+# ---------------------------------------------------------------------------
+#
+# El caso real, del 15 de septiembre de 2026: contenedor arriba a las 06:22,
+# check-in a las 06:23, decisión a las 06:23:33. El reloj todavía no había
+# subido la noche, Garmin contestó con `"hrv": {}` y el sueño a nulos, y el día
+# se decidió con cinco reglas sin evaluar. A las 09:00 el dato ya estaba, pero
+# el trabajo se suprimía por la única razón de que existía check-in.
+#
+# Lo que estos tests fijan es la distinción que faltaba: «ya tengo tu respuesta»
+# no es «ya tengo todos los datos».
+
+
+def sin_wellness(cfg, day):
+    """Lo que contesta Garmin cuando el reloj no ha sincronizado la noche."""
+    return dias(day, 10), []
+
+
+def _manana_a_ciegas(db, cfg, day=LUNES):
+    """Reproduce la mañana rota: check-in temprano y decisión sin datos del reloj.
+
+    El orden importa y es el de verdad: primero se decide a ciegas -como hace la
+    PWA al recibir el formulario- y DESPUÉS se deja el check-in en la base. Al
+    revés, el cerrojo saltaría antes de escribir la decisión que estos tests
+    necesitan tener delante.
+    """
+    job_decision(
+        cfg, day=day, fetch=sin_wellness, source="checkin",
+        solo_si_falta_checkin=False,
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+    repo.upsert_checkin(db, day, {"fatigue": 2, "lower_discomfort": 1}, config=cfg)
+    db.commit()
+    previa = repo.current_decision(db, day)
+    assert previa is not None and previa.source == "checkin"
+    return previa
+
+
+def test_una_decision_completa_con_checkin_no_se_recomputa(en_memoria, cfg):
+    """El cerrojo de siempre, ahora probado con una decisión DELANTE.
+
+    `test_con_checkin_el_fallback_no_actua` pasaba sin que hubiera ninguna fila
+    de decisión en la base, así que no distinguía «no actúo porque la decisión
+    está completa» de «no actúo porque no hay nada que mirar». Este sí: hay
+    check-in, hay decisión, y esa decisión evaluó todo lo que venía del reloj.
+    """
+    job_decision(
+        cfg, day=LUNES, fetch=fetch_falso, source="checkin",
+        solo_si_falta_checkin=False,
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+    repo.upsert_checkin(
+        en_memoria, LUNES, {"fatigue": 3, "lower_discomfort": 1}, config=cfg
+    )
+    en_memoria.commit()
+
+    pedido = []
+
+    def fetch_espia(c, d):
+        pedido.append(d)
+        return fetch_falso(c, d)
+
+    assert job_decision(cfg, day=LUNES, fetch=fetch_espia) is None
+    assert not pedido, (
+        "con la decisión ya completa no hay que volver a molestar a Garmin"
+    )
+    assert repo.current_decision(en_memoria, LUNES).source == "checkin"
+
+
+def test_la_decision_ciega_se_recomputa_cuando_llega_el_wellness(en_memoria, cfg):
+    """El arreglo, entero: se vuelve a decidir y la anterior deja de ser vigente."""
+    previa = _manana_a_ciegas(en_memoria, cfg)
+    saltadas = previa.skipped_rules_json or ""
+    assert "hrv" in saltadas and "sleep_min" in saltadas, (
+        "la premisa del test: la decisión de las 06:23 salió sin datos del reloj"
+    )
+
+    res = job_decision(
+        cfg, day=LUNES, fetch=fetch_falso,
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+
+    assert res is not None, "con el dato ya disponible hay que volver a decidir"
+    vigente = repo.current_decision(en_memoria, LUNES)
+    assert vigente.source == "recompute", (
+        "no es `fallback_0900`: ese día SÍ hubo check-in, y marcarlo así sería "
+        "mentir sobre cómo se decidió"
+    )
+    assert vigente.id != previa.id
+    en_memoria.refresh(previa)
+    assert previa.is_current is False, (
+        "la decisión ciega tiene que quedar registrada, pero no vigente"
+    )
+
+
+def test_si_el_wellness_sigue_sin_llegar_no_se_escribe_nada(en_memoria, cfg):
+    """Una segunda decisión idéntica con otra fuente ensucia y no arregla nada.
+
+    Este es el test que impide que el arreglo se pase de listo. Recomputar por
+    el mero hecho de que faltara un dato -sin comprobar que el dato ha llegado-
+    reescribiría la decisión todas las mañanas en las que el reloj no sincronice
+    en toda la noche, cambiándole la fuente a `recompute` sin haber evaluado ni
+    una regla más.
+    """
+    previa = _manana_a_ciegas(en_memoria, cfg)
+
+    assert job_decision(cfg, day=LUNES, fetch=sin_wellness) is None
+    en_memoria.refresh(previa)
+    assert previa.is_current is True
+    assert previa.source == "checkin"
+
+
+def test_lo_que_falta_y_no_es_del_reloj_no_dispara_recomputacion(en_memoria, cfg):
+    """Una regla saltada por una señal del formulario no la arregla Garmin.
+
+    Y las derivadas tampoco cuentan: `hrv_baseline` falta porque no hay días
+    suficientes de historia, no porque el reloj vaya tarde. Si contaran, cada
+    mañana de una instalación recién estrenada sería una recomputación
+    garantizada que nunca puede salir bien.
+    """
+    from app.scheduler import _medidas_que_faltaban
+
+    def fila(missing):
+        import json
+        return SimpleNamespace(
+            date=LUNES,
+            skipped_rules_json=json.dumps([{"name": "r", "missing": missing}]),
+        )
+
+    assert _medidas_que_faltaban(fila(["fatigue", "training_desire"])) == set()
+    assert _medidas_que_faltaban(fila(["hrv_baseline", "rhr_baseline"])) == set()
+    assert _medidas_que_faltaban(fila(["rhr", "rhr_delta"])) == {"rhr"}
+    assert _medidas_que_faltaban(None) == set()
+    assert _medidas_que_faltaban(
+        SimpleNamespace(date=LUNES, skipped_rules_json="{no es json")
+    ) == set()
+
+
+def test_la_recomputacion_cuenta_que_anula_a_la_de_antes(en_memoria, cfg):
+    """El usuario tiene dos mensajes en el móvil: hay que decirle cuál manda."""
+    previa = _manana_a_ciegas(en_memoria, cfg)
+    tg = TelegramFalso()
+
+    res = job_decision(
+        cfg, day=LUNES, fetch=fetch_falso,
+        hevy_client=HevyFalso(), telegram_client=tg,
+    )
+
+    a = res.decision.anulacion
+    assert a is not None
+    assert a.anterior == previa.light
+    assert a.fuente_anterior == "checkin"
+    assert "hrv" in a.medidas and "rhr" in a.medidas
+    assert tg.enviados, "una recomputación que no se cuenta no sirve de nada"
+    assert "♻️" in tg.enviados[-1], (
+        "el mensaje de las 09:00 tiene que presentarse como lo que es"
+    )
+
+
+def test_el_historico_explica_el_cambio_sin_columna_nueva(en_memoria, cfg):
+    """La anulación no se guarda en ninguna columna, y no hace falta.
+
+    `save_decision` escribe campo a campo y no hay hueco para ella. La
+    tentación es añadir uno; la razón para no hacerlo es que el histórico YA
+    contesta la pregunta de dentro de tres meses -«¿por qué el martes el
+    semáforo cambió a las nueve?»- con lo que guarda:
+
+      · dos filas del mismo día, la ciega marcada `is_current=False` y con
+        fuente `checkin`, la nueva vigente y con fuente `recompute`;
+      · y la diferencia entre sus dos `skipped_rules_json`, que es exactamente
+        la lista de lo que el reloj subió entre una hora y la otra.
+
+    Este test fija esa reconstrucción. Si algún día deja de poder hacerse, la
+    columna pasa de innecesaria a imprescindible y hay que enterarse aquí y no
+    tres meses después, delante de una fila muda.
+    """
+    import json
+
+    _manana_a_ciegas(en_memoria, cfg)
+    job_decision(
+        cfg, day=LUNES, fetch=fetch_falso,
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+
+    filas = en_memoria.scalars(
+        select(DecisionRow).where(DecisionRow.date == LUNES).order_by(DecisionRow.id)
+    ).all()
+    assert [f.source for f in filas] == ["checkin", "recompute"]
+    assert [f.is_current for f in filas] == [False, True]
+
+    def faltaban(fila):
+        return {
+            s
+            for r in json.loads(fila.skipped_rules_json or "[]")
+            for s in r.get("missing") or []
+        }
+
+    llego = faltaban(filas[0]) - faltaban(filas[1])
+    assert {"hrv", "rhr"} <= llego, (
+        "de las dos filas tiene que poder deducirse qué subió el reloj a las "
+        f"09:00, y de estas se deduce {sorted(llego)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # La reconciliación
 # ---------------------------------------------------------------------------
 

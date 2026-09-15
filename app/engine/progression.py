@@ -171,6 +171,12 @@ class ProgressionPlan:
     # "no me avises" en "no lo apuntes", y entonces la auditoría del día no
     # podría contestar por qué un ejercicio lleva tres semanas parado.
     notify_ceiling: bool = True
+    # La puerta está cerrada porque esta rutina no se ha hecho nunca, no porque
+    # algo haya salido mal. Es un booleano y no una comprobación del texto de
+    # `gate_reason` porque el mensaje cambia de TONO con esto, y hacer que el
+    # tono dependa de una subcadena es garantizar que el día que alguien
+    # reescriba la frase el aviso vuelva a sonar a fallo sin que nada avise.
+    estreno: bool = False
 
     @property
     def changes(self) -> list[ExerciseProgression]:
@@ -190,6 +196,7 @@ class ProgressionPlan:
             # Va al registro para que el "por qué no me avisó" tenga respuesta:
             # un techo apuntado y no notificado se distingue de uno que no hubo.
             "notify_ceiling": self.notify_ceiling,
+            "estreno": self.estreno,
             "exercises": [e.to_dict() for e in self.exercises],
         }
 
@@ -247,7 +254,11 @@ def _fmt_kg(v: float) -> str:
     return s.replace(".", ",")  # 62,5 kg, que es como se lee en España
 
 
-def _por_que_sin_registro(detalle: dict[str, bool | None] | None) -> str:
+def _por_que_sin_registro(
+    detalle: dict[str, bool | None] | None,
+    estrenada: bool | None = None,
+    titulo: str | None = None,
+) -> str:
     """Motivo de cerrar la puerta por falta de registro, nombrando a los
     ejercicios culpables cuando eso sirve de algo.
 
@@ -255,7 +266,31 @@ def _por_que_sin_registro(detalle: dict[str, bool | None] | None) -> str:
     en el primer arranque llenaría el mensaje de Telegram de ruido. Con uno o
     dos ejercicios nuevos dentro de una rutina en marcha sí aporta: es la
     diferencia entre "hoy no se sube carga" y "reconcilia el hip thrust".
+
+    Y hay un tercer caso, que es el que más veces se va a leer durante las dos
+    primeras semanas: la rutina que el sistema no ha visto NUNCA. Ahí "no hay
+    registro de la última sesión con el que comparar" es verdad y suena a
+    avería -¿se ha perdido algo?, ¿ha fallado la reconciliación?- cuando lo
+    que pasa es lo más normal del mundo el día que estrenas un ciclo. Se dice
+    en positivo y con lo que el usuario necesita saber, que es CUÁNDO empieza
+    a subir la carga.
+
+    `estrenada` es tri-estado a propósito. `None` es "no me lo han dicho" -los
+    scripts y buena parte de los tests llaman a `evaluate_gate` a pelo- y cae
+    en la redacción de siempre, que no miente: dice menos.
+
+    El sujeto es EL SISTEMA y no el usuario, y eso también es deliberado. Si
+    el Día 2 se entrenó pero la reconciliación no llegó a registrarlo, "primera
+    vez que el sistema ve el Día 2" sigue siendo cierto; "es la primera vez que
+    haces el Día 2" sería falso y encima delataría el fallo al revés.
     """
+    if estrenada is False:
+        quien = f"el {titulo}" if titulo else "esta rutina"
+        return (
+            f"primera vez que el sistema ve {quien}: la progresión arranca la "
+            f"próxima vez que toque"
+        )
+
     base = "no hay registro de la última sesión con el que comparar"
     if not detalle:
         return base
@@ -277,11 +312,15 @@ def evaluate_gate(
     routine_key: str,
     deload_active: bool = False,
     compliance_por_ejercicio: dict[str, bool | None] | None = None,
+    rutina_estrenada: bool | None = None,
+    titulo_rutina: str | None = None,
 ) -> tuple[bool, str]:
     """Puerta general. Devuelve (abierta, motivo).
 
-    `compliance_por_ejercicio` es opcional y solo sirve para redactar el
-    motivo: la decisión la toma `compliance_ok`, que ya viene resuelto.
+    `compliance_por_ejercicio`, `rutina_estrenada` y `titulo_rutina` son
+    opcionales y solo sirven para redactar el motivo: la decisión la toma
+    `compliance_ok`, que ya viene resuelto. Ninguno de los tres puede abrir
+    una puerta que estaría cerrada ni cerrar una que estaría abierta.
     """
     if deload_active and (prog_cfg.get("deload") or {}).get("freeze_progression", True):
         return False, "semana de descarga: la progresión está congelada"
@@ -297,7 +336,9 @@ def evaluate_gate(
 
     if gate.get("require_all_sets_at_target_reps", True):
         if compliance_ok is None:
-            return False, _por_que_sin_registro(compliance_por_ejercicio)
+            return False, _por_que_sin_registro(
+                compliance_por_ejercicio, rutina_estrenada, titulo_rutina
+            )
         if not compliance_ok:
             return False, "en la última sesión no se completaron todas las series efectivas"
 
@@ -721,6 +762,7 @@ def plan_progression(
     sessions_since_progress: dict[str, int] | None = None,
     last_routine_light: str | None = None,
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    rutina_estrenada: bool | None = None,
 ) -> ProgressionPlan:
     """Decide la progresión de todos los ejercicios de una rutina.
 
@@ -796,9 +838,26 @@ def plan_progression(
     gate_open, gate_reason = evaluate_gate(
         prog_cfg, light, signals, global_compliance, routine_key, deload_active,
         compliance_por_ejercicio=por_ejercicio,
+        rutina_estrenada=rutina_estrenada,
+        # El título del `config.yaml` -"Día 2"-, no la clave -`dia_2`-. Este
+        # motivo se lee en Telegram y en la vista de auditoría, no en un log.
+        titulo_rutina=str(routine.get("title") or "") or None,
     )
     (sets_ok, sets_why), (reps_ok, reps_why) = evaluate_volume_gates(
         prog_cfg, signals, signals.day, last_routine_light
+    )
+
+    # Que la rutina esté sin estrenar no basta: tiene que ser ADEMÁS lo que
+    # cierra la puerta hoy. Un día rojo en una rutina nueva se cierra por el
+    # semáforo, y anunciar ahí "la progresión arranca la próxima vez que toque"
+    # sería prometer algo que el color no permite prometer.
+    #
+    # La comprobación se hace contra el texto que devuelve la MISMA función que
+    # lo redacta, no contra una subcadena escrita aquí a mano: así el día que
+    # alguien reescriba la frase, esto la sigue reconociendo en vez de dejar de
+    # reconocerla en silencio y volver al tono de avería.
+    es_estreno = rutina_estrenada is False and gate_reason == _por_que_sin_registro(
+        por_ejercicio, rutina_estrenada, str(routine.get("title") or "") or None
     )
 
     plan = ProgressionPlan(
@@ -813,6 +872,7 @@ def plan_progression(
         # pone `_plan_volume` (tope de reps o de segundos). Si algún día otro
         # modo marca techo, esta opción tendrá que subir un nivel.
         notify_ceiling=bool((modes.get("volume") or {}).get("on_ceiling_notify", True)),
+        estreno=es_estreno,
     )
 
     for exercise in ejercicios:

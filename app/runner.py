@@ -150,6 +150,10 @@ def run_daily(
     client_errors: dict[str, str] | None = None,
     dry_run: bool = False,
     source: str = "scheduler",
+    # La decisión de esta misma mañana que esta deja sin efecto, cuando la hay.
+    # La construye `job_decision`, que es el único que sabe qué había antes y
+    # qué dato del reloj ha llegado desde entonces.
+    anulacion: Any = None,
 ) -> DailyResult:
     """Decide el día y lo ejecuta. Los clientes se inyectan a propósito.
 
@@ -192,6 +196,20 @@ def run_daily(
     # sistema que recuerda y uno que cada mañana vuelve a nacer.
     state = repo.load_state(session, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
     decision = decide(cfg, day, signals, state, source=source)
+
+    # Esto viaja con la decisión hasta el renderizador, y NO hasta la base:
+    # `save_decision` escribe columna a columna y no hay ninguna para la
+    # anulación. Aquí decía lo contrario -"para que el JSON del histórico la
+    # lleve"- y era falso.
+    #
+    # Tampoco hace falta una columna nueva. Dentro de tres meses, "el martes el
+    # semáforo cambió de verde a ámbar a las nueve" se reconstruye con lo que ya
+    # se guarda: dos filas del mismo día, la de las 06:23 con `is_current=False`
+    # y fuente `checkin`, la de las 09:00 vigente y con fuente `recompute`. Y
+    # QUÉ dato llegó sale de comparar los dos `skipped_rules_json`: lo que
+    # faltaba en la primera y ya no falta en la segunda es exactamente lo que el
+    # reloj subió entre una hora y otra.
+    decision.anulacion = anulacion
 
     # Lo que la reconciliación de anoche movió de la carga, para contarlo AHORA.
     # Se cuelga antes de guardar la decisión para que quede también en el

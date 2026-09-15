@@ -456,14 +456,83 @@ def test_el_registro_de_otra_rutina_no_vale_por_esta(cfg):
 
 
 def test_en_frio_la_puerta_se_cierra_en_vez_de_abrirse(cfg):
-    """Instalación recién estrenada: no hay ni una sesión reconciliada."""
+    """Instalación recién estrenada: no hay ni una sesión reconciliada.
+
+    La puerta cerrada es lo importante y no ha cambiado. Lo que cambia es CÓMO
+    se cuenta: "no hay registro de la última sesión con el que comparar" es
+    verdad y suena a avería -¿se ha perdido algo?, ¿ha fallado la
+    reconciliación?- justo el día que estrenas el ciclo, que es cuando más
+    veces se va a leer.
+    """
     d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), EngineState())
     assert d.progression is not None
     assert not d.progression.gate_open
-    assert "no hay registro" in d.progression.gate_reason
+    assert d.progression.estreno is True
+    assert "primera vez que el sistema ve el Día 1" in d.progression.gate_reason
+    assert "arranca la próxima vez que toque" in d.progression.gate_reason, (
+        "hay que decir CUÁNDO empieza a subir, que es la pregunta que deja"
+    )
     assert not d.progression.changes, (
         "y no se mueve nada: la puerta gobierna también el volumen"
     )
+
+
+def test_una_rutina_con_historia_no_se_presenta_como_estrenada(cfg):
+    """Con las claves renombradas sigue sin haber registro, pero no es estreno.
+
+    El caso: una rutina con meses de historia a la que se le cambian las claves
+    de los ejercicios. La proyección de `for_routine` sale entera a `None` -las
+    claves nuevas no tienen registro-, exactamente igual que en una instalación
+    recién puesta. La diferencia solo se ve mirando `compliance` ENTERO, que es
+    lo que hace `estrenada`.
+
+    Si esto se leyera como estreno, el mensaje prometería que "la progresión
+    arranca la próxima vez que toque", la próxima vez no arrancaría -porque el
+    registro que falta seguirá faltando- y no habría nada que lo explicara.
+    """
+    st = EngineState(compliance={("dia_1", "un_ejercicio_que_ya_no_existe"): True})
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+
+    assert not d.progression.gate_open
+    assert d.progression.estreno is False
+    assert "no hay registro" in d.progression.gate_reason
+    assert "primera vez" not in d.progression.gate_reason
+
+
+@pytest.mark.parametrize(
+    "molestia, color",
+    [
+        ({"upper_discomfort": 6}, "amber"),
+        ({"lower_discomfort": 7}, "red"),
+    ],
+)
+def test_en_un_dia_sin_verde_la_rutina_virgen_no_se_presenta_como_estreno(
+    cfg, molestia, color
+):
+    """Sin estrenar Y en ámbar: lo que cierra la puerta hoy es el color.
+
+    Las dos condiciones se dan a la vez y solo una es la que manda. Decir aquí
+    "primera vez que el sistema ve el Día 1: la progresión arranca la próxima
+    vez que toque" sería prometer algo que el color no permite prometer: la
+    próxima vez que toque el Día 1 puede volver a salir ámbar, y entonces
+    tampoco arrancaría.
+
+    Por eso `estreno` no es `rutina_estrenada is False` a secas sino esa
+    condición Y que el motivo que ha cerrado la puerta sea EL del estreno. Este
+    test es el que hace falsable esa segunda mitad: si se cae, la puerta sigue
+    cerrada igual -no cambia ninguna decisión- y solo cambia el tono del
+    mensaje, que es exactamente el tipo de rotura que pasa desapercibida.
+    """
+    d = decide(cfg, LUNES, sig(LUNES, **molestia), EngineState())
+
+    assert d.light == color
+    assert d.progression is not None and not d.progression.gate_open
+    assert d.progression.estreno is False, (
+        "un día sin verde en una rutina nueva se cierra por el semáforo, y el "
+        "mensaje estaría prometiendo un arranque que el color no garantiza"
+    )
+    assert "el semáforo está en" in d.progression.gate_reason
+    assert "primera vez" not in d.progression.gate_reason
 
 
 def test_un_ejercicio_nuevo_en_una_rutina_en_marcha_frena_a_toda_la_rutina(cfg):
@@ -554,3 +623,22 @@ def test_la_decision_se_puede_guardar_como_json(cfg):
     recargada = json.loads(json.dumps(d.to_dict(), ensure_ascii=False))
     assert recargada["light"] == "green"
     assert "inputs" in recargada, "sin la fotografía de señales no se puede auditar"
+
+
+def test_el_estreno_viaja_en_el_json_y_no_solo_en_la_prosa(cfg):
+    """El motivo del estreno se guarda DOS veces, y es a propósito.
+
+    En `gate_reason` va la frase, que es lo que se lee. En `estreno` va el
+    booleano, que es lo que se consulta. Dentro de tres meses, "¿cuántas de las
+    puertas cerradas de septiembre fueron estrenos y cuántas averías?" se
+    contesta con un filtro sobre el JSON; con solo la prosa habría que buscar
+    subcadenas contra un texto que para entonces puede estar reescrito, que es
+    exactamente la fragilidad que el booleano existe para evitar.
+    """
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), EngineState())
+    recargada = json.loads(json.dumps(d.to_dict(), ensure_ascii=False))
+    assert recargada["progression"]["estreno"] is True
+
+    con_historia = EngineState(compliance={("dia_1", "lo_que_sea"): True})
+    d2 = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), con_historia)
+    assert json.loads(json.dumps(d2.to_dict()))["progression"]["estreno"] is False
