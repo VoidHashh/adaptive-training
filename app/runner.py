@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -44,6 +44,8 @@ from app import repository as repo
 from app.engine.decision import apply_execution, decide
 from app.engine.message import render_telegram
 from app.engine.recalibracion import evaluar_recalibracion
+from app.engine.rotacion import pendientes as rutinas_pendientes
+from app.engine.session_builder import orden_de_rotacion
 from app.engine.signals import Checkin, build_signals
 from app.engine.tendencia import DecisionDia, evaluar_tendencia
 from app.integrations.telegram import escapar_html
@@ -235,6 +237,20 @@ def run_daily(
         + [DecisionDia(day, decision.light, decision.trigger_rule)],
         sleep_score={m.date: m.sleep_score for m in metrics},
         sleep_min={m.date: m.sleep_min for m in metrics},
+    )
+
+    # Qué rutina del ciclo lleva más de una vuelta sin hacerse. No cambia la
+    # decisión: se cuelga para que el mensaje pueda nombrarla y para que quede en
+    # el histórico. Ver `app/engine/rotacion.py`, que explica por qué basta con
+    # contar y por qué no hace falta ni puntero ni cola.
+    #
+    # Se acota a `day` aunque en producción no cambie nada -a las siete de la
+    # mañana lo último que hay en `workout_log` es de anoche- porque en un replay
+    # sí cambia: sin el tope, volver a decidir una mañana de marzo contaría las
+    # sesiones de abril y diría que no había nada parado cuando sí lo había.
+    orden = orden_de_rotacion(cfg)
+    decision.pendientes = rutinas_pendientes(
+        orden, repo.sesiones_del_ciclo(session, orden, hasta=day)
     )
 
     res = DailyResult(day=day, decision=decision)
@@ -833,6 +849,41 @@ def run_reconcile(
     bloque_hiit = plan.get("hiit_block")
     hiit = claves_hiit(cfg)
 
+    # LOS DOS DATOS QUE HACEN INFORMATIVO EL AVISO DE «HE ENTRENADO OTRA COSA».
+    #
+    # Declarar el Día 2 y acabar registrando el Día 1 ya se detectaba: el Día 1
+    # no era la rutina del plan, así que la fila salía `unplanned` y el motivo
+    # decía «es dia_1 y en la rotación tocaba dia_2». Eso cuenta el desajuste y
+    # se queda a medias en lo único que tiene consecuencias: los pesos.
+    #
+    # Lo que hay dentro de una rutina de Hevy es lo que el motor escribió la
+    # última vez que ESA rutina se planificó. Nadie la toca entre medias. Así
+    # que entrenar el Día 1 una mañana en la que se escribió el Día 2 es
+    # entrenar con la carga de hace dos semanas, sin el semáforo ni la
+    # progresión de hoy, y sin que nada lo diga uno lo achaca a tener un mal
+    # día. `declarada` sirve para no atribuirle a la rotación una elección que
+    # fue mía: si el selector dijo «Día 2», la frase correcta es «declaraste» y
+    # no «tocaba».
+    #
+    # Se resuelven aquí, antes del bucle, y no dentro de `_motivo_suelto`:
+    # ese helper redacta y no consulta, y mantenerlo sin base de datos es lo que
+    # permite leerlo entero para saber qué frases puede llegar a decir.
+    #
+    # `declarada` NO SE FILTRA CONTRA EL CICLO, y aquí hubo una línea que lo
+    # hacía. Parecía prudente -«que un bici no acabe de sujeto de la frase»- y
+    # era imposible de disparar: lo único que se hace con `declarada` es
+    # compararla con la rutina PLANIFICADA, y a `_motivo_otro_dia` solo se llega
+    # con las dos claves dentro del ciclo. Un «bici» nunca puede ser igual a un
+    # `dia_2`, así que el filtro no podía cambiar ninguna frase. Una guarda que
+    # no puede fallar no protege: ocupa sitio y hace creer que sí.
+    ciclo = orden_de_rotacion(cfg)
+    ci = repo.get_checkin(session, day)
+    declarada = getattr(ci, "chosen_session", None)
+    fechas_pesos = {
+        k: repo.fecha_de_los_pesos(session, k, hasta=day)
+        for k in {r for r in rutinas.values() if r}
+    }
+
     sueltos: list[dict[str, Any]] = []
     for w in nuevos:
         wid = str(w.get("id"))
@@ -842,7 +893,19 @@ def run_reconcile(
         motivo = (
             None
             if previsto
-            else _motivo_suelto(rk, rkey, plan, es_fuerza, fila, hiit)
+            else _motivo_suelto(
+                rk,
+                rkey,
+                plan,
+                es_fuerza,
+                fila,
+                hiit,
+                cfg=cfg,
+                ciclo=ciclo,
+                declarada=declarada,
+                fecha_pesos=fechas_pesos.get(rk),
+                dia=day,
+            )
         )
         totales = workout_totals(w)
         fuera = WorkoutLog(
@@ -949,6 +1012,12 @@ def _motivo_suelto(
     es_fuerza: bool,
     fila: Any,
     hiit: set[str],
+    *,
+    cfg: Any = None,
+    ciclo: Sequence[str] = (),
+    declarada: str | None = None,
+    fecha_pesos: date | None = None,
+    dia: date | None = None,
 ) -> str:
     """Por qué este entrenamiento no se reconcilia contra ningún plan.
 
@@ -963,6 +1032,15 @@ def _motivo_suelto(
     haberse equivocado de rutina cuando lo que pasó es que se añadió trabajo.
     El aviso de la mañana es lo único que se lee, así que un defecto que cambia
     lo que dice el aviso es un defecto que cambia lo que yo entiendo que hice.
+
+    LOS CINCO ÚLTIMOS SÍ TIENEN DEFECTO, Y ES EL CONTRARIO DEL DE `hiit`.
+    --------------------------------------------------------------------
+    Sin ellos se cae en la frase de siempre -«es dia_1 y en la rotación tocaba
+    dia_2»-, que es peor pero no es falsa. Con `hiit` el defecto inventaba una
+    explicación; aquí solo deja de dar una mejor. La diferencia importa porque
+    esta función se llama desde un sitio donde los cinco están disponibles y
+    desde los tests, donde escribir cinco argumentos irrelevantes para
+    comprobar el motivo de un HIIT sería ruido.
     """
     if fila is None:
         return "no había decisión guardada de ese día"
@@ -995,7 +1073,77 @@ def _motivo_suelto(
         )
     if rk is None:
         return "no sale de ninguna rutina del plan"
+    if rk in ciclo and rkey in ciclo:
+        return _motivo_otro_dia(
+            cfg, rk, rkey, declarada=declarada, fecha_pesos=fecha_pesos, dia=dia
+        )
     return f"es {rk} y en la rotación tocaba {rkey}"
+
+
+def _motivo_otro_dia(
+    cfg: Any,
+    hecha: str,
+    puesta: str,
+    *,
+    declarada: str | None,
+    fecha_pesos: date | None,
+    dia: date | None,
+) -> str:
+    """Entrené un día del ciclo y el sistema había puesto otro.
+
+    LO QUE ESTA FRASE AÑADE A «HAS ENTRENADO OTRA COSA» ES LA FECHA DE LOS PESOS
+    ---------------------------------------------------------------------------
+    Que las dos rutinas no coincidan ya se decía. Lo que no se decía es lo único
+    que cambia lo que levanté: la rutina que abrí en el gimnasio llevaba dentro
+    los pesos del último día en que se planificó, porque entre medias nadie la
+    toca. El semáforo de esa mañana, la progresión de esa mañana y el recorte
+    del ámbar fueron a la OTRA. Sin esta frase, una sesión que se hace pesada
+    porque arrastra la carga de hace dos semanas se lee como un mal día, y el
+    sistema tenía el dato para evitarlo.
+
+    Se decidió esto en lugar de escribir las tres rutinas cada mañana, que era
+    la alternativa: triplicar las llamadas a la API por un caso raro no
+    compensa, y el caso raro deja de doler en cuanto se nombra.
+
+    «DECLARASTE» Y «TOCABA» NO SON LA MISMA FRASE.
+    ---------------------------------------------
+    Si el selector del check-in eligió esa rutina, atribuírsela a la rotación
+    sería contarme mal mi propio día: la elegí yo. Y al revés, llamar
+    «declaración» a lo que propuso el ciclo cuando no contesté el formulario
+    convertiría el silencio en una afirmación.
+
+    `declarada` llega tal cual salió del check-in, sin filtrar: puede ser
+    `None`, una rutina del ciclo, «bici» u «otro». No hace falta limpiarla
+    porque lo único que se hace con ella es compararla con `puesta`, que aquí
+    siempre es una rutina del ciclo; las tres que no lo son fallan la igualdad
+    solas y caen en «tocaba», que es la frase correcta para ellas.
+    """
+    t_hecha = _titulo_de(cfg, hecha)
+    t_puesta = _titulo_de(cfg, puesta)
+    cabeza = (
+        f"declaraste {t_puesta} y entrenaste {t_hecha}"
+        if declarada == puesta
+        else f"tocaba {t_puesta} y entrenaste {t_hecha}"
+    )
+    cola = f": los ajustes de la mañana fueron a {t_puesta}"
+
+    if fecha_pesos is None:
+        # Nunca escrita: no es un fallo, es el estado normal de una rutina que
+        # todavía no ha salido en ninguna rotación, y decir «llevaba los pesos
+        # del ...» con una fecha inventada sería peor que no decir nada.
+        return f"{cabeza}, sin pesos escritos nunca por el sistema{cola}"
+    if dia is not None and fecha_pesos >= dia:
+        # SE ESCRIBIÓ ESA MISMA MAÑANA, que pasa por un camino concreto: a las
+        # 07:00 sin check-in el motor propuso y escribió esta rutina, a las
+        # 09:40 llegó el formulario eligiendo otra y se escribió la otra
+        # encima. Los pesos de la primera son de hoy, así que la frase de
+        # siempre -«llevaba los pesos del 03/09»- sería falsa, y la cola
+        # también: los ajustes de la mañana fueron a las dos, por turnos.
+        return f"{cabeza}, que también se había escrito esa mañana"
+    return (
+        f"{cabeza}, con los pesos del "
+        f"{fecha_pesos.strftime('%d/%m')}{cola}"
+    )
 
 
 class _PlanLeido:

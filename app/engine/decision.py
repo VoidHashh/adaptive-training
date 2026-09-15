@@ -50,6 +50,7 @@ from typing import Any, Sequence
 
 from app.engine.bike_advisor import BikeRecommendation, recommend_bike
 from app.engine.progression import ProgressionPlan, plan_progression
+from app.engine.rotacion import to_dict as pendientes_to_dict
 from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_light
 from app.engine.session_builder import (
     BuiltSession,
@@ -364,6 +365,20 @@ class DayDecision:
     # le pasa `job_decision`, por el mismo motivo que los tres campos de arriba:
     # `decide` no abre la base de datos y no sabe qué se decidió antes.
     anulacion: Any = None
+    # Las rutinas del ciclo que llevan más de una vuelta sin hacerse. Una lista
+    # de `rotacion.Pendiente`, colgada por `run_daily` como los cuatro campos de
+    # arriba y por el mismo motivo: se calcula sobre `workout_log` entero y
+    # `decide` no abre la base de datos.
+    #
+    # NO CAMBIA NADA DE LO QUE SE DECIDE. No reordena el ciclo, no adelanta
+    # ninguna rutina y no entra en ninguna regla: la propuesta de mañana la sigue
+    # dando `siguiente_en_rotacion` a partir de lo último que se ejecutó. Está
+    # aquí para que el mensaje pueda decirlo y para que quede en el histórico,
+    # que son las dos cosas que se pidieron.
+    #
+    # Ordenada por lo que más lleva parado primero, porque el mensaje nombra como
+    # mucho una.
+    pendientes: list[Any] = field(default_factory=list)
     # Lo que contestaste a «¿Vas a entrenar hoy?». Tres estados, y el `None` no
     # es un hueco: es «no me lo han dicho», que es el caso de todos los días sin
     # check-in y de todo el histórico anterior a la pregunta.
@@ -423,6 +438,12 @@ class DayDecision:
                 self.recalibracion.to_dict() if self.recalibracion else None
             ),
             "anulacion": self.anulacion.to_dict() if self.anulacion else None,
+            # LAS CADUCADAS TAMBIÉN. La caducidad decide si el mensaje la nombra,
+            # no si el dato existe: «el Día 1 lleva nueve sesiones sin hacerse» es
+            # justo lo que querrá leer quien mire el histórico dentro de tres
+            # meses, y es el día en que el mensaje ya se ha callado cuando más
+            # falta hace que esté escrito.
+            "pendientes": pendientes_to_dict(self.pendientes),
             # Los tres estados salen tal cual, `None` incluido. Convertirlo a
             # `False` aquí -"total, es un JSON"- haría que cada día sin check-in
             # del histórico quedara escrito como un día en el que dijiste que no

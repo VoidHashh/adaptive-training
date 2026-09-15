@@ -1806,3 +1806,190 @@ def test_la_anulacion_tambien_va_escapada(cfg):
 
     assert "&lt;x &amp; 'y'&gt;" in txt
     assert _telegram_rechazaria({"text": txt, "parse_mode": "HTML"}) is None
+
+
+# ---------------------------------------------------------------------------
+# Lo que lleva más de una vuelta sin hacerse
+# ---------------------------------------------------------------------------
+#
+# LA LÍNEA NO ES UNA COLA DE TAREAS, Y ESO ES LO QUE SE PROTEGE AQUÍ.
+#
+# El encargo fue explícito: el ciclo no se reordena, nadie adelanta nada y el
+# tono no regaña. Lo único que se pidió es SABER que el Día 1 lleva sin hacerse
+# más de una vuelta. Eso convierte a este bloque en un caso raro dentro del
+# mensaje: casi todas las demás líneas se comprueban mirando si el dato sale;
+# ésta hay que comprobarla también por lo que NO hace.
+#
+# Las tres cosas que puede romper alguien de buena fe, y que por tanto tienen
+# test: enumerar las dos paradas en vez de la que más lleva -y convertir el
+# apunte en una lista de deberes-, seguir nombrando la caducada para siempre -y
+# convertirlo en decorado-, y dejar de guardarla al caducar -y perder el dato
+# justo cuando pasa a ser interesante-.
+
+
+def _con_pendientes(cfg, historial):
+    """Una mañana normal a la que se le cuelga la rotación de `historial`.
+
+    `historial` es lo que hay en `workout_log`, MÁS RECIENTE PRIMERO, igual que
+    lo que devuelve `repository.sesiones_del_ciclo`. Se pasa por la función de
+    verdad -`rotacion.pendientes`- en vez de fabricar objetos `Pendiente` a
+    mano: escritos a mano, el umbral y el orden serían los que yo creo que son
+    y no los que el módulo aplica, y este fichero dejaría de notar que cambien.
+    """
+    from app.engine.rotacion import pendientes
+    from app.engine.session_builder import orden_de_rotacion
+
+    d = decision_completa(cfg)
+    d.pendientes = pendientes(orden_de_rotacion(cfg), historial)
+    return d
+
+
+def _historial(claves, *, desde=None):
+    """De más reciente a más antigua, una sesión cada dos días."""
+    dia = desde or LUNES
+    return [(k, dia - timedelta(days=2 * i)) for i, k in enumerate(claves)]
+
+
+def test_una_rutina_parada_mas_de_una_vuelta_se_nombra_con_su_titulo(cfg):
+    """«Día 1», las sesiones que han pasado y desde cuándo.
+
+    Las tres cosas en la misma línea porque las tres hacen falta para saber si
+    importa: el nombre dice cuál, la cuenta dice cuánto -en sesiones, que es la
+    unidad del ciclo- y la fecha ancla eso a un día real. Con la cuenta sola,
+    «cinco sesiones» puede ser hace una semana o hace dos meses.
+    """
+    d = _con_pendientes(
+        cfg, _historial(["dia_2", "dia_3", "dia_2", "dia_3", "dia_2", "dia_1"])
+    )
+    assert [p.clave for p in d.pendientes] == ["dia_1"], d.pendientes
+
+    txt = render_telegram(d, cfg)
+    assert "Día 1: han pasado 5 sesiones de fuerza desde la última vez" in txt, txt
+    # La fecha es la de la última vez que se hizo, no la de hoy.
+    ultima = LUNES - timedelta(days=10)
+    assert f"({ultima.strftime('%d/%m')})" in txt, txt
+    assert "dia_1" not in txt, f"ha salido el identificador crudo:\n{txt}"
+
+
+def test_solo_se_nombra_la_que_mas_lleva_parada(cfg):
+    """Con dos paradas, una línea. Enumerarlas es hacer una lista de deberes.
+
+    Y no es una preferencia de estilo: con un ciclo de tres, que haya DOS
+    paradas ya lo está diciendo la línea de arriba -«última sesión de fuerza:
+    hace tantos días»-, así que la segunda línea no añade un hecho, añade
+    insistencia.
+    """
+    d = _con_pendientes(cfg, _historial(["dia_3"] * 5 + ["dia_2", "dia_1"]))
+    assert [p.clave for p in d.pendientes] == ["dia_1", "dia_2"], d.pendientes
+    assert not any(p.caducada for p in d.pendientes), "el montaje no vale: ver abajo"
+
+    txt = render_telegram(d, cfg)
+    assert txt.count("🗓") == 1, f"se han enumerado varias:\n{txt}"
+    # La más parada es el Día 1: está una sesión más atrás que el Día 2.
+    assert "Día 1: han pasado 6" in txt, txt
+    assert "Día 2: han pasado" not in txt, txt
+
+
+def test_si_la_mas_parada_ya_caduco_se_nombra_la_siguiente(cfg):
+    """«La primera» y «la primera de las vivas» no son la misma línea.
+
+    Con el Día 3 repetido siete veces, el Día 1 lleva siete sesiones parado -ya
+    caducado, ya no se nombra- y el Día 2 lleva seis, que todavía está dentro de
+    la ventana. Escrito `p = decision.pendientes[0]` y filtrando después, el
+    mensaje se quedaría mudo: cogería la caducada, vería que lo está y no diría
+    nada, callando una rutina que sí toca nombrar.
+
+    Es el fallo que sale solo cuando dos rutinas se paran a la vez, o sea el día
+    que el aviso más falta hace, y no se ve en ninguno de los otros tests
+    porque todos tienen una pendiente sola.
+    """
+    d = _con_pendientes(cfg, _historial(["dia_3"] * 6 + ["dia_2", "dia_1"]))
+    assert [(p.clave, p.caducada) for p in d.pendientes] == [
+        ("dia_1", True),
+        ("dia_2", False),
+    ], d.pendientes
+
+    txt = render_telegram(d, cfg)
+    assert "Día 2: han pasado 6" in txt, txt
+    assert "Día 1: han pasado" not in txt, txt
+
+
+def test_la_caducada_deja_de_nombrarse_pero_no_deja_de_guardarse(cfg):
+    """Las dos mitades de `CADUCA_TRAS`, que son fáciles de confundir en una.
+
+    Lo que caduca es decirlo en voz alta. Una línea idéntica cada mañana durante
+    meses se deja de leer a la tercera, y a partir de ahí no informa: insiste.
+    Pero el dato al caducar es MÁS interesante que antes, no menos -una rutina
+    que lleva nueve sesiones parada es una rutina abandonada, y eso es justo lo
+    que se querrá ver en el histórico-, así que sigue en la decisión guardada.
+
+    Filtrar la lista al colgarla en la decisión habría sido lo natural de
+    escribir y habría cumplido la primera mitad rompiendo la segunda sin que se
+    notara: el mensaje se vería bien y el JSON tendría un hueco que nadie mira
+    hasta dentro de tres meses.
+    """
+    d = _con_pendientes(cfg, _historial(["dia_2"] * 9 + ["dia_1"]))
+    assert [p.clave for p in d.pendientes] == ["dia_1"]
+    assert d.pendientes[0].caducada is True, d.pendientes
+
+    txt = render_telegram(d, cfg)
+    assert "🗓" not in txt, f"la caducada sigue saliendo:\n{txt}"
+    assert "han pasado" not in txt, txt
+
+    guardado = d.to_dict()["pendientes"]
+    assert guardado == [
+        {
+            "clave": "dia_1",
+            "sesiones_desde": 9,
+            "ultima_vez": (LUNES - timedelta(days=18)).isoformat(),
+            "caducada": True,
+        }
+    ], guardado
+
+
+def test_una_rotacion_normal_no_saca_ninguna_linea(cfg):
+    """El caso de todas las mañanas: 1, 2, 3, 1, 2, 3 y nada que decir.
+
+    Es el test que impide que esto se convierta en una cabecera fija. El umbral
+    vive en `rotacion.py` y allí tiene el suyo; éste comprueba lo otro, que es
+    que el mensaje respeta la lista vacía en vez de pintar el bloque igual.
+    """
+    d = _con_pendientes(cfg, _historial(["dia_3", "dia_2", "dia_1"] * 3))
+    assert d.pendientes == []
+
+    assert "🗓" not in render_telegram(d, cfg)
+    # Y un día sin el campo siquiera -toda decisión anterior a esto- tampoco.
+    assert "🗓" not in render_telegram(decision_completa(cfg), cfg)
+
+
+def test_el_desvio_puntual_de_ayer_no_sale_en_el_mensaje_de_hoy(cfg):
+    """El caso que motivó el encargo, visto desde el único sitio que se lee.
+
+    Tocaba el Día 1, llegué con las piernas cansadas, hice el Día 2. A la mañana
+    siguiente el Día 1 está a una vuelta EXACTA, y decirle «llevas sin hacer el
+    Día 1» a alguien que se lo saltó ayer a propósito es contarle lo que acaba
+    de decidir.
+
+    El umbral que sostiene esto es el `>` de `rotacion.pendientes`, y allí está
+    su test. Éste existe porque ese `>` no protege nada por sí solo: protege
+    esta frase, y quien lo cambie a `>=` verá un test rojo que habla de reglas y
+    otro que habla de la mañana siguiente a un desvío.
+    """
+    d = _con_pendientes(cfg, _historial(["dia_2", "dia_3", "dia_2", "dia_1"]))
+    assert d.pendientes == [], d.pendientes
+    assert "🗓" not in render_telegram(d, cfg)
+
+
+def test_la_linea_de_pendiente_tambien_va_escapada(cfg):
+    """El título sale de `config.yaml`, y de ahí puede salir cualquier cosa."""
+    from tests.conftest import _telegram_rechazaria
+
+    c = copy.deepcopy(cfg)
+    c.raw["routines"]["dia_1"]["title"] = "Día <1> & 'pierna'"
+    d = _con_pendientes(
+        c, _historial(["dia_2", "dia_3", "dia_2", "dia_3", "dia_2", "dia_1"])
+    )
+    txt = render_telegram(d, c)
+
+    assert "Día &lt;1&gt; &amp; 'pierna'" in txt, txt
+    assert _telegram_rechazaria({"text": txt, "parse_mode": "HTML"}) is None

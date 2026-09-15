@@ -28,7 +28,7 @@ import json
 import logging
 from dataclasses import fields as dataclass_fields
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
@@ -39,6 +39,7 @@ from app.engine.signals import CLAVE_SESION_ELEGIDA
 from app.engine.tendencia import DecisionDia
 from app.models import (
     ExerciseTarget,
+    HevyWrite,
     LoadAdoption,
     ProgramState,
     RoutineState,
@@ -200,6 +201,45 @@ def load_state(
         state.last_deload_start = programa.last_deload_start
 
     return state
+
+
+def sesiones_del_ciclo(
+    session: Session,
+    rotation_order: Sequence[str],
+    *,
+    hasta: date | None = None,
+) -> list[tuple[str, date]]:
+    """Las sesiones de fuerza del ciclo ejecutadas, MÁS RECIENTE PRIMERO.
+
+    Es la consulta de `load_state` sin el `.first()`. Aquella se queda con la
+    última porque de la última sale la propuesta; ésta las quiere todas porque
+    `rotacion.pendientes` no pregunta cuál fue la última, sino cuántas van desde
+    cada una. El filtro es el mismo -pertenencia a `rotation_order`, no «clave no
+    nula»- y por el mismo motivo: un HIIT suelto está en la tabla con su clave
+    puesta y no es un paso del ciclo.
+
+    Que la consulta esté escrita dos veces y no compartida es a propósito hasta
+    cierto punto: lo que comparten es el FILTRO, y el filtro es una línea. Lo que
+    no comparten es qué se hace con el resultado. Factorizarlas dejaría una
+    función que devuelve una lista para que una de las dos llamantes se quede con
+    el primer elemento, que es más indirección de la que ahorra. Si algún día el
+    filtro se complica, se factoriza el filtro y no la consulta.
+
+    SIN LÍMITE DE FILAS, Y ES UNA DECISIÓN. Un tope barato -«las últimas veinte»-
+    haría que una rutina abandonada hace un año no apareciese en el resultado, y
+    `pendientes` lee la ausencia como «nunca se ha hecho», que es lo contrario de
+    lo que pasa: se hizo y se dejó de hacer. La tabla crece unas ciento cincuenta
+    filas al año y esto se consulta una vez por mañana.
+    """
+    if not rotation_order:
+        return []
+    q = select(WorkoutLog).where(WorkoutLog.routine_key.in_(list(rotation_order)))
+    if hasta is not None:
+        q = q.where(WorkoutLog.date <= hasta)
+    filas = session.scalars(
+        q.order_by(WorkoutLog.date.desc(), WorkoutLog.id.desc())
+    ).all()
+    return [(str(f.routine_key), f.date) for f in filas]
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +726,43 @@ def planned_session(fila: DecisionRow | None) -> dict[str, Any]:
     if fila is None or not fila.planned_session_json:
         return {}
     return json.loads(fila.planned_session_json)
+
+
+def fecha_de_los_pesos(
+    session: Session, routine_key: str | None, *, hasta: date
+) -> date | None:
+    """Cuándo se escribieron por última vez los pesos de esa rutina en Hevy.
+
+    Lo que hay AHORA MISMO en una rutina de Hevy no es lo que el motor decidiría
+    hoy: es lo que el motor decidió el último día que esa rutina se planificó y
+    se escribió. Entre medias no la ha tocado nadie. Ejecutar el Día 1 un día en
+    que el sistema escribió el Día 2 es, por tanto, entrenar con los pesos de
+    hace dos semanas, y esta función es la que sabe de cuándo son.
+
+    SOLO CUENTA `ok`, por lo mismo que en `_escritura_viva_de_hoy` de
+    `runner.py`: `dry_run` no tocó nada, `read_only` se paró antes del PUT,
+    `skipped` ni lo intentó y `error` pudo llegar a medias. Un `reverted`
+    tampoco, y ese es el que más engaña: es una escritura de verdad, pero su
+    contenido es la rutina ANTERIOR, así que fecharía los pesos el día en que se
+    deshizo un cambio en vez del día en que se pusieron.
+
+    `hasta` no es opcional. Sin tope, un replay de una noche de marzo fecharía
+    los pesos en abril y la frase diría que la rutina llevaba unos pesos que
+    todavía no se habían escrito.
+    """
+    if not routine_key:
+        return None
+    fila = session.scalars(
+        select(HevyWrite)
+        .where(
+            HevyWrite.routine_key == routine_key,
+            HevyWrite.status == "ok",
+            HevyWrite.date <= hasta,
+        )
+        .order_by(HevyWrite.date.desc(), HevyWrite.id.desc())
+        .limit(1)
+    ).first()
+    return fila.date if fila is not None else None
 
 
 def progressed_keys(fila: DecisionRow | None) -> list[str]:

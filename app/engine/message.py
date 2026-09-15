@@ -145,6 +145,20 @@ def _nombre_ejercicio(raw: dict[str, Any], routine: str, key: str) -> str:
     return key
 
 
+def _titulo_rutina(raw: dict[str, Any], key: str | None) -> str:
+    """«Día 1», no `dia_1`. Buscado en el config de HOY, como los ejercicios.
+
+    Devuelve la clave cuando no hay título, por el mismo motivo que
+    `_nombre_ejercicio`: una rutina retirada del YAML se nombra fea pero cierta,
+    y nunca con un hueco. Y devuelve cadena vacía solo si no hay clave, que es el
+    caso en que quien llama tiene que decidir no escribir la línea.
+    """
+    if not key:
+        return ""
+    titulo = ((raw.get("routines") or {}).get(key) or {}).get("title")
+    return str(titulo or key)
+
+
 def _motivo_adopcion(a: dict[str, Any]) -> str:
     """El porqué de un cambio de carga, o el hueco dicho en voz alta.
 
@@ -793,6 +807,39 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         L.append(
             "💤 <i>Todavía no hay ninguna sesión de fuerza leída de Hevy; "
             "la rotación empieza por el principio.</i>"
+        )
+
+    # --- lo que lleva más de una vuelta sin hacerse -------------------------
+    # La línea de arriba dice cuánto hace de la ÚLTIMA sesión, sea cual sea.
+    # Ésta dice algo que aquella no puede ver: que entrenando con normalidad,
+    # tres veces por semana, hay una rutina concreta que no ha entrado.
+    #
+    # NO ES UNA COLA NI UN AVISO DE DEUDA. No hay nada que reponer: el ciclo da
+    # la vuelta y esa rutina vuelve a tocar cuando le toque, sin que nadie la
+    # adelante. Esto es información sobre uno mismo -saltarse el Día 1 varias
+    # veces seguidas dice algo-, y por eso se cuenta y no se corrige.
+    #
+    # UNA SOLA, LA QUE MÁS LLEVA PARADA. `pendientes` viene ordenada por eso. Si
+    # hay dos paradas, enumerar las dos convierte un apunte en una lista de
+    # tareas, que es exactamente el tono que se pidió evitar; y con un ciclo de
+    # tres, que haya dos paradas ya lo dice la de arriba contando días.
+    #
+    # Y la caducada no se nombra: ver `CADUCA_TRAS` en `rotacion.py`. Una línea
+    # que sale todas las mañanas durante meses deja de informar y empieza a
+    # sonar a reproche por pura insistencia. El dato sigue guardándose en la
+    # decisión; lo que caduca es decirlo en voz alta, no saberlo.
+    #
+    # EL EMOJI NO ES 🔁 AUNQUE LO PAREZCA. Ése ya es el de «Ajustado a lo que
+    # levantaste», que habla de kilos y no de rotación; repetirlo haría que dos
+    # bloques sin nada que ver se leyeran como el mismo tipo de aviso en un
+    # mensaje que se ojea en diez segundos.
+    vivas = [p for p in (getattr(decision, "pendientes", None) or []) if not p.caducada]
+    if vivas:
+        p = vivas[0]
+        L.append(
+            f"🗓 <i>{escapar_html(_titulo_rutina(raw, p.clave))}: han pasado "
+            f"{p.sesiones_desde} sesiones de fuerza desde la última vez "
+            f"({fmt_short(p.ultima_vez)}).</i>"
         )
 
     # --- mantenimiento del propio sistema -----------------------------------

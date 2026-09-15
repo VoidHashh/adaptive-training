@@ -1094,6 +1094,298 @@ def test_un_entrenamiento_de_un_dia_que_no_planificaba_fuerza_se_registra_igual(
     assert fila.date == LUNES
 
 
+# ---------------------------------------------------------------------------
+# Declaré una rutina y en Hevy acabé registrando otra
+# ---------------------------------------------------------------------------
+#
+# ESTE CASO YA SE DETECTABA. LO QUE FALTABA ERA LO ÚNICO QUE TIENE CONSECUENCIAS.
+#
+# Declarar el Día 2 y abrir el Día 1 en el gimnasio ya salía como «visto fuera
+# del plan» con el motivo «es dia_1 y en la rotación tocaba dia_2». Eso cuenta
+# el desajuste y se queda corto en lo que de verdad cambió: los pesos.
+#
+# Lo que hay dentro de una rutina de Hevy es lo que el motor escribió la última
+# vez que ESA rutina se planificó, porque entre medias no la toca nadie. El
+# semáforo de esa mañana, la progresión de esa mañana y el recorte del ámbar
+# fueron a la otra. Sin decirlo, una sesión que se hace cuesta arriba porque
+# arrastra la carga de hace dos semanas se lee como un mal día.
+#
+# La alternativa era escribir las tres rutinas cada mañana. Se descartó: no
+# compensa triplicar las llamadas a la API por un caso raro, y el caso raro deja
+# de doler en cuanto se nombra.
+
+
+def _escrita_el(db, rkey: str, dia: date, estado: str = "ok") -> None:
+    """La última mañana en que el sistema puso pesos en esa rutina de Hevy."""
+    db.add(
+        HevyWrite(date=dia, routine_key=rkey, hevy_routine_id=_rid_de(rkey), status=estado)
+    )
+    db.flush()
+
+
+def _rid_de(rkey: str) -> str:
+    return f"rid-{rkey}"
+
+
+def _declaro_y_entreno(db, cfg, *, declara, ejecuta, pesos_de=None, estado_pesos="ok"):
+    """El check-in declara una, el motor escribe la declarada, y en Hevy sale otra.
+
+    Va por `run_daily` entero y no por `_motivo_suelto` a mano, que sería mucho
+    más corto: lo que se está comprobando es un CABLE -que la elección del
+    check-in llegue hasta la frase de la noche siguiente-, y un test que llamara
+    al helper con los argumentos ya resueltos pasaría igual el día que alguien
+    deje de pasárselos.
+    """
+    if declara is not None:
+        upsert_checkin(db, LUNES, {"chosen_session": declara}, config=cfg)
+    if pesos_de is not None:
+        _escrita_el(db, ejecuta, pesos_de, estado_pesos)
+
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    planificada = _plan_guardado(db).get("routine")
+
+    w = _entrenamiento_completo({"exercises": []}, wid="otro_dia")
+    w["routine_id"] = _rid(cfg, ejecuta)
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    fila = db.scalars(
+        select(WorkoutLog).where(WorkoutLog.hevy_workout_id == "otro_dia")
+    ).one()
+    return res, planificada, fila
+
+
+def test_lo_declarado_y_lo_entrenado_salen_con_la_fecha_de_los_pesos(db, cfg):
+    """La frase entera, que es el encargo literal.
+
+    Tres hechos y ni uno más: qué declaré, qué entrené, y de cuándo eran los
+    pesos que llevaba dentro lo que entrené. El tercero es el que no se podía
+    deducir mirando la fila, y es el que explica por qué la sesión fue como fue.
+
+    Se comprueban por TÍTULO -«Día 1», no `dia_1`- porque esta cadena se guarda
+    para que el mensaje de la mañana la lea tal cual. Un identificador crudo en
+    la pantalla del móvil obliga a traducirlo mentalmente a las nueve de la
+    mañana, que es cuando menos ganas hay.
+    """
+    hace_doce = LUNES - timedelta(days=12)
+    _, planificada, fila = _declaro_y_entreno(
+        db, cfg, declara="dia_2", ejecuta="dia_1", pesos_de=hace_doce
+    )
+    assert planificada == "dia_2", f"el montaje no ha llegado al plan: {planificada}"
+
+    assert fila.unplanned is True
+    assert fila.motivo_suelto == (
+        f"declaraste Día 2 y entrenaste Día 1, con los pesos del "
+        f"{hace_doce.strftime('%d/%m')}: los ajustes de la mañana fueron a Día 2"
+    ), fila.motivo_suelto
+
+
+def test_sin_selector_la_frase_dice_tocaba_y_no_declaraste(db, cfg):
+    """Atribuirle a la rotación una elección mía, o al revés, es contarme mal mi día.
+
+    Son dos frases y no una porque describen dos cosas distintas: «declaraste
+    Día 2» solo es verdad si contesté el selector, y llamar declaración a lo que
+    propuso el ciclo un día en que no rellené el formulario convierte mi silencio
+    en una afirmación. La diferencia importa para lo que se pidió registrar:
+    saltarse el Día 1 varias veces seguidas es información sobre mí, y solo lo es
+    si lo que se cuenta son elecciones y no propuestas.
+    """
+    hace_doce = LUNES - timedelta(days=12)
+    _, planificada, fila = _declaro_y_entreno(
+        db, cfg, declara=None, ejecuta="dia_2", pesos_de=hace_doce
+    )
+    assert planificada == "dia_1", (
+        f"sin check-in la propuesta debería ser la primera del ciclo: {planificada}"
+    )
+
+    assert fila.motivo_suelto.startswith("tocaba Día 1 y entrenaste Día 2"), (
+        fila.motivo_suelto
+    )
+    assert "declaraste" not in fila.motivo_suelto, fila.motivo_suelto
+
+
+def test_declarar_bici_no_convierte_la_propuesta_en_una_declaracion(db, cfg):
+    """«Bici» es declarar que no hay fuerza, no declarar qué fuerza.
+
+    El selector tiene cinco opciones y solo tres son rutinas. La rutina que se
+    escribió ese día la siguió eligiendo la rotación -por decisión del usuario:
+    si acabo yendo al gimnasio quiero la rutina puesta, no la de hace dos
+    semanas-, así que «declaraste Día 1» sería falso. Escrito sin filtrar el
+    selector contra el ciclo, este caso diría exactamente eso.
+    """
+    _, _, fila = _declaro_y_entreno(
+        db, cfg, declara="bici", ejecuta="dia_2", pesos_de=LUNES - timedelta(days=9)
+    )
+    assert fila.motivo_suelto.startswith("tocaba Día 1 y entrenaste Día 2"), (
+        fila.motivo_suelto
+    )
+
+
+def test_una_rutina_sin_pesos_escritos_nunca_no_se_inventa_una_fecha(db, cfg):
+    """El estado normal de una rutina que todavía no ha salido en ninguna vuelta.
+
+    No es un fallo y no se disimula con la fecha de hoy ni con un hueco: se
+    nombra. Una fecha inventada aquí sería peor que el silencio, porque es
+    exactamente el dato que se va a usar para entender por qué la sesión fue
+    como fue.
+    """
+    _, _, fila = _declaro_y_entreno(db, cfg, declara="dia_2", ejecuta="dia_1")
+
+    assert "sin pesos escritos nunca por el sistema" in fila.motivo_suelto, (
+        fila.motivo_suelto
+    )
+    assert "los pesos del" not in fila.motivo_suelto, fila.motivo_suelto
+
+
+@pytest.mark.parametrize("estado", ["dry_run", "read_only", "skipped", "error", "reverted"])
+def test_una_escritura_que_no_toco_hevy_no_fecha_ningun_peso(db, cfg, estado):
+    """Solo `ok` cuenta, y la lista de lo que no cuenta importa tanto como esa.
+
+    `dry_run` no tocó nada, `read_only` se paró antes del PUT, `skipped` ni lo
+    intentó y `error` pudo llegar a medias. `reverted` es el que más engaña: es
+    una escritura de verdad, pero su contenido es la rutina ANTERIOR, así que
+    fecharía los pesos el día en que se deshizo un cambio en vez del día en que
+    se pusieron.
+
+    Cualquiera de los cinco dado por bueno produce una frase concreta y falsa
+    -«con los pesos del 03/09»- sobre unos pesos que ese día no se escribieron.
+    """
+    _, _, fila = _declaro_y_entreno(
+        db, cfg, declara="dia_2", ejecuta="dia_1",
+        pesos_de=LUNES - timedelta(days=12), estado_pesos=estado,
+    )
+    assert "sin pesos escritos nunca por el sistema" in fila.motivo_suelto, (
+        fila.motivo_suelto
+    )
+
+
+def test_una_rutina_de_fuera_del_ciclo_conserva_el_motivo_de_siempre(db, cfg):
+    """El HIIT no entra por aquí, y no es un detalle de reparto.
+
+    La frase nueva habla de «los ajustes de la mañana fueron a la otra», que
+    presupone que las dos rutinas son alternativas: una en vez de la otra. Un
+    HIIT no es una alternativa a la fuerza, es un añadido, y contarlo con esas
+    palabras diría que ese día elegí HIIT en lugar de entrenar.
+    """
+    upsert_checkin(db, LUNES, {"chosen_session": "dia_2"}, config=cfg)
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+
+    w = _entrenamiento_completo({"exercises": []}, wid="hiit_suelto")
+    w["routine_id"] = _rid(cfg, "hiit_dia_1")
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    fila = db.scalars(
+        select(WorkoutLog).where(WorkoutLog.hevy_workout_id == "hiit_suelto")
+    ).one()
+    assert "HIIT por libre" in fila.motivo_suelto, fila.motivo_suelto
+    assert "entrenaste" not in fila.motivo_suelto, fila.motivo_suelto
+
+
+def test_una_rutina_del_config_que_no_esta_en_la_rotacion_tampoco_entra(db, cfg_copia):
+    """Ni del ciclo ni HIIT: una rutina suelta del `config.yaml`.
+
+    Hoy no existe ninguna, y por eso este test monta una. El HIIT se desvía
+    antes por su propia rama, así que sin este caso la condición `rk in ciclo`
+    no la comprueba nadie: da igual escribirla que poner `rk is not None`, y la
+    suite entera sigue verde.
+
+    Pero el día que se añada una rutina de movilidad, o de core, o lo que sea,
+    hacerla un martes tiene que contarse como lo que es -trabajo extra que el
+    plan no pedía- y no como «declaraste Día 1 y entrenaste Movilidad, con los
+    pesos del 03/09», que sugiere que era una alternativa a la sesión y que
+    alguien se equivocó de rutina.
+    """
+    cfg_copia.raw["routines"]["movilidad"] = {
+        "title": "Movilidad",
+        "hevy_routine_id": "rid-movilidad",
+        "exercises": [],
+    }
+    assert "movilidad" not in cfg_copia.raw["rotation"]["order"]
+
+    corre(db, cfg_copia, hevy=HevyFalso(), tg=TelegramFalso())
+    w = _entrenamiento_completo({"exercises": []}, wid="movilidad")
+    w["routine_id"] = "rid-movilidad"
+    run_reconcile(db, cfg_copia, LUNES, workouts=[w])
+
+    fila = db.scalars(
+        select(WorkoutLog).where(WorkoutLog.hevy_workout_id == "movilidad")
+    ).one()
+    assert fila.motivo_suelto == "es movilidad y en la rotación tocaba dia_1", (
+        fila.motivo_suelto
+    )
+
+
+def test_la_fecha_de_los_pesos_es_la_ultima_escritura_y_no_la_primera(db, cfg):
+    """Con dos mañanas en que se escribió esa rutina, vale la de después.
+
+    Lo que hay AHORA en Hevy lo puso la última, y es de lo que hay ahora de lo
+    que habla la frase. Ordenado al revés, el motivo fecharía los pesos meses
+    atrás y haría parecer abandonada una rutina que se hizo hace dos semanas.
+    """
+    _escrita_el(db, "dia_1", LUNES - timedelta(days=40))
+    _, _, fila = _declaro_y_entreno(
+        db, cfg, declara="dia_2", ejecuta="dia_1", pesos_de=LUNES - timedelta(days=12)
+    )
+
+    esperada = (LUNES - timedelta(days=12)).strftime("%d/%m")
+    assert f"con los pesos del {esperada}" in fila.motivo_suelto, fila.motivo_suelto
+
+
+def test_reconciliar_una_noche_vieja_no_fecha_los_pesos_en_el_futuro(db, cfg):
+    """Este job se reintenta y se puede lanzar a mano meses después.
+
+    Rehecha la noche del lunes desde el sábado siguiente, la base ya tiene la
+    escritura del miércoles, que el lunes por la noche no existía. Sin el tope
+    en `hasta`, la frase diría que esa mañana entrené con unos pesos que se
+    escribieron dos días más tarde: no es un desajuste de un día, es una
+    afirmación sobre el pasado que se contradice sola.
+    """
+    _, _, fila = _declaro_y_entreno(
+        db, cfg, declara="dia_2", ejecuta="dia_1", pesos_de=LUNES - timedelta(days=12)
+    )
+    del fila  # la primera pasada solo deja el escenario montado
+
+    # Llega el miércoles, el Día 1 vuelve a tocar y se escribe. Y el sábado se
+    # relanza a mano la reconciliación del lunes.
+    _escrita_el(db, "dia_1", LUNES + timedelta(days=2))
+    db.query(WorkoutLog).delete()
+    db.flush()
+
+    w = _entrenamiento_completo({"exercises": []}, wid="otra_vez")
+    w["routine_id"] = _rid(cfg, "dia_1")
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    rehecha = db.scalars(
+        select(WorkoutLog).where(WorkoutLog.hevy_workout_id == "otra_vez")
+    ).one()
+    esperada = (LUNES - timedelta(days=12)).strftime("%d/%m")
+    assert f"con los pesos del {esperada}" in rehecha.motivo_suelto, (
+        rehecha.motivo_suelto
+    )
+
+
+def test_hacer_la_rutina_declarada_no_deja_ningun_motivo(db, cfg):
+    """El caso de todos los días: se declara una y se hace ésa.
+
+    Es el que impide que el bloque nuevo se convierta en un aviso permanente.
+    Escrita la comprobación sobre `sesion_elegida` en vez de sobre la rutina del
+    plan, un día perfectamente normal -declaro Día 2, hago Día 2- saldría cada
+    noche como «visto en Hevy, fuera del plan».
+    """
+    upsert_checkin(db, LUNES, {"chosen_session": "dia_2"}, config=cfg)
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    assert plan["routine"] == "dia_2"
+
+    w = _entrenamiento_completo(plan, wid="lo_declarado")
+    w["routine_id"] = _rid(cfg, "dia_2")
+    res = run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    assert res.sueltos == [], res.sueltos
+    fila = db.scalars(select(WorkoutLog)).one()
+    assert fila.unplanned is False
+    assert fila.motivo_suelto is None
+
+
 def test_lo_registrado_lleva_duracion_series_y_volumen(db, cfg):
     """Las tres columnas llevaban desde el principio declaradas y nadie las
     llenaba. `docs/analisis.md` daba por hecho que la vista de volumen salía de
