@@ -14,6 +14,7 @@ este sistema puede hacer daño sin dar un error:
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -23,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, apply_execution
 from app.models import Base, Decision, HevyWrite, Notification, WorkoutLog
-from app.repository import load_state, save_decision, save_state
+from app.repository import load_state, save_decision, save_state, upsert_checkin
 from app.runner import run_daily, run_reconcile
 from tests.conftest import LUNES, dias, sig_completa
 from tests.dobles import doble_de, no_es_doble
@@ -36,11 +37,24 @@ from app.integrations.telegram import TelegramClient
 # puntero en la anterior en vez de buscar el día del calendario que la traía.
 
 
-@pytest.fixture
-def db():
+@contextmanager
+def _base_en_blanco():
+    """Una base recién creada, sin nada dentro.
+
+    Está fuera de la fixture porque algún test necesita DOS: comparar la misma
+    mañana con y sin una respuesta del check-in exige correrlas en bases
+    distintas, ya que `run_daily` escribe la decisión y el check-in queda
+    guardado. Lo que se compara son dos primeros días, no un día y su secuela.
+    """
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
     with Session(engine) as session:
+        yield session
+
+
+@pytest.fixture
+def db():
+    with _base_en_blanco() as session:
         yield session
 
 
@@ -496,6 +510,89 @@ def test_la_decision_se_guarda_con_su_progresion(db, cfg):
     # Puede no haber progresión un día concreto, pero la columna tiene que
     # existir y poder llenarse.
     assert hasattr(fila, "progression_json")
+
+
+# ---------------------------------------------------------------------------
+# «Hoy no voy a entrenar»: la rutina se escribe en Hevy IGUAL
+# ---------------------------------------------------------------------------
+#
+# EL ÚNICO TROZO DE ESTA PREGUNTA QUE NO VIVE EN EL MOTOR.
+#
+# Las otras cinco consecuencias de contestar que no -no prescribir, no subir
+# carga, no mover la rotación, no contar como saltado, contar normal si al final
+# se entrena- se comprueban sobre `decide` y `advance_state` en `test_decision`
+# y `test_message`, que son funciones puras. Ésta no: escribir en Hevy pasa en
+# `runner._escribir_hevy`, después de decidir, y por un camino al que
+# `va_a_entrenar` no llega ni tiene que llegar.
+#
+# Que no llegue es justamente el motivo de probarlo aquí. El mensaje promete por
+# escrito «La rutina está escrita en Hevy de todas formas, por si cambias de
+# idea», y hasta ahora lo único que comprobaba esa promesa era un `assert
+# "escrita en Hevy" in txt` de `test_message`: o sea, que la frase se dice. Que
+# sea verdad no lo miraba nadie. Y es la clase de promesa que se rompe sin hacer
+# ruido, porque el día que alguien meta un `if decision.va_a_entrenar is False:
+# return` en `_escribir_hevy` -para «ahorrar una llamada a la API», que suena
+# razonable- no falla nada: el mensaje sigue llegando, sigue diciendo que la
+# rutina está ahí, y quien cambie de idea a las siete de la tarde abre Hevy y
+# encuentra la de la semana pasada.
+
+
+def _dije_que_no(db, cfg, **kw):
+    """La mañana de un día en el que el check-in contestó «no voy a entrenar»."""
+    upsert_checkin(db, LUNES, {"will_train": False}, config=cfg)
+    return corre(db, cfg, **kw)
+
+
+def test_decir_que_no_no_impide_que_la_rutina_llegue_a_hevy(db, cfg):
+    """La promesa del mensaje, comprobada contra el hecho y no contra sí misma."""
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = _dije_que_no(db, cfg, hevy=hevy, tg=tg)
+
+    assert res.decision.va_a_entrenar is False, "el montaje no ha llegado al motor"
+    assert res.hevy_status == "ok", (
+        f"se contestó «no voy» y la rutina no se ha escrito: "
+        f"{res.hevy_status} ({res.hevy_reason})"
+    )
+    assert hevy.llamadas, "no se ha llamado a Hevy siquiera"
+
+    # Y la fila, que es lo que se lee dentro de tres meses.
+    fila = db.scalars(select(HevyWrite)).first()
+    assert fila is not None and fila.status == "ok"
+
+    # Las dos mitades juntas: se dice Y es verdad. Separadas, cada una puede
+    # sobrevivir a que la otra se caiga.
+    assert "escrita en Hevy" in tg.enviados[0]
+
+
+def test_la_rutina_que_se_escribe_es_LA_MISMA_diga_lo_que_diga(db, cfg):
+    """No basta con que se escriba algo: tiene que escribirse lo de siempre.
+
+    Un recorte a medias -escribir la rutina «por si acaso» pero sin los
+    ejercicios que el ámbar ya había reducido, o con el peso de ayer en vez del
+    de hoy- pasaría el test de arriba entero y dejaría en la aplicación una
+    sesión que no es la que el sistema ha decidido. La respuesta del formulario
+    es una intención sobre si se va; no toca NADA de lo que hay que levantar si
+    se va.
+
+    Se comparan los dos payloads enteros, no el título ni el número de
+    ejercicios: cualquier campo que alguien decida podar en el futuro sale aquí.
+    """
+    dijo_que_no = HevyFalso()
+    _dije_que_no(db, cfg, hevy=dijo_que_no, tg=TelegramFalso())
+
+    # El día normal contra el que se compara. En una base APARTE y no en un
+    # segundo `corre` sobre la misma: `run_daily` guarda la decisión y el
+    # check-in ya está escrito, así que reutilizar `db` compararía la mañana con
+    # una versión de sí misma que ya ha pasado.
+    with _base_en_blanco() as otra:
+        callado = HevyFalso()
+        corre(otra, cfg, hevy=callado, tg=TelegramFalso())
+
+    assert dijo_que_no.llamadas and callado.llamadas
+    assert dijo_que_no.llamadas == callado.llamadas, (
+        "la rutina escrita en Hevy cambia según lo que se conteste en el "
+        "formulario: la pregunta es sobre si vas, no sobre qué levantas"
+    )
 
 
 # ---------------------------------------------------------------------------
