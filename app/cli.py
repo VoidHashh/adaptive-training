@@ -66,6 +66,27 @@ CHECKIN_ALIAS = {
     "desire": "training_desire",
     "ganas": "training_desire",
     "rpe": "yesterday_rpe",
+    "apetece": "wants_to_train",
+    "voy": "will_train",
+}
+
+# Las dos preguntas de Sí/No no se escriben con un número. `voy=no` y no
+# `voy=0`, porque el 0 en este CLI quiere decir «el mínimo del deslizador» en
+# todos los demás campos y aquí querría decir otra cosa.
+#
+# Se admite `si` sin tilde a propósito: esto se teclea a las siete de la mañana.
+SI_O_NO = {
+    "si": True,
+    "sí": True,
+    "s": True,
+    "yes": True,
+    "y": True,
+    "true": True,
+    "1": True,
+    "no": False,
+    "n": False,
+    "false": False,
+    "0": False,
 }
 
 
@@ -87,31 +108,57 @@ def checkin_help(cfg) -> str:
         corto = f"   [alias: {', '.join(alias)}]" if alias else ""
         lineas.append(f"  {clave:<18} {s.get('label', '')}{corto}")
 
+    # Las dos preguntas van en su propio bloque y no coladas entre los
+    # deslizadores, porque no se escriben igual. Un `voy=5` copiado del ejemplo
+    # de arriba no es un valor raro: es un error, y la ayuda tiene que hacer
+    # obvio por qué antes de que alguien lo teclee.
+    preguntas = cfg.raw.get("checkin_preguntas") or []
+    if preguntas:
+        lineas += ["", "Preguntas de sí o no (no llevan número):", ""]
+        for p in preguntas:
+            clave = p["key"]
+            alias = sorted(a for a in inverso.get(clave, []) if a != clave)
+            corto = f"   [alias: {', '.join(alias)}]" if alias else ""
+            lineas.append(f"  {clave:<18} {p.get('label', '')}{corto}")
+
     claves = [s["key"] for s in cfg.raw.get("checkin_sliders", [])]
+    largos = ",".join(f"{k}=5" for k in claves)
+    if preguntas:
+        largos += "," + ",".join(f"{p['key']}=si" for p in preguntas)
     lineas += [
         "",
         "Todos los campos, nombres largos:",
-        '  --checkin "' + ",".join(f"{k}=5" for k in claves) + '"',
+        '  --checkin "' + largos + '"',
         "",
         "Todos los campos, alias cortos:",
-        '  --checkin "fatigue=4,mood=7,upper=1,lower=2,sleep=7,desire=8,rpe=6"',
+        '  --checkin "fatigue=4,mood=7,upper=1,lower=2,sleep=7,desire=8,rpe=6,'
+        'apetece=si,voy=no"',
         "",
         "Una clave que no esté en la lista es un error, no un valor ignorado.",
     ]
     return "\n".join(lineas)
 
 
-def parse_checkin(text: str | None, day: date, valid_keys: set[str]) -> Checkin | None:
-    """`lower=2,fatigue=5` -> Checkin.
+def parse_checkin(
+    text: str | None,
+    day: date,
+    valid_keys: set[str],
+    pregunta_keys: set[str] = frozenset(),
+) -> Checkin | None:
+    """`lower=2,fatigue=5,voy=no` -> Checkin.
 
     Una clave desconocida es un error duro. Antes se aceptaba cualquier cosa, y
     una errata (`fatige=5`) se traducía en que la regla correspondiente saliera
     como "sin datos para evaluar" sin que nadie pudiera sospechar por qué. Un
     check-in que se ignora en silencio es peor que uno que no se escribe.
+
+    `pregunta_keys` viene aparte de `valid_keys` y con defecto vacío porque este
+    parser se llama también desde guiones de simulación que solo conocen
+    deslizadores. Vacío, el comportamiento es exactamente el de antes.
     """
     if not text:
         return None
-    values: dict[str, int | None] = {}
+    values: dict[str, Any] = {}
     for par in text.split(","):
         par = par.strip()
         if not par:
@@ -121,12 +168,21 @@ def parse_checkin(text: str | None, day: date, valid_keys: set[str]) -> Checkin 
         k, v = par.split("=", 1)
         k = k.strip()
         key = CHECKIN_ALIAS.get(k, k)
-        if key not in valid_keys:
+        if key not in valid_keys and key not in pregunta_keys:
             raise SystemExit(
-                f"\n  check-in: '{k}' no es un deslizador de este config.yaml.\n"
-                f"  Válidos: {', '.join(sorted(valid_keys))}\n"
+                f"\n  check-in: '{k}' no es un campo de este config.yaml.\n"
+                f"  Válidos: {', '.join(sorted(valid_keys | set(pregunta_keys)))}\n"
                 f"  Alias:   {', '.join(sorted(CHECKIN_ALIAS))}\n"
             )
+        if key in pregunta_keys:
+            respuesta = SI_O_NO.get(v.strip().lower())
+            if respuesta is None:
+                raise SystemExit(
+                    f"check-in: '{key}' se contesta sí o no, y '{v.strip()}' no es "
+                    f"ninguna de las dos. Vale: {', '.join(sorted(SI_O_NO))}"
+                )
+            values[key] = respuesta
+            continue
         try:
             values[key] = int(v)
         except ValueError:
@@ -636,10 +692,16 @@ def main(argv: list[str] | None = None) -> int:
         metrics, rides, proc = fetch_garmin(day, args.days, not args.no_cache, cfg)
 
     valid_keys = {s["key"] for s in cfg.raw.get("checkin_sliders", [])}
-    checkin = parse_checkin(args.checkin, day, valid_keys)
+    pregunta_keys = {p["key"] for p in cfg.raw.get("checkin_preguntas", [])}
+    checkin = parse_checkin(args.checkin, day, valid_keys, pregunta_keys)
     if checkin:
-        faltan = sorted(valid_keys - set(checkin.values))
-        origen_ci = f"simulado, {len(checkin.values)}/{len(valid_keys)} campos"
+        # Las preguntas cuentan en el denominador de la completitud igual que los
+        # deslizadores: si no las has contestado, el ensayo en seco tiene que
+        # decir que faltan. Dejarlas fuera del recuento haría que un check-in al
+        # que le falta «¿vas a entrenar?» se anunciara como 7/7 completo.
+        campos = valid_keys | pregunta_keys
+        faltan = sorted(campos - set(checkin.values))
+        origen_ci = f"simulado, {len(checkin.values)}/{len(campos)} campos"
         if faltan:
             proc.detalle.append(
                 f"check-in incompleto, sin: {', '.join(faltan)}"

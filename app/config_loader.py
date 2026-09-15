@@ -32,6 +32,16 @@ from app.engine.rules import (
     RuleError,
     resolve_option,
 )
+from app.engine.signals import CLAVE_APETECE, CLAVE_VOY_A_ENTRENAR
+# Y la MISMA función con la que el motor averigua de qué habla una regla. Se
+# importa por lo mismo que `resolve_option` de arriba: aquí hace falta saber qué
+# señales mira un `when` para prohibir que mire las preguntas de Sí/No, y esa
+# lectura del árbol ya existe. Copiarla sería firmar que las dos copias van a
+# decir lo mismo dentro de un año, cuando el `when` admita un operador nuevo que
+# solo una de las dos entienda: el validador aprobaría una regla que el motor sí
+# sabe evaluar, y la garantía de que el semáforo no puede mirar `will_train`
+# quedaría en papel mojado justo en el caso raro.
+from app.engine.tendencia import senales_de_regla
 # La MISMA función que usa el motor por la mañana para decidir cuántos días de
 # salidas hay que tener en caché. Se importa en vez de reimplementar el `max`
 # aquí: dos versiones del mismo criterio en dos ficheros divergen a la primera
@@ -174,6 +184,25 @@ class Config:
     def slider_keys(self) -> list[str]:
         return [s["key"] for s in self._data.get("checkin_sliders", [])]
 
+    def pregunta_keys(self) -> list[str]:
+        """Las de Sí/No, que se guardan y se cuentan pero no deciden nada.
+
+        Separadas de `slider_keys` y no juntas con una bandera, porque esta
+        lista es justo la que NO se le pasa al validador de reglas: el semáforo
+        solo puede nombrar deslizadores. Fundirlas en un solo método y filtrar
+        después convertiría esa garantía en un `if` que alguien puede olvidar.
+        """
+        return [p["key"] for p in self._data.get("checkin_preguntas", [])]
+
+    def checkin_keys(self) -> list[str]:
+        """Todo lo que contesta el usuario por la mañana, en orden de pantalla.
+
+        Para quien solo necesita recorrer las respuestas -las series, el
+        histórico, la fotografía de señales- y no tiene nada que decidir sobre
+        quién puede leerlas.
+        """
+        return self.slider_keys() + self.pregunta_keys()
+
     def all_rules(self) -> list[dict[str, Any]]:
         out = []
         for light in ("red", "amber"):
@@ -232,6 +261,12 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "timezone",
         "program",
         "checkin_sliders",
+        # Obligatoria por lo mismo que `trend`: el motor busca `will_train` por
+        # su nombre para saber si hoy prescribe sesión o no. Sin la sección, esa
+        # señal no la escribe nadie, se queda en `None` -que es "no me lo han
+        # dicho"- y el mensaje vuelve a prescribir todos los días. Funcionaría,
+        # y eso es lo malo: sería el comportamiento de antes con cara de normal.
+        "checkin_preguntas",
         "thresholds",
         "actions",
         "progression",
@@ -276,6 +311,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "wellness",
         "adaptive_thresholds",
         "checkin_sliders",
+        "checkin_preguntas",
         "checkin_comment",
         "thresholds",
         "actions",
@@ -502,12 +538,91 @@ def _validate(data: dict[str, Any]) -> list[str]:
 
     routines = data["routines"]
     slider_keys = {s["key"] for s in data["checkin_sliders"]}
+    pregunta_keys = {p.get("key") for p in (data.get("checkin_preguntas") or [])}
 
     # --- sliders ------------------------------------------------------------
     require(
         len(slider_keys) == len(data["checkin_sliders"]),
         "hay claves duplicadas en checkin_sliders",
     )
+
+    # --- las dos preguntas de Sí/No -----------------------------------------
+    require(
+        len(pregunta_keys) == len(data.get("checkin_preguntas") or []),
+        "hay claves duplicadas en checkin_preguntas",
+    )
+    # La misma clave en las dos listas sería el peor de los mundos: el
+    # formulario la pintaría dos veces, y el validador de reglas la dejaría
+    # entrar en el semáforo por la puerta de los deslizadores mientras el resto
+    # del sistema la trata como una pregunta que no decide.
+    solapadas = sorted(slider_keys & pregunta_keys)
+    require(
+        not solapadas,
+        f"estas claves están en `checkin_sliders` y en `checkin_preguntas` a la "
+        f"vez: {solapadas}. Una respuesta o puede mover el semáforo o no puede, "
+        f"y estando en las dos listas puede y no puede.",
+    )
+    # Estas dos claves el código las busca POR SU NOMBRE, y el nombre está en
+    # `app/engine/signals.py`, no aquí. Si una desapareciera del YAML nadie
+    # reventaría: `sig.get(...)` devolvería `None` para siempre -que el motor lee
+    # como "no me lo han dicho", el tercer estado- y el sistema seguiría
+    # funcionando exactamente como antes de que estas preguntas existieran. No es
+    # un error, es el comportamiento anterior con cara de normal, que es la clase
+    # de avería que este fichero existe para que no ocurra.
+    #
+    # Las etiquetas sí pueden reescribirse a gusto; lo que no puede es faltar la
+    # clave.
+    for clave, para_que in (
+        (
+            CLAVE_VOY_A_ENTRENAR,
+            "es la que decide si el mensaje del día prescribe la sesión o solo "
+            "informa del estado",
+        ),
+        (
+            CLAVE_APETECE,
+            "es la mitad de la que se calcula la discordancia (apetece pero no "
+            "voy, o no apetece y voy), y sin ella esa señal se queda muda sin "
+            "decir que se ha quedado muda",
+        ),
+    ):
+        require(
+            clave in pregunta_keys,
+            f"falta la pregunta '{clave}' en `checkin_preguntas`. {para_que}, y "
+            f"el código la busca por ese nombre.",
+        )
+
+    # NINGUNA REGLA DEL SEMÁFORO PUEDE NOMBRARLAS, Y ESTO ES LO QUE LO IMPIDE
+    # ----------------------------------------------------------------------
+    # Los frenos de progresión y los disparadores de reglas especiales ya se
+    # validan contra `slider_keys` unos cientos de líneas más abajo, así que
+    # esos dos caminos están cerrados por construcción: una pregunta no es un
+    # deslizador y no pasa. El camino que estaba ABIERTO era el principal -las
+    # reglas de `thresholds`-, cuyas señales no se validaban contra nada.
+    #
+    # Se camina el árbol `when` en vez de mirar `requires`, y se camina con LA
+    # MISMA función que usa el motor para saber de qué habla una regla, no con
+    # una copia escrita aquí: `requires` es documentación -puede quedarse corto
+    # sin que nada se rompa- y una segunda versión del recorrido divergiría a la
+    # primera forma de `when` que alguien añada, dejando este permiso abierto
+    # justo en el caso nuevo.
+    reglas_de_luz = [
+        r
+        for nivel in ("red", "amber")
+        for r in (data["thresholds"].get(nivel) or [])
+        if isinstance(r, dict)
+    ]
+    for rule in reglas_de_luz:
+        usadas = sorted(senales_de_regla(rule) & pregunta_keys)
+        require(
+            not usadas,
+            f"regla '{rule.get('name')}': mira {usadas}, que son preguntas del "
+            f"check-in y no pueden decidir el semáforo. «No me apetece» y «hoy "
+            f"no voy» son decisiones, no medidas: un color que dependiera de "
+            f"ellas te daría la razón llamándolo fisiología, y encima enseñaría "
+            f"a contestar el formulario según el color que uno quiere que "
+            f"salga. Si lo que quieres es que las ganas pesen, para eso está el "
+            f"deslizador `training_desire`.",
+        )
 
     # --- rotación -----------------------------------------------------------
     # Aquí vivía la validación del calendario fijo: variantes de temporada, un
@@ -943,6 +1058,19 @@ def _validate(data: dict[str, Any]) -> list[str]:
         require(
             spec.get("min_days_required", 0) <= spec.get("window_days", 0),
             f"adaptive_thresholds.{name}: min_days_required no puede superar window_days",
+        )
+        # La puerta trasera del guardia de arriba. Aquel mira las CLAVES del
+        # `when`, y en `{load_3d: {gt_adaptive: mi_umbral}}` la clave es
+        # `load_3d`: el umbral contra el que se compara viaja en el valor y ahí
+        # no llega. Un `metric: will_train` definido aquí y referenciado desde
+        # cualquier regla metería el histórico de «hoy no voy» dentro del cálculo
+        # del color por un camino que el otro test no ve. Es rebuscado, y por eso
+        # mismo es el que nadie revisaría.
+        require(
+            spec.get("metric") not in pregunta_keys,
+            f"adaptive_thresholds.{name}: su métrica es '{spec.get('metric')}', que "
+            f"es una pregunta del check-in. Un percentil sobre ella sigue siendo "
+            f"ella decidiendo el semáforo, solo que con una vuelta más.",
         )
 
     # --- la ventana de salidas que alimenta esos umbrales --------------------

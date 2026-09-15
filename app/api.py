@@ -222,6 +222,19 @@ class CheckinIn(BaseModel):
     sleep_quality: int | None = Field(None, ge=0, le=10)
     training_desire: int | None = Field(None, ge=0, le=10)
     yesterday_rpe: int | None = Field(None, ge=0, le=10)
+
+    # Las dos preguntas de Sí/No. `bool | None`, y el `None` es un estado de
+    # verdad: «no me lo han dicho». Son los días en que no se contesta el
+    # formulario, y esos días el sistema tiene que seguir prescribiendo como
+    # siempre. Un `bool = False` por defecto los convertiría a todos en días en
+    # los que dijiste que no ibas a entrenar.
+    #
+    # Sin `ge/le` porque no hay rango que validar: Pydantic ya rechaza un 7 aquí.
+    # Y por eso el test de simetría de más abajo compara contra la UNIÓN de las
+    # dos listas del config, no solo contra `checkin_sliders`.
+    wants_to_train: bool | None = None
+    will_train: bool | None = None
+
     comments: str | None = None
     # Permite rehacer el check-in de ayer sin mentirle a la fecha.
     day: date | None = None
@@ -669,6 +682,14 @@ def checkin_today(
         # lo dejaría fuera del formulario y el sistema decidiría sin ese dato sin
         # que nadie lo notara.
         "sliders": cfg.raw.get("checkin_sliders", []),
+        # Y lo mismo con las dos preguntas de Sí/No, por el mismo motivo y en una
+        # lista aparte. Aparte y no mezcladas con una bandera de tipo: la PWA las
+        # pinta distinto -dos botones en vez de una barra- y separarlas aquí es lo
+        # que permite que `pintarSliders` siga sin saber que existen los
+        # booleanos. Un solo array con `tipo: "bool"` obligaría a cada consumidor
+        # de esta respuesta a mirar el tipo antes de nada, y el día que alguien se
+        # olvide pintaría una barra de 1 a 10 para «¿Vas a entrenar hoy?».
+        "preguntas": cfg.raw.get("checkin_preguntas", []),
         "comment_label": (cfg.raw.get("checkin_comment") or {}).get(
             "label", "Comentarios"
         ),

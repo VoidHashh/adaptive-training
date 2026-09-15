@@ -56,7 +56,12 @@ from app.engine.session_builder import (
     build_session,
     siguiente_en_rotacion,
 )
-from app.engine.signals import Signals, WEEKDAY_NAMES, week_start
+from app.engine.signals import (
+    CLAVE_VOY_A_ENTRENAR,
+    Signals,
+    WEEKDAY_NAMES,
+    week_start,
+)
 
 DELOAD_RULE = "semana_de_descarga"
 
@@ -341,6 +346,22 @@ class DayDecision:
     # le pasa `job_decision`, por el mismo motivo que los tres campos de arriba:
     # `decide` no abre la base de datos y no sabe qué se decidió antes.
     anulacion: Any = None
+    # Lo que contestaste a «¿Vas a entrenar hoy?». Tres estados, y el `None` no
+    # es un hueco: es «no me lo han dicho», que es el caso de todos los días sin
+    # check-in y de todo el histórico anterior a la pregunta.
+    #
+    # Este SÍ lo produce `decide` -sale de `signals`, que es entrada pura- a
+    # diferencia de los cuatro de arriba, que necesitan la base de datos. Está
+    # aquí y no solo dentro de `signals` porque es lo que decide si el mensaje
+    # prescribe la sesión o solo informa del estado, y esa es una propiedad de la
+    # decisión del día, no un dato de entrada más entre veinte.
+    #
+    # No tiene columna propia en `decisions`, y es deliberado: la respuesta ya se
+    # guarda dos veces -en `checkins.will_train`, que es su casa, y dentro de
+    # `inputs_snapshot_json`- y el efecto que tuvo queda escrito en el motivo de
+    # la puerta. Una tercera copia solo añadiría un sitio donde pudieran
+    # discrepar.
+    va_a_entrenar: bool | None = None
 
     @property
     def weekday(self) -> str:
@@ -379,6 +400,12 @@ class DayDecision:
                 self.recalibracion.to_dict() if self.recalibracion else None
             ),
             "anulacion": self.anulacion.to_dict() if self.anulacion else None,
+            # Los tres estados salen tal cual, `None` incluido. Convertirlo a
+            # `False` aquí -"total, es un JSON"- haría que cada día sin check-in
+            # del histórico quedara escrito como un día en el que dijiste que no
+            # ibas a entrenar, y eso es lo que leerá cualquier análisis que se
+            # escriba sobre esta salida.
+            "va_a_entrenar": self.va_a_entrenar,
         }
 
 
@@ -654,7 +681,21 @@ def decide(
     state = state or EngineState()
     notes: list[str] = []
 
+    # Si hoy vas a entrenar o no, según lo que contestaste esta mañana. Tres
+    # estados, y el `None` -«no me lo han dicho»- es el caso normal: los días sin
+    # check-in y todo el histórico anterior a que la pregunta existiera.
+    #
+    # Se lee UNA vez y aquí arriba, junto al resto de lo que entra, porque lo
+    # consultan dos sitios -la puerta de la progresión y el mensaje- y leerlo dos
+    # veces sería tener dos sitios donde equivocarse de clave.
+    va_a_entrenar = signals.get(CLAVE_VOY_A_ENTRENAR)
+
     # --- 1. semáforo --------------------------------------------------------
+    #
+    # Y esto NO mira `va_a_entrenar`, a propósito y por construcción: una regla
+    # solo puede nombrar deslizadores del check-in, y las dos preguntas de Sí/No
+    # no lo son -`config_loader` rechaza el arranque si alguna lo intenta-. El
+    # color dice cómo estás; que vayas o no es otra cosa.
     light_decision = evaluate_light(config, signals)
     light = light_decision.light
 
@@ -727,6 +768,12 @@ def decide(
         # no ha visto nunca no es una avería, y el mensaje no tiene por qué
         # sonar como si lo fuera.
         rutina_estrenada=state.estrenada(routine_key),
+        # Este sí cierra la puerta. Del check-in, y en tres estados: si hoy no
+        # vas, no hay nada que subir. Que la puerta se cierre AQUÍ y no solo al
+        # redactar el mensaje es lo que hace que el día quede guardado con su
+        # motivo -«hoy no entrenas»- en vez de con un plan de subidas que nadie
+        # llegó a ejecutar y que dentro de tres meses parecerá que sí.
+        va_a_entrenar=va_a_entrenar,
         # La cola de los cupos, acotada a esta rutina: `plan_progression`
         # trabaja con claves de ejercicio a secas.
         sessions_since_progress={
@@ -770,6 +817,7 @@ def decide(
         config_hash=getattr(config, "hash", None),
         source=source,
         last_strength=state.last_strength,
+        va_a_entrenar=va_a_entrenar,
     )
 
 

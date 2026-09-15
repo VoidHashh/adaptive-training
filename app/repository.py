@@ -372,6 +372,19 @@ def sliders_del_config(config: Any) -> list[str]:
     return [str(s["key"]) for s in (raw.get("checkin_sliders") or []) if s.get("key")]
 
 
+def preguntas_del_config(config: Any) -> list[str]:
+    """Las claves de las dos preguntas de Sí/No, leídas del YAML.
+
+    Función aparte de `sliders_del_config` y no un parámetro suyo, por lo mismo
+    que en el config son dos listas: quien necesita saber qué puede mover el
+    semáforo pide los deslizadores y solo recibe deslizadores. Aquí dentro las
+    dos listas se suman -para GUARDAR da igual de qué tipo sea la respuesta- pero
+    la suma se hace explícita en el sitio que la necesita, no por defecto.
+    """
+    raw = config.raw if hasattr(config, "raw") else (config or {})
+    return [str(p["key"]) for p in (raw.get("checkin_preguntas") or []) if p.get("key")]
+
+
 def upsert_checkin(
     session: Session,
     day: date,
@@ -390,8 +403,19 @@ def upsert_checkin(
     Una clave desconocida es un ERROR, no un campo que se ignora. Un `fatiga`
     por `fatigue` escrito desde la PWA se guardaría en ninguna parte y el
     sistema decidiría sin ese dato, diciendo que el check-in está completo.
+
+    Lo que se admite es la UNIÓN de deslizadores y preguntas de Sí/No. Guardar es
+    la única operación en la que los dos tipos de respuesta son la misma cosa:
+    una columna de `checkins`. La diferencia entre ellos -que un deslizador puede
+    mover el semáforo y una pregunta no- se sostiene en el config y en
+    `config_loader`, no aquí; meter ese criterio también en esta función sería
+    tener la misma regla en dos sitios y que uno de los dos se quedase atrás.
     """
-    permitidas = set(sliders_del_config(config)) if config is not None else None
+    permitidas = (
+        set(sliders_del_config(config)) | set(preguntas_del_config(config))
+        if config is not None
+        else None
+    )
     columnas = {c.name for c in CheckinRow.__table__.columns}
 
     for clave in valores:
@@ -402,8 +426,9 @@ def upsert_checkin(
             )
         if permitidas is not None and clave not in permitidas:
             raise ValueError(
-                f"el check-in trae '{clave}', que no está en `checkin_sliders` del "
-                f"config. O sobra en el formulario o falta en el YAML."
+                f"el check-in trae '{clave}', que no está ni en `checkin_sliders` "
+                f"ni en `checkin_preguntas` del config. O sobra en el formulario o "
+                f"falta en el YAML."
             )
 
     fila = session.scalars(

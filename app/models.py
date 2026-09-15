@@ -231,6 +231,25 @@ class Checkin(Base):
     # ni al leer ni al escribir). Opcional: si ayer no hubo entreno, va nulo.
     yesterday_rpe: Mapped[int | None] = mapped_column(Integer)
 
+    # Las dos preguntas de Sí/No. Booleanas y NULABLES, y el nulo es un valor con
+    # significado propio: «no me lo han dicho». Son tres estados, no dos.
+    #
+    # Es la distinción que decide si el mensaje de mañana prescribe sesión.
+    # `False` es «hoy no voy» y apaga la prescripción; `None` es un día en el que
+    # no rellenaste el formulario, y ahí el sistema tiene que seguir proponiendo
+    # como siempre. Si estas columnas fueran `NOT NULL DEFAULT 0`, los dos casos
+    # se confundirían en el mismo cero y todos los días sin check-in pasarían a
+    # contarse como días en los que dijiste que no ibas a entrenar: el histórico
+    # quedaría lleno de noes que nunca dijiste, y las correlaciones se calcularían
+    # sobre ellos.
+    #
+    # Y no tocan el semáforo. Están aquí abajo y no en la lista de deslizadores
+    # del config a propósito: se guardan, se cuentan y se correlacionan, pero
+    # ninguna regla de color puede nombrarlas -`config_loader` lo rechaza al
+    # arrancar-. «No me apetece» es una decisión, no una medida.
+    wants_to_train: Mapped[bool | None] = mapped_column(Boolean)
+    will_train: Mapped[bool | None] = mapped_column(Boolean)
+
     comments: Mapped[str | None] = mapped_column(Text)
 
 

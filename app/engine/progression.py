@@ -314,6 +314,7 @@ def evaluate_gate(
     compliance_por_ejercicio: dict[str, bool | None] | None = None,
     rutina_estrenada: bool | None = None,
     titulo_rutina: str | None = None,
+    va_a_entrenar: bool | None = None,
 ) -> tuple[bool, str]:
     """Puerta general. Devuelve (abierta, motivo).
 
@@ -321,7 +322,29 @@ def evaluate_gate(
     opcionales y solo sirven para redactar el motivo: la decisión la toma
     `compliance_ok`, que ya viene resuelto. Ninguno de los tres puede abrir
     una puerta que estaría cerrada ni cerrar una que estaría abierta.
+
+    `va_a_entrenar` sí decide, y es el único de los cuatro que lo hace. Son tres
+    estados: `False` cierra la puerta, `True` no hace nada y `None` -«no me lo
+    han dicho»- tampoco. Ese `None` es el de todos los días en que no se rellena
+    el formulario y el de todo el histórico anterior a que la pregunta
+    existiera; leerlo como un no habría congelado la progresión hacia atrás en
+    el archivo entero.
     """
+    # VA EL PRIMERO, ANTES INCLUSO QUE LA DESCARGA.
+    #
+    # No porque pese más, sino porque es el que explica el mensaje entero. El día
+    # que has dicho que no vas, lo que se lee arriba no es un plan de sesión: es
+    # el estado del día. Si el motivo de la puerta dijera «semana de descarga»
+    # mientras el mensaje no prescribe nada, serían dos versiones del mismo día,
+    # y la que se queda en el histórico es esta.
+    #
+    # Y NO es un reproche. No dice que hayas fallado ni que se pierda nada: dice
+    # que lo que suba, subirá la próxima vez. Que es exactamente lo que pasa -la
+    # racha no se rompe, la rotación no avanza, el día no cuenta como saltado- y
+    # por eso se puede escribir sin rodeos.
+    if va_a_entrenar is False:
+        return False, "hoy no entrenas: la progresión se decide la próxima vez que toque"
+
     if deload_active and (prog_cfg.get("deload") or {}).get("freeze_progression", True):
         return False, "semana de descarga: la progresión está congelada"
 
@@ -763,6 +786,7 @@ def plan_progression(
     last_routine_light: str | None = None,
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
     rutina_estrenada: bool | None = None,
+    va_a_entrenar: bool | None = None,
 ) -> ProgressionPlan:
     """Decide la progresión de todos los ejercicios de una rutina.
 
@@ -842,6 +866,7 @@ def plan_progression(
         # El título del `config.yaml` -"Día 2"-, no la clave -`dia_2`-. Este
         # motivo se lee en Telegram y en la vista de auditoría, no en un log.
         titulo_rutina=str(routine.get("title") or "") or None,
+        va_a_entrenar=va_a_entrenar,
     )
     (sets_ok, sets_why), (reps_ok, reps_why) = evaluate_volume_gates(
         prog_cfg, signals, signals.day, last_routine_light

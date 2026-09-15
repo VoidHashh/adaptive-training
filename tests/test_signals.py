@@ -15,6 +15,8 @@ import pytest
 from app.config_loader import load_config
 
 from app.engine.signals import (
+    CLAVE_APETECE,
+    CLAVE_VOY_A_ENTRENAR,
     UNKNOWN,
     Checkin,
     DayMetrics,
@@ -1177,3 +1179,118 @@ def test_con_el_recuento_apagado_la_senal_no_se_escribe_a_cero(cfg_copia):
     assert apagada.intense_count is None
     claves = [k for k in apagada.values if k.startswith("intense_count")]
     assert claves == [], f"con el recuento apagado no debería haber señal: {claves}"
+
+
+# ---------------------------------------------------------------------------
+# Las dos preguntas de Sí/No
+# ---------------------------------------------------------------------------
+
+
+def test_las_preguntas_llegan_a_las_senales_y_al_historico(cfg):
+    """Mismo bucle que los deslizadores: valor del día, serie y snapshot.
+
+    Es el bucle compartido lo que cumple «se guardan y se cuentan en todas las
+    métricas». Si las preguntas tuvieran su propio camino corto -asignar
+    `sig.values` y ya- entrarían en el mensaje de hoy y faltarían en las
+    correlaciones, en las tendencias y en el replay de un día pasado, y eso no se
+    notaría hasta mirar una gráfica dentro de dos meses.
+    """
+    ayer = LUNES - timedelta(days=1)
+    sig = build_signals(
+        cfg,
+        LUNES,
+        metrics=[],
+        rides=[],
+        sessions=[],
+        checkin=Checkin(
+            date=LUNES, values={CLAVE_APETECE: False, CLAVE_VOY_A_ENTRENAR: True}
+        ),
+        checkin_history=[
+            Checkin(date=ayer, values={CLAVE_APETECE: True, CLAVE_VOY_A_ENTRENAR: True})
+        ],
+    )
+
+    assert sig.get(CLAVE_APETECE) is False
+    assert sig.get(CLAVE_VOY_A_ENTRENAR) is True
+    assert sig.series(CLAVE_APETECE) == {ayer: True, LUNES: False}
+    assert sig.snapshot()["values"][CLAVE_VOY_A_ENTRENAR] is True
+
+
+@pytest.mark.parametrize(
+    "apetece, voy, esperada",
+    [
+        (True, True, False),
+        (False, False, False),
+        (True, False, True),
+        (False, True, True),
+    ],
+)
+def test_la_discordancia_son_las_dos_casillas_de_la_diagonal(cfg, apetece, voy, esperada):
+    """Las cuatro celdas de la tabla 2x2, y la derivada que las resume.
+
+    Las dos que discrepan no son la misma historia -«me apetecía y no fui» y «no
+    me apetecía y fui» son casi opuestas- pero como binaria sirven para la
+    pregunta que se quiere contestar: cuántas veces la intención y las ganas van
+    por caminos distintos. El desglose de las cuatro celdas se guarda igual,
+    porque las respuestas crudas siguen ahí.
+    """
+    sig = build_signals(
+        cfg,
+        LUNES,
+        metrics=[],
+        rides=[],
+        sessions=[],
+        checkin=Checkin(
+            date=LUNES, values={CLAVE_APETECE: apetece, CLAVE_VOY_A_ENTRENAR: voy}
+        ),
+        checkin_history=[],
+    )
+    assert sig.get("discordancia") is esperada
+
+
+@pytest.mark.parametrize(
+    "valores",
+    [
+        {},
+        {CLAVE_APETECE: True},
+        {CLAVE_VOY_A_ENTRENAR: False},
+    ],
+)
+def test_sin_las_dos_respuestas_no_hay_discordancia_ni_concordancia(cfg, valores):
+    """Falta una: `None`, no `False`.
+
+    Un `False` aquí querría decir «contestó lo mismo a las dos preguntas», y
+    sobre un día en el que solo contestó una -o ninguna- eso es una afirmación
+    inventada. Y no una cualquiera: es la que engorda la casilla de la
+    concordancia con días vacíos, así que la correlación saldría más limpia
+    cuantos menos datos hubiera. El p=0 que preocupaba sale precisamente de aquí.
+    """
+    sig = build_signals(
+        cfg,
+        LUNES,
+        metrics=[],
+        rides=[],
+        sessions=[],
+        checkin=Checkin(date=LUNES, values=valores),
+        checkin_history=[],
+    )
+    assert sig.get("discordancia") is None
+
+
+def test_ninguna_regla_del_semaforo_puede_leer_las_preguntas(cfg):
+    """El guardia del config, comprobado sobre el config REAL.
+
+    Los tests del validador prueban que RECHAZA una regla inventada. Este prueba
+    lo otro: que hoy, en el fichero que de verdad se carga cada mañana, ninguna
+    de las trece reglas las mira. Las dos afirmaciones hacen falta -un validador
+    correcto con un config que ya lo incumpliera no serviría de nada- y esta es
+    la que se romperá el día que alguien añada la regla, no el día que alguien
+    toque el validador.
+    """
+    from app.engine.tendencia import senales_de_regla
+
+    preguntas = set(cfg.pregunta_keys())
+    for nivel in ("red", "amber"):
+        for regla in cfg.raw["thresholds"].get(nivel) or []:
+            usadas = senales_de_regla(regla) & preguntas
+            assert not usadas, f"la regla '{regla.get('name')}' mira {usadas}"

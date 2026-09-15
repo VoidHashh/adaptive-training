@@ -46,6 +46,27 @@ WEEKDAY_NAMES = [
 
 UNKNOWN = "desconocida"
 
+# Las dos preguntas de Sí/No del check-in, por su nombre, aquí y no en el
+# `config.yaml`.
+#
+# En el config viven sus etiquetas -el texto que se lee en el móvil, que puede
+# reescribirse cuantas veces haga falta- pero NO la decisión de cuál de las dos
+# manda en el mensaje. Esa es de código: `CLAVE_VOY_A_ENTRENAR` es la que apaga
+# la prescripción del día, y ponerla como bandera por pregunta en el YAML sería
+# inventar una opción que nadie va a cambiar nunca, con el efecto secundario de
+# que un `false` por descuido dejaría al sistema prescribiendo sesión los días
+# que has dicho que no vas. `config_loader` comprueba a cambio que la clave siga
+# existiendo en `checkin_preguntas`: si se borrara, el motor estaría leyendo una
+# señal que nadie escribe y se quedaría en `None` para siempre, que es el
+# comportamiento anterior con cara de normal.
+#
+# Ninguna de las dos está en `checkin_sliders`, y eso no es una omisión: estar en
+# esa lista es tener permiso para que una regla del semáforo te mire. Estas dos
+# son intenciones, no medidas. Se guardan, se cuentan y se correlacionan; no
+# deciden el color.
+CLAVE_APETECE = "wants_to_train"
+CLAVE_VOY_A_ENTRENAR = "will_train"
+
 
 class IntensityCountConfigError(ValueError):
     """El bloque de recuento de intensas está mal configurado.
@@ -1163,12 +1184,28 @@ def build_signals(
     sig.values["yesterday_ride_level"] = last_ride_level(classified, day, lookback)
 
     # --- formulario --------------------------------------------------------
+    #
+    # El mismo bucle para los deslizadores y para las dos preguntas de Sí/No. Que
+    # compartan bucle es lo que hace que las preguntas lleguen GRATIS al
+    # histórico, a las series y al `snapshot`, que es justo lo que se pidió:
+    # guardadas y contadas en todas las métricas como cualquier otra respuesta.
+    #
+    # Compartir bucle NO les da poder sobre el semáforo. Eso se decide en otro
+    # sitio: una regla solo puede nombrar lo que esté en `checkin_sliders`, y las
+    # preguntas no están ahí -`config_loader` rechaza el arranque si una regla lo
+    # intenta-. Aquí se rellenan señales; quién puede leerlas es una frontera de
+    # configuración, no de bucle.
     slider_keys = (
         config.slider_keys()
         if hasattr(config, "slider_keys")
         else [s["key"] for s in raw.get("checkin_sliders", [])]
     )
-    for key in slider_keys:
+    pregunta_keys = (
+        config.pregunta_keys()
+        if hasattr(config, "pregunta_keys")
+        else [p["key"] for p in raw.get("checkin_preguntas", [])]
+    )
+    for key in [*slider_keys, *pregunta_keys]:
         sig.values[key] = checkin.values.get(key) if checkin else None
         hist: dict[date, Any] = {}
         for c in checkin_history:
@@ -1178,6 +1215,24 @@ def build_signals(
         if checkin and checkin.values.get(key) is not None:
             hist[day] = checkin.values[key]
         sig.history[key] = hist
+
+    # La discordancia: te apetecía y no vas, o no te apetecía y vas.
+    #
+    # Se deriva AQUÍ y no en el análisis porque tiene que quedar en el histórico
+    # día a día, igual que las dos respuestas de las que sale. Calculada después
+    # sobre la tabla daría el mismo número hoy y ninguno el día que se reescriba
+    # la consulta.
+    #
+    # `None` si falta cualquiera de las dos, y este es el punto entero: dos de
+    # los cuatro estados posibles son «no contestó», y un `False` ahí diría
+    # «contestó lo mismo a las dos» sobre un día en el que no contestó nada. El
+    # nombre es castellano porque es una métrica DERIVADA; las respuestas crudas
+    # van en inglés como el resto de la tabla.
+    apetece = sig.values.get(CLAVE_APETECE)
+    voy = sig.values.get(CLAVE_VOY_A_ENTRENAR)
+    sig.values["discordancia"] = (
+        None if apetece is None or voy is None else bool(apetece) != bool(voy)
+    )
 
     if checkin is None:
         notes.append("sin check-in: solo se evalúan las reglas objetivas")

@@ -123,6 +123,63 @@ def test_haber_entrenado_de_verdad_si_mueve_el_puntero(cfg):
     assert decide(cfg, martes, sig(martes), st).rotation_routine == "dia_2"
 
 
+def test_decir_que_no_vas_no_mueve_la_rotacion_ni_cuenta_como_saltada(cfg):
+    """Decir «hoy no voy» tiene que costar exactamente lo mismo que no decir nada.
+
+    Es la mitad silenciosa de la pregunta del check-in, y la que decide si el
+    usuario la contesta más de una semana. Si contestar que no tuviera cualquier
+    coste -perder el turno de la rutina, sumar a un contador de saltadas,
+    reiniciar una racha- la pregunta se quedaría sin contestar y el sistema
+    volvería a no saber nada de los días que no se entrena, que es justo lo que
+    la pregunta existe para arreglar.
+
+    No hace falta que `advance_state` sepa nada de `will_train`, y a propósito:
+    el puntero ya se mueve solo con `executed is not None`, o sea al reconciliar
+    contra Hevy por la noche. Lo que este test fija es que eso SIGA siendo así, y
+    que a nadie se le ocurra "ayudar" restando algo por la mañana. Se compara
+    campo a campo contra el mismo día sin contestar en vez de mirar solo la
+    rotación: un contador nuevo que se tocara aquí pasaría desapercibido.
+    """
+    st = EngineState(last_strength=("dia_1", LUNES))
+    martes = LUNES + timedelta(days=1)
+
+    callado = advance_state(st, decide(cfg, martes, sig(martes), st), executed=None)
+    dije_que_no = advance_state(
+        st, decide(cfg, martes, sig(martes, will_train=False), st), executed=None
+    )
+
+    assert dije_que_no.last_strength == st.last_strength == ("dia_1", LUNES)
+    assert dije_que_no.__dict__ == callado.__dict__, (
+        "contestar «no voy» ha cambiado el estado respecto a no contestar"
+    )
+
+    miercoles = LUNES + timedelta(days=2)
+    assert decide(cfg, miercoles, sig(miercoles), dije_que_no).rotation_routine == "dia_2"
+
+
+def test_y_si_dice_que_no_y_entrena_igual_cuenta_como_una_sesion_normal(cfg):
+    """Manda Hevy, no el formulario.
+
+    La respuesta de la mañana es una intención, no un hecho. El hecho es la
+    sesión leída por la noche, y cuando existe vale por encima de lo que se
+    contestó: mueve el puntero, cuenta la sesión limpia y sigue la racha igual
+    que cualquier otro día. Un sistema que descartara la sesión por contradecir
+    el formulario estaría castigando al usuario por cambiar de idea.
+    """
+    st = EngineState(last_strength=("dia_1", LUNES))
+    martes = LUNES + timedelta(days=1)
+
+    d = decide(cfg, martes, sig(martes, will_train=False), st)
+    ejecutado = {e["key"]: True for e in d.session.exercises}
+    assert ejecutado, "la sesión se escribe en Hevy igual, con sus ejercicios"
+
+    despues = advance_state(st, d, executed=ejecutado)
+    assert despues.last_strength == ("dia_2", martes)
+
+    miercoles = LUNES + timedelta(days=2)
+    assert decide(cfg, miercoles, sig(miercoles), despues).rotation_routine == "dia_3"
+
+
 def test_da_igual_el_dia_de_la_semana_que_sea(cfg):
     """Ni "los lunes toca Día 1" ni "los domingos se descansa".
 
@@ -642,3 +699,30 @@ def test_el_estreno_viaja_en_el_json_y_no_solo_en_la_prosa(cfg):
     con_historia = EngineState(compliance={("dia_1", "lo_que_sea"): True})
     d2 = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), con_historia)
     assert json.loads(json.dumps(d2.to_dict()))["progression"]["estreno"] is False
+
+
+def test_la_respuesta_del_dia_viaja_en_el_json_con_sus_tres_estados(cfg):
+    """El volcado tiene que distinguir «no voy» de «no has contestado».
+
+    No hay columna `decisions.va_a_entrenar` a propósito -la respuesta ya vive en
+    `checkins.will_train`-, así que este JSON es lo que lee la ficha y lo que lee
+    la simulación. Con el campo perdido en `to_dict`, el mensaje del día seguiría
+    saliendo perfecto y el día siguiente nadie podría contestar por qué el 17 de
+    septiembre no se prescribió nada: los dos extremos bien y el cable suelto en
+    medio, que es como se pierden las cosas sin que nada reviente.
+
+    Los tres estados se comprueban con `is`, no con `==`: `False == 0` y
+    `None == False` es falso pero `not None` es cierto, y este campo existe
+    justamente para que esa diferencia sobreviva hasta el archivo.
+    """
+    for respuesta in (True, False, None):
+        d = decide(cfg, LUNES, sig(LUNES, will_train=respuesta), EngineState())
+        recargada = json.loads(json.dumps(d.to_dict(), ensure_ascii=False))
+        assert "va_a_entrenar" in recargada, "el volcado no cuenta lo que se contestó"
+        assert recargada["va_a_entrenar"] is respuesta
+
+        # Y la fotografía de señales la lleva también, que es de donde salen las
+        # correlaciones y la tabla 2x2 de la ficha. Las dos copias no sobran: el
+        # campo de arriba dice qué hizo el motor con la respuesta, y el de aquí
+        # dentro dice qué se leyó, aunque algún día el motor deje de mirarla.
+        assert recargada["inputs"]["values"]["will_train"] is respuesta

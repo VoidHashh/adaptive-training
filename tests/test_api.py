@@ -623,6 +623,71 @@ def test_el_checkin_se_guarda_y_se_puede_releer(cliente):
     assert cuerpo["comments"] == "molestia leve"
 
 
+def test_un_no_se_guarda_como_no_y_no_como_si_no_hubiera_contestado(cliente, db):
+    """El `False` tiene que sobrevivir al viaje entero. Es el bug de una línea.
+
+    `post_checkin` filtra los campos con `if v is not None`, y ahí está la trampa
+    a un carácter de distancia: escrito `if v` -que es lo que uno escribe sin
+    pensar- el `False` de «hoy no voy» se caería del diccionario y el día se
+    guardaría como si no hubieras contestado esa pregunta. El mensaje volvería a
+    prescribir la sesión, el histórico no tendría el no, y no habría ni un error
+    en el log. El único síntoma sería que decir que no no sirve para nada.
+
+    Por eso el test mira las dos: un `False` y un `True` en el mismo envío.
+    """
+    cliente.post(
+        "/api/checkin",
+        json={
+            "day": str(LUNES),
+            "fatigue": 4,
+            "wants_to_train": True,
+            "will_train": False,
+        },
+    )
+
+    cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
+    assert cuerpo["values"]["wants_to_train"] is True
+    assert cuerpo["values"]["will_train"] is False, (
+        "el 'no' se ha perdido por el camino: se guarda como si no hubiera "
+        "contestado"
+    )
+    assert repo.get_checkin(db, LUNES).will_train is False
+
+
+def test_no_contestar_una_pregunta_no_es_contestar_que_no(cliente, db):
+    """El tercer estado, comprobado en la frontera donde se puede perder.
+
+    Un día sin check-in y un día en el que dijiste que no ibas a entrenar son
+    cosas opuestas, y para una columna booleana con defecto `False` serían la
+    misma. La columna es nulable justo para que no lo sean, y esta es la prueba
+    de que el `None` llega hasta abajo en vez de convertirse en un no.
+    """
+    cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
+
+    cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
+    assert "will_train" not in cuerpo["values"], (
+        "una pregunta sin contestar no puede aparecer con valor: para el motor "
+        "sería una respuesta"
+    )
+    assert repo.get_checkin(db, LUNES).will_train is None
+
+
+def test_las_preguntas_viajan_a_la_pwa_como_lista_propia(cliente, cfg):
+    """La PWA no las lleva escritas a mano, igual que con los deslizadores.
+
+    Y llegan en su propio array, no mezcladas con `sliders`. Si vinieran en la
+    misma lista, el código que pinta barras de 1 a 10 tendría que mirar un campo
+    de tipo antes de cada una, y el día que alguien añada un consumidor nuevo y
+    se olvide de mirarlo, «¿Vas a entrenar hoy?» aparecerá como un deslizador.
+    """
+    cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
+
+    claves = [p["key"] for p in cuerpo["preguntas"]]
+    assert claves == cfg.pregunta_keys()
+    assert all(p.get("label") for p in cuerpo["preguntas"]), "sin etiqueta no se pintan"
+    assert not {s["key"] for s in cuerpo["sliders"]} & set(claves)
+
+
 def test_enviar_el_checkin_decide_el_dia_en_ese_momento(cliente, db):
     """Las dos cosas van juntas a propósito.
 
@@ -695,10 +760,17 @@ def test_los_deslizadores_del_config_y_del_modelo_coinciden(cfg):
 
     Las dos listas tienen que ser la misma, y este test es lo único que lo
     sostiene el día que se toque una de ellas.
+
+    Se compara contra la UNIÓN de las dos secciones del check-in. Aquí, y solo
+    aquí, deslizadores y preguntas de Sí/No son lo mismo: campos que la PWA
+    manda y que el modelo tiene que dejar pasar. La frontera entre ellos -quién
+    puede mover el semáforo- vive en `config_loader`, y meterla también en este
+    test haría que la asimetría que sí importa se colara por el hueco.
     """
     from app.api import CheckinIn
 
     del_config = {s["key"] for s in cfg.raw.get("checkin_sliders", [])}
+    del_config |= {p["key"] for p in cfg.raw.get("checkin_preguntas", [])}
     del_modelo = set(CheckinIn.model_fields) - {"comments", "day"}
 
     assert del_modelo == del_config, (

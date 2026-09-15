@@ -13,6 +13,7 @@ from datetime import date, datetime
 import pytest
 
 from app.config_loader import Config, ConfigError, _validate, compute_hash, load_config
+from app.engine.tendencia import senales_de_regla
 from app.integrations.activity_cache import dias_adaptativos
 
 from tests.conftest import REPO_ROOT
@@ -1401,3 +1402,146 @@ def test_los_recortes_por_intensa_de_ayer_ya_no_existen(cfg_copia, muerta):
     """
     cfg_copia.raw["cycling"]["recommendation"][muerta] = "suave"
     assert muerta in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# Las dos preguntas de Sí/No
+# ---------------------------------------------------------------------------
+#
+# «¿Te apetece entrenar hoy?» y «¿Vas a entrenar hoy?» se guardan, se cuentan y
+# se correlacionan, pero NO deciden el color del día. Esa frontera no se sostiene
+# sola: se sostiene porque están en una lista distinta a la de los deslizadores y
+# porque hay un validador que lo comprueba. Estos tests son el validador del
+# validador.
+
+
+def test_las_preguntas_no_son_deslizadores(cfg):
+    """Dos listas separadas, y `checkin_keys` las junta solo para la pantalla.
+
+    Fundirlas en una sola lista con una bandera `decide: false` sería la versión
+    frágil: la garantía pasaría a depender de que cada sitio que recorre las
+    respuestas se acuerde de mirar la bandera. Estando en listas distintas, el
+    sitio que solo puede ver deslizadores pide `slider_keys()` y ya está.
+    """
+    assert set(cfg.pregunta_keys()) == {"wants_to_train", "will_train"}
+    assert not set(cfg.pregunta_keys()) & set(cfg.slider_keys())
+    assert cfg.checkin_keys() == cfg.slider_keys() + cfg.pregunta_keys()
+
+
+@pytest.mark.parametrize("clave", ["wants_to_train", "will_train"])
+def test_borrar_una_pregunta_del_config_no_pasa_en_silencio(cfg_copia, clave):
+    """Sin la clave, el sistema NO se rompe: vuelve a comportarse como antes.
+
+    Eso es justo lo que lo hace peligroso. `sig.get("will_train")` devolvería
+    `None`, el motor lee `None` como «no me lo han dicho» -que es el tercer
+    estado legítimo, el de los días que no contestas- y el mensaje prescribiría
+    la sesión todos los días. Ni una excepción, ni un log: el comportamiento
+    anterior con cara de normal. Por eso la ausencia tiene que doler AQUÍ, que es
+    el único momento en que alguien está mirando.
+    """
+    cfg_copia.raw["checkin_preguntas"] = [
+        p for p in cfg_copia.raw["checkin_preguntas"] if p["key"] != clave
+    ]
+    assert clave in errores(cfg_copia.raw)
+
+
+def test_una_pregunta_repetida_como_deslizador_se_rechaza(cfg_copia):
+    """La misma clave en las dos listas: puede y no puede mover el semáforo.
+
+    El formulario la pintaría dos veces -una como barra de 1 a 10 y otra como
+    Sí/No, sobre la misma columna- y el validador de reglas la dejaría entrar en
+    el semáforo por la puerta de los deslizadores mientras el resto del sistema
+    la trata como una pregunta que no decide. No hay forma de que las dos
+    lecturas sean ciertas a la vez.
+    """
+    cfg_copia.raw["checkin_sliders"].append(
+        {"key": "will_train", "label": "¿Vas a entrenar hoy?", "min": 1, "max": 10}
+    )
+    fallo = errores(cfg_copia.raw)
+    assert "will_train" in fallo
+    assert "checkin_preguntas" in fallo
+
+
+def test_una_regla_del_semaforo_no_puede_mirar_una_pregunta(cfg_copia):
+    """El camino que estaba abierto: las reglas de `thresholds`.
+
+    Los frenos de progresión y los disparadores de reglas especiales ya se
+    validaban contra `slider_keys`, así que una pregunta no pasaba por ahí. Las
+    reglas del semáforo, en cambio, no validaban sus señales contra NADA: bastaba
+    con escribir `will_train: {eq: false}` en un `when` para que «hoy no voy» te
+    pusiera el día en ámbar. Y el ámbar de ese día no sería una medida de cómo
+    estás: sería el sistema dándote la razón y llamándolo fisiología.
+    """
+    cfg_copia.raw["thresholds"]["amber"].append(
+        {
+            "name": "no_me_apetece",
+            "when": {"all": [{"wants_to_train": {"eq": False}}]},
+        }
+    )
+    fallo = errores(cfg_copia.raw)
+    assert "no_me_apetece" in fallo
+    assert "wants_to_train" in fallo
+
+
+def test_la_prohibicion_llega_hasta_el_fondo_del_arbol(cfg_copia):
+    """Anidada bajo `any` y negada: sigue siendo una regla que la mira.
+
+    Este es el test que hace falsable la decisión de reutilizar
+    `senales_de_regla` en vez de copiar aquí un recorrido más simple. Una
+    comprobación que solo mirase las claves de primer nivel del `when` aprobaría
+    esta regla, y el permiso quedaría abierto exactamente para quien anide, que
+    es lo que hace cualquiera en cuanto la condición tiene dos partes.
+    """
+    cfg_copia.raw["thresholds"]["red"].append(
+        {
+            "name": "escondida",
+            "when": {
+                "any": [
+                    {"all": [{"fatigue": {"gte": 9}}]},
+                    {"not": {"will_train": {"eq": True}}},
+                ]
+            },
+        }
+    )
+    fallo = errores(cfg_copia.raw)
+    assert "escondida" in fallo
+    assert "will_train" in fallo
+
+
+def test_un_umbral_adaptativo_tampoco_puede_calcularse_sobre_una_pregunta(cfg_copia):
+    """La puerta trasera: la clave del `when` no es la métrica del umbral.
+
+    En `{load_3d: {gt_adaptive: mi_umbral}}` la señal que se lee es `load_3d` y
+    el umbral contra el que se compara viaja en el VALOR. El guardia que camina
+    las claves del árbol no puede ver ahí dentro por construcción, así que un
+    `metric: will_train` colaría el histórico de «hoy no voy» dentro del cálculo
+    del color sin que ninguna regla nombrase la pregunta.
+    """
+    cfg_copia.raw["adaptive_thresholds"]["ganas_p50"] = {
+        "metric": "will_train",
+        "window_days": 60,
+        "percentile": 50,
+        "min_days_required": 30,
+    }
+    fallo = errores(cfg_copia.raw)
+    assert "ganas_p50" in fallo
+    assert "will_train" in fallo
+
+
+def test_el_desliza_de_las_ganas_sigue_pudiendo_decidir(cfg):
+    """Y esta es la otra mitad: la prohibición no se ha comido `training_desire`.
+
+    Conviven a propósito. La INTENSIDAD de las ganas (1-10) es una medida de
+    estado y sí es asunto del semáforo -`sin_ganas_y_reventado` la usa-. El sí o
+    el no de si vas a ir es una intención, y esa es asunto tuyo. Un guardia
+    demasiado ancho habría matado la regla que sí queremos.
+    """
+    assert "training_desire" in cfg.slider_keys()
+    reglas = [
+        r
+        for nivel in ("red", "amber")
+        for r in (cfg.raw["thresholds"].get(nivel) or [])
+        if isinstance(r, dict)
+    ]
+    assert any("training_desire" in senales_de_regla(r) for r in reglas)
+    assert _validate(cfg.raw) == []

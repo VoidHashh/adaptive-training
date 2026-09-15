@@ -431,6 +431,41 @@ checkin_sliders:
     hint_high: "al límite"
     optional: true          # si ayer no hubo entreno, se deja en blanco
 
+# Las dos preguntas de Sí/No, que NO son deslizadores y por eso no están en la
+# lista de arriba.
+#
+# La diferencia no es de tipo de dato, es de PODER. Todo lo que hay en
+# `checkin_sliders` puede ser leído por una regla del semáforo, por un freno de
+# progresión o por el disparador de una regla especial: el `config_loader`
+# valida contra esa lista, así que estar ahí es tener permiso para mover el
+# color del día. Estas dos no lo tienen, y tenerlas fuera es lo que hace que ese
+# permiso no se pueda dar por descuido. Si algún día una regla nombra
+# `will_train`, el config no carga.
+#
+# Por qué no pueden tocar el semáforo: "no me apetece" y "hoy no voy" son
+# decisiones, no medidas. Un sistema que pone el día en ámbar porque has dicho
+# que no te apetece está dándote la razón y llamándolo fisiología, y además
+# enseña a mentirle al formulario: contestas lo que quieres que salga. Los datos
+# se guardan, se cuentan y se correlacionan con todo lo demás; lo que no hacen
+# es decidir.
+#
+# `training_desire` (1-10) sigue estando arriba y sigue mandando en la regla
+# `sin_ganas_y_reventado`. Conviven a propósito: la intensidad de las ganas es
+# una medida de estado y sí es asunto del semáforo; el sí o el no de si vas a ir
+# es una intención, y esa es asunto tuyo.
+checkin_preguntas:
+  - key: wants_to_train
+    label: "¿Te apetece entrenar hoy?"
+  # La única de las dos que cambia lo que se escribe: con un "no" el mensaje
+  # deja de prescribir la sesión. No la suprime -la rutina se escribe en Hevy
+  # igual, por si cambias de idea a las siete de la tarde-, deja de dártela
+  # como plan del día. El motor la busca por su nombre, y `config_loader`
+  # comprueba que siga aquí: si se borrara de esta lista, el motor leería una
+  # señal que nadie escribe, se quedaría en `None` para siempre y el mensaje
+  # volvería a prescribir todos los días sin que nada avisara.
+  - key: will_train
+    label: "¿Vas a entrenar hoy?"
+
 checkin_comment:
   key: comments
   label: "Comentarios"

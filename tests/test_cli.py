@@ -26,6 +26,11 @@ def claves(cfg) -> set[str]:
     return set(cfg.slider_keys())
 
 
+@pytest.fixture
+def preguntas(cfg) -> set[str]:
+    return set(cfg.pregunta_keys())
+
+
 # ---------------------------------------------------------------------------
 # Parseo
 # ---------------------------------------------------------------------------
@@ -63,6 +68,66 @@ def test_una_clave_desconocida_es_un_error_duro_no_un_valor_ignorado(claves):
     mensaje = str(exc.value)
     assert "fatige" in mensaje
     assert "Válidos:" in mensaje, "el error tiene que decir qué SÍ vale"
+
+
+@pytest.mark.parametrize(
+    "texto, esperado",
+    [
+        ("voy=no", False),
+        ("voy=si", True),
+        ("voy=sí", True),
+        ("voy=NO", False),
+        ("will_train = No ", False),
+    ],
+)
+def test_las_preguntas_se_contestan_con_palabras(claves, preguntas, texto, esperado):
+    """`voy=no`, no `voy=0`.
+
+    En todos los demás campos de este CLI el 0 quiere decir «el mínimo del
+    deslizador»; aquí querría decir otra cosa, y las dos lecturas conviviendo en
+    la misma línea de comandos es cómo se teclea un cero queriendo decir una y
+    entendiéndose la otra. Se admiten mayúsculas y `si` sin tilde porque esto se
+    escribe a las siete de la mañana.
+    """
+    c = parse_checkin(texto, LUNES, claves, preguntas)
+    assert c.values["will_train"] is esperado
+
+
+def test_una_pregunta_contestada_con_un_numero_no_se_traga(claves, preguntas):
+    """`voy=5` tiene que doler, no guardarse como un `True` cualquiera.
+
+    Python diría que 5 es verdadero y el check-in se guardaría con «sí voy»
+    dentro. Pero quien escribe un 5 ahí no está diciendo que sí: está copiando la
+    forma de los deslizadores sin darse cuenta de que esta pregunta es otra cosa.
+    Tragárselo convertiría un malentendido en un dato.
+    """
+    with pytest.raises(SystemExit) as exc:
+        parse_checkin("voy=5", LUNES, claves, preguntas)
+    assert "sí o no" in str(exc.value)
+
+
+def test_un_deslizador_contestado_con_una_palabra_sigue_siendo_un_error(claves, preguntas):
+    """La simétrica: `fatiga=no` no se cuela por la puerta nueva.
+
+    El parser ahora tiene dos caminos, y el riesgo de tener dos es que uno acabe
+    atrapando lo que le toca al otro. La rama de sí/no solo se entra si la clave
+    es una pregunta; un deslizador sigue exigiendo un entero.
+    """
+    with pytest.raises(SystemExit) as exc:
+        parse_checkin("fatiga=no", LUNES, claves, preguntas)
+    assert "entero" in str(exc.value)
+
+
+def test_sin_pasar_las_preguntas_el_parser_se_comporta_como_antes(claves):
+    """El defecto vacío del cuarto parámetro, que es lo que protege a los guiones.
+
+    `parse_checkin` lo llaman también simulaciones que solo conocen
+    deslizadores. Con `pregunta_keys` vacío, `voy=no` tiene que seguir siendo una
+    clave desconocida y no colarse como campo válido: un guion viejo no puede
+    empezar a aceptar en silencio algo que no sabe manejar.
+    """
+    with pytest.raises(SystemExit):
+        parse_checkin("voy=no", LUNES, claves)
 
 
 def test_un_alias_de_una_señal_que_no_existe_en_este_config_tambien_falla():
@@ -113,26 +178,76 @@ def test_la_ayuda_se_genera_del_yaml_no_de_una_lista_a_mano(cfg):
         assert k in texto
 
 
-def test_la_ayuda_incluye_una_linea_de_ejemplo_valida(cfg, claves):
-    """El ejemplo que se le enseña al usuario tiene que funcionar de verdad."""
+def test_la_ayuda_incluye_una_linea_de_ejemplo_valida(cfg, claves, preguntas):
+    """Los ejemplos que se le enseñan al usuario tienen que funcionar de verdad.
+
+    TODOS, no el primero. Antes se comprobaba solo uno porque solo había uno que
+    pudiera romperse; ahora la ayuda tiene una línea con nombres largos y otra
+    con alias cortos, y la de los alias está escrita a mano. Comprobar la primera
+    y dar por buena la segunda es exactamente cómo un ejemplo se queda obsoleto:
+    sale en pantalla, se copia, y falla en la consola del usuario.
+    """
     texto = checkin_help(cfg)
-    ejemplo = next(
+    ejemplos = [
         l.strip().split('"')[1]
         for l in texto.splitlines()
         if l.strip().startswith('--checkin "')
-    )
-    c = parse_checkin(ejemplo, LUNES, claves)
-    assert c is not None and c.values
+    ]
+    assert len(ejemplos) >= 2, f"la ayuda ha perdido ejemplos: {ejemplos}"
+
+    for ejemplo in ejemplos:
+        c = parse_checkin(ejemplo, LUNES, claves, preguntas)
+        assert c is not None and c.values, ejemplo
 
 
-def test_todos_los_alias_apuntan_a_deslizadores_reales(claves):
+def test_el_ejemplo_de_los_alias_cortos_cubre_todo_el_formulario(cfg, claves, preguntas):
+    """Y además está completo: los siete deslizadores y las dos preguntas.
+
+    Es la línea que se copia de verdad -por eso existe- y está escrita a mano. Un
+    campo nuevo en el YAML no entra en ella solo, así que sin este test la línea
+    va perdiendo campos de uno en uno, cada vez que se añade algo, sin dejar de
+    ser válida ni un momento. Un ejemplo incompleto no falla: enseña a hacer
+    ensayos en seco a los que les falta un dato.
+    """
+    texto = checkin_help(cfg)
+    corto = [
+        l.strip().split('"')[1]
+        for l in texto.splitlines()
+        if l.strip().startswith('--checkin "')
+    ][-1]
+
+    c = parse_checkin(corto, LUNES, claves, preguntas)
+    faltan = sorted((claves | preguntas) - set(c.values))
+    assert not faltan, f"el ejemplo de alias cortos no cubre: {faltan}"
+
+
+def test_las_preguntas_se_documentan_aparte_de_los_deslizadores(cfg):
+    """`voy=5` no es un valor raro, es un error, y la ayuda tiene que evitarlo.
+
+    Si las dos preguntas salieran en la misma lista que los deslizadores -donde
+    todo el mundo escribe números- el ejemplo de al lado enseñaría a ponerles un
+    número. Aparecen en su propio bloque, con su etiqueta, y diciendo que no
+    llevan número.
+    """
+    texto = checkin_help(cfg)
+    for clave in cfg.pregunta_keys():
+        assert clave in texto
+    assert "sí o no" in texto
+
+
+def test_todos_los_alias_apuntan_a_deslizadores_reales(claves, preguntas):
     """Un alias hacia una señal inexistente sería una trampa de erratas.
 
     Es exactamente lo que había: la tabla contenía `stress` y `soreness`, que
     no son deslizadores de este config.
+
+    Se comprueba contra deslizadores Y preguntas porque `--checkin` escribe en
+    los dos: `voy=no` es tan campo del formulario como `fatiga=4`. La frontera
+    entre ellos es qué puede mover el semáforo, y eso no se decide tecleando.
     """
-    huerfanos = sorted(v for v in set(CHECKIN_ALIAS.values()) if v not in claves)
-    assert huerfanos == [], f"alias que no llevan a ningún deslizador: {huerfanos}"
+    campos = claves | preguntas
+    huerfanos = sorted(v for v in set(CHECKIN_ALIAS.values()) if v not in campos)
+    assert huerfanos == [], f"alias que no llevan a ningún campo real: {huerfanos}"
 
 
 def test_todos_los_deslizadores_tienen_al_menos_una_forma_de_escribirse(claves):

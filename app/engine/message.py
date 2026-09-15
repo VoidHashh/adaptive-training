@@ -283,6 +283,107 @@ def _concordar(claves: list[str], singular: str, plural: str) -> str:
     return singular if len(claves) == 1 else plural
 
 
+def _lineas_sesion(s: Any, raw: dict, set_cfg: dict[str, Any]) -> list[str]:
+    """El bloque que prescribe: qué sesión tocaría hoy y con qué series.
+
+    Estaba escrito en línea dentro de `render_telegram` y sale aquí por una razón
+    concreta: desde que existe la pregunta «¿vas a entrenar hoy?» este bloque es
+    CONDICIONAL, y la alternativa era envolver cincuenta líneas -con sus cuatro
+    comentarios largos- en un `if`. Una condición que se lee de un vistazo vale
+    más que un diff pequeño; y con el bloque suelto, el sitio donde se decide
+    prescribir o no es una sola línea en el sitio obvio.
+
+    AQUÍ HABÍA UNA RAMA PARA `rest`, `pool` Y `bike`, Y EL MODO VERBAL ERA OTRO
+    --------------------------------------------------------------------------
+    Con calendario fijo, los días sin fuerza asignada salían como un "😴
+    Descanso" y los de fuerza se anunciaban en indicativo -"Día 1 (sesión
+    completa)"-, como quien lee una agenda. Ya no hay días asignados ni días de
+    descanso decididos por el sistema: todos los días tienen la rutina que toque
+    en el ciclo, y el mensaje no manda, informa de qué tocaría SI se va al
+    gimnasio. Quién decide es el usuario, y el sistema se entera leyendo Hevy.
+
+    El día rojo se queda en indicativo a propósito: el bloque de recuperación no
+    es una sesión del ciclo que uno elija hacer o no, es lo que el sistema
+    propone para hoy. Ponerle un "si vas al gimnasio" delante lo ofrecería como
+    alternativa al gimnasio, que es lo contrario de lo que dice un rojo.
+    """
+    etiqueta = {
+        "full": "sesión completa",
+        "reduced": "sesión reducida",
+        "recovery": "recuperación",
+    }.get(s.kind, s.kind)
+
+    if s.kind == "recovery":
+        cab = f"💪 <b>{escapar_html(s.title)}</b> ({escapar_html(etiqueta)})"
+    else:
+        cab = (
+            f"💪 <b>Si vas al gimnasio hoy:</b> {escapar_html(s.title)} "
+            f"({escapar_html(etiqueta)})"
+        )
+    # `routines.*.focus` llevaba desde el principio en el YAML sin que lo
+    # leyera nadie: "Tren inferior + core", "Cadena posterior + espalda",
+    # "Caderas + hombro + brazo + core". Es la única frase del fichero que
+    # dice de qué va la sesión, y el mensaje de la mañana la ignoraba
+    # mientras enumeraba ocho ejercicios sin encabezarlos.
+    #
+    # Va pegado al título y no en una línea aparte: el mensaje ya tiene
+    # bloques de sobra, y esto es un subtítulo, no un apartado. Se busca en
+    # `routines` a propósito: en un día de recuperación `routine_key`
+    # apunta a `recovery_blocks`, no encuentra nada, y el encabezado se
+    # queda como estaba.
+    foco = ((raw.get("routines") or {}).get(s.routine_key or "") or {}).get("focus")
+    if foco:
+        cab += f" — {escapar_html(foco)}"
+
+    out = ["", cab]
+    for ex in s.exercises:
+        nombre_ex = escapar_html(ex.get("name", ex.get("key")))
+        out.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
+    if s.hiit_block:
+        out.append(f"🔥 <b>HIIT:</b> {escapar_html(s.hiit_block)}")
+    return out
+
+
+def _lineas_sin_entreno(decision: Any, raw: dict) -> list[str]:
+    """Lo que ocupa el sitio de la sesión el día que has dicho que no vas.
+
+    Y ocupa su sitio, no lo deja vacío. Un mensaje al que simplemente le falta el
+    bloque de la sesión se lee como un mensaje roto -¿se ha caído algo?, ¿se ha
+    olvidado de qué toca hoy?- y la duda acaba en abrir Hevy a comprobarlo, que
+    es justo el trabajo que este sistema existe para ahorrar.
+
+    Las dos frases contestan las dos preguntas que quedan en el aire, y no hay
+    una tercera a propósito:
+
+    1. «¿Pierdo el turno?» No. La rotación la manda lo ÚLTIMO EJECUTADO, no el
+       calendario, así que la rutina que tocaba sigue siendo la siguiente
+       mañana, la semana que viene o en octubre. No hace falta que el motor haga
+       nada para eso: hace falta decirlo, porque el sistema anterior sí perdía
+       sesiones y nadie se fía de lo que no se le cuenta.
+    2. «¿Y si cambio de idea a las siete de la tarde?» Está escrita en Hevy. La
+       rutina se escribe igual -eso no se toca-, y decirlo aquí es lo que hace
+       que decir «no» por la mañana no sea una puerta cerrada.
+
+    No hay una línea animándote a ir, ni recordándote lo que llevas de semana, ni
+    preguntando si estás seguro. Has contestado una pregunta que el sistema hizo;
+    discutir la respuesta enseñaría a no contestarla.
+    """
+    rutina = getattr(decision, "rotation_routine", None)
+    titulo = ((raw.get("routines") or {}).get(rutina or "") or {}).get("title")
+
+    cual = (
+        f"{escapar_html(titulo)} sigue siendo la siguiente"
+        if titulo
+        else "la rutina que tocaba sigue siendo la siguiente"
+    )
+    return [
+        "",
+        f"🌙 <b>Hoy no entrenas.</b> {cual}: la rotación no se mueve hasta que se haga.",
+        "   <i>La rutina está escrita en Hevy de todas formas, por si cambias de "
+        "idea.</i>",
+    ]
+
+
 def _lineas_anulacion(decision: Any, tz: str | None) -> list[str]:
     """El aviso de que esta decisión deja sin efecto la de hace un rato.
 
@@ -407,53 +508,28 @@ def render_telegram(decision: Any, config: Any = None) -> str:
 
     # --- la sesión ----------------------------------------------------------
     s = decision.session
-    L.append("")
-    etiqueta = {
-        "full": "sesión completa",
-        "reduced": "sesión reducida",
-        "recovery": "recuperación",
-    }.get(s.kind, s.kind)
-    # AQUÍ HABÍA UNA RAMA PARA `rest`, `pool` Y `bike`, Y EL MODO VERBAL ERA OTRO
-    # --------------------------------------------------------------------------
-    # Con calendario fijo, los días sin fuerza asignada salían como un "😴
-    # Descanso" y los de fuerza se anunciaban en indicativo -"Día 1 (sesión
-    # completa)"-, como quien lee una agenda. Ya no hay días asignados ni días
-    # de descanso decididos por el sistema: todos los días tienen la rutina que
-    # toque en el ciclo, y el mensaje no manda, informa de qué tocaría SI se va
-    # al gimnasio. Quién decide es el usuario, y el sistema se entera leyendo
-    # Hevy.
+
+    # PRESCRIBIR O INFORMAR, QUE ES LA ÚNICA DECISIÓN QUE TOMA ESTE FICHERO HOY.
     #
-    # El día rojo se queda en indicativo a propósito: el bloque de recuperación
-    # no es una sesión del ciclo que uno elija hacer o no, es lo que el sistema
-    # propone para hoy. Ponerle un "si vas al gimnasio" delante lo ofrecería
-    # como alternativa al gimnasio, que es lo contrario de lo que dice un rojo.
-    if s.kind == "recovery":
-        cab = f"💪 <b>{escapar_html(s.title)}</b> ({escapar_html(etiqueta)})"
+    # Con un «no voy» contestado esta mañana, el mensaje deja de darte el plan
+    # del día y pasa a contarte el día: estado, tendencia y bici si toca. No
+    # desaparece nada más. Las adopciones de anoche, los entrenos sueltos, las
+    # reglas activas, el recuento de intensas, los avisos de datos incompletos y
+    # la recalibración siguen saliendo, porque ninguno de esos es una
+    # prescripción: son cosas que han pasado o que hay que saber.
+    #
+    # Se compara con `is not False` y no con `if decision.va_a_entrenar` porque
+    # los tres estados no son dos. `None` -no has contestado, o es un día del
+    # archivo anterior a que la pregunta existiera- tiene que seguir prescribiendo
+    # como siempre. Escrito `if decision.va_a_entrenar:` el sistema entero dejaría
+    # de proponer sesión todos los días en que no se rellena el formulario, que
+    # son la mayoría, y lo haría en silencio.
+    prescribe = getattr(decision, "va_a_entrenar", None) is not False
+
+    if prescribe:
+        L.extend(_lineas_sesion(s, raw, set_cfg))
     else:
-        cab = (
-            f"💪 <b>Si vas al gimnasio hoy:</b> {escapar_html(s.title)} "
-            f"({escapar_html(etiqueta)})"
-        )
-    # `routines.*.focus` llevaba desde el principio en el YAML sin que lo
-    # leyera nadie: "Tren inferior + core", "Cadena posterior + espalda",
-    # "Caderas + hombro + brazo + core". Es la única frase del fichero que
-    # dice de qué va la sesión, y el mensaje de la mañana la ignoraba
-    # mientras enumeraba ocho ejercicios sin encabezarlos.
-    #
-    # Va pegado al título y no en una línea aparte: el mensaje ya tiene
-    # bloques de sobra, y esto es un subtítulo, no un apartado. Se busca en
-    # `routines` a propósito: en un día de recuperación `routine_key`
-    # apunta a `recovery_blocks`, no encuentra nada, y el encabezado se
-    # queda como estaba.
-    foco = ((raw.get("routines") or {}).get(s.routine_key or "") or {}).get("focus")
-    if foco:
-        cab += f" — {escapar_html(foco)}"
-    L.append(cab)
-    for ex in s.exercises:
-        nombre_ex = escapar_html(ex.get("name", ex.get("key")))
-        L.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
-    if s.hiit_block:
-        L.append(f"🔥 <b>HIIT:</b> {escapar_html(s.hiit_block)}")
+        L.extend(_lineas_sin_entreno(decision, raw))
 
     # --- lo que movió la carga que se levantó de verdad ---------------------
     # Va ANTES de "Sube hoy" porque ocurrió antes: la adopción se decide al
@@ -473,8 +549,19 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     L.extend(_lineas_sueltos(getattr(decision, "entrenos_sueltos", None) or []))
 
     # --- lo que ha cambiado hoy --------------------------------------------
+    # `prescribe` además de la lista vacía, y no porque hoy pueda no estarlo: con
+    # un «no voy», `evaluate_gate` cierra la puerta antes que nada y el bucle de
+    # `plan_progression` sale por `continue` sin tocar un solo ejercicio, así que
+    # `changes` ya viene vacío. El `if` no quita ninguna línea que hoy exista.
+    #
+    # Está por lo que pasaría si dejara de venir vacío. Tal y como estaba, este
+    # bloque hereda de `progression.py` la promesa de no prescribir; el día que
+    # alguien mueva esa comprobación de sitio -o añada un modo que proponga algo
+    # con la puerta cerrada-, el fallo no sale en `progression.py`, sale aquí, en
+    # forma de "📈 Sube hoy" debajo de un "🌙 Hoy no entrenas". Este fichero
+    # decide si prescribe o no; que lo decida entero.
     cambios = decision.progression.changes if decision.progression else []
-    if cambios:
+    if prescribe and cambios:
         L.append("")
         L.append("📈 <b>Sube hoy</b>")
         for e in cambios:
@@ -492,6 +579,14 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # había apuntado en Hevy- y ninguno de los mensajes de esos ochenta y
     # cuatro días lo mencionó. El sistema lo sabía y no lo dijo, que es la
     # forma más cara de saberlo.
+    #
+    # SIN `prescribe`, y es la excepción deliberada entre los bloques de
+    # progresión. "Sin progresión por falta de carga registrada en Hevy" no te
+    # dice qué hacer hoy: te dice que hay un ejercicio esperando un dato desde
+    # hace semanas y que va a seguir esperándolo. Eso se lee igual de bien el día
+    # que no vas al gimnasio -mejor, incluso: es el día que hay tiempo de
+    # arreglarlo-. La línea que separa lo que se calla de lo que no es
+    # prescripción contra hecho, no "todo lo que venga de progression.py".
     parados = decision.progression.stopped_lines() if decision.progression else []
     if parados:
         L.append("")
@@ -501,7 +596,14 @@ def render_telegram(decision: Any, config: Any = None) -> str:
 
     # Retiradas y recortes: son cambios que el usuario notará en la app y que
     # sin explicación parecen un fallo del sistema.
-    if s.dropped:
+    #
+    # Este sí lleva `prescribe` por necesidad, no por prudencia: `s.dropped` lo
+    # llena el constructor de la sesión mirando el semáforo, y le da igual lo que
+    # hayas contestado esta mañana. Un ámbar con dos ejercicios recortados los
+    # tiene puestos también el día que dices que no vas. Sin el `if`, el mensaje
+    # sacaría "➖ Fuera hoy: sentadilla búlgara, hip thrust" sin haber enseñado
+    # antes ninguna sesión de la que sacarlos: fuera ¿de qué?
+    if prescribe and s.dropped:
         L.append("")
         L.append(
             f"➖ <b>Fuera hoy:</b> "

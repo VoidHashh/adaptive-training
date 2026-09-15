@@ -449,6 +449,214 @@ def test_despues_de_un_rojo_el_mensaje_no_habla_de_recuperar_nada(cfg):
 
 
 # ---------------------------------------------------------------------------
+# «Hoy no voy a entrenar»: el mensaje deja de prescribir y pasa a informar
+# ---------------------------------------------------------------------------
+#
+# La pregunta del check-in existe para los días que NO se entrena, que son los
+# que hasta ahora no dejaban ningún rastro: sin fila en `checkins`, sin nada en
+# las correlaciones, y con un mensaje a las siete de la mañana proponiendo ocho
+# ejercicios a alguien que ya había decidido que no.
+#
+# Lo que este bloque fija es la frontera: se calla la PRESCRIPCIÓN -la sesión,
+# las subidas, los ejercicios retirados- y se queda todo lo demás, porque nada
+# de lo demás es una prescripción. Y se calla con `is False`, nunca con la
+# falsedad a secas, porque el día sin contestar no es un día de "no voy".
+
+
+def test_un_no_voy_no_propone_sesion_pero_dice_que_la_rutina_sigue_ahi(cfg):
+    """Las dos frases que sustituyen al plan del día, y ninguna más.
+
+    Un mensaje al que simplemente le falta el bloque de la sesión se lee como un
+    mensaje roto. Las dos preguntas que quedan en el aire -¿pierdo el turno? ¿y
+    si cambio de idea?- se contestan aquí, porque la respuesta a las dos es que
+    no pasa nada y nadie se fía de lo que no se le cuenta.
+    """
+    d = decision_completa(cfg, will_train=False)
+    txt = render_plain(d, cfg)
+
+    assert "Hoy no entrenas" in txt, txt
+    assert "la rotación no se mueve" in txt, txt
+    assert "escrita en Hevy" in txt, "decir «no» por la mañana no cierra la puerta"
+
+    # El TÍTULO, no la clave. "dia_1 sigue siendo la siguiente" es el sistema
+    # hablando en su propio idioma, que es la queja de siempre.
+    titulo = cfg.raw["routines"][d.rotation_routine]["title"]
+    assert titulo in txt, f"hay que decir CUÁL sigue siendo la siguiente:\n{txt}"
+    assert d.rotation_routine not in txt, "ha salido la clave cruda en vez del título"
+
+    assert "Si vas al gimnasio hoy" not in txt, "sigue prescribiendo la sesión"
+    for ex in d.session.exercises:
+        assert ex["name"] not in txt, f"ha colado un ejercicio: {ex['name']}\n{txt}"
+
+
+def test_un_no_voy_no_regana_ni_anima(cfg):
+    """Has contestado una pregunta que hizo el sistema; discutir la respuesta enseña a no contestarla."""
+    txt = render_plain(decision_completa(cfg, will_train=False), cfg).lower()
+    for palabra in ("seguro", "ánimo", "anímate", "recuerda que", "deberías",
+                    "¿de verdad", "esfuerzo", "excusa", "mañana sin falta"):
+        assert palabra not in txt, f"el mensaje opina sobre la respuesta: {palabra!r}"
+
+
+def test_sin_contestar_la_pregunta_el_mensaje_es_exactamente_el_de_siempre(cfg):
+    """EL TEST QUE PROTEGE LOS 364 DÍAS QUE NO SE RELLENA EL FORMULARIO.
+
+    `None` no es `False`. Escrito `if decision.va_a_entrenar:` en vez de
+    `is not False`, el sistema dejaría de proponer sesión todos los días sin
+    check-in -que son la mayoría- y lo haría sin romper nada: el mensaje seguiría
+    llegando, con su semáforo, su tendencia y su bici, y sin el plan.
+
+    Por eso se compara el texto ENTERO contra el de antes de que la pregunta
+    existiera, y no solo se busca "Si vas al gimnasio". Un día sin contestar
+    tiene que renderizar carácter por carácter como siempre.
+    """
+    antes = render_plain(decision_completa(cfg), cfg)
+    despues = render_plain(decision_completa(cfg, will_train=None), cfg)
+    assert despues == antes
+    assert "Si vas al gimnasio hoy" in antes
+    assert "Hoy no entrenas" not in antes
+
+
+def test_un_si_voy_prescribe_igual_que_siempre(cfg):
+    """La otra mitad: contestar que sí no cambia nada."""
+    assert (
+        render_plain(decision_completa(cfg, will_train=True), cfg)
+        == render_plain(decision_completa(cfg), cfg)
+    )
+
+
+def test_que_no_te_apetezca_no_calla_la_sesion(cfg):
+    """Las dos preguntas no son la misma pregunta.
+
+    `wants_to_train` es la que se cruza con la otra para sacar la discordancia;
+    no decide nada por su cuenta. Un día de «no me apetece pero voy» tiene que
+    salir con su sesión entera, y este test es lo que impide que alguien
+    conecte la pregunta equivocada al `if`.
+    """
+    d = decision_completa(cfg, wants_to_train=False, will_train=True)
+    txt = render_plain(d, cfg)
+    assert "Si vas al gimnasio hoy" in txt, txt
+    assert "Hoy no entrenas" not in txt
+
+
+def test_un_no_voy_conserva_todo_lo_que_no_es_una_prescripcion(cfg):
+    """Estado, tendencia, bici, adopciones, intensas y recalibración se quedan.
+
+    El día que no se entrena no es un día en blanco: la adopción de anoche sigue
+    escrita en Hevy, el HRV sigue bajando desde hace seis días y la salida en
+    bici sigue siendo hoy. Lo único que sobra es el plan.
+    """
+    from datetime import timedelta
+
+    from app.engine.signals import IntensityCount
+    from app.engine.tendencia import DecisionDia, evaluar_tendencia
+
+    d = decide(cfg, LUNES, sig_completa(LUNES, will_train=False), EngineState())
+
+    # `adopcion` y el montaje de la racha están definidos más abajo en este mismo
+    # fichero, en sus bloques. Se reutilizan a propósito: una adopción escrita a
+    # mano aquí se me quedó con las claves de otra versión y el test pasaba por
+    # el motivo equivocado, enseñando "🛑 No adoptado · : se registraron  kg".
+    d.load_adoptions = [adopcion(key="prensa_horizontal", after_kg=62.5)]
+    d.signals.intense_count = IntensityCount(
+        used=3, detail=[], desde=LUNES - timedelta(days=6), hasta=LUNES, unknown=0
+    )
+    # La racha se calcula con la capa de verdad, no se escribe a mano: dos copias
+    # del criterio acaban divergiendo y este test dejaría de comprobar nada.
+    historia = [
+        DecisionDia(LUNES - timedelta(days=i), "green") for i in range(46, 5, -1)
+    ] + [
+        DecisionDia(LUNES - timedelta(days=i), "amber", "sueno_corto")
+        for i in range(5, -1, -1)
+    ]
+    d.tendencia = evaluar_tendencia(cfg, LUNES, historia)
+    assert d.tendencia.lineas(), "el montaje del test no produce tendencia"
+
+    txt = render_plain(d, cfg)
+    assert "Hoy no entrenas" in txt
+    assert "62,5" in txt, f"la adopción de anoche ha desaparecido:\n{txt}"
+    assert "6 días seguidos" in txt, f"la tendencia ha desaparecido:\n{txt}"
+    assert "🔥" in txt, f"el recuento de intensas ha desaparecido:\n{txt}"
+    assert "Bici" in txt or "🚴" in txt, f"la bici ha desaparecido:\n{txt}"
+    assert "Última sesión de fuerza" in txt or "Todavía no hay" in txt
+
+
+def test_un_rojo_con_no_voy_tampoco_prescribe_la_recuperacion(cfg):
+    """El bloque de recuperación es una prescripción como cualquier otra.
+
+    Es el caso que más fácil se cuela, porque la recuperación se anuncia en
+    indicativo -no lleva el "si vas al gimnasio" delante- y se construye por una
+    rama distinta del mensaje. Si el `if` estuviera dentro de la rama del `else`,
+    este test sería el único que lo vería.
+    """
+    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=7, will_train=False), EngineState())
+    assert d.session.kind == "recovery", "el semáforo lo decide el dolor, no la respuesta"
+
+    txt = render_plain(d, cfg)
+    assert "Hoy no entrenas" in txt
+    assert "recuperación" not in txt, f"ha prescrito el bloque de recuperación:\n{txt}"
+    for ex in d.session.exercises:
+        assert ex["name"] not in txt, f"ha colado un ejercicio: {ex['name']}"
+
+
+def test_la_pregunta_no_toca_el_semaforo_ni_la_sesion_que_se_escribe_en_hevy(cfg):
+    """Se calla el mensaje, no se cambia la decisión.
+
+    La rutina se sigue escribiendo en Hevy -por si cambias de idea a las siete
+    de la tarde-, así que `decision.session` tiene que venir intacta: mismos
+    ejercicios, mismo tipo y mismo color que el día idéntico en que se contestó
+    que sí. Si algún día alguien "optimiza" esto vaciando la sesión en el motor,
+    el mensaje seguiría igual de bonito y Hevy se quedaría vacío.
+    """
+    no = decision_completa(cfg, will_train=False)
+    si = decision_completa(cfg, will_train=True)
+
+    assert no.light == si.light
+    assert no.session.kind == si.session.kind
+    assert no.session.routine_key == si.session.routine_key
+    assert [e["key"] for e in no.session.exercises] == [
+        e["key"] for e in si.session.exercises
+    ]
+    assert no.rotation_routine == si.rotation_routine
+
+
+def test_un_no_voy_no_saca_fuera_hoy_sin_haber_ensenado_la_sesion(cfg):
+    """`s.dropped` lo llena el semáforo y le da igual lo que hayas contestado.
+
+    Sin el `if`, el mensaje sacaría "➖ Fuera hoy: X, Y" sin haber enseñado antes
+    ninguna sesión de la que sacarlos. Fuera ¿de qué?
+    """
+    # Un ámbar por sueño corto: el config real recorta tres ejercicios ahí.
+    d = decide(cfg, LUNES, sig_completa(LUNES, sleep_min=300.0, will_train=False), EngineState())
+    si = decide(cfg, LUNES, sig_completa(LUNES, sleep_min=300.0), EngineState())
+    assert si.session.dropped, "el montaje del test ya no recorta nada"
+    assert d.session.dropped == si.session.dropped, (
+        "la respuesta ha cambiado la sesión que se escribe en Hevy"
+    )
+
+    txt = render_plain(d, cfg)
+    assert "Fuera hoy" not in txt, txt
+    assert "Fuera hoy" in render_plain(si, cfg), "el bloque ya no sale ningún día"
+
+
+def test_un_no_voy_no_anuncia_subidas_de_peso(cfg):
+    """No se prescribe progresión el día que no se entrena.
+
+    Hoy la lista ya viene vacía: `evaluate_gate` cierra la puerta antes que nada
+    y `plan_progression` sale por `continue` sin tocar un ejercicio. Este test
+    comprueba las dos mitades -la puerta cerrada con su motivo, y el bloque
+    ausente del mensaje- para que el día que alguien mueva la comprobación de
+    sitio, el fallo salga aquí y no en forma de "📈 Sube hoy" debajo de un
+    "🌙 Hoy no entrenas".
+    """
+    d = decision_completa(cfg, will_train=False)
+    assert d.progression is not None
+    assert not d.progression.gate_open
+    assert "no entrenas" in d.progression.gate_reason, d.progression.gate_reason
+    assert d.progression.changes == []
+    assert "Sube hoy" not in render_plain(d, cfg)
+
+
+# ---------------------------------------------------------------------------
 # `routines.*.focus`: la única frase que dice de qué va el día
 # ---------------------------------------------------------------------------
 #
