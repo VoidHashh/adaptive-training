@@ -369,12 +369,19 @@ wellness:
 # cargado", significa "1 día de cada 5". Medido sobre tus 180 días reales:
 #     load_3d  p50=95   p80=238  p90=308  máximo=566
 #     load_7d  p50=273  p80=485  p90=587  máximo=746
-# Elegido p90: dispara ~1 día de cada 10 (load_3d por encima de 308). Con p80
-# eran 1 de cada 5, demasiado al sumarlo al resto de reglas ámbar.
+# Elegido p90: dispara ~1 día de cada 10. Con p80 eran 1 de cada 5, demasiado al
+# sumarlo al resto de reglas ámbar.
+#
+# LOS NÚMEROS DE ARRIBA SON DE `load_3d`, Y `load_3d` YA NO EXISTE
+# ----------------------------------------------------------------
+# Se dejan porque siguen sirviendo para lo que ilustran -qué significa elegir un
+# percentil- pero NO son los de la métrica que hay hoy. La ventana pasó de 3 días
+# a 2 y, a la vez, la ventana dejó de incluir el propio día. Con las dos cosas,
+# `load_2d` es otra distribución: más baja y más corta.
 adaptive_thresholds:
 
-  load_3d_p90:
-    metric: load_3d
+  load_2d_p90:
+    metric: load_2d
     window_days: 60
     percentile: 90
     # Sin este mínimo de histórico la regla NO dispara: con pocos días, el
@@ -610,11 +617,41 @@ thresholds:
       when: {fatigue: {gte: 7}}
 
     - name: carga_acumulada
-      description: "Carga de 3 días por encima de tu percentil 90 habitual"
-      requires: [load_3d, load_3d_p90]
+      description: "Carga de ayer y anteayer por encima de tu percentil 90 habitual"
+      requires: [load_2d, load_2d_p90]
       # Umbral relativo, no constante: se compara con tu propia distribución.
       # Ver la sección `adaptive_thresholds`.
-      when: {load_3d: {gt_adaptive: load_3d_p90}}
+      when: {load_2d: {gt_adaptive: load_2d_p90}}
+
+      # LA VENTANA, MEDIDA SOBRE 185 DÍAS, Y UN AVISO SOBRE ESTOS NÚMEROS
+      # ------------------------------------------------------------------
+      # Replicando los 185 días mañana a mañana con el motor de verdad, con el
+      # sesgo YA FUERA -valor y distribución la misma magnitud- y preguntando
+      # cuántas de las veces que la regla disparaba el cuerpo estaba bajo esa
+      # misma mañana (hrv_ratio < 0,90; de fondo pasa el 22,2 % de los días):
+      #
+      #     k=1  ayer solo            16 disparos   10/16   p = 0,0006   pasa BH
+      #     k=2  ayer y anteayer      18 disparos    6/18   p = 0,19     no pasa
+      #     k=3  los tres de antes    22 disparos    6/22   p = 0,36     no pasa
+      #
+      # AQUÍ ESTÁ CONFIGURADO k=2, QUE NO ES EL QUE PASA EL CORTE. Está así
+      # porque es lo que se pidió; la línea de arriba no se ha maquillado para
+      # que cuadre. Antes ponía «2 días, p = 0,0006» y era falso: ese p era de
+      # una sonda que numeraba las ventanas por el argumento NOMINAL que se le
+      # pasaba a `rolling_load` -que incluía el propio día-, así que su «2 días»
+      # sumaba UNO. El mismo desfase de una unidad que causó el sesgo, esta vez
+      # en los nombres. Se deja escrito porque es el segundo que muerde.
+      #
+      # Y AUNQUE SE PUSIERA k=1, LA REGLA APENAS APORTA. De sus 16 disparos,
+      # solo 2 días serían VERDES sin ella, y los dos con hrv_ratio 1,067 y
+      # 0,905: cuerpo normal. Su significación sale de días que `hrv_baja_1d` y
+      # `hrv_hundida_2d` ya cogen. Con k=2 son 5 días propios, los cinco con el
+      # cuerpo bien. Sea cual sea la ventana, lo que esta regla añade POR SU
+      # CUENTA son falsas alarmas. Antes de tocar el número, la pregunta que
+      # toca es si la regla debe existir.
+      #
+      # Lo que sí es un arreglo sin discusión es el sesgo: el motivo largo está
+      # en `load_series`, en `app/engine/signals.py`.
 
     # AQUÍ ESTABA `resaca_finde`, Y SE HA IDO. Léelo antes de reescribirla.
     #
@@ -647,7 +684,7 @@ thresholds:
     # normalmente y no contra un número escrito en un fichero.
     #
     # Si algún día vuelve la tentación de frenar el lunes: el sitio es
-    # `adaptive_thresholds.load_3d_p90`, bajando el percentil. Eso sigue siendo
+    # `adaptive_thresholds.load_2d_p90`, bajando el percentil. Eso sigue siendo
     # el cuerpo hablando. Un umbral de horas de fin de semana es un calendario
     # hablando, y encima uno que hay que recalibrar a mano cada vez que cambia
     # el volumen -lo decía su propio comentario, que empezaba por "RECALIBRAR".
@@ -1152,7 +1189,7 @@ rotation:
 # El Edge 1040 sincroniza con Garmin Connect; el sistema lee las actividades con
 # get_activities_by_date y las guarda enteras (incluido raw_json) en la tabla
 # `activities`. De ahí salen tres cosas: la clasificación de cada salida, la
-# carga real que alimenta load_3d/load_7d, y la recomendación del fin de semana.
+# carga real que alimenta load_2d/load_7d, y la recomendación del fin de semana.
 cycling:
 
   # Qué actividades de Garmin cuentan como ciclismo. Los nombres son los
@@ -1240,7 +1277,7 @@ cycling:
   # Carga de entrenamiento
   # ---------------------------------------------------------------------------
   load:
-    # De dónde sale la carga que alimenta load_3d / load_7d.
+    # De dónde sale la carga que alimenta load_2d / load_7d.
     source: activity_training_load    # activity_training_load | garmin_daily
     # Si una actividad no trae trainingLoad, se estima con duración x factor
     # según la clasificación. Aproximado, pero mejor que contarla como cero.

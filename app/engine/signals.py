@@ -12,11 +12,34 @@ un objeto `Signals` con:
 
 Decisiones de diseño que conviene tener presentes:
 
-1. `load_3d` / `load_7d` se calculan SUMANDO las actividades, no leyendo un
+1. `load_2d` / `load_7d` se calculan SUMANDO las actividades, no leyendo un
    endpoint de Garmin. Así la carga es siempre la que de verdad se hizo.
-2. Las ventanas de carga incluyen el propio día. Por la mañana todavía no hay
-   actividad de hoy, así que en la práctica son los 3 días anteriores; pero si
-   se recalcula por la tarde la cifra sigue siendo correcta.
+2. Las ventanas de carga TERMINAN LA VÍSPERA y no incluyen el propio día. `load_2d`
+   del día d es la carga de [d-2, d-1], siempre dos días enteros y siempre
+   pasados. Da igual a qué hora se calcule: a las 07:00 y a las 22:30 sale lo
+   mismo, que es lo que uno espera de un número que se guarda en el histórico.
+
+   ESTO ES UN ARREGLO, Y CONVIENE SABER DE QUÉ
+   -------------------------------------------
+   Antes la ventana era [d-n+1, d] -incluía el día-. Ninguna función estaba mal
+   por separado, pero en la junta entre dos de ellas vivía un sesgo: por la
+   mañana la salida de hoy todavía no existe, así que el valor de HOY sumaba n-1
+   días; los días PASADOS de la misma serie sí llevaban su propia salida dentro
+   y sumaban n. `resolve_adaptive_threshold` sacaba el percentil de esa serie, o
+   sea que comparaba una suma de n-1 contra una distribución de sumas de n. En
+   los 184 días medidos la media de lo comparado era 66,9 contra 99,5: el valor
+   de hoy jugaba estructuralmente por debajo y la regla se inclinaba a NO
+   disparar, todos los días, sin que se viera leyendo ninguna de las dos
+   funciones.
+
+   No se arregló tocando el umbral, que es lo que habría parecido: se arregló
+   haciendo que los dos lados sean la MISMA MAGNITUD -carga de los k días que
+   terminan ayer, el valor y la distribución-. Un percentil solo significa algo
+   si lo que se compara con él está medido igual que lo que lo formó.
+
+   El comentario que había aquí decía «los 3 días anteriores» cuando eran dos y
+   además no eran ésos. Se deja escrito porque durante semanas se razonó sobre
+   esa regla dando por buena esa frase.
 3. Las líneas base (HRV, FC reposo) se calculan con los días ANTERIORES a hoy.
    Meter el valor de hoy en su propia media lo amortiguaría justo cuando más
    interesa que destaque.
@@ -194,7 +217,7 @@ class Ride:
     activity_id: int | None = None
     name: str | None = None
     # Nada de lo de abajo lo mira el motor: no entra en ninguna regla ni en
-    # `load_3d/7d`. Viaja porque la vista 5 lo necesita para juzgar una salida
+    # `load_2d/7d`. Viaja porque la vista 5 lo necesita para juzgar una salida
     # -sin potenciómetro, el esfuerzo se lee en FC relativa a zonas, velocidad y
     # desnivel- y porque el sitio donde se normaliza una actividad de Garmin es
     # este, no dos capas más arriba.
@@ -224,7 +247,7 @@ class ClassifiedRide:
     ride: Ride
     level: str  # suave | media | intensa | desconocida
     source: str  # zones | fallback_te | none
-    load: float  # carga usada para load_3d/7d (real o estimada)
+    load: float  # carga usada para load_2d/7d (real o estimada)
     load_estimated: bool
     # False cuando la carga no se ha podido saber NI estimar y `load` es un 0
     # de relleno. Un 0 de relleno y un día de descanso son el mismo número y
@@ -555,7 +578,7 @@ def rolling_load(
     `resolve_adaptive_threshold` exige `min_days_required` días para calcular
     un percentil, y esa exigencia existe justamente para no calibrar contra
     cuatro datos. Medido sobre el histórico real: el 2026-03-15 la ventana de
-    60 días de `load_3d_p90` llevaba 52 ceros de días sin ningún dato y 8 días
+    60 días de `load_2d_p90` llevaba 52 ceros de días sin ningún dato y 8 días
     de verdad. El mínimo de 30 se cumplía de sobra, el percentil salía de los
     ceros, y la primera salida real lo superaba sin despeinarse. En el replay
     entero `carga_acumulada` disparó 32 veces de 181 y se saltó CERO: la guarda
@@ -591,9 +614,46 @@ def load_series(
     days: int,
     window_days: int,
 ) -> dict[date, float | None]:
-    """`load_Nd` para cada uno de los últimos `days` días que terminan en `end_day`."""
+    """`load_Nd` de cada uno de los últimos `days` días que terminan en `end_day`.
+
+    `load_Nd` del día d es la carga de los N días que TERMINAN LA VÍSPERA:
+    [d-N, d-1]. El propio día NO entra, y eso no es un detalle de
+    implementación: es lo único que hace la serie comparable consigo misma.
+
+    POR QUÉ NO ENTRA EL PROPIO DÍA
+    ------------------------------
+    Aquí se llamaba a `rolling_load(rides, d, N)`, cuya ventana es [d-N+1, d] e
+    incluye el día. Para los días pasados eso sumaba N días con su salida
+    dentro. Para HOY, a las 07:00, la salida de hoy todavía no está en la base,
+    así que sumaba N-1. La misma serie tenía dos magnitudes distintas según se
+    mirara el último elemento o cualquier otro, y el último es justamente el que
+    `build_signals` publica como valor del día.
+
+    `resolve_adaptive_threshold` saca el percentil de esta serie sobre la
+    ventana que termina ayer. Juntando las dos cosas, la regla comparaba una
+    suma de N-1 días contra una distribución de sumas de N días. Medido sobre
+    los 184 días reales del histórico: media 66,9 del lado del valor contra 99,5
+    del lado de la distribución. No es ruido ni es un caso raro -es todos los
+    días- y el efecto siempre va en la misma dirección: el valor de hoy juega
+    por debajo y la regla se inclina a NO disparar.
+
+    Ninguna de las dos funciones estaba mal. `rolling_load` hacía lo que dice su
+    nombre y `resolve_adaptive_threshold` también. El sesgo vivía en la junta, y
+    por eso no lo encontraba nadie leyendo cualquiera de las dos: hay que tener
+    las dos delante A LA VEZ y acordarse de que a las 07:00 falta un dato.
+
+    LO QUE NO SE HIZO
+    -----------------
+    No se tocó el percentil. Mover el umbral para compensar habría tapado el
+    número sin arreglar la medida, y además habría dejado el error dependiendo
+    de la hora: recalculado a las 22:30 -con la salida de hoy ya dentro- el
+    valor cambiaba de magnitud y el umbral compensado pasaba a estar mal en el
+    otro sentido. Ahora la cifra no depende de la hora.
+    """
     return {
-        end_day - timedelta(days=i): rolling_load(rides, end_day - timedelta(days=i), window_days)
+        end_day - timedelta(days=i): rolling_load(
+            rides, end_day - timedelta(days=i + 1), window_days
+        )
         for i in range(days)
     }
 
@@ -1153,14 +1213,21 @@ def build_signals(
         if isinstance(spec, dict)
     ]
     dias_de_serie = max([history_days, 90, *(v + 1 for v in ventanas_pedidas)])
-    for name, win in (("load_3d", 3), ("load_7d", 7)):
+    for name, win in (("load_2d", 2), ("load_7d", 7)):
         series = load_series(classified, day, days=dias_de_serie, window_days=win)
         sig.values[name] = series.get(day)
         sig.history[name] = series
         if series.get(day) is None:
-            desde = day - timedelta(days=win - 1)
+            # La ventana termina AYER, así que los culpables están en
+            # [d-win, d-1]. Buscarlos en [d-win+1, d] -como se hacía- señalaba al
+            # día equivocado por los dos extremos: acusaba a una salida de hoy
+            # que no había entrado en la cuenta y absolvía a la de hace `win`
+            # días, que sí. La nota nombra fechas concretas y se lee; nombrar la
+            # fecha que no es cuesta más que no nombrar ninguna.
+            desde = day - timedelta(days=win)
+            hasta = day - timedelta(days=1)
             culpables = sorted(
-                {r.date for r in classified if desde <= r.date <= day and not r.load_known}
+                {r.date for r in classified if desde <= r.date <= hasta and not r.load_known}
             )
             notes.append(
                 f"{name}: sin dato — {len(culpables)} salida(s) sin carga ni forma de "
@@ -1314,7 +1381,7 @@ def build_signals(
     # la regla que dependiera de él se saltaba entera para siempre.
     #
     # No se había notado porque los dos únicos umbrales del config miran
-    # `load_3d` y `load_7d`, que sí están construidos a estas alturas: el
+    # `load_2d` y `load_7d`, que sí están construidos a estas alturas: el
     # segundo fusible de la misma mina que `checkin_history`. Arreglar solo el
     # parámetro habría dejado la serie llegando bien a un sitio que se leía
     # antes de que existiera, o sea el mismo None con una causa distinta.

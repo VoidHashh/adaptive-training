@@ -439,7 +439,7 @@ def dias_de_wellness(cfg: Any) -> int:
     (`_baseline_for` cuenta desde `day - 1`), así que con `window_days` justos
     entraban solo `window_days - 1`. Con el config actual, 8 en vez de 7.
 
-    El histórico largo -el que necesitan `load_3d_p90` y `load_7d_p90`- NO sale
+    El histórico largo -el que necesitan `load_2d_p90` y `load_7d_p90`- NO sale
     de aquí: son salidas, vienen en una sola llamada por rango y las gobierna
     `ventana_de_salidas` con `cycling.fetch`. El wellness se consulta día a día
     y cada día son varias peticiones, así que este número se mantiene pequeño a

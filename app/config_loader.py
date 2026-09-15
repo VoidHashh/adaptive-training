@@ -820,7 +820,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 "HRV en 1,62 y la carga de tres días a un cuarto de tu p90. Lo "
                 "que mide eso de verdad es thresholds.amber.carga_acumulada, "
                 "contra tu propia distribución. Si hace falta apretar por ahí, "
-                "se baja el percentil en adaptive_thresholds.load_3d_p90."
+                "se baja el percentil en adaptive_thresholds.load_2d_p90."
                 .format(light),
             )
             seen_names.add(name)
@@ -1194,8 +1194,8 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"adaptive_thresholds.{name}: min_days_required no puede superar window_days",
         )
         # La puerta trasera del guardia de arriba. Aquel mira las CLAVES del
-        # `when`, y en `{load_3d: {gt_adaptive: mi_umbral}}` la clave es
-        # `load_3d`: el umbral contra el que se compara viaja en el valor y ahí
+        # `when`, y en `{load_2d: {gt_adaptive: mi_umbral}}` la clave es
+        # `load_2d`: el umbral contra el que se compara viaja en el valor y ahí
         # no llega. Un `metric: will_train` definido aquí y referenciado desde
         # cualquier regla metería el histórico de «hoy no voy» dentro del cálculo
         # del color por un camino que el otro test no ve. Es rebuscado, y por eso

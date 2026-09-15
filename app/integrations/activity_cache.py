@@ -2,7 +2,7 @@
 
 POR QUÉ EXISTE
 --------------
-Los umbrales adaptativos (`load_3d_p90`, `load_7d_p90`) son percentiles sobre
+Los umbrales adaptativos (`load_2d_p90`, `load_7d_p90`) son percentiles sobre
 la propia distribución histórica del usuario: exigen 30 días con dato dentro de
 una ventana de 60. El wellness se consulta día a día —una petición por métrica y
 por día—, así que ampliar esa ventana a 60 días serían cientos de peticiones y
@@ -135,7 +135,7 @@ def save_cache(path: Path | str, frescas: Sequence[dict[str, Any]]) -> int:
        refresco diario trae una ventana mucho más corta. Escribir directamente
        lo recién leído tiraría todo lo anterior, y como `load_cached_rides` no
        se queja de una caché corta, los percentiles adaptativos se quedarían sin
-       base sin que nadie viera un error: simplemente `load_3d_p90` pasaría a
+       base sin que nadie viera un error: simplemente `load_2d_p90` pasaría a
        valer None y las reglas que lo usan dejarían de evaluarse.
 
     2. **No escribe en el sitio: escribe al lado y renombra.** Si el proceso se
@@ -184,7 +184,7 @@ def dias_adaptativos(cfg: Any) -> int:
     """El histórico más largo que le hace falta a algo que se calibra solo.
 
     Sale del config y no de una constante porque es lo que la caché existe
-    para alimentar: `load_3d_p90` y `load_7d_p90` son percentiles sobre una
+    para alimentar: `load_2d_p90` y `load_7d_p90` son percentiles sobre una
     ventana de `window_days`. Subir esa ventana en el YAML y dejar la caché
     corta es la forma silenciosa de apagar las dos reglas que la usan.
 
@@ -291,7 +291,7 @@ def ventana_de_salidas(
         return larga, f"{motivo}: se pide el histórico entero ({larga} días)"
 
     # `load_cached_rides` no se queja de una caché corta -lo dice `save_cache`
-    # en su propio docstring-, así que una caché de 20 días dejaba `load_3d_p90`
+    # en su propio docstring-, así que una caché de 20 días dejaba `load_2d_p90`
     # en None y las reglas que lo usan sin evaluar, sin un solo error.
     necesarios = dias_adaptativos(cfg)
     cubiertos = 0

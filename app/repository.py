@@ -548,7 +548,7 @@ def historial_checkins(session: Session, *, desde: date, hasta: date) -> list[An
     `series = sig.history.get(metric, {})`.
 
     Hoy no se nota porque los dos únicos umbrales adaptativos del config miran
-    métricas derivadas de las salidas (`load_3d_p90`, `load_7d_p90`), que se
+    métricas derivadas de las salidas (`load_2d_p90`, `load_7d_p90`), que se
     construyen por otro camino. Ninguna regla usa todavía un deslizador del
     formulario a lo largo de varios días. O sea que la mina está armada y
     dormida: el día que se defina un umbral adaptativo sobre la lumbar o el
@@ -1099,7 +1099,7 @@ def upsert_daily_metrics(
     pasaba la pasada diaria, así que el backfill dejó los 179 días a NULL, y no
     leía esas columnas NADIE. Una serie con seis meses vacíos y un escalón el
     día que arranca el sistema es una invitación a leer "antes no entrenaba".
-    Las reglas siguen viendo `load_3d`: se recalcula cada mañana sumando las
+    Las reglas siguen viendo `load_2d`: se recalcula cada mañana sumando las
     actividades, que es de donde salía también este número.
 
     `errores` son las lecturas que FALLARON ese día, si se sabe cuáles. Sin

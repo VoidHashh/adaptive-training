@@ -74,7 +74,7 @@ class DailyMetrics(Base):
       acabaría leyendo como "antes no entrenaba".
 
     Ojo a la distinción, que importa: se va la COLUMNA, no la señal.
-    `load_3d` sigue existiendo como señal y `carga_acumulada` sigue
+    `load_2d` sigue existiendo como señal y `carga_acumulada` sigue
     disparando con ella. Lo que desaparece es el sitio donde se guardaba
     dos veces.
     """

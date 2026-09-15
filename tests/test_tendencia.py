@@ -801,12 +801,12 @@ class TestTemas:
             "requires": ["hrv_ratio"],
             "when": {
                 "any": [
-                    {"load_3d": {"gt_adaptive": "load_3d_p90"}},
+                    {"load_2d": {"gt_adaptive": "load_2d_p90"}},
                     {"not": {"sleep_min": {"lt": 300}}},
                 ]
             },
         }
-        assert senales_de_regla(regla) == {"load_3d", "sleep_min"}
+        assert senales_de_regla(regla) == {"load_2d", "sleep_min"}
 
 
 # ---------------------------------------------------------------------------

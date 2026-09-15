@@ -93,7 +93,7 @@ DIA_TRANQUILO = {
     "rhr_baseline": 50.0,
     "rhr_delta": 0.0,
     "sleep_min": 450.0,
-    "load_3d": 100.0,
+    "load_2d": 100.0,
     # `weekend_intense_rides` y `weekend_total_hours` se han ido de aquí igual
     # que de `SENALES_COMPLETAS`: ninguna regla las lee y `build_signals` ya no
     # las escribe. Copiar a mano los valores de otro fichero tiene este precio
@@ -111,7 +111,7 @@ def senales(day: date) -> Signals:
         history={k: {day - timedelta(days=i): v for i in range(7)}
                  for k, v in valores.items()},
     )
-    s.adaptive.update({"load_3d_p90": 200.0, "load_7d_p90": 400.0})
+    s.adaptive.update({"load_2d_p90": 200.0, "load_7d_p90": 400.0})
     return s
 
 

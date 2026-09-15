@@ -171,7 +171,7 @@ def test_cached_activities_vacio_no_esta_disponible():
 # El fallo que se vigila aquí no da error: el refresco diario trae una ventana
 # corta, y si escribiera encima en vez de mezclar, el histórico largo
 # desaparecería sin que nadie viera nada. `load_cached_rides` no se queja de una
-# caché corta, así que `load_3d_p90` pasaría a valer None y las reglas que lo
+# caché corta, así que `load_2d_p90` pasaría a valer None y las reglas que lo
 # usan dejarían de evaluarse en silencio.
 
 
@@ -303,14 +303,14 @@ def test_refrescar_sin_novedades_no_borra_la_cache(tmp_path):
 # constante tapaba: la ventana corta SOLO vale si la caché puede sostenerla.
 # Las tres situaciones en las que no puede se prueban una a una, porque
 # `load_cached_rides` no se queja de una caché corta —lo dice `save_cache` en
-# su propio docstring— y ese silencio dejaría `load_3d_p90` en None y las dos
+# su propio docstring— y ese silencio dejaría `load_2d_p90` en None y las dos
 # reglas que lo usan sin evaluar, para siempre y sin un solo error.
 
 
 CFG_FETCH = {
     "cycling": {"fetch": {"lookback_days": 10, "backfill_days": 90}},
     "adaptive_thresholds": {
-        "load_3d_p90": {"window_days": 60, "percentile": 90},
+        "load_2d_p90": {"window_days": 60, "percentile": 90},
         "load_7d_p90": {"window_days": 60, "percentile": 90},
     },
 }
@@ -347,7 +347,7 @@ def test_sin_objeto_de_cache_tampoco_se_asume_que_hay_historico():
 
 def test_una_cache_mas_corta_que_el_percentil_dispara_el_backfill():
     """El fallo silencioso que la constante tapaba. Una caché de 20 días deja
-    `load_3d_p90` en None: la regla no dispara, no falla, y el mensaje sale
+    `load_2d_p90` en None: la regla no dispara, no falla, y el mensaje sale
     igual de bonito con una señal menos."""
     dias, motivo = ventana_de_salidas(CFG_FETCH, LUNES, cache_de(20))
     assert dias == 90
@@ -393,7 +393,7 @@ def test_los_umbrales_adaptativos_marcan_el_minimo_de_cache():
     """Subir `window_days` en el YAML tiene que mover esto. Si no, ampliar la
     ventana del percentil lo apagaría en vez de mejorarlo."""
     ancho = {**CFG_FETCH,
-             "adaptive_thresholds": {"load_3d_p90": {"window_days": 120}}}
+             "adaptive_thresholds": {"load_2d_p90": {"window_days": 120}}}
     assert dias_adaptativos(ancho) == 120
     assert ventana_de_salidas(ancho, LUNES, cache_de(90))[0] == 90, "90 < 120: backfill"
     assert ventana_de_salidas(CFG_FETCH, LUNES, cache_de(90))[0] == 10, "90 > 60: basta"

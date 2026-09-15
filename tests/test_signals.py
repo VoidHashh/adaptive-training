@@ -238,8 +238,45 @@ def test_load_series_devuelve_un_valor_por_dia():
     rides = classify_all([ride(ANCLA, load=999), ride(LUNES, load=100)], CYCLING)
     serie = load_series(rides, LUNES, days=10, window_days=3)
     assert len(serie) == 10
-    assert serie[LUNES] == 100.0
     assert serie[LUNES - timedelta(days=5)] == 0.0
+
+
+def test_la_serie_no_mete_la_salida_del_propio_dia_en_su_casilla():
+    """El día d vale [d-N, d-1]: la salida de d NO entra en `load_Nd` de d.
+
+    ES EL TEST QUE FALTABA, Y POR ESO EL SESGO VIVIÓ SEIS MESES
+    -----------------------------------------------------------
+    `rolling_load` está bien y sus tests están bien: su ventana incluye el día y
+    eso es lo que dicen. `resolve_adaptive_threshold` está bien y sus tests
+    también: su ventana termina ayer y eso es lo que dice. El fallo no estaba en
+    ninguna de las dos, estaba en que la serie que la primera construye es la
+    misma que la segunda resume, y a las 07:00 el último elemento de esa serie
+    está medido con una magnitud distinta de todos los demás -le falta la salida
+    de hoy, que aún no existe-. Comparar ese elemento contra el percentil de los
+    otros es comparar N-1 días contra N.
+
+    Ningún test podía cazarlo mirando una función sola. Este mira la serie, que
+    es donde vive la propiedad: TODOS los días valen lo mismo, incluido el
+    último, y por eso el percentil significa algo.
+    """
+    rides = classify_all(
+        [ride(ANCLA, load=999)]
+        + [ride(LUNES - timedelta(days=i), load=10) for i in range(5)],
+        CYCLING,
+    )
+    serie = load_series(rides, LUNES, days=10, window_days=3)
+
+    # Tres días de a 10 terminando AYER: LUNES-3, LUNES-2 y LUNES-1. La salida de
+    # hoy vale 10 y no está sumada. Con la ventana vieja aquí salía 30 contando a
+    # LUNES y dejando fuera a LUNES-3, el mismo número por los días equivocados.
+    assert serie[LUNES] == 30.0
+    assert rolling_load(rides, LUNES, 3) == 30.0, "`rolling_load` no cambia"
+
+    # Y la propiedad que hace comparable la serie: cada casilla es la suma de los
+    # N días anteriores, la de hoy igual que las demás.
+    for i in range(6):
+        d = LUNES - timedelta(days=i)
+        assert serie[d] == rolling_load(rides, d - timedelta(days=1), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +290,7 @@ def test_load_series_devuelve_un_valor_por_dia():
 # Lo que rompía no era el número, era la guarda de al lado. `min_days_required`
 # existe para no calcular un percentil con cuatro datos, y esos ceros la
 # cumplían de sobra: el 2026-03-15, sobre el histórico de verdad, la ventana de
-# 60 días de `load_3d_p90` llevaba 52 ceros de días sin ningún dato y 8 días
+# 60 días de `load_2d_p90` llevaba 52 ceros de días sin ningún dato y 8 días
 # medidos. El percentil salía de los ceros y la primera salida real lo superaba
 # sin despeinarse.
 #
@@ -327,12 +364,12 @@ def test_la_serie_de_carga_cubre_la_ventana_que_pide_el_config():
 
     for ventana in (60, 120, 180):
         c = copy.deepcopy(cfg)
-        c.raw["adaptive_thresholds"]["load_3d_p90"]["window_days"] = ventana
+        c.raw["adaptive_thresholds"]["load_2d_p90"]["window_days"] = ventana
         sig = build_signals(
             c, LUNES, metrics=mets, rides=rides,
             sessions=[], checkin_history=[], checkin=None,
         )
-        serie = sig.history["load_3d"]
+        serie = sig.history["load_2d"]
         assert len(serie) >= ventana + 1, (
             f"con window_days={ventana} la serie tiene {len(serie)} días: el "
             f"percentil se estaría calculando sobre menos ventana de la pedida"
@@ -397,14 +434,29 @@ def test_el_percentil_adaptativo_descarta_los_dias_sin_dato():
 
 def test_se_dice_en_las_notas_que_falta_la_carga(cfg):
     """Si no se dice, es otro fallo silencioso: el usuario vería
-    `carga_acumulada` sin evaluar y sin saber por qué."""
+    `carga_acumulada` sin evaluar y sin saber por qué.
+
+    LA SALIDA SIN CARGA ESTÁ AYER, NO HOY, Y ESO ES EL TEST
+    -------------------------------------------------------
+    Antes se ponía en el propio LUNES. Desde que la ventana termina la víspera,
+    una salida de hoy NO entra en `load_Nd` de hoy: el valor seguía saliendo
+    `None` -por falta de horizonte- y el test seguía verde acusando a un día que
+    ya no tenía nada que ver. Habría certificado para siempre una nota que
+    nombra el día equivocado.
+    """
     from app.engine.signals import build_signals
 
+    ayer = LUNES - timedelta(days=1)
     s = build_signals(
         cfg,
         LUNES,
         metrics=[],
-        rides=[Ride(date=LUNES, duration_s=7200, is_cycling=True)],
+        rides=[
+            # Ancla vieja: declara desde cuándo se ha mirado, para que el `None`
+            # no venga de la guarda de horizonte sino de la carga desconocida.
+            ride(ANCLA, load=50),
+            Ride(date=ayer, duration_s=7200, is_cycling=True),
+        ],
         sessions=[],
         checkin_history=[],
         checkin=None,
@@ -412,7 +464,10 @@ def test_se_dice_en_las_notas_que_falta_la_carga(cfg):
     assert s.values["load_7d"] is None
     nota = next((n for n in s.notes if n.startswith("load_7d")), None)
     assert nota is not None, f"ninguna nota explica el hueco: {s.notes}"
-    assert LUNES.isoformat() in nota, "hay que decir QUÉ día está sin clasificar"
+    assert ayer.isoformat() in nota, "hay que decir QUÉ día está sin clasificar"
+    assert LUNES.isoformat() not in nota, (
+        "hoy no entra en la ventana: acusarlo sería señalar al día equivocado"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -425,7 +480,7 @@ def test_se_dice_en_las_notas_que_falta_la_carga(cfg):
 
 
 SPEC = {
-    "metric": "load_3d",
+    "metric": "load_2d",
     "window_days": 60,
     "percentile": 90,
     "min_days_required": 30,
@@ -845,9 +900,9 @@ def test_el_historico_largo_de_salidas_da_umbrales_adaptativos(cfg):
     s_pocas = build_signals(cfg, LUNES, metrics=[], rides=pocas, sessions=[], checkin_history=[])
     s_muchas = build_signals(cfg, LUNES, metrics=[], rides=muchas, sessions=[], checkin_history=[])
 
-    assert s_pocas.adaptive.get("load_3d_p90") is None
-    assert s_muchas.adaptive.get("load_3d_p90") is not None
-    assert s_muchas.adaptive["load_3d_p90"] > 0
+    assert s_pocas.adaptive.get("load_2d_p90") is None
+    assert s_muchas.adaptive.get("load_2d_p90") is not None
+    assert s_muchas.adaptive["load_2d_p90"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -982,7 +1037,7 @@ def test_olvidarse_del_historico_es_un_error_y_no_una_serie_vacia(cfg):
 def test_los_umbrales_de_carga_siguen_saliendo_despues_de_bajar_el_bloque(cfg):
     """Mover el bloque de los umbrales al final no puede romper los que ya iban.
 
-    `load_3d_p90` y `load_7d_p90` son los dos únicos umbrales adaptativos que
+    `load_2d_p90` y `load_7d_p90` son los dos únicos umbrales adaptativos que
     hoy están en el config y los únicos que se han usado nunca. Si bajarlo los
     hubiera dejado sin serie, el efecto sería `carga_acumulada` muda: un freno
     que desaparece sin un solo error. Este test es lo que separa reordenar de
@@ -992,9 +1047,9 @@ def test_los_umbrales_de_carga_siguen_saliendo_despues_de_bajar_el_bloque(cfg):
     s = build_signals(
         cfg, LUNES, metrics=[], rides=muchas, sessions=[], checkin_history=[]
     )
-    assert s.adaptive["load_3d_p90"] is not None
+    assert s.adaptive["load_2d_p90"] is not None
     assert s.adaptive["load_7d_p90"] is not None
-    assert s.adaptive["load_3d_p90"] > 0
+    assert s.adaptive["load_2d_p90"] > 0
 
 
 # ---------------------------------------------------------------------------

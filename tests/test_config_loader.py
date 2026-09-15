@@ -162,7 +162,7 @@ def test_un_operador_desconocido_se_rechaza_al_arrancar(cfg_copia, operador):
 
 def test_los_operadores_adaptativos_siguen_siendo_validos(cfg_copia):
     """`gte_adaptive` es legítimo: compara contra la distribución propia."""
-    cfg_copia.raw["progression"]["brakes"][1]["when"] = {"gte_adaptive": "load_3d_p90"}
+    cfg_copia.raw["progression"]["brakes"][1]["when"] = {"gte_adaptive": "load_2d_p90"}
     assert "operador desconocido" not in errores(cfg_copia.raw)
 
 
@@ -323,7 +323,7 @@ def test_regla_especial_sobre_un_ejercicio_inexistente(cfg):
 def test_umbral_adaptativo_referenciado_pero_no_definido(cfg):
     data = copy.deepcopy(cfg.raw)
     data["thresholds"]["amber"].append(
-        {"name": "inventada", "when": {"load_3d": {"gt_adaptive": "no_existe"}}}
+        {"name": "inventada", "when": {"load_2d": {"gt_adaptive": "no_existe"}}}
     )
     assert "'no_existe', que no está definido" in errores(data)
 
@@ -827,7 +827,7 @@ def test_el_config_real_declara_como_suben_las_reps(cfg, modo, esperado):
 # principio declarado y sin leer mientras el código pedía 190 días a pelo. Una
 # opción conectada hay que validarla, y aquí la validación no es cosmética: el
 # backfill es lo ÚNICO que llena la caché sobre la que se calculan
-# `load_3d_p90` y `load_7d_p90`. Si se queda corto, las dos reglas que usan
+# `load_2d_p90` y `load_7d_p90`. Si se queda corto, las dos reglas que usan
 # esos umbrales no se evalúan ningún día. No fallan: no se evalúan. Y el
 # mensaje de la mañana sale igual de bonito con una señal menos.
 
@@ -1511,7 +1511,7 @@ def test_la_prohibicion_llega_hasta_el_fondo_del_arbol(cfg_copia):
 def test_un_umbral_adaptativo_tampoco_puede_calcularse_sobre_una_pregunta(cfg_copia):
     """La puerta trasera: la clave del `when` no es la métrica del umbral.
 
-    En `{load_3d: {gt_adaptive: mi_umbral}}` la señal que se lee es `load_3d` y
+    En `{load_2d: {gt_adaptive: mi_umbral}}` la señal que se lee es `load_2d` y
     el umbral contra el que se compara viaja en el VALOR. El guardia que camina
     las claves del árbol no puede ver ahí dentro por construcción, así que un
     `metric: will_train` colaría el histórico de «hoy no voy» dentro del cálculo

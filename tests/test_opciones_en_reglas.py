@@ -83,7 +83,7 @@ def regla_sintetica(ruta: str = RUTA_NUMERO, op: str = "gt_option") -> dict:
     return {
         "name": "sintetica",
         "description": "regla de laboratorio para el operador _option",
-        "when": {"load_3d": {op: ruta}},
+        "when": {"load_2d": {op: ruta}},
     }
 
 
@@ -106,7 +106,7 @@ def test_la_regla_compara_contra_el_numero_de_la_seccion(cfg, valor, esperado):
     """
     umbral = resolve_option(RUTA_NUMERO, cfg.raw)
     assert (valor > umbral) == (esperado == FIRED), "el caso de prueba está mal elegido"
-    res = evaluate_rule(regla_sintetica(), sig(LUNES, load_3d=valor), options=cfg.raw)
+    res = evaluate_rule(regla_sintetica(), sig(LUNES, load_2d=valor), options=cfg.raw)
     assert res.status == esperado
 
 
@@ -117,7 +117,7 @@ def test_mover_el_umbral_en_la_seccion_mueve_lo_que_decide_la_regla(cfg_copia):
     arrancar y nadie lo notaría: el número saldría bien en los dos sitios y
     seguiría decidiendo el viejo.
     """
-    senales = sig(LUNES, load_3d=200.0)
+    senales = sig(LUNES, load_2d=200.0)
     assert evaluate_rule(regla_sintetica(), senales, options=cfg_copia.raw).status == FIRED
     cfg_copia.raw["cycling"]["load"]["fallback_estimate"]["load_per_hour"]["intensa"] = 300
     assert evaluate_rule(regla_sintetica(), senales, options=cfg_copia.raw).status == NOT_FIRED
@@ -128,7 +128,7 @@ def test_el_detalle_dice_el_numero_y_de_donde_sale(cfg):
     no basta con el valor: hace falta saber contra qué se comparó y por qué ese
     número era ese. La ruta es lo que lleva al comentario que lo justifica."""
     res = evaluate_rule(
-        regla_sintetica(), sig(LUNES, load_3d=400.0), level="amber", options=cfg.raw
+        regla_sintetica(), sig(LUNES, load_2d=400.0), level="amber", options=cfg.raw
     )
     assert res.status == FIRED
     assert any("400 gt 160" in d and RUTA_NUMERO in d for d in res.detail), res.detail
@@ -162,11 +162,11 @@ def test_un_umbral_adaptativo_sin_datos_si_se_salta(cfg):
     """
     regla = {
         "name": "inventada",
-        "when": {"load_3d": {"gt_adaptive": "load_3d_p99"}},
+        "when": {"load_2d": {"gt_adaptive": "load_2d_p99"}},
     }
-    res = evaluate_rule(regla, sig(LUNES, load_3d=100.0), options=cfg.raw)
+    res = evaluate_rule(regla, sig(LUNES, load_2d=100.0), options=cfg.raw)
     assert res.status == SKIPPED
-    assert "load_3d_p99" in res.missing
+    assert "load_2d_p99" in res.missing
 
 
 @pytest.mark.parametrize(
@@ -223,13 +223,13 @@ def _con_regla(cfg_copia, when: dict) -> dict:
 
 
 def test_una_ruta_rota_impide_arrancar(cfg_copia):
-    data = _con_regla(cfg_copia, {"load_3d": {"gt_option": "cycling.fetch.no_existe"}})
+    data = _con_regla(cfg_copia, {"load_2d": {"gt_option": "cycling.fetch.no_existe"}})
     assert "no existe en config.yaml" in "\n".join(_validate(data))
 
 
 def test_una_ruta_que_apunta_a_algo_que_no_es_numero_impide_arrancar(cfg_copia):
     data = _con_regla(
-        cfg_copia, {"load_3d": {"gt_option": "cycling.recommendation.intensity_order"}}
+        cfg_copia, {"load_2d": {"gt_option": "cycling.recommendation.intensity_order"}}
     )
     assert "tiene que ser un número" in "\n".join(_validate(data))
 
@@ -239,19 +239,19 @@ def test_un_operador_mal_escrito_en_una_regla_impide_arrancar(cfg_copia):
     los disparadores de las reglas especiales, nunca por las del semáforo. Un
     `gte_optionn` levantaba `RuleError` a las 06:30, con el proceso ya en
     marcha, que es el peor momento posible para enterarse."""
-    data = _con_regla(cfg_copia, {"load_3d": {"gte_optionn": RUTA_NUMERO}})
+    data = _con_regla(cfg_copia, {"load_2d": {"gte_optionn": RUTA_NUMERO}})
     assert "operador desconocido" in "\n".join(_validate(data))
 
 
 def test_un_percentil_inexistente_impide_arrancar_con_cualquier_operador(cfg_copia):
     """El validador viejo solo comprobaba `gt_adaptive`, literal.
 
-    `lt_adaptive: load_3d_p99` pasaba la validación tan campante y se saltaba la
+    `lt_adaptive: load_2d_p99` pasaba la validación tan campante y se saltaba la
     regla todos los días. Es el mismo agujero de siempre en su versión más
     tonta: la comprobación estaba escrita para un operador de los cuatro.
     """
     for op in ("gt_adaptive", "gte_adaptive", "lt_adaptive", "lte_adaptive"):
-        data = _con_regla(copy.deepcopy(cfg_copia), {"load_3d": {op: "no_existe_p99"}})
+        data = _con_regla(copy.deepcopy(cfg_copia), {"load_2d": {op: "no_existe_p99"}})
         assert "adaptive_thresholds" in "\n".join(_validate(data)), op
 
 

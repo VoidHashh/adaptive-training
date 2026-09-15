@@ -77,7 +77,7 @@ def ride_from_activity(act: dict[str, Any]) -> Ride | None:
         # es toda la cuestión: ese significa "no es una salida en bici", este
         # significaría "es una salida en bici y la estoy tirando". Devolver
         # None en los dos casos hacía que una salida real desapareciera de
-        # `load_3d/7d` sin dejar rastro: menos carga de la que hubo, y verde
+        # `load_2d/7d` sin dejar rastro: menos carga de la que hubo, y verde
         # el día que tocaba ámbar.
         #
         # Y no puede ser un caso rutinario: Garmin siempre manda
@@ -663,7 +663,7 @@ class GarminClient:
         las líneas base de HRV y FC en reposo usan una ventana de esa escala.
 
         El histórico de salidas es otra cosa: viene en UNA sola llamada por
-        rango, y los umbrales adaptativos (`load_3d_p90`) necesitan 60 días de
+        rango, y los umbrales adaptativos (`load_2d_p90`) necesitan 60 días de
         distribución para existir. Pedir solo 7 los deja en None para siempre.
         """
         start = day - timedelta(days=days - 1)

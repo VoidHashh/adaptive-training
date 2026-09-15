@@ -135,8 +135,8 @@ def replay(cfg, metricas, salidas, desde: date, hasta: date) -> list[dict]:
                 "hrv_ratio": sig.get("hrv_ratio"),
                 "rhr_delta": sig.get("rhr_delta"),
                 "sleep_min": sig.get("sleep_min"),
-                "load_3d": sig.get("load_3d"),
-                "load_3d_p90": sig.adaptive.get("load_3d_p90"),
+                "load_2d": sig.get("load_2d"),
+                "load_2d_p90": sig.adaptive.get("load_2d_p90"),
             }
         )
         d += timedelta(days=1)

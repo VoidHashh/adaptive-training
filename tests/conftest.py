@@ -147,7 +147,7 @@ SENALES_COMPLETAS: dict[str, Any] = {
     "rhr_baseline": 50.0,
     "rhr_delta": 0.0,
     "sleep_min": 450.0,
-    "load_3d": 100.0,
+    "load_2d": 100.0,
     # Aquí estaban `weekend_intense_rides: 0` y `weekend_total_hours: 1.0`, y se
     # han ido. Eran las dos señales que pedía `resaca_finde`; la regla se borró
     # hace tiempo y `build_signals` dejó de escribirlas al pasar el recuento a
@@ -158,10 +158,10 @@ SENALES_COMPLETAS: dict[str, Any] = {
 }
 
 # Los percentiles NO son señales: viven en `Signals.adaptive` y las reglas los
-# leen por ahí (`gt_adaptive: load_3d_p90`), no en `values`. Ponerlos en
+# leen por ahí (`gt_adaptive: load_2d_p90`), no en `values`. Ponerlos en
 # `values` no da error, simplemente no los encuentra nadie.
 UMBRALES_COMPLETOS: dict[str, float] = {
-    "load_3d_p90": 200.0,
+    "load_2d_p90": 200.0,
     "load_7d_p90": 400.0,
 }
 

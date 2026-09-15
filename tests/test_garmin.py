@@ -187,7 +187,7 @@ def test_una_fecha_ilegible_en_una_salida_de_bici_revienta():
 
     Descartar la actividad "en vez de inventarla" suena prudente, pero la
     alternativa a inventarse la fecha no era tirar la salida: era decir que no
-    se puede leer. Una salida real que desaparece resta carga de `load_3d/7d`
+    se puede leer. Una salida real que desaparece resta carga de `load_2d/7d`
     y deja el día en verde cuando tocaba ámbar, sin que nada lo cuente.
 
     Además no es un caso raro y aislado. Garmin manda `startTimeLocal` en ISO
