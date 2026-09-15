@@ -38,9 +38,12 @@ from sqlalchemy.orm import Session
 from app.analysis.stats import percentil
 from app.analysis.umbral import (
     DIAS_AISLAMIENTO,
+    MINIMO_SUAVIZADO,
     N_MINIMO_FIABLE,
     N_MINIMO_TRAMO,
+    SUAVIZADO,
     _escalon_o_cuesta,
+    _media_movil,
     _na_grafica,
     _resumen,
     _resumen_descartes,
@@ -701,6 +704,94 @@ def test_el_techo_del_dibujo_es_el_suyo_y_no_una_cifra_escrita(db):
     # Y el palo más alto sigue siendo exactamente el borde del dibujo: el techo
     # que escala el corte y el que escala las barras son el mismo.
     assert max(s["altura"] for s in g["salidas"]) == 1.0
+
+
+def test_la_banda_del_dibujo_es_la_mitad_central_y_no_el_recorrido_entero(db):
+    """La banda dice "esto es lo normal", y para eso tiene que dejar algo fuera.
+
+    Lo encontró la batería de mutación: abrir `BANDA` de (25, 75) a (0, 100)
+    dejaba la suite entera en verde. Y no es un cambio de cosmética. Una banda que
+    va del mínimo al máximo contiene, por construcción, TODAS las noches: la
+    franja de detrás de la línea pasaría a decir "todo lo que has visto entra
+    dentro de lo normal", que es justo lo contrario de lo que una banda sirve para
+    decir. Del mismo color, en el mismo sitio y un poco más ancha: no hay nada en
+    la pantalla que permita notarlo.
+
+    Ninguno de los tests de la gráfica la miraba. Comprobaban el techo, la altura
+    del corte, el rango y el motivo de que no haya línea, y la banda se coló por
+    el hueco que dejaban entre todos ellos.
+
+    Se siembran cien noches con veinte valores distintos, cinco veces cada uno,
+    para que los cuartiles caigan donde se pueden calcular a mano: 44,75 y 54,25.
+    Pero lo que se exige no son esos dos números sino la PROPIEDAD que los hace
+    una banda -que una de cada cuatro noches quede fuera por cada lado-, porque
+    los números solos los cumpliría cualquier par de percentiles y la propiedad no
+    la puede fingir un (0, 100).
+    """
+    for i in range(N):
+        db.add(DailyMetrics(date=dia(i), fetch_status="ok", hrv=40.0 + (i % 20)))
+    db.commit()
+
+    g = grafica(db, desde=dia(0), hasta=dia(N - 1))
+    assert g["na"] is None and g["n"] == N
+    assert g["rango"] == [40.0, 59.0]
+    assert g["banda"] == {"desde": 44.8, "hasta": 54.2}
+
+    # Acota: los dos bordes caen ESTRICTAMENTE dentro del recorrido medido.
+    assert g["rango"][0] < g["banda"]["desde"] < g["banda"]["hasta"] < g["rango"][1]
+
+    # Y acota por donde dice: un cuarto de las noches fuera por cada lado.
+    medidos = [p["valor"] for p in g["puntos"] if p["valor"] is not None]
+    assert len(medidos) == N
+    assert sum(v < g["banda"]["desde"] for v in medidos) == N // 4
+    assert sum(v > g["banda"]["hasta"] for v in medidos) == N // 4
+
+    # Y por debajo del mínimo calculable la banda no se estrecha: se va.
+    assert grafica(db, desde=dia(0), hasta=dia(1))["banda"] is None
+
+
+def test_un_punto_suavizado_que_sale_de_una_sola_noche_es_una_cola_inventada():
+    """El mínimo de la media móvil, y por qué el sembrado no podía verlo.
+
+    Bajar `MINIMO_SUAVIZADO` de 4 a 1 dejaba la suite entera en verde, y el motivo
+    es estructural, no un descuido de nadie: `sembrar` pone HRV los cien días, sin
+    un solo hueco. Sobre una serie sin huecos los dos valores dan exactamente lo
+    mismo, punto por punto, porque nunca hay menos de cuatro noches dentro de la
+    ventana. Los tests no eran flojos: el sembrado hacía la pregunta imposible, y
+    ésa es una forma de agujero que no se encuentra leyendo los tests, porque en
+    los tests no hay nada escrito que esté mal.
+
+    Con huecos, la diferencia es la que va de medir a rellenar. El día de una
+    noche suelta publicaría un punto "suavizado" que es esa noche otra vez, con el
+    mismo trazo que uno salido de siete. En una gráfica eso no se distingue: no
+    hay manera de mirar la línea y saber qué parte es medida y qué parte es una
+    cola inventada.
+
+    Por eso el mínimo se AFIRMA además de comprobarse: más de media ventana tiene
+    que ser noche de verdad. Es la lección de `N_MINIMO_TRAMO`, que sobrevivió a
+    la primera batería porque el test leía la constante para construir el caso y
+    encogía con ella.
+    """
+    assert MINIMO_SUAVIZADO > SUAVIZADO // 2, (
+        "más de media ventana tiene que ser noche de verdad, o el punto dibujado "
+        "dice más de lo que sabe"
+    )
+
+    dias = [dia(i) for i in range(12)]
+    # Una noche suelta al principio y cuatro seguidas al final: el mínimo parte
+    # justo entre las dos cosas.
+    valores = {dia(0): 50.0, dia(6): 40.0, dia(7): 42.0, dia(8): 44.0, dia(9): 46.0}
+    suave = _media_movil(valores, dias)
+
+    assert suave[dia(0)] is None  # una sola noche en toda la ventana
+    assert suave[dia(3)] is None  # dos, y cogidas de los dos extremos
+    assert suave[dia(5)] is None  # tres: sigue sin llegar
+
+    # Con las cuatro dentro sí, y el punto es la media de las cuatro.
+    assert suave[dia(6)] == suave[dia(9)] == 43.0
+
+    # Y en cuanto se sale una, se acaba la línea. No se estira: se corta.
+    assert suave[dia(10)] is None
 
 
 # ---------------------------------------------------------------------------

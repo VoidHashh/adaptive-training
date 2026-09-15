@@ -195,6 +195,22 @@ qué **forma** es. La `r` va al lado, con su barra, donde se compara con las dem
   el tiempo con las salidas marcadas y la raya del corte, y la curva de días +1 a
   +4 con el cero marcado.
 
+  La franja de detrás de la línea es la **mitad central** (`BANDA`, cuartiles 25 y
+  75), no el recorrido entero. Una banda que fuera del mínimo al máximo contendría
+  por construcción **todas** las noches, o sea que estaría diciendo «todo lo que
+  has visto entra dentro de lo normal», que es lo contrario de para lo que sirve
+  una banda; y lo diría del mismo color, en el mismo sitio y solo un poco más
+  ancha. Lo que se exige no son los dos percentiles sino la propiedad que los hace
+  banda: **una de cada cuatro noches fuera por cada lado**.
+
+  Y la línea suavizada solo publica un punto cuando **más de media ventana** son
+  noches de verdad (`MINIMO_SUAVIZADO` sobre `SUAVIZADO`). Con menos, la media
+  móvil se dibujaría igual de gruesa sobre una sola noche, y no hay forma de mirar
+  el trazo y saber qué parte está medida y qué parte es una cola inventada. Esa
+  regla se comprueba dos veces a propósito —la constante y el sitio donde se
+  aplica—, porque un test que solo afirmara la constante seguiría verde el día que
+  el dibujo se la saltara.
+
 #### Los dos huecos que la vista dice en vez de callar
 
 Ninguno devuelve un cero de relleno; los dos devuelven el motivo escrito.
