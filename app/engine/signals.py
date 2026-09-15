@@ -1234,6 +1234,27 @@ def build_signals(
         None if apetece is None or voy is None else bool(apetece) != bool(voy)
     )
 
+    # Y el histórico, que es la mitad que faltaba.
+    #
+    # Ese párrafo de ahí arriba -"tiene que quedar en el histórico día a día"-
+    # estuvo escrito sin cumplirse: solo se rellenaba `values`, o sea el día de
+    # hoy, y cualquier umbral adaptativo o cualquier vista que pidiera la serie
+    # de `discordancia` habría encontrado un hueco donde el comentario prometía
+    # una serie. No daba error: daba "no hay serie para la métrica
+    # discordancia", que se lee como "todavía no hay datos".
+    #
+    # La INTERSECCIÓN y no la unión, al revés que en `series.py`, y la razón es
+    # que aquí el diccionario significa otra cosa: el bucle de arriba solo mete
+    # en `history` los días con valor -`if v is not None`-, así que un hueco ya
+    # es "no se sabe" por convenio del módulo. Meter un día con `None` rompería
+    # esa regla para todo el que recorra el histórico contando días.
+    hist_apetece = sig.history.get(CLAVE_APETECE, {})
+    hist_voy = sig.history.get(CLAVE_VOY_A_ENTRENAR, {})
+    sig.history["discordancia"] = {
+        d: bool(hist_apetece[d]) != bool(hist_voy[d])
+        for d in sorted(set(hist_apetece) & set(hist_voy))
+    }
+
     if checkin is None:
         notes.append("sin check-in: solo se evalúan las reglas objetivas")
 

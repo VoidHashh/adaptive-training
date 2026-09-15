@@ -1314,12 +1314,25 @@ def test_concordancia_contesta_con_todo_lo_que_hace_falta_para_pintar(cliente, d
 
 
 def test_desfase_contesta_la_rejilla_entera(cliente, db):
+    """La rejilla entera, y "entera" se cuenta, no se escribe.
+
+    Estaba clavado en 35 -siete deslizadores por cinco métricas- y el número se
+    quedó viejo el día que entraron las dos preguntas de Sí/No y la
+    discordancia. Un test que se pone rojo porque han aparecido filas nuevas
+    avisa de lo que no hay que hacer -quitarlas- en vez de comprobar lo que se
+    quería comprobar, que es que no FALTA ninguna.
+    """
+    from app.analysis import series as S
+
     _sembrar_metricas(db)
     d = cliente.get("/api/metrics/desfase?dias=90").json()
 
     assert d["vista"] == "desfase"
     assert d["rango_desfase"] == [-3, 3]
-    assert len(d["rejilla"]) == 35
+    assert len(d["rejilla"]) == (len(S.SLIDERS) + len(S.PREGUNTAS)) * len(S.GARMIN)
+    # Y las tres nuevas están de verdad, no solo cuadra la multiplicación.
+    ejes_x = {c["x"] for c in d["rejilla"]}
+    assert {"wants_to_train", "will_train", "discordancia"} <= ejes_x
     casilla = next(c for c in d["rejilla"] if c["x"] == "fatigue" and c["y"] == "hrv")
     assert casilla["mejor_desfase"] == 0
     assert sorted(int(k) for k in casilla["por_desfase"]) == [-3, -2, -1, 0, 1, 2, 3]
@@ -1761,7 +1774,14 @@ def test_sin_datos_las_metricas_contestan_200_con_los_motivos(cliente):
     # La vista 3 tampoco se esconde: las exposiciones que no dependen de lo que
     # se haya entrenado siguen ahí, con el motivo escrito en cada casilla.
     v3 = cliente.get("/api/metrics/impacto").json()
-    assert len(v3["rejilla"]) == 9 * 12
+    # Nueve exposiciones contra TODAS las respuestas. El número de respuestas se
+    # cuenta de `series.py` -no se escribe- porque el que estaba escrito, doce,
+    # se quedó viejo en cuanto entraron las dos preguntas de Sí/No y la
+    # discordancia. Lo que hay que comprobar aquí es que ninguna falta.
+    from app.analysis import series as S
+
+    n_respuestas = len(S.SLIDERS) + len(S.PREGUNTAS) + len(S.GARMIN)
+    assert len(v3["rejilla"]) == 9 * n_respuestas
     assert all(c["na"] for f in v3["rejilla"] for c in f["por_dia"])
     # Y el ranking sin entrenos es una lista vacía CON su advertencia y su
     # cobertura, no un 404 que dejaría la pantalla en blanco el primer día.

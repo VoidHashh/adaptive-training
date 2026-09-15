@@ -53,6 +53,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis import series as S
 from app.analysis.impacto import vista_impacto
+from app.analysis.preguntas import tabla_discordancia
 from app.analysis.stats import percentil_de
 from app.analysis.texto import cuantos
 from app.engine.luces import LUCES as _LUCES
@@ -458,8 +459,9 @@ def _linea(
     percentil: float | None = None,
     n_reciente: int | None = None,
     n_referencia: int | None = None,
+    tabla: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Una línea de «Cómo voy», SIEMPRE con las mismas once claves.
+    """Una línea de «Cómo voy», SIEMPRE con las mismas doce claves.
 
     Antes había cinco formas distintas de esta fila esparcidas por el módulo, y
     las cinco eran correctas por separado: la de Garmin con percentil llevaba
@@ -488,6 +490,14 @@ def _linea(
     mira. Ahora llega `Definicion.sufijo`, que es `None` cuando lo que había era
     un rango: la nota de sueño sale como «85,50», y la escala -que sigue entera
     en `unidad` y en `rango`- se queda donde sirve, que es en los ejes.
+
+    `tabla` es la duodécima, y nace `None` en once de las doce líneas. Solo la
+    lleva la discordancia, porque es la única de estas cifras que MIENTE leída
+    sola: un 30 % de días discordantes no dice si fue que te apetecía y no
+    fuiste o al revés. Y se añade a la firma -en vez de colgarla solo donde
+    hace falta- por lo que dicen los tres párrafos de arriba: la clave que falta
+    no se distingue de la clave que vale `None`, y el que lo lee es un navegador
+    a las siete de la mañana.
     """
     return {
         "clave": clave,
@@ -501,7 +511,99 @@ def _linea(
         "percentil": percentil,
         "n_reciente": n_reciente,
         "n_referencia": n_referencia,
+        "tabla": tabla,
     }
+
+
+def _linea_de_serie(
+    d: S.Definicion,
+    serie: dict[date, float | None],
+    *,
+    corte: date,
+    escala: float = 1.0,
+    unidad: str | None = None,
+    decimales: int = 1,
+    tabla: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Una serie cualquiera situada dentro de su propio histórico.
+
+    Era el cuerpo del bucle de `como_voy`, escrito una sola vez para las cinco
+    métricas del reloj. Se saca fuera porque ahora lo usan también las tres
+    preguntas, y copiarlo habría dejado dos sitios donde decidir qué es "poca
+    muestra": el día que uno de los dos cambiara, la portada tendría dos
+    criterios distintos para la misma frase y ninguno de los dos sería el
+    equivocado a simple vista.
+
+    `tabla` se pasa TAL CUAL por las tres salidas, incluidas las dos de «no hay
+    bastante muestra». Habla de la ventana entera y no de la última semana, así
+    que una semana floja no es motivo para esconderla: al contrario, es cuando
+    más falta hace saber de qué lado cayeron los días que sí hubo.
+
+    `escala` y `unidad` son lo único que las preguntas necesitan distinto, y son
+    presentación pura: multiplican el número que se enseña y nada más. La cuenta
+    -la media, el percentil, el nivel- es idéntica, que es justamente lo que
+    había que conservar.
+    """
+    recientes = [v for f, v in sorted(serie.items()) if f >= corte and v is not None]
+    previos = [v for f, v in sorted(serie.items()) if f < corte and v is not None]
+    sufijo = unidad if unidad is not None else d.sufijo
+
+    if len(recientes) < MINIMO_RECIENTES:
+        return _linea(
+            clave=d.clave,
+            etiqueta=d.etiqueta,
+            na=(
+                f"solo {len(recientes)} de los últimos {DIAS_RECIENTES} días "
+                f"traen este dato; hacen falta {MINIMO_RECIENTES} para que la "
+                f"media sea de la semana y no de los días sueltos que hubo"
+            ),
+            unidad=sufijo,
+            n_reciente=len(recientes),
+            n_referencia=len(previos),
+            tabla=tabla,
+        )
+
+    referencia = _ventanas(previos, min(DIAS_RECIENTES, len(recientes)))
+    if len(referencia) < MINIMO_REFERENCIA:
+        return _linea(
+            clave=d.clave,
+            etiqueta=d.etiqueta,
+            na=(
+                f"hay {len(referencia)} semanas anteriores con las que "
+                f"comparar y hacen falta {MINIMO_REFERENCIA}: con menos, "
+                f"decir si esta semana es alta o baja sería inventárselo"
+            ),
+            unidad=sufijo,
+            n_reciente=len(recientes),
+            n_referencia=len(referencia),
+            tabla=tabla,
+        )
+
+    media = fmean(recientes)
+    pct = percentil_de(media, referencia)
+    nivel, frase = _nivel(pct or 0.0)
+    if nivel == "normal":
+        valencia = "normal"
+    elif d.sentido == "alto_mejor":
+        valencia = "peor" if nivel.endswith("bajo") else "mejor"
+    elif d.sentido == "alto_peor":
+        valencia = "mejor" if nivel.endswith("bajo") else "peor"
+    else:
+        valencia = "neutro"
+
+    return _linea(
+        clave=d.clave,
+        etiqueta=d.etiqueta,
+        nivel=nivel,
+        valencia=valencia,
+        lectura=frase,
+        media=round(media * escala, decimales),
+        unidad=sufijo,
+        percentil=round(pct, 0) if pct is not None else None,
+        n_reciente=len(recientes),
+        n_referencia=len(referencia),
+        tabla=tabla,
+    )
 
 
 def como_voy(
@@ -524,71 +626,44 @@ def como_voy(
     lineas: list[dict[str, Any]] = []
 
     for clave, d in S.GARMIN.items():
-        serie = S.serie(session, clave, desde, hoy, cob=cob)
-        recientes = [
-            v for f, v in sorted(serie.items()) if f >= corte and v is not None
-        ]
-        previos = [v for f, v in sorted(serie.items()) if f < corte and v is not None]
-
-        if len(recientes) < MINIMO_RECIENTES:
-            lineas.append(
-                _linea(
-                    clave=clave,
-                    etiqueta=d.etiqueta,
-                    na=(
-                        f"solo {len(recientes)} de los últimos {DIAS_RECIENTES} días "
-                        f"traen este dato; hacen falta {MINIMO_RECIENTES} para que la "
-                        f"media sea de la semana y no de los días sueltos que hubo"
-                    ),
-                    unidad=d.sufijo,
-                    n_reciente=len(recientes),
-                    n_referencia=len(previos),
-                )
-            )
-            continue
-
-        referencia = _ventanas(previos, min(DIAS_RECIENTES, len(recientes)))
-        if len(referencia) < MINIMO_REFERENCIA:
-            lineas.append(
-                _linea(
-                    clave=clave,
-                    etiqueta=d.etiqueta,
-                    na=(
-                        f"hay {len(referencia)} semanas anteriores con las que "
-                        f"comparar y hacen falta {MINIMO_REFERENCIA}: con menos, "
-                        f"decir si esta semana es alta o baja sería inventárselo"
-                    ),
-                    unidad=d.sufijo,
-                    n_reciente=len(recientes),
-                    n_referencia=len(referencia),
-                )
-            )
-            continue
-
-        media = fmean(recientes)
-        pct = percentil_de(media, referencia)
-        nivel, frase = _nivel(pct or 0.0)
-        if nivel == "normal":
-            valencia = "normal"
-        elif d.sentido == "alto_mejor":
-            valencia = "peor" if nivel.endswith("bajo") else "mejor"
-        elif d.sentido == "alto_peor":
-            valencia = "mejor" if nivel.endswith("bajo") else "peor"
-        else:
-            valencia = "neutro"
-
         lineas.append(
-            _linea(
-                clave=clave,
-                etiqueta=d.etiqueta,
-                nivel=nivel,
-                valencia=valencia,
-                lectura=frase,
-                media=round(media, 1),
-                unidad=d.sufijo,
-                percentil=round(pct, 0) if pct is not None else None,
-                n_reciente=len(recientes),
-                n_referencia=len(referencia),
+            _linea_de_serie(
+                d, S.serie(session, clave, desde, hoy, cob=cob), corte=corte
+            )
+        )
+
+    # Las tres del formulario que se contestan con un Sí o un No.
+    #
+    # Aquí es donde «se cuentan en la tendencia» deja de ser una frase. La media
+    # de una serie de ceros y unos es una PROPORCIÓN, así que la línea dice «has
+    # dicho que sí el 43 % de los últimos siete días» y el percentil la sitúa
+    # contra todas tus semanas anteriores. Eso responde a la única pregunta que
+    # justifica contestarlas cada mañana durante meses: ¿me está bajando el
+    # apetito, o es que esta semana ha sido rara?
+    #
+    # Los deslizadores NO están en esta lista, y no es un olvido: no lo estaban
+    # antes de existir las preguntas y meterlos ahora sería otra decisión, de
+    # otro día, con su propio motivo. Lo que se pidió es que las respuestas de
+    # Sí/No se contaran en la tendencia, y se cuentan.
+    tabla = tabla_discordancia(session, desde, hoy)
+    for clave, d in S.PREGUNTAS.items():
+        lineas.append(
+            _linea_de_serie(
+                d,
+                S.serie(session, clave, desde, hoy, cob=cob),
+                corte=corte,
+                # Solo la discordancia. Las dos preguntas crudas se leen solas
+                # -«has dicho que sí el 43 % de los días» no tiene doble
+                # lectura-; la que sale de restarlas, no.
+                tabla=tabla if clave == "discordancia" else None,
+                # De proporción a porcentaje, y con el "%" puesto. Sin esto la
+                # portada imprimiría «0,4» encima de la palabra "apetece", que
+                # no significa nada a las siete de la mañana. `d.sufijo` no
+                # sirve aquí porque la unidad declarada es "0-1", que es un
+                # rango -bueno para un eje- y no un sufijo.
+                escala=100.0,
+                unidad="%",
+                decimales=0,
             )
         )
 

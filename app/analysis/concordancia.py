@@ -46,6 +46,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.analysis import series as S
+from app.analysis.preguntas import tabla_discordancia
 from app.analysis.stats import corregir_tanda, correlacion, emparejar, mejor_desfase
 
 # Cuántos días mira por defecto. Coincide a propósito con la ventana del
@@ -261,13 +262,19 @@ def _ventana(dias: int, hoy: date | None) -> tuple[date, date]:
 
 
 def _claves_de_la_vista() -> list[str]:
-    """Deslizadores, métricas de Garmin y lo que haga falta para las parejas.
+    """Deslizadores, preguntas, métricas de Garmin y lo que pidan las parejas.
 
     Se calcula, no se escribe. Añadir una pareja nueva con una serie de entreno
     que no estuviera aquí dejaría la correlación calculada pero el gráfico sin
     una de sus dos líneas, y nadie se daría cuenta hasta abrirlo en el móvil.
+
+    `S.PREGUNTAS` va NOMBRADO, y esa es la mitad del diseño de `series.py`: las
+    dos respuestas de Sí/No y la discordancia no viven en `SLIDERS` justamente
+    para que llegar hasta aquí cueste escribirlo. Se escribe, porque se pidió
+    que se contaran en todas las correlaciones, y se escribe en este sitio y no
+    en la lista que consulta el semáforo.
     """
-    claves = list(S.SLIDERS) + list(S.GARMIN)
+    claves = list(S.SLIDERS) + list(S.PREGUNTAS) + list(S.GARMIN)
     for p in PARES:
         for c in (p.x, p.y):
             if c not in claves:
@@ -331,6 +338,18 @@ def vista_concordancia(
                 **d.como_dict(),
                 "n": sum(1 for v in valores.values() if v is not None),
                 "puntos": puntos,
+                # La tabla de las cuatro casillas, pegada a la serie que no se
+                # puede leer sin ella. Va en TODAS las series con valor `None`
+                # -y no solo en la que la tiene- por la misma razón que `_linea`
+                # de la portada tiene siempre las mismas claves: en JavaScript,
+                # una clave que falta no da error, da `undefined`, y de ahí sale
+                # una rama elegida al revés que nadie ve hasta que la ve el
+                # usuario.
+                "tabla": (
+                    tabla_discordancia(session, desde, hasta)
+                    if clave == "discordancia"
+                    else None
+                ),
             }
         )
 
@@ -439,14 +458,30 @@ def vista_desfase(
     metodo: str = "spearman",
     rango: range = RANGO_DESFASE,
 ) -> dict[str, Any]:
-    """Vista 2: los siete deslizadores contra las cinco métricas, de -3 a +3.
+    """Vista 2: los siete deslizadores y las tres preguntas contra las cinco métricas.
 
-    La rejilla entera, treinta y cinco casillas, sin filtrar por "las que salen
-    bien". Una casilla que sale a cero también es una respuesta -ese deslizador y
-    esa métrica no tienen nada que ver, ni a la vez ni con retraso- y esconderla
-    dejaría la rejilla llena de las que sobrevivieron por azar, que con treinta y
-    cinco intentos son unas cuantas. Por eso viaja también la `p` de cada una: la
-    forma de no engañarse con esta tabla es mirarla entera.
+    La rejilla entera, cincuenta casillas, sin filtrar por "las que salen bien".
+    Una casilla que sale a cero también es una respuesta -ese deslizador y esa
+    métrica no tienen nada que ver, ni a la vez ni con retraso- y esconderla
+    dejaría la rejilla llena de las que sobrevivieron por azar, que con cincuenta
+    intentos son unas cuantas. Por eso viaja también la `p` de cada una: la forma
+    de no engañarse con esta tabla es mirarla entera.
+
+    Eran treinta y cinco y ahora son cincuenta porque las dos preguntas de Sí/No
+    y la discordancia entran por derecho: se pidió que se contaran en todas las
+    correlaciones, y una respuesta que se guarda y no se cruza con nada es un
+    campo de la base de datos, no una pregunta.
+
+    Y ese aumento del 43 % en el número de casillas TIENE UN PRECIO, que se paga
+    a sabiendas: con más intentos, más casillas cruzan el 0,05 por puro azar. El
+    precio se paga aquí y no se disimula porque la alternativa -mirarlas sin
+    meterlas en la tabla- sería el mismo número de intentos con la cuenta
+    escondida.
+
+    De las tres filas nuevas, dos son la misma pregunta: `discordancia` se
+    calcula de las otras dos, así que si sale algo en ella conviene mirar cuál de
+    las dos lo está trayendo antes de contarlo como un tercer hallazgo. Es el
+    mismo aviso que `MISMO_ORIGEN` le pone a la nota de sueño y a los minutos.
     """
     desde, hasta = _ventana(dias, hoy)
     cob = S.cobertura(session)
@@ -457,8 +492,13 @@ def vista_desfase(
     # base. El margen es lo que hace que la n de los extremos baje por falta de
     # datos de verdad y no por el corte de la consulta.
     margen = max(abs(min(rango)), abs(max(rango)))
+    # El eje de lo que se CONTESTA: los deslizadores y las preguntas. Las dos
+    # listas se nombran por separado porque en `series.py` están separadas, y
+    # están separadas para que nadie las junte por descuido en la lista que
+    # decide qué puede mirar el semáforo.
     sliders = {
-        c: S.serie(session, c, desde, hasta, cob=cob) for c in S.SLIDERS
+        c: S.serie(session, c, desde, hasta, cob=cob)
+        for c in [*S.SLIDERS, *S.PREGUNTAS]
     }
     metricas = {
         c: S.serie(

@@ -546,10 +546,18 @@ def test_con_la_base_vacia_sale_la_rejilla_entera_con_sus_motivos(db):
     """Nada de medias tintas: ningún gráfico oculto, ninguna vista aplazada.
 
     Con la base vacía siguen saliendo las cuatro exposiciones de bici y las cinco
-    continuas contra las doce respuestas, con el motivo escrito en cada casilla.
+    continuas contra TODAS las respuestas, con el motivo escrito en cada casilla.
     Lo que no sale son las rutinas y los ejercicios, y eso es correcto: no son
     una lista fija, se descubren de lo que se ha entrenado.
+
+    Las respuestas se CUENTAN de `series.py`, no se escriben. El número estaba
+    escrito -doce- y se quedó viejo en cuanto entraron las dos preguntas de Sí/No
+    y la discordancia. Un test que se pone rojo porque han aparecido respuestas
+    nuevas empuja a quitarlas, que es lo contrario de lo que quería comprobar:
+    que no falte ninguna.
     """
+    from app.analysis import series as S
+
     v = vista_impacto(db, dias=N, hoy=HOY)
 
     exposiciones = {f["exposicion"]["clave"] for f in v["rejilla"]}
@@ -564,7 +572,9 @@ def test_con_la_base_vacia_sale_la_rejilla_entera_con_sus_motivos(db):
         "minutos_bici",
         "desnivel_bici",
     }
-    assert len(v["rejilla"]) == 9 * 12
+    respuestas = {f["respuesta"]["clave"] for f in v["rejilla"]}
+    assert respuestas == set(S.SLIDERS) | set(S.PREGUNTAS) | set(S.GARMIN)
+    assert len(v["rejilla"]) == 9 * len(respuestas)
 
     for fila in v["rejilla"]:
         for c in fila["por_dia"]:

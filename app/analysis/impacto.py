@@ -559,8 +559,23 @@ def _lectura_recuperacion(
 
 
 def _respuestas() -> dict[str, S.Definicion]:
-    """Contra qué se mide la resaca: los siete deslizadores y las cinco métricas."""
-    return {**S.SLIDERS, **S.GARMIN}
+    """Contra qué se mide la resaca: deslizadores, preguntas y métricas del reloj.
+
+    Las tres preguntas entran como RESPUESTA y nunca como exposición, y la
+    distinción es la que da sentido a toda esta vista. Como respuesta, la frase
+    que sale es «salir largo en bici te baja el apetito de entrenar al día
+    siguiente», que es exactamente lo que esta pantalla existe para descubrir.
+    Como exposición sería «no tener ganas te baja la variabilidad», que suena
+    igual de bien y es una inversión de la flecha sin ningún dato detrás: el
+    apetito de un martes no CAUSA la HRV del miércoles, y si las dos se mueven
+    juntas lo más probable es que las mueva la misma tercera cosa.
+
+    `will_train` y `discordancia` son `neutro` en `series.py`, así que sus
+    hallazgos saldrán con valencia neutra: la portada dirá que suben o bajan y no
+    dirá que eso sea bueno ni malo. Es lo correcto y es lo que se pidió: ninguna
+    de las dos preguntas emite un juicio.
+    """
+    return {**S.SLIDERS, **S.PREGUNTAS, **S.GARMIN}
 
 
 def vista_impacto(

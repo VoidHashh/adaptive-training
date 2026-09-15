@@ -880,9 +880,9 @@ def metrics_portada(
     las está sacando.
     """
     from app.analysis.portada import vista_portada
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     return vista_portada(s, cfg, dias=dias, metodo=_metodo(metodo))
 
 
@@ -896,9 +896,9 @@ def metrics_concordancia(
     """Vista 1: lo que nota frente a lo que mide el reloj, el mismo día."""
     from app.analysis.concordancia import vista_concordancia
     from app.analysis.encabezados import poner
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     return poner(
         "concordancia", vista_concordancia(s, dias=dias, metodo=_metodo(metodo))
     )
@@ -914,9 +914,9 @@ def metrics_desfase(
     """Vista 2: la misma pregunta corriendo la ventana de -3 a +3 días."""
     from app.analysis.concordancia import vista_desfase
     from app.analysis.encabezados import poner
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     return poner("desfase", vista_desfase(s, dias=dias, metodo=_metodo(metodo)))
 
 
@@ -930,9 +930,9 @@ def metrics_impacto(
     """Vista 3: qué le hace al cuerpo cada cosa, uno, dos y tres días después."""
     from app.analysis.encabezados import poner
     from app.analysis.impacto import vista_impacto
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     return poner("impacto", vista_impacto(s, dias=dias, metodo=_metodo(metodo)))
 
 
@@ -957,9 +957,9 @@ def metrics_ranking_ejercicios(
     """
     from app.analysis.encabezados import poner
     from app.analysis.impacto import ranking_ejercicios
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     try:
         return poner(
             "ranking-ejercicios",
@@ -991,9 +991,9 @@ def metrics_auditoria(
     """
     from app.analysis.auditoria import vista_auditoria
     from app.analysis.encabezados import poner
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     return poner("auditoria", vista_auditoria(s, cfg, dias=dias))
 
 
@@ -1015,7 +1015,7 @@ def metrics_percepcion(
     Tampoco lleva `metodo`, por lo mismo que la auditoría: aquí no se
     correlaciona nada, se restan dos percentiles ya guardados.
 
-    `comprobar_sliders` sí se llama, aunque esta vista no lea los deslizadores
+    `comprobar_series` sí se llama, aunque esta vista no lea los deslizadores
     de la base: los lee de `series.DEFINICIONES` para saber el sentido de cada
     uno, y un deslizador que exista en el formulario y no en esa tabla se caería
     del índice de percepción sin dar un solo error. Es la defensa de siempre
@@ -1023,9 +1023,9 @@ def metrics_percepcion(
     """
     from app.analysis.encabezados import poner
     from app.analysis.rendimiento import vista_percepcion
-    from app.analysis.series import comprobar_sliders
+    from app.analysis.series import comprobar_series
 
-    comprobar_sliders(cfg)
+    comprobar_series(cfg)
     return poner("percepcion", vista_percepcion(s, dias=dias))
 
 

@@ -76,6 +76,14 @@ class Definicion:
     # Días que hay que RESTAR a la fecha de la fila para colocar el valor en el
     # día del que habla. Hoy solo `yesterday_rpe` lo usa; ver la cabecera.
     desplazamiento: int = 0
+    # De qué otras series sale esta, si no tiene columna propia.
+    #
+    # Vacío para todo lo que se mide o se contesta. Lo lleva `discordancia`, que
+    # es la única serie de aquí que no existe en ninguna tabla: se calcula, día a
+    # día, de las dos respuestas de las que habla. Tenerlo como campo y no como
+    # un `if clave == "discordancia"` escondido en la lectura es lo que hace que
+    # la siguiente derivada no tenga que tocar la función que lee.
+    deriva_de: tuple[str, ...] = ()
     # Cómo se llama esta serie DENTRO DE UNA FRASE, con su artículo puesto.
     #
     # "Variabilidad (HRV)" es un buen encabezado de columna y una frase
@@ -189,6 +197,87 @@ SLIDERS: dict[str, Definicion] = {
     )
 }
 
+# Las dos preguntas de Sí/No, y la que sale de las dos.
+#
+# EN SU PROPIO DICCIONARIO, Y ESO ES LA MITAD DEL DISEÑO
+# ------------------------------------------------------
+# Meterlas en `SLIDERS` habría sido una línea menos y el error de siempre: hay
+# sitios que recorren `SLIDERS` para decidir qué PUEDE mirar el semáforo, qué se
+# pinta encima del calendario y qué sale en el desplegable de percepción. Un
+# `will_train` colado ahí se habría ganado esos tres permisos sin que nadie los
+# concediera, y el primero es justo el que el proyecto entero se ha dedicado a
+# negar: «no me apetece» es una decisión, no una medida, y no puede pintar el
+# semáforo de rojo.
+#
+# Separadas, cada sitio que las quiera tiene que nombrarlas. Eso es más trabajo
+# hoy y es la razón de que mañana no se cuelen donde no deben.
+#
+# Y SE MIDEN EN 0-1, QUE NO ES UNA TRAMPA
+# ---------------------------------------
+# Un booleano como serie es una recta de ceros y unos, y su media es una
+# proporción: 0,43 es «dijiste que sí el 43 % de los días». Eso se puede
+# correlacionar -es lo que hace Spearman con cualquier variable de dos valores- y
+# se puede pintar.
+#
+# Lo que NO se puede es dejar que un `None` entre en esa cuenta como 0. Ahí está
+# toda la diferencia entre «contestaste que no» y «no contestaste», y es la misma
+# distinción que el formulario, la API y el mensaje del día defienden cada uno por
+# su lado. Aquí la defiende `_serie_checkin`, que convierte con `float(v)` y NUNCA
+# con `bool(v)`, y que deja el `None` pasar de largo antes de convertir nada.
+PREGUNTAS: dict[str, Definicion] = {
+    d.clave: d
+    for d in (
+        Definicion(
+            "wants_to_train",
+            "Apetece entrenar (sí/no)",
+            "checkin",
+            "0-1",
+            # Igual que `training_desire`, del que esto es la versión de dos
+            # valores: que apetezca es la parte buena de la escala.
+            "alto_mejor",
+            (0, 1),
+            en_frase="el apetito de entrenar",
+        ),
+        Definicion(
+            "will_train",
+            "Va a entrenar (sí/no)",
+            "checkin",
+            "0-1",
+            # NEUTRO, y no es una duda: entrenar no es mejor que no entrenar. El
+            # día que toca descanso, un «no» es el plan cumpliéndose. Ponerle
+            # `alto_mejor` sería que el análisis escribiera en cada frase que
+            # entrenar más es estar mejor, que es precisamente la creencia por la
+            # que este sistema existe para no tenerla.
+            "neutro",
+            (0, 1),
+            en_frase="la intención de entrenar",
+        ),
+        # La derivada. Sin columna: se calcula de las dos de arriba.
+        Definicion(
+            "discordancia",
+            "Discordancia (apetece ≠ voy)",
+            "checkin",
+            "0-1",
+            # NEUTRO otra vez, y aquí es lo importante de toda esta entrada.
+            #
+            # La discordancia junta dos cosas que no se parecen en nada: «me
+            # apetecía y no fui» y «no me apetecía y fui». La primera es un
+            # obstáculo; la segunda es disciplina, o es empeñarse, según el día.
+            # Un solo bit no distingue cuál de las dos fue, así que declararla
+            # «alto_peor» sería que el sistema diera por malo entrenar sin ganas
+            # sin haberlo demostrado nunca.
+            #
+            # Por eso el binario viaja SIEMPRE con la tabla de las cuatro
+            # casillas al lado: el binario es lo que se puede correlacionar, y
+            # las cuatro casillas son lo que dice en qué dirección pasó.
+            "neutro",
+            (0, 1),
+            deriva_de=("wants_to_train", "will_train"),
+            en_frase="la distancia entre lo que te apetece y lo que haces",
+        ),
+    )
+}
+
 GARMIN: dict[str, Definicion] = {
     d.clave: d
     for d in (
@@ -241,7 +330,13 @@ ENTRENO: dict[str, Definicion] = {
     )
 }
 
-DEFINICIONES: dict[str, Definicion] = {**SLIDERS, **GARMIN, **ENTRENO}
+DEFINICIONES: dict[str, Definicion] = {**SLIDERS, **PREGUNTAS, **GARMIN, **ENTRENO}
+
+# Lo que no sale de ninguna columna. Se calcula al leer, de las series que diga
+# su `deriva_de`.
+DERIVADAS: dict[str, Definicion] = {
+    k: d for k, d in DEFINICIONES.items() if d.deriva_de
+}
 
 # Las cinco de `ENTRENO` hacen doble papel: son RESPUESTA -"¿qué pasa con el
 # desnivel?"- y son EXPOSICIÓN -"¿qué te hace acumular desnivel?"-, y en cada
@@ -257,18 +352,91 @@ COMO_EXPOSICION: dict[str, str] = {
     "series_fuerza": "acumular series",
 }
 
+
+def cuadran(
+    registro: dict[str, Any],
+    contra: dict[str, Any],
+    *,
+    nombre: str,
+    nombre_contra: str,
+    falta: str,
+) -> None:
+    """Dos diccionarios que tienen que llevar las mismas claves, o `ValueError`.
+
+    Es el mismo patrón dos veces -`COMO_EXPOSICION` contra `ENTRENO`, `_COMBINA`
+    contra `DERIVADAS`- y las dos se comprueban al IMPORTAR, que es todo el
+    punto: el fallo que evitan no se parece a un fallo. Una serie sin su entrada
+    no revienta al arrancar; revienta -o peor, calla- el día que alguien abre la
+    pantalla que la usa, con el usuario delante y sin nada en el log.
+
+    Y está sacada a función, en vez de repetida en dos `if`, porque un `if` a
+    nivel de módulo no se puede probar: se ejecuta una sola vez, al importar, con
+    los datos buenos, y cualquier test que lo mire acaba comprobando los datos y
+    no la comprobación. Eso ya pasó aquí -la batería de mutaciones cambió el `if`
+    por un `if False:` y nadie se quejó-, y una guardia que nadie vigila es una
+    guardia que alguien borrará por inútil.
+    """
+    if set(registro) == set(contra):
+        return
+    raise ValueError(
+        f"`{nombre}` y `{nombre_contra}` han dejado de coincidir "
+        f"(sobran: {sorted(set(registro) - set(contra))}; "
+        f"faltan: {sorted(set(contra) - set(registro))}). {falta}"
+    )
+
+
 # Sin defecto y comprobado al importar. Una serie de entreno nueva sin su
 # infinitivo no daría un error: daría una frase con la etiqueta de tabla metida
 # a la fuerza -"Desnivel acumulado te baja la variabilidad"- o, peor, un hueco
 # donde tendría que ir el sujeto. Y eso solo se vería en la pantalla del
 # usuario, nunca en un log.
-if set(COMO_EXPOSICION) != set(ENTRENO):
-    raise ValueError(
-        "`COMO_EXPOSICION` y `ENTRENO` han dejado de coincidir "
-        f"(sobran: {sorted(set(COMO_EXPOSICION) - set(ENTRENO))}; "
-        f"faltan: {sorted(set(ENTRENO) - set(COMO_EXPOSICION))}). Toda serie de "
-        "entreno necesita cómo se nombra cuando es la causa y no el efecto."
-    )
+cuadran(
+    COMO_EXPOSICION,
+    ENTRENO,
+    nombre="COMO_EXPOSICION",
+    nombre_contra="ENTRENO",
+    falta="Toda serie de entreno necesita cómo se nombra cuando es la causa y "
+    "no el efecto.",
+)
+
+
+def _discordancia(partes: tuple[float | None, ...]) -> float | None:
+    """1 si una de las dos respuestas dice sí y la otra no; 0 si van juntas.
+
+    La primera línea es la única que importa: si falta CUALQUIERA de las dos, el
+    día no vale. No hay discordancia de la que hablar cuando solo se sabe la
+    mitad, y darle un 0 -"pues no hubo discordancia"- sería inventar un día de
+    coherencia cada vez que el formulario se envió a medias.
+
+    Es la misma cuenta, con las mismas palabras, que hace `signals.py` para el
+    mensaje del día. Que esté escrita dos veces es a propósito: allí se decide
+    con los valores de HOY y aquí se lee el histórico de meses, y juntarlas
+    obligaría a uno de los dos a cargar con la forma del otro. Lo que no puede
+    pasar es que difieran, y de eso hay test.
+    """
+    apetece, voy = partes
+    if apetece is None or voy is None:
+        return None
+    return 1.0 if bool(apetece) != bool(voy) else 0.0
+
+
+# Cómo se calcula cada derivada, al lado de la lista de derivadas y no dentro de
+# la función que lee. Igual que `_COLUMNAS_ENTRENO`: quien añada una serie que
+# sale de otras pone aquí su cuenta y no toca `_serie_derivada`.
+_COMBINA: dict[str, Any] = {
+    "discordancia": _discordancia,
+}
+
+# Y comprobado al importar, por lo mismo que `COMO_EXPOSICION`: una derivada sin
+# su cuenta no daría un error al arrancar, daría un `KeyError` el día que alguien
+# pidiera esa serie desde la portada, con el usuario delante.
+cuadran(
+    _COMBINA,
+    DERIVADAS,
+    nombre="_COMBINA",
+    nombre_contra="DERIVADAS",
+    falta="Toda serie con `deriva_de` necesita la cuenta que la saca de sus partes.",
+)
 
 # Las columnas reales detrás de cada serie de entreno, y de qué tabla salen.
 _COLUMNAS_ENTRENO: dict[str, tuple[Any, Any]] = {
@@ -307,6 +475,56 @@ def comprobar_sliders(config: Any) -> None:
         "config (" + "; ".join(partes) + "). Añádelo a `app/analysis/series.py` "
         "con su sentido, o quítalo del YAML."
     )
+
+
+def comprobar_preguntas(config: Any) -> None:
+    """Lo mismo que `comprobar_sliders`, para las preguntas de Sí/No.
+
+    No existía, y esa es la razón de que exista ahora. `comprobar_sliders` lleva
+    escrito desde el principio por qué hace falta -un deslizador nuevo que no
+    esté en la tabla no aparece en ninguna vista y no da ningún error-, y las dos
+    preguntas nacieron con el mismo agujero abierto y sin nadie mirándolo. Una
+    tercera pregunta -«¿has dormido fuera de casa?», la que sea- se habría
+    contestado todas las mañanas, se habría guardado en su columna, y no habría
+    salido en una sola correlación. El formulario la pediría, la base la
+    guardaría y el análisis no la habría visto nunca.
+
+    Las DERIVADAS no se comparan contra el YAML a propósito: `discordancia` no es
+    una pregunta que nadie conteste, es lo que sale de restar dos que sí. Exigir
+    que estuviera en `checkin_preguntas` obligaría a poner en el formulario una
+    pregunta que el formulario no puede hacer.
+    """
+    from app.repository import preguntas_del_config
+
+    del_yaml = set(preguntas_del_config(config))
+    de_aqui = set(PREGUNTAS) - set(DERIVADAS)
+    if del_yaml == de_aqui:
+        return
+    faltan = sorted(del_yaml - de_aqui)
+    sobran = sorted(de_aqui - del_yaml)
+    partes = []
+    if faltan:
+        partes.append(f"en el config pero no en `PREGUNTAS`: {faltan}")
+    if sobran:
+        partes.append(f"en `PREGUNTAS` pero no en el config: {sobran}")
+    raise ValueError(
+        "las preguntas del análisis no coinciden con `checkin_preguntas` del "
+        "config (" + "; ".join(partes) + "). Añádela a `app/analysis/series.py` "
+        "con su sentido y su frase, o quítala del YAML."
+    )
+
+
+def comprobar_series(config: Any) -> None:
+    """Las dos comprobaciones, en una sola llamada.
+
+    Existe porque `comprobar_sliders(cfg)` estaba copiado literal en las siete
+    vistas de métricas, y añadir una segunda comprobación habría sido copiarla
+    siete veces más y olvidarla en la octava vista que se escribiera. Con una
+    sola puerta, la lista que se añada mañana queda vigilada en todas partes sin
+    tocar ni un endpoint.
+    """
+    comprobar_sliders(config)
+    comprobar_preguntas(config)
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +599,12 @@ def serie(
             f"serie desconocida: {clave!r}. Las que hay: {sorted(DEFINICIONES)}"
         )
     d = DEFINICIONES[clave]
+    # Antes que la fuente, porque una derivada TIENE fuente -`discordancia` es
+    # del check-in, y así sale en el desplegable junto a las dos de las que
+    # viene- pero no tiene columna. Preguntar primero por la fuente la mandaría a
+    # `_serie_checkin` a buscar un `Checkin.discordancia` que no existe.
+    if d.deriva_de:
+        return _serie_derivada(session, d, desde, hasta, cob)
     if d.fuente == "checkin":
         return _serie_checkin(session, d, desde, hasta)
     if d.fuente == "garmin":
@@ -405,10 +629,41 @@ def _serie_checkin(
     ).all()
     salida: dict[date, float | None] = {}
     for f, v in filas:
+        # `float(v)` y no `bool(v)`, y la diferencia solo se nota con las dos
+        # preguntas de Sí/No. `float` de un booleano da 1.0 o 0.0 y de un `None`
+        # revienta -por eso el guardia va delante-; `bool` de un `None` da
+        # `False` sin quejarse, y ahí se habría perdido para siempre la
+        # diferencia entre "contestaste que no" y "no contestaste". Toda la
+        # columna se leería como una fila de noes.
         salida[a_fecha(f) - timedelta(days=d.desplazamiento)] = (
             None if v is None else float(v)
         )
     return salida
+
+
+def _serie_derivada(
+    session: Session,
+    d: Definicion,
+    desde: date,
+    hasta: date,
+    cob: Cobertura | None,
+) -> dict[date, float | None]:
+    """La serie que no está en ninguna tabla: se saca de las que dice `deriva_de`.
+
+    Los días son la UNIÓN de los días de sus partes, no la intersección. Parece
+    lo contrario de lo que conviene -un día con una sola mitad no puede dar un
+    valor- pero da igual: la cuenta devuelve `None` para ese día, y un día con
+    `None` y un día que no está valen lo mismo para `emparejar`. Con la
+    intersección el resultado sería el mismo diccionario menos unas claves
+    nulas, y a cambio habría que decidir aquí qué significa que falte una parte,
+    que es justo lo que decide la cuenta.
+    """
+    partes = [serie(session, k, desde, hasta, cob=cob) for k in d.deriva_de]
+    combina = _COMBINA[d.clave]
+    dias: set[date] = set()
+    for p in partes:
+        dias |= set(p)
+    return {dia: combina(tuple(p.get(dia) for p in partes)) for dia in sorted(dias)}
 
 
 def _serie_garmin(

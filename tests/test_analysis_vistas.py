@@ -634,17 +634,24 @@ def test_sin_retardo_gana_el_cero(db):
     assert "a la vez" in c["lectura"]
 
 
-def test_la_rejilla_trae_las_treinta_y_cinco_casillas_aunque_no_haya_nada(db):
-    """Siete deslizadores por cinco métricas, sin filtrar por las que salen bien.
+def test_la_rejilla_trae_todas_las_casillas_aunque_no_haya_nada(db):
+    """Deslizadores y preguntas por métricas, sin filtrar por las que salen bien.
 
-    Filtrar dejaría en pantalla justo las que sobrevivieron al azar. Con treinta
-    y cinco intentos, unas cuantas pasan cualquier filtro por casualidad, y
-    esconder las otras treinta convierte la rejilla en una máquina de confirmar
-    lo que uno ya creía.
+    Filtrar dejaría en pantalla justo las que sobrevivieron al azar. Con
+    cincuenta intentos, unas cuantas pasan cualquier filtro por casualidad, y
+    esconder las otras convierte la rejilla en una máquina de confirmar lo que
+    uno ya creía.
+
+    El total se CUENTA de `series.py`. Estaba escrito -35- y se quedó viejo el
+    día que entraron las dos preguntas de Sí/No y la discordancia. Un número a
+    mano aquí se pone rojo porque han aparecido filas nuevas, que es el
+    contrario exacto de lo que este test vigila: que no falte ninguna.
     """
     v = vista_desfase(db, dias=90, hoy=HOY)
 
-    assert len(v["rejilla"]) == len(S.SLIDERS) * len(S.GARMIN) == 35
+    assert len(v["rejilla"]) == (len(S.SLIDERS) + len(S.PREGUNTAS)) * len(S.GARMIN)
+    ejes_x = {c["x"] for c in v["rejilla"]}
+    assert ejes_x == set(S.SLIDERS) | set(S.PREGUNTAS)
     for c in v["rejilla"]:
         assert c["mejor_desfase"] is None
         assert c["na"], f"{c['x']}/{c['y']} sale sin motivo"
