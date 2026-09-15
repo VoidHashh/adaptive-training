@@ -202,6 +202,12 @@ def _huella_del_armazon() -> str:
 # crezca es la señal de que la regla se está cumpliendo.
 HUELLAS_DEL_ARMAZON = {
     "v6": "6f2fbb1d5b8582bacc197674486762dafc8a004db939ec4cf97244eebd648c5a",
+    # v7: las dos preguntas de Sí/No en el formulario. Toca los tres archivos
+    # del armazón que se abren todas las mañanas -`index.html`, `app.js` y
+    # `styles.css`-, así que es exactamente el caso para el que está la regla:
+    # un móvil que estuvo sin cobertura se quedaría con el formulario de antes,
+    # sin las preguntas, y no habría nada que lo dijera.
+    "v7": "7c82f876e4881b9470a7719e87999eea6e486bec71659c7067d58d994be3fbcd",
 }
 
 
@@ -1019,6 +1025,413 @@ def test_no_hay_dos_copias_del_escape_de_html():
     assert definiciones == ["comun.js"], (
         f"`escapar` está definida en {definiciones}; tiene que estar solo en "
         f"comun.js"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Las dos preguntas de Sí/No, rellenadas de verdad
+# ---------------------------------------------------------------------------
+#
+# Lo que se persigue en este bloque entero es UNA sola cosa: que el tercer estado
+# sobreviva al formulario.
+#
+# El motor distingue `True`, `False` y `None`, la base guarda la columna nulable
+# y el mensaje del día mira `is not False` precisamente para no confundir "he
+# dicho que no" con "no me lo han dicho". Todo eso está probado en Python y todo
+# eso da igual si la pantalla que GENERA el dato aplasta los tres estados en dos.
+#
+# Y aplastarlos es de lo más fácil que hay aquí, porque JavaScript lo hace solo y
+# en las dos direcciones: `Number(false)` es 0 -que en un deslizador es un
+# extremo del rango, no un hueco- y `Boolean(0)` es `false` -que en una pregunta
+# es una respuesta-. Ninguna de las dos conversiones da error, ninguna deja
+# rastro, y las dos producen un check-in impecable con una respuesta que nadie
+# dio. Contra eso no vale leer el archivo: hay que pulsar el botón y mirar el
+# JSON que sale por el cable, y eso es lo que hace `tests/checkin_pwa.mjs`.
+
+
+def _rellenar(tmp_path, hoy: dict, acciones: list[dict], borrador=None) -> dict:
+    """Abre el formulario contra un `/api/checkin/today` de mentira y lo rellena.
+
+    Devuelve lo que quedó en pantalla y, sobre todo, `cuerpo`: el JSON EXACTO
+    del POST, o `None` si no llegó a salir.
+
+    `borrador` siembra el `localStorage` antes de abrir, que es como se abre una
+    pantalla por segunda vez después de un envío que no salió. Cada llamada es un
+    proceso de `node` nuevo y no recuerda nada de la anterior: eso es a propósito
+    -un test que dependiera del orden de ejecución de los otros sería peor que
+    no tenerlo- y por eso el estado previo se pasa explícitamente.
+    """
+    guion = tmp_path / "guion.json"
+    guion.write_text(
+        json.dumps(
+            {"hoy": hoy, "acciones": acciones, "borrador": borrador},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    r = subprocess.run(
+        ["node", "tests/checkin_pwa.mjs", str(guion)],
+        cwd=RAIZ, capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    assert r.returncode == 0, f"el arnés no terminó:\n{r.stdout}\n{r.stderr}"
+    # `app.js` escribe por consola al cargarse -el aviso del service worker-, así
+    # que el JSON es la ÚLTIMA línea.
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+def _hoy(**cambios) -> dict:
+    """Un `/api/checkin/today` con la forma que manda el endpoint de verdad."""
+    base = {
+        "day": "2026-09-15",
+        "submitted": False,
+        "values": {},
+        "comments": None,
+        "sliders": [
+            {"key": "fatigue", "label": "Fatiga", "hint_low": "ninguna",
+             "hint_high": "mucha"},
+            {"key": "yesterday_rpe", "label": "Esfuerzo de ayer", "optional": True},
+        ],
+        "preguntas": [
+            {"key": "wants_to_train", "label": "¿Te apetece entrenar hoy?"},
+            {"key": "will_train", "label": "¿Vas a entrenar hoy?"},
+        ],
+        "comment_label": "Comentarios",
+    }
+    base.update(cambios)
+    return base
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_no_viaja_como_false_y_no_como_cero(tmp_path):
+    """EL TEST DE TODO ESTO. Un «No» pulsado llega al servidor como `false`.
+
+    `fijar()` hacía -y el resto del archivo sigue haciendo, para los
+    deslizadores- `estado.valores[key] = Number(valor)`. Metida una pregunta por
+    ese camino, un "No" se habría enviado como `0`.
+
+    Y `0` no explota en ningún sitio. Pydantic lo acepta en un `bool | None` y lo
+    convierte de vuelta a `False`, la columna lo guarda, el motor lo lee como un
+    "no" y el mensaje se calla la sesión. O sea: hoy habría funcionado. Lo que se
+    habría roto es el día que alguien mire la columna para contar discordancias y
+    se encuentre ceros y unos donde debería haber tres estados, sin forma de
+    saber cuáles vinieron de un dedo y cuáles de un `Number()`.
+
+    Se comprueba con `is` y no con `==` a propósito: en Python `0 == False` es
+    verdadero, así que un `assert cuerpo["will_train"] == False` daría verde con
+    el fallo puesto. Este test tiene que mirar el TIPO.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 3},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "si"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "no"},
+        {"tipo": "enviar"},
+    ])
+
+    cuerpo = salida["cuerpo"]
+    assert cuerpo is not None, "el formulario no llegó a enviarse"
+    assert cuerpo["will_train"] is False, (
+        f"un «No» ha salido como {cuerpo['will_train']!r}. Si es 0, alguien ha "
+        f"metido las preguntas por el camino de los deslizadores."
+    )
+    assert cuerpo["wants_to_train"] is True
+    assert cuerpo["fatigue"] == 3 and isinstance(cuerpo["fatigue"], int)
+
+    # Y que se VEA lo contestado, que es la otra mitad. Un estado interno
+    # correcto con los dos botones en blanco es un formulario que ha decidido
+    # por su cuenta y no lo enseña.
+    assert salida["elegidas"] == {"wants_to_train": "si", "will_train": "no"}
+    assert salida["aria"]["will_train.no"] == "true"
+    assert salida["aria"]["will_train.si"] == "false"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_una_pregunta_sin_tocar_no_viaja_de_ninguna_manera(tmp_path):
+    """El tercer estado se manda no mandando nada, y mientras tanto no se envía.
+
+    Es la misma regla que ya tenían los deslizadores -"uno que nadie ha tocado no
+    vale 5, vale nada"- aplicada a las preguntas. Con una casilla de verificación
+    esto sería imposible de escribir: la posición "sin marcar" tendría que
+    significar a la vez "no" y "no lo he mirado", y el `false` inventado saldría
+    hacia el servidor sin que nada pudiera distinguirlo después.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 5},
+    ])
+
+    assert salida["cuerpo"] is None and salida["veces_enviado"] == 0
+    assert salida["enviar_deshabilitado"] is True
+    assert salida["valores"] == '{"fatigue":5}', (
+        f"algo se ha colado en los valores sin haberlo contestado: "
+        f"{salida['valores']}"
+    )
+    assert salida["sin_contestar"] == ["wants_to_train", "will_train"]
+    assert salida["elegidas"] == {"wants_to_train": None, "will_train": None}
+    # Y con nombre y apellidos, que es la regla de esta pantalla: un botón gris
+    # sin explicación es un callejón sin salida.
+    assert "¿Te apetece entrenar hoy?" in salida["faltan"]
+    assert "¿Vas a entrenar hoy?" in salida["faltan"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_cero_de_un_deslizador_si_viaja(tmp_path):
+    """El control del test de arriba, y no sobra.
+
+    Sin él, "la clave no está en el cuerpo" quedaría demostrado para el caso
+    falso sin haber demostrado nunca que el formulario sabe mandar un valor
+    falso. Un `if (estado.valores[s.key])` en vez de un `=== undefined` haría
+    pasar el test anterior y tiraría a la basura todos los ceros: "ninguna
+    molestia lumbar", que es el dato con el que se levanta un freno.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 0},
+        {"tipo": "responder", "key": "wants_to_train", "respuesta": "no"},
+        {"tipo": "responder", "key": "will_train", "respuesta": "no"},
+        {"tipo": "enviar"},
+    ])
+
+    cuerpo = salida["cuerpo"]
+    assert cuerpo["fatigue"] == 0, "un 0 contestado se ha perdido por el camino"
+    assert cuerpo["wants_to_train"] is False and cuerpo["will_train"] is False
+    assert salida["enviar_deshabilitado"] is False
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_pantalla_pregunta_lo_que_diga_el_config_y_no_lo_que_lleve_escrito(tmp_path):
+    """Ni una pregunta escrita a mano en el JavaScript.
+
+    Es la misma regla que ya regía para los deslizadores y por el mismo motivo:
+    con la lista escrita en la pantalla, añadir una pregunta al `config.yaml` la
+    dejaría fuera del formulario y el sistema decidiría sin ese dato sin que
+    nadie lo notara.
+
+    Se sirven TRES, y una de ellas no existe en el proyecto. Una pantalla con el
+    par escrito a mano pintaría dos y aprobaría todo lo demás.
+    """
+    hoy = _hoy(preguntas=[
+        {"key": "wants_to_train", "label": "¿Te apetece entrenar hoy?"},
+        {"key": "will_train", "label": "¿Vas a entrenar hoy?"},
+        {"key": "pregunta_inventada", "label": "¿Una que no existe?",
+         "nota": "con su nota debajo"},
+    ])
+    salida = _rellenar(tmp_path, hoy, [])
+
+    assert salida["preguntas"] == [
+        "wants_to_train", "will_train", "pregunta_inventada"
+    ], "la pantalla no pinta las preguntas que le manda el servidor"
+    assert "¿Una que no existe?" in salida["html_preguntas"]
+    assert "con su nota debajo" in salida["html_preguntas"]
+
+    # Y NO por el camino de los deslizadores. Un `<input type=range>` de 0 a 10
+    # para «¿Vas a entrenar hoy?» se contestaría con un número, el backend lo
+    # rechazaría con un 422 y desde el móvil eso es "el servidor ha rechazado el
+    # check-in" sin más pistas.
+    assert salida["rangos_en_preguntas"] == 0
+    assert "pregunta_inventada" not in salida["deslizadores"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_lo_ya_contestado_hoy_vuelve_a_la_pantalla_con_los_tres_estados(tmp_path):
+    """Reabrir el formulario después de haberlo enviado no cambia la respuesta.
+
+    `recuperar()` hacía `if (v !== null && v !== undefined) fijar(k, v)`, que ya
+    era correcto para `false` -es la comprobación explícita, no una de
+    veracidad-. Lo que faltaba era que `fijar` supiera repartir. Sin eso, un
+    `will_train: false` recuperado habría buscado un deslizador con esa clave, no
+    lo habría encontrado y se habría ido por la salida de "una clave que ya no
+    está en el config": la pregunta se quedaría en blanco y el siguiente envío la
+    mandaría sin contestar, borrando la respuesta de esta mañana.
+
+    El `wants_to_train: null` del payload es el tercer estado viniendo del
+    servidor, y tiene que llegar SIN CONTESTAR, no como un "no".
+    """
+    hoy = _hoy(
+        submitted=True,
+        values={"fatigue": 4, "wants_to_train": None, "will_train": False},
+        comments="dormí fatal",
+    )
+    salida = _rellenar(tmp_path, hoy, [])
+
+    assert salida["elegidas"] == {"wants_to_train": None, "will_train": "no"}
+    assert salida["sin_contestar"] == ["wants_to_train"]
+    # Y el botón sigue gris, porque de verdad falta una respuesta.
+    assert salida["enviar_deshabilitado"] is True
+    assert "¿Te apetece entrenar hoy?" in salida["faltan"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_el_borrador_del_movil_guarda_el_no_como_no(tmp_path):
+    """Lo que se escribió y no llegó a salir, incluidas las preguntas.
+
+    El borrador es la red de la pantalla para el envío que no llega, y guarda
+    `estado.valores` entero. Que un booleano sobreviva a `JSON.stringify` y a
+    `JSON.parse` no es gratis por el hecho de ser JSON: lo que lo decide es que
+    `fijar()` no lo pase por `Number()` al recuperarlo, que es exactamente el
+    mismo fallo de antes en el único sitio donde nadie lo estaría mirando.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 2},
+        {"tipo": "responder", "key": "will_train", "respuesta": "no"},
+    ])
+
+    borrador = salida["borrador"]
+    assert borrador is not None, "no se ha guardado nada en el móvil"
+    assert borrador["day"] == "2026-09-15", (
+        "el borrador se marca con el día DEL SERVIDOR; con el del móvil, un "
+        "check-in de madrugada no casaría al recargar y se perdería en silencio"
+    )
+    assert borrador["valores"]["will_train"] is False
+    # Y el deslizador que se movió también, que es la otra mitad del borrador: si
+    # solo se guardaran las preguntas, volver a abrir la pantalla dejaría la
+    # fatiga en blanco al lado de un "No" recordado, y eso se lee como que la
+    # pantalla se ha inventado la mitad de lo que muestra.
+    assert borrador["valores"]["fatigue"] == 2
+    # Y la que no se tocó no está, ni como `false` ni como `null`.
+    assert "wants_to_train" not in borrador["valores"]
+
+    # LA VUELTA, que es la mitad que importa: ese mismo borrador, abierto en una
+    # pantalla nueva. Aquí es donde `recuperar()` vuelve a llamar a `fijar()`, y
+    # donde un `Number()` mal puesto convertiría el "No" guardado en un hueco.
+    vuelta = _rellenar(tmp_path, _hoy(), [], borrador=borrador)
+    assert vuelta["elegidas"] == {"wants_to_train": None, "will_train": "no"}
+    assert vuelta["valores"] == '{"fatigue":2,"will_train":false}'
+    # Sigue faltando una, así que sigue sin poder enviarse.
+    assert vuelta["enviar_deshabilitado"] is True
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_mover_un_deslizador_y_nada_mas_ya_guarda_el_borrador(tmp_path):
+    """Sin contestar ninguna pregunta, que es lo que lo hace un test distinto.
+
+    El de arriba mueve la fatiga Y contesta una pregunta, y el borrador se
+    guarda igual porque el clic de la pregunta salva `estado.valores` ENTERO.
+    Así que ese test pasa aunque el deslizador no guarde nada por su cuenta:
+    quitarle el `guardarBorrador()` al deslizador no ponía rojo a nadie, y eso
+    lo dijo la batería de mutación, no la lectura del archivo.
+
+    No es de esta tanda -el borrador de los deslizadores lleva aquí desde el
+    principio-, pero taparlo sería escoger no saberlo. Lo que está en juego es
+    el caso normal: se abre el formulario, se mueven los tres deslizadores, se
+    sale de la app a mirar otra cosa y se vuelve. Media pantalla recordada y
+    media en blanco es igual de mala que ninguna, y además desconcierta más.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 7},
+    ])
+    borrador = salida["borrador"]
+    assert borrador is not None, (
+        "mover un deslizador no ha guardado nada en el móvil"
+    )
+    assert borrador["valores"] == {"fatigue": 7}
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_valor_guardado_del_tipo_que_no_es_no_pinta_nada(tmp_path):
+    """El día que una clave se cambia de lista en el `config.yaml`.
+
+    Este test existe porque la batería de mutación lo pidió. Los dos guardias de
+    tipo de `fijar()` -`typeof valor !== "boolean"` y `typeof valor !== "number"`-
+    se podían quitar los dos y no se ponía nada rojo, así que hasta hoy eran un
+    comentario largo defendiendo una línea que no defendía nada.
+
+    Y son alcanzables. `recuperar()` filtra los `null` antes de llamar a `fijar`,
+    sí, pero solo por el camino de lo ya enviado; el del BORRADOR llama a `fijar`
+    con lo que haya, sin mirar. Basta con editar `config.yaml` una mañana en la
+    que hay un borrador sin enviar -mover una clave de `checkin_sliders` a
+    `checkin_preguntas` o al revés- para que el valor guardado sea del tipo de la
+    lista de ayer.
+
+    Lo que pasaría sin los guardias son las dos conversiones de siempre, una en
+    cada dirección y las dos silenciosas:
+
+      - un `0` guardado cuando eso era un deslizador se pintaría hoy como un "No"
+        a «¿Vas a entrenar hoy?», que es la única respuesta que cambia lo que el
+        sistema escribe esta mañana;
+      - un `false` guardado cuando eso era una pregunta pondría el deslizador en
+        su mínimo, y el mínimo de «Fatiga» no es un hueco: es "ninguna".
+
+    Lo correcto es lo aburrido: no pintar nada, dejarlo sin contestar y que el
+    botón siga gris. Un hueco se ve; una respuesta inventada, no.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [], borrador={
+        "day": "2026-09-15",
+        # Los tipos, cruzados: un número para la pregunta y un booleano para el
+        # deslizador.
+        "valores": {"will_train": 0, "fatigue": False},
+        "comentarios": "",
+    })
+
+    # Ni uno de los dos entra. `"{}"` y no "no está `will_train`": lo que se
+    # exige es que no quede NADA, porque lo que viaja en el POST es este objeto.
+    assert salida["valores"] == "{}", (
+        "un valor del tipo que no es se ha colado en el check-in"
+    )
+    assert salida["cuerpo"] is None and salida["veces_enviado"] == 0
+
+    # Y se nota en la pantalla, que es lo que hace que se vuelva a contestar.
+    assert salida["sin_contestar"] == ["wants_to_train", "will_train"]
+    assert salida["elegidas"] == {"wants_to_train": None, "will_train": None}
+    assert salida["enviar_deshabilitado"] is True
+    assert "Fatiga" in salida["faltan"]
+    assert "¿Vas a entrenar hoy?" in salida["faltan"]
+
+
+def test_el_html_tiene_donde_pintar_las_preguntas():
+    """El hueco que `pintarPreguntas()` necesita, comprobado sin `node`.
+
+    Sin el `<div id="preguntas">`, `$("preguntas")` da `null` y la primera línea
+    de `pintarPreguntas` revienta DENTRO de `arrancar()`, que es `async`: la
+    excepción se queda en una promesa que nadie mira y el formulario no llega a
+    mostrarse nunca. Desde el móvil eso es un "Cargando…" eterno sin un solo
+    error legible.
+    """
+    html = (ESTATICOS / "index.html").read_text(encoding="utf-8")
+    assert 'id="preguntas"' in html, (
+        "falta el hueco de las preguntas en index.html"
+    )
+    # Y en su sitio: después de los deslizadores y antes de los comentarios. El
+    # orden no es decoración -«¿Vas a entrenar hoy?» es la única respuesta que
+    # cambia lo que el sistema escribe esta mañana, y va pegada al botón-, pero
+    # lo que este test defiende es lo otro: que no acabe DENTRO del bloque de
+    # deslizadores, donde se leería como uno más.
+    assert (
+        html.index('id="deslizadores"')
+        < html.index('id="preguntas"')
+        < html.index('id="comentarios"')
+    )
+
+
+def test_el_formulario_lee_del_servidor_exactamente_lo_que_el_servidor_manda(cliente):
+    """Las claves que `arrancar()` saca de `/api/checkin/today`, contra las reales.
+
+    El mismo cruce que ya protege la cobertura de las métricas, aplicado al
+    formulario. `datos.preguntas` mal escrito -`datos.pregunta`- no da ningún
+    error: da `undefined`, el `|| []` lo convierte en una lista vacía y el
+    formulario abre sin las dos preguntas, exactamente igual que antes de que
+    existieran. Nada que mirar, nada que se queje.
+    """
+    servidas = set(cliente.get("/api/checkin/today").json())
+
+    # Las DOS funciones que reciben esa respuesta, y solo ésas. `enviar()` tiene
+    # otra variable llamada igual con la respuesta del POST -de donde saca
+    # `datos.detail`-, y barrer el archivo entero la contaría como una clave
+    # inventada de este endpoint.
+    fuente = _sin_comentarios((ESTATICOS / "app.js").read_text(encoding="utf-8"))
+    leidas: set[str] = set()
+    for nombre in ("async function arrancar", "function recuperar"):
+        trozo = fuente[fuente.index(nombre) :]
+        leidas |= set(re.findall(r"\bdatos\.([a-z_]+)\b", trozo[: trozo.index("\n}\n")]))
+
+    assert leidas, "no encuentro ninguna lectura `datos.algo` en arrancar()"
+    assert "preguntas" in leidas, (
+        "`arrancar()` no lee `datos.preguntas`: el servidor las manda y el "
+        "formulario abriría sin ellas, igual que antes de que existieran"
+    )
+    inventadas = leidas - servidas
+    assert not inventadas, (
+        f"`arrancar()` lee {sorted(inventadas)} y `/api/checkin/today` manda "
+        f"{sorted(servidas)}. Leer una clave que no viene no da error: da "
+        f"`undefined`, y el `|| []` de al lado lo convierte en un formulario "
+        f"sin esa mitad."
     )
 
 

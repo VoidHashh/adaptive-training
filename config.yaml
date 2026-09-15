@@ -465,6 +465,17 @@ checkin_preguntas:
   # volvería a prescribir todos los días sin que nada avisara.
   - key: will_train
     label: "¿Vas a entrenar hoy?"
+    # `nota` la pinta el formulario debajo del enunciado, y está aquí y no
+    # escrita en el JavaScript por lo mismo que la etiqueta: la pantalla no
+    # sabe cuál de las preguntas es ésta ni tiene por qué saberlo.
+    #
+    # Lo que dice es lo que evita el malentendido caro: un "no" que se lee como
+    # "cancela el día" haría que se contestara "sí" los días de duda, para no
+    # perder la rutina. Y entonces el dato recogido sería el miedo a perderla,
+    # no la intención.
+    nota: >-
+      La rutina se escribe en Hevy igual. Un «no» solo hace que el mensaje de
+      hoy no te la proponga.
 
 checkin_comment:
   key: comments

@@ -47,6 +47,28 @@
   <form id="formulario" hidden>
     <div id="deslizadores"></div>
 
+    <!--
+      Las dos preguntas de Sí/No, en su propio hueco y no coladas entre los
+      deslizadores.
+
+      Separadas porque son OTRA COSA, y porque una de ellas -«¿Te apetece
+      entrenar hoy?»- se parece peligrosamente a un deslizador que ya existe
+      arriba, «Ganas de entrenar» del 0 al 10. Conviven a propósito: una mide
+      cuánto y la otra decide sí o no. Mezcladas en la misma lista se leerían
+      como la misma pregunta hecha dos veces y se contestarían en piloto
+      automático; en bloques distintos, el corte dice sin escribirlo que arriba
+      hay escalas y aquí hay decisiones.
+
+      Y van ABAJO, pegadas al botón, porque «¿Vas a entrenar hoy?» es la única
+      respuesta del formulario que cambia lo que el sistema escribe esta misma
+      mañana. Ese sitio es el suyo.
+
+      El hueco se rellena desde `/api/checkin/today`, igual que los
+      deslizadores y por el mismo motivo: aquí no hay ninguna pregunta escrita
+      a mano.
+    -->
+    <div id="preguntas"></div>
+
     <label class="comentarios">
       <span id="etiqueta-comentarios">Comentarios</span>
       <textarea id="comentarios" rows="3"

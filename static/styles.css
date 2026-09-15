@@ -193,6 +193,73 @@ input[type="range"]::-moz-range-thumb {
   font-size: 0.88rem;
 }
 
+/* --- las dos preguntas de Sí/No ----------------------------------------- */
+
+/* El bloque tiene que parecerse a un deslizador -misma caja, mismo borde, misma
+ * separación- pero no confundirse con uno, porque una de las dos preguntas
+ * suena casi igual que el deslizador "Ganas de entrenar" que hay más arriba. De
+ * ahí el aire de más antes del primero: el hueco es lo que dice que empieza otra
+ * cosa. */
+#preguntas { margin-top: 1.4rem; }
+
+.pregunta {
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-radius: 0.65rem;
+  padding: 0.85rem 0.9rem 0.9rem;
+  margin-bottom: 0.7rem;
+}
+
+.enunciado { margin: 0; font-weight: 600; font-size: 0.97rem; }
+
+.nota-pregunta {
+  margin: 0.3rem 0 0;
+  color: var(--tenue);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+/* Sin contestar se ve sin contestar, exactamente igual que un deslizador y por
+ * el mismo motivo: aquí `false` y "no lo he mirado" son dos datos distintos, y
+ * el segundo tiene que notarse desde la otra punta de la habitación. */
+.pregunta.sin-contestar { border-style: dashed; }
+
+.si-o-no {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+  margin-top: 0.7rem;
+}
+
+/* Los dos botones IGUALES de tamaño, de color y de peso.
+ *
+ * Es deliberado y es la mitad del diseño. Hacer el "Sí" más grande o más
+ * llamativo -que es la costumbre- empujaría la respuesta hacia el sí en la
+ * única pregunta cuya respuesta honesta importa, y el dato que se recogería
+ * sería el de la interfaz, no el del día. */
+.si-o-no button {
+  padding: 0.85rem 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+/* Elegida se marca con el acento, la misma señal para el "Sí" y para el "No".
+ * Un "No" en rojo diría que has contestado mal. */
+.si-o-no button.elegida {
+  border-color: var(--acento);
+  /* El acento en crudo y no un `color-mix`: esto lo abre un iPhone que puede
+   * llevar años sin actualizar, y un `color-mix` que el navegador no entiende
+   * no da error, descarta la línea y deja los dos botones con el mismo fondo.
+   * Un formulario donde no se ve qué has contestado. */
+  background: rgba(76, 141, 255, 0.22);
+  color: var(--texto);
+}
+
 /* --- comentarios y envío ------------------------------------------------ */
 
 .comentarios { display: block; margin: 1.1rem 0 0.9rem; }

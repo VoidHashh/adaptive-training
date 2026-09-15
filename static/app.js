@@ -19,6 +19,25 @@
  * El botón no se activa hasta que están todos los obligatorios. `yesterday_rpe`
  * es opcional porque hay días sin entreno el día antes, y eso no es no
  * contestar: es que no hay nada que contestar.
+ *
+ * Y LA MISMA DECISIÓN, OTRA VEZ, PARA LAS DOS PREGUNTAS DE SÍ/NO
+ * --------------------------------------------------------------
+ * «¿Te apetece entrenar hoy?» y «¿Vas a entrenar hoy?» tienen TRES estados, no
+ * dos: sí, no, y no me lo han dicho. El motor los distingue -`True`, `False` y
+ * `None`-, la base los guarda nulables y el mensaje del día mira `is not False`
+ * justamente para no confundir el tercero con el segundo.
+ *
+ * Por eso son DOS BOTONES y no una casilla. Una casilla tiene dos posiciones
+ * para tres estados, así que una de las dos tiene que hacer doble papel, y le
+ * toca siempre a la de abajo: sin marcar querría decir a la vez "he dicho que
+ * no" y "no lo he mirado". Ese aplastamiento es exactamente el que el resto del
+ * sistema se ha construido para evitar, y aquí -en el único sitio donde el dato
+ * se genera- sería el más barato de cometer y el único imposible de deshacer
+ * después: una vez enviado un `false` inventado, ningún análisis puede saber que
+ * no lo dijo nadie.
+ *
+ * Con dos botones, no haber pulsado ninguno no se parece a ninguna respuesta, y
+ * lo que se manda es que falta.
  */
 
 const API = {
@@ -50,7 +69,11 @@ if (typeof escapar !== "function") {
 const estado = {
   dia: null,         // el día SEGÚN EL SERVIDOR, nunca el del móvil
   sliders: [],       // los del config.yaml, tal cual llegan
-  valores: {},       // key -> número, SOLO de los contestados
+  preguntas: [],     // las de Sí/No, en su lista aparte y por el mismo motivo
+  // key -> número o booleano, SOLO de los contestados. Un mismo diccionario
+  // para los dos tipos porque el cuerpo que se envía es uno solo y el backend
+  // valida la UNIÓN de las dos listas; lo que no se mezcla es cómo se pintan.
+  valores: {},
   comentarios: "",
   etiquetaComentarios: "Comentarios",
   enviando: false,
@@ -91,10 +114,19 @@ async function arrancar() {
   }
 
   estado.sliders = datos.sliders || [];
+  // Dos listas del servidor y dos aquí. Un solo array con una bandera de tipo
+  // obligaría a mirar el tipo antes de pintar nada, y el día que se olvidara
+  // saldría una barra de 0 a 10 para «¿Vas a entrenar hoy?».
+  estado.preguntas = datos.preguntas || [];
   if (datos.comment_label) estado.etiquetaComentarios = datos.comment_label;
   $("etiqueta-comentarios").textContent = estado.etiquetaComentarios;
 
   pintarSliders();
+  pintarPreguntas();
+  // Después de pintar LAS DOS, no entre medias: `recuperar` llama a `fijar`,
+  // que busca en el DOM la fila de cada clave. Con las preguntas sin pintar,
+  // las respuestas ya enviadas hoy -o el borrador- se perderían en silencio
+  // por la salida de "una clave que ya no está en el config".
   recuperar(datos);
 
   $("cargando").hidden = true;
@@ -200,12 +232,89 @@ function pintarSliders() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Las dos preguntas de Sí/No
+// ---------------------------------------------------------------------------
+
+/* Dos botones por pregunta. Nunca una casilla: el motivo está entero arriba, y
+ * se resume en que una casilla tiene dos posiciones para tres estados.
+ *
+ * Tampoco un `<select>` con un "—" delante. Se puede, y distingue los tres, pero
+ * pone la respuesta a un toque más de distancia y deja el estado sin contestar
+ * dentro de la misma lista que las respuestas, con la misma pinta. Aquí no
+ * contestar no es una opción del desplegable: es que no hay nada pulsado, y eso
+ * se ve de un vistazo desde el otro lado de la habitación.
+ */
+function pintarPreguntas() {
+  const cont = $("preguntas");
+  cont.innerHTML = "";
+
+  for (const p of estado.preguntas) {
+    const bloque = document.createElement("div");
+    bloque.className = "pregunta sin-contestar";
+    bloque.dataset.key = p.key;
+
+    const id = `pr-${escapar(p.key)}`;
+    bloque.innerHTML = `
+      <p class="enunciado" id="${id}">${escapar(p.label || p.key)}</p>
+      ${p.nota ? `<p class="nota-pregunta">${escapar(p.nota)}</p>` : ""}
+      <div class="si-o-no" role="group" aria-labelledby="${id}">
+        <button type="button" data-respuesta="si" aria-pressed="false">Sí</button>
+        <button type="button" data-respuesta="no" aria-pressed="false">No</button>
+      </div>
+    `;
+
+    for (const boton of bloque.querySelectorAll("[data-respuesta]")) {
+      boton.addEventListener("click", () => {
+        // El booleano sale de CUÁL botón se ha pulsado, no de leer el estado
+        // anterior y darle la vuelta. Un `!estado.valores[p.key]` convertiría
+        // el primer toque sobre "No" en un "sí" -porque `undefined` negado es
+        // `true`- y pulsar dos veces el mismo botón en la respuesta contraria.
+        estado.valores[p.key] = boton.dataset.respuesta === "si";
+        bloque.classList.remove("sin-contestar");
+        pintarRespuesta(p.key);
+        revisar();
+        guardarBorrador();
+      });
+    }
+
+    cont.appendChild(bloque);
+  }
+}
+
+/* Poner un valor que viene de fuera: lo ya enviado hoy, o el borrador del móvil.
+ *
+ * Reparte por el TIPO DE PREGUNTA -mirando qué hay pintado con esa clave-, y
+ * una vez repartido comprueba que el valor sea del tipo que toca. Lo segundo no
+ * sobra: las dos conversiones automáticas de JavaScript convierten aquí un dato
+ * que falta en una respuesta perfectamente creíble, y en direcciones opuestas.
+ */
 function fijar(key, valor) {
-  const fila = document.querySelector(`.slider[data-key="${CSS.escape(key)}"]`);
-  if (!fila) return;   // un deslizador guardado que ya no está en el config
+  const escapada = CSS.escape(key);
+
+  const pregunta = document.querySelector(`.pregunta[data-key="${escapada}"]`);
+  if (pregunta) {
+    // `Boolean(valor)` haría de un 0 guardado un "no" y de un 5 un "sí": una
+    // respuesta inventada a la única pregunta del formulario que cambia lo que
+    // el sistema escribe esta mañana. Si lo que llega no es un booleano, la
+    // pregunta se queda sin contestar y el botón de enviar sigue gris. Eso se
+    // ve; una respuesta inventada, no.
+    if (typeof valor !== "boolean") return;
+    estado.valores[key] = valor;
+    pregunta.classList.remove("sin-contestar");
+    pintarRespuesta(key);
+    return;
+  }
+
+  const fila = document.querySelector(`.slider[data-key="${escapada}"]`);
+  if (!fila) return;   // una clave guardada que ya no está en el config
+  // Y la simétrica, que es peor: `Number(false)` es 0, o sea "ninguna fatiga",
+  // "ningún dolor", "ninguna gana". Cero es un extremo del rango, no un hueco,
+  // y el motor lo trataría como el dato más rotundo del día.
+  if (typeof valor !== "number") return;
   fila.querySelector("input").value = String(valor);
   fila.classList.remove("sin-contestar", "descartado");
-  estado.valores[key] = Number(valor);
+  estado.valores[key] = valor;
   pintarValor(key);
 }
 
@@ -217,10 +326,41 @@ function pintarValor(key) {
   else out.textContent = String(estado.valores[key]);
 }
 
+/* Cuál de los dos botones está pulsado.
+ *
+ * `v === suya` y no `v == suya` ni un `if (v)`: con la pregunta sin contestar
+ * `v` es `undefined`, y así los dos botones salen sin marcar, que es lo que
+ * hay. Marcar el "No" mientras nadie ha dicho que no es la misma mentira de
+ * siempre con otra ropa.
+ */
+function pintarRespuesta(key) {
+  const bloque = document.querySelector(`.pregunta[data-key="${CSS.escape(key)}"]`);
+  if (!bloque) return;
+  const v = estado.valores[key];
+  for (const boton of bloque.querySelectorAll("[data-respuesta]")) {
+    const suya = boton.dataset.respuesta === "si";
+    const puesto = v === suya;
+    boton.classList.toggle("elegida", puesto);
+    boton.setAttribute("aria-pressed", String(puesto));
+  }
+}
+
 /* Qué falta y por qué no se puede enviar todavía. Se dice con nombre y
- * apellidos: un botón gris sin explicación es un callejón sin salida. */
+ * apellidos: un botón gris sin explicación es un callejón sin salida.
+ *
+ * LAS PREGUNTAS CUENTAN IGUAL QUE LOS DESLIZADORES, y por eso se concatenan las
+ * dos listas en vez de mirar solo `estado.sliders`. Dejarlas fuera del recuento
+ * habría sido lo cómodo -el formulario se envía igual, el motor tiene camino
+ * para el `None`- y habría dejado la mitad de los días sin la respuesta que se
+ * añadieron para recoger. Son opcionales para el MOTOR, que sabe seguir sin
+ * ellas; no lo son para quien rellena esto.
+ *
+ * Se respeta `optional` en las dos listas por el mismo motivo por el que no hay
+ * ninguna pregunta escrita a mano aquí: quien decide qué es obligatorio es el
+ * `config.yaml`. Hoy ninguna de las dos lo lleva.
+ */
 function revisar() {
-  const faltan = estado.sliders
+  const faltan = [...estado.sliders, ...estado.preguntas]
     .filter((s) => !s.optional && estado.valores[s.key] === undefined)
     .map((s) => s.label || s.key);
 
