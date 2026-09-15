@@ -20,9 +20,36 @@ import pytest
 from app.engine.decision import EngineState, advance_state, decide
 from app.engine.signals import Signals
 
-from tests.conftest import LUNES, sig
+from tests.conftest import LUNES, eligiendo, sig
 
 JUEVES = LUNES + timedelta(days=3)
+
+
+def _series(s) -> int:
+    """Cuántas series lleva la sesión en total, calentamiento incluido.
+
+    El ámbar recorta series, no ejercicios: le quita una efectiva a cada uno y
+    deja la lista de ejercicios igual de larga. Medir el recorte contando
+    ejercicios da el mismo número antes y después y no distingue una sesión
+    recortada de una intacta.
+    """
+    return sum(len(e["sets"]) for e in s.exercises)
+
+
+def _nombres(s) -> set[str]:
+    """Los ejercicios de la sesión, por su nombre visible."""
+    return {e["name"] for e in s.exercises}
+
+
+def _tocados(s) -> set[str]:
+    """Los ejercicios que el semáforo ha modificado, sacados de `changes`.
+
+    `changes` es la lista de lo que se le ha hecho a la rutina base -«Jalón al
+    pecho: 3->2 series efectivas»- y aquí solo interesa el nombre de delante.
+    Sirve para comprobar QUÉ rutina se ha recortado y no solo cuánto: los
+    nombres son de un día o del otro, y no hay forma de confundirlos.
+    """
+    return {c.split(":")[0] for c in s.changes}
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +250,221 @@ def test_una_semana_entera_sin_pisar_el_gimnasio_deja_el_puntero_quieto(cfg):
     assert st.last_strength == ("dia_2", LUNES)
     ultimo = decide(cfg, LUNES + timedelta(days=15), sig(LUNES + timedelta(days=15)), st)
     assert ultimo.rotation_routine == "dia_3"
+
+
+# ---------------------------------------------------------------------------
+# El selector: lo que propone el ciclo y lo que se elige
+# ---------------------------------------------------------------------------
+#
+# El caso que lo motivó: tocaba el Día 1, las piernas llegan cansadas y se
+# prefiere el Día 2. Antes eso no se podía decir, y lo que quedaba escrito en
+# Hevy esa mañana era el Día 1. Quien luego hacía el Día 2 lo hacía con los pesos
+# que esa rutina tuviera guardados de la última vez, sin los ajustes del día.
+#
+# Elegir cambia HOY y no mañana. La rotación la sigue gobernando `workout_log`:
+# desviarse no adelanta el ciclo, y el día que se salta vuelve a tocar al final
+# de la vuelta sin que nadie lo anote en ninguna parte.
+
+
+def test_elegir_otro_dia_del_ciclo_planifica_ese_dia(cfg):
+    """Y lo planifica entero: la sesión, la progresión y lo que se escribirá."""
+    d = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_2"), EngineState())
+
+    assert d.rotation_routine == "dia_2"
+    assert d.session.routine_key == "dia_2"
+    assert d.progression is not None and d.progression.routine_key == "dia_2"
+
+    # Y la propuesta original no se pierde por el camino. Sin ella, dentro de
+    # tres meses no habría forma de saber que ese día hubo un desvío.
+    assert d.propuesta == "dia_1"
+    assert d.sesion_elegida == "dia_2"
+
+
+def test_lo_elegido_se_lleva_los_ajustes_de_hoy_y_no_los_de_su_ultima_vez(cfg):
+    """El motivo entero de que el selector escriba en Hevy.
+
+    Un ámbar recorta la sesión del día. Si elegir el Día 2 dejase la rutina
+    intacta -«total, la que el sistema había decidido era la otra»- se acabaría
+    levantando en un día de molestias lo que estaba escrito para un día bueno.
+    La elección no es un cambio de tema: es la misma mañana aplicada a otra
+    rutina.
+    """
+    ambar = decide(
+        cfg, LUNES, eligiendo(sig(LUNES, upper_discomfort=6), "dia_2"), EngineState()
+    )
+    assert ambar.light == "amber"
+    assert ambar.session.routine_key == "dia_2"
+    assert ambar.session.kind == "reduced", (
+        "se ha planificado el Día 2 con la sesión de un día verde"
+    )
+
+    # El recorte se mide en series y no en ejercicios: el ámbar del Día 2 le
+    # quita una serie efectiva a cada uno sin retirar ninguno. Contar
+    # ejercicios da nueve en los dos casos y el test pasaría con la sesión sin
+    # tocar.
+    verde = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_2"), EngineState())
+    assert _series(ambar.session) < _series(verde.session)
+
+    # Y lo recortado son los ejercicios del Día 2, uno por uno. Si el semáforo
+    # se hubiera aplicado a la rutina propuesta y solo después se le hubiera
+    # cambiado la etiqueta, aquí aparecerían los nombres del Día 1.
+    assert _tocados(ambar.session) == _nombres(verde.session)
+
+
+def test_elegir_lo_que_ya_tocaba_es_el_dia_de_siempre(cfg):
+    """El caso normal, que es el 90% de las mañanas: el selector viene
+    preseleccionado con la propuesta y no se toca.
+
+    Se comparan las decisiones enteras y no la rutina, porque lo que hay que
+    descartar es que el camino nuevo haga algo de más en cualquier otro sitio.
+    """
+    callado = decide(cfg, LUNES, sig(LUNES), EngineState()).to_dict()
+    elegido = decide(
+        cfg, LUNES, eligiendo(sig(LUNES), "dia_1"), EngineState()
+    ).to_dict()
+
+    # Lo declarado sí cambia, claro: en uno se contestó y en el otro no.
+    assert elegido.pop("sesion_elegida") == "dia_1"
+    assert callado.pop("sesion_elegida") is None
+    # Y el `inputs` lleva dentro el snapshot de las señales, que difieren por lo
+    # mismo. Todo lo demás tiene que ser idéntico.
+    elegido.pop("inputs"), callado.pop("inputs")
+
+    assert elegido == callado
+
+
+@pytest.mark.parametrize(
+    "eleccion, trozo",
+    [("bici", "bici"), ("otro", "otra cosa")],
+)
+def test_bici_y_otro_no_prescriben_fuerza_pero_dejan_la_rutina_puesta(
+    cfg, eleccion, trozo
+):
+    """Las dos mitades del mismo día, y la segunda es la que se olvida.
+
+    No prescribir es lo que se pidió: si hoy sales en bici, el mensaje no te
+    anuncia subidas de peso. Escribir la rutina igual también, y por el mismo
+    argumento que el «hoy no voy a entrenar»: la respuesta de las siete de la
+    mañana es una intención, y si a las siete de la tarde se cambia de idea, lo
+    que tiene que haber en Hevy es la sesión de HOY y no la de hace dos semanas.
+    """
+    d = decide(cfg, LUNES, eligiendo(sig(LUNES), eleccion), EngineState())
+
+    assert d.progression is not None
+    assert not d.progression.gate_open
+    assert trozo in d.progression.gate_reason
+    assert not d.progression.changes, "se ha anunciado una subida en un día sin fuerza"
+
+    # Y la rutina del ciclo sigue planificada entera, con sus ejercicios y sus
+    # series: es lo que `runner._escribir_hevy` va a subir a la aplicación.
+    assert d.rotation_routine == "dia_1"
+    assert d.session.routine_key == "dia_1"
+    assert d.session.exercises, "no hay nada que escribir en Hevy"
+    assert d.session.kind == "full"
+
+
+def test_el_motivo_de_la_puerta_no_regana(cfg):
+    """Mismo listón que el «hoy no voy»: informa de lo que pasa y de cuándo se
+    retoma, sin calificar la decisión ni insinuar que se pierde algo."""
+    for eleccion in ("bici", "otro"):
+        motivo = decide(
+            cfg, LUNES, eligiendo(sig(LUNES), eleccion), EngineState()
+        ).progression.gate_reason
+        assert "próxima vez" in motivo
+        for reproche in ("deberías", "perdido", "pierdes", "incumpl", "fallo", "solo"):
+            assert reproche not in motivo.lower(), f"«{motivo}» suena a reproche"
+
+
+def test_elegir_no_adelanta_la_rotacion_ni_aunque_sea_otro_dia(cfg):
+    """Lo de hoy es de hoy. Mañana sigue mandando lo que se ejecutó.
+
+    Es la trampa que este diseño evita: si declarar el Día 2 moviera el puntero,
+    tres mañanas seguidas tocando el selector y sin pisar el gimnasio darían una
+    vuelta entera al ciclo sin haber levantado nada.
+    """
+    st = EngineState()
+    d = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_2"), st)
+    despues = advance_state(st, d, executed=None)
+
+    assert despues.last_strength is None
+    martes = LUNES + timedelta(days=1)
+    assert decide(cfg, martes, sig(martes), despues).propuesta == "dia_1", (
+        "declarar el Día 2 ha adelantado el ciclo sin que se entrenara"
+    )
+
+
+def test_hacer_el_dia_elegido_si_mueve_el_puntero_a_ese(cfg):
+    """Y entonces el Día 1 se queda para el final de la vuelta.
+
+    Que es lo acordado: no se reordena nada ni se recupera nada. El ciclo da la
+    vuelta y el día saltado vuelve a tocar cuando le toca.
+    """
+    st = EngineState()
+    d = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_2"), st)
+    despues = advance_state(
+        st, d, executed={e["key"]: True for e in d.session.exercises}
+    )
+    assert despues.last_strength == ("dia_2", LUNES)
+
+    martes = LUNES + timedelta(days=1)
+    assert decide(cfg, martes, sig(martes), despues).rotation_routine == "dia_3"
+
+
+def test_un_dia_de_bici_no_toca_el_estado_mas_que_un_dia_callado(cfg):
+    """La misma exigencia que se le puso al «hoy no voy», y por el mismo motivo:
+    si declarar la bici costara algo -perder el turno, romper una racha, sumar a
+    un contador- el selector se dejaría sin tocar y el sistema volvería a no
+    saber qué se hizo los días que no hubo fuerza."""
+    st = EngineState(last_strength=("dia_1", LUNES))
+    martes = LUNES + timedelta(days=1)
+
+    callado = advance_state(st, decide(cfg, martes, sig(martes), st), executed=None)
+    en_bici = advance_state(
+        st, decide(cfg, martes, eligiendo(sig(martes), "bici"), st), executed=None
+    )
+
+    assert en_bici.__dict__ == callado.__dict__
+
+
+def test_una_eleccion_de_una_rutina_que_no_existe_se_ignora_sin_romper_el_dia(cfg):
+    """`upsert_checkin` no deja guardar esto, pero el motor no se apoya en eso.
+
+    El archivo viene de antes de que el selector existiera, el ciclo del config
+    se puede editar, y un `dia_4` guardado ayer con un ciclo de cuatro se lee hoy
+    con uno de tres. Que el día siga decidiéndose con la propuesta es lo que hace
+    que ninguno de esos tres casos deje una mañana sin rutina.
+    """
+    d = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_9"), EngineState())
+    assert d.rotation_routine == "dia_1"
+    assert d.session.exercises
+    # Cae del lado de «hoy no hay fuerza que prescribir», que es lo único que se
+    # puede afirmar de una elección que no nombra ninguna rutina del ciclo.
+    assert not d.progression.gate_open
+    assert "dia_9" in d.progression.gate_reason
+
+
+def test_lo_propuesto_y_lo_elegido_quedan_los_dos_en_la_decision_guardada(cfg):
+    """Es lo que permitirá contestar «¿me salto el Día 1 a menudo?».
+
+    De `workout_log` sale lo que se hizo. Lo que se iba a hacer no sale de
+    ninguna parte si no se escribe aquí, y una pregunta sobre uno mismo que
+    depende de un dato que nadie guardó no se puede contestar más tarde: hay que
+    empezar a guardarlo antes de necesitarlo.
+    """
+    d = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_2"), EngineState())
+    guardada = json.loads(json.dumps(d.to_dict(), default=str))
+
+    assert guardada["propuesta"] == "dia_1"
+    assert guardada["sesion_elegida"] == "dia_2"
+    assert guardada["rotation_routine"] == "dia_2"
+
+
+def test_no_contestar_el_selector_deja_los_tres_campos_coherentes(cfg):
+    """El histórico entero anterior a hoy, y la mayoría de los días de mañana."""
+    d = decide(cfg, LUNES, sig(LUNES), EngineState())
+    assert d.sesion_elegida is None
+    assert d.propuesta == d.rotation_routine == "dia_1"
+    assert d.progression.gate_reason != ""
 
 
 # ---------------------------------------------------------------------------

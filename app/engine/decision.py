@@ -54,6 +54,7 @@ from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_lig
 from app.engine.session_builder import (
     BuiltSession,
     build_session,
+    orden_de_rotacion,
     siguiente_en_rotacion,
 )
 from app.engine.signals import (
@@ -279,14 +280,31 @@ class DayDecision:
     light_decision: LightDecision
     session: BuiltSession
     deload: DeloadStatus
-    # La rutina que toca en el ciclo, se vaya al gimnasio o no. En un día rojo
+    # La rutina que se planifica hoy, se vaya al gimnasio o no. En un día rojo
     # `session.routine_key` apunta al bloque de recuperación, así que sin este
     # campo no habría forma de saber qué sigue esperando su turno.
     #
     # Se llamaba `calendar_routine` y significaba «la que tocaba hoy por
     # calendario». Ya no la manda el día de la semana: la manda cuál fue la
-    # última que se ejecutó en Hevy.
+    # última que se ejecutó en Hevy... salvo que esta mañana se haya elegido otra
+    # en el selector, y entonces es esa. Es la que se construye, la que se escribe
+    # en Hevy y la que nombra el mensaje, que son las tres cosas que tienen que
+    # hablar de lo mismo.
     rotation_routine: str | None = None
+    # Lo que decía el ciclo antes de mirar el formulario. Igual a
+    # `rotation_routine` casi todos los días: solo se separan cuando se elige un
+    # día distinto del propuesto, y ahí está justamente su razón de ser.
+    #
+    # Se guarda aparte porque sin ella no se puede reconstruir si el día se
+    # desvió. `rotation_routine` a solas dice qué se planificó; `last_strength`
+    # permite recalcular la propuesta a mano, pero solo si el ciclo del config no
+    # ha cambiado desde entonces. Escrito, no hay que recalcular nada.
+    propuesta: str | None = None
+    # Lo que se contestó en el selector: una clave del ciclo, `bici`, `otro`, o
+    # `None` si no se contestó. Crudo, sin traducir a nada, por lo mismo que
+    # `va_a_entrenar`: el `None` es «no me lo han dicho» y es todo el histórico
+    # anterior a que el selector existiera.
+    sesion_elegida: str | None = None
     active_rules: list[ActiveRule] = field(default_factory=list)
     progression: ProgressionPlan | None = None
     bike: BikeRecommendation | None = None
@@ -374,6 +392,11 @@ class DayDecision:
             "light": self.light,
             "trigger_rule": self.trigger_rule,
             "rotation_routine": self.rotation_routine,
+            # Las dos van al lado de la de arriba a propósito: leídas juntas se
+            # ve de un vistazo si el día se desvió y hacia dónde. Iguales las
+            # tres es el día normal.
+            "propuesta": self.propuesta,
+            "sesion_elegida": self.sesion_elegida,
             "source": self.source,
             "config_hash": self.config_hash,
             "inputs": self.signals.snapshot(),
@@ -730,12 +753,49 @@ def decide(
     # previsible de dos copias del mismo razonamiento que podían separarse sin
     # que nada las comparase.
     #
-    # Siempre hay rutina. No existe el día sin fuerza asignada: existe el día en
-    # que no se va al gimnasio, y de eso se entera el sistema leyendo Hevy, no
-    # decidiéndolo por adelantado.
+    # SIEMPRE HAY RUTINA, Y NO DEPENDE DE LO QUE SE HAYA CONTESTADO.
+    #
+    # No existe el día sin fuerza asignada. Existe el día en que se dice que no
+    # se va al gimnasio, el día en que se elige salir en bici y el día en que se
+    # entrena otra cosa, y en los tres se planifica una rutina igual y se escribe
+    # en Hevy igual. Lo que cambia es si el mensaje la PRESCRIBE.
+    #
+    # El motivo es el mismo en los tres casos y es el de siempre: a las siete de
+    # la mañana se contesta una intención, y a las siete de la tarde se cambia de
+    # idea. Si la escritura dependiera de la respuesta, cambiar de idea
+    # significaría abrir Hevy y encontrar la rutina de hace dos semanas, con los
+    # pesos de entonces y sin los ajustes de hoy. Lo que pasó de verdad lo sabe
+    # el sistema leyendo Hevy, no decidiéndolo por adelantado.
+    #
+    # LA PROPUESTA Y LA ELECCIÓN SON DOS COSAS
+    # ----------------------------------------
+    # `propuesta` es lo que dice el ciclo, que es función de lo último que se
+    # EJECUTÓ y de nada más. `sesion_elegida` es lo que se declaró esta mañana en
+    # el formulario. Casi siempre coinciden -el selector viene preseleccionado
+    # con la propuesta-, y cuando no, manda la elección para hoy y no para
+    # mañana: la rotación de mañana la sigue gobernando `workout_log`.
+    #
+    # Las dos se guardan. Con una sola no se puede preguntar en qué se
+    # diferencian, que es justo lo que hay que poder preguntar para saber si uno
+    # se salta el Día 1 a menudo.
     ultima = state.last_strength
-    rotation_routine = siguiente_en_rotacion(config, ultima[0] if ultima else None)
+    propuesta = siguiente_en_rotacion(config, ultima[0] if ultima else None)
+    sesion_elegida = getattr(signals, "sesion_elegida", None)
+
+    # Solo una elección que ES una rutina del ciclo cambia lo que se planifica.
+    # `bici` y `otro` no nombran ninguna, así que el día se planifica con la
+    # propuesta: es la que hay que dejar puesta en Hevy por si acaba yendo.
+    del_ciclo = sesion_elegida in orden_de_rotacion(config)
+    rotation_routine = sesion_elegida if del_ciclo else propuesta
     routine_key = rotation_routine
+
+    # Lo que cierra la puerta de la progresión, vacío salvo en `bici` y `otro`.
+    # Se resuelve por descarte y no contra una lista de no-fuerza: cualquier cosa
+    # contestada que no sea una rutina del ciclo es, por definición, un día sin
+    # fuerza que prescribir. Comprobarlo contra `checkin_selector.sin_fuerza`
+    # sería leer una segunda lista para decidir lo mismo, y dejaría el hueco de
+    # una opción añadida al YAML y olvidada aquí.
+    eleccion_sin_fuerza = None if del_ciclo else sesion_elegida
 
     # SIN `if routine_key:` DELANTE, Y ESO ES UN CAMBIO
     # ------------------------------------------------
@@ -774,6 +834,11 @@ def decide(
         # motivo -«hoy no entrenas»- en vez de con un plan de subidas que nadie
         # llegó a ejecutar y que dentro de tres meses parecerá que sí.
         va_a_entrenar=va_a_entrenar,
+        # Y la hermana de la de arriba: hoy toca bici, o algo sin plan. Cierra la
+        # puerta por lo mismo -no hay fuerza que prescribir- y por eso no se
+        # anuncia ninguna subida. Lo que sí sigue pasando es todo lo demás: la
+        # sesión se construye, se escribe en Hevy y la carga vigente se fija.
+        eleccion_sin_fuerza=eleccion_sin_fuerza,
         # La cola de los cupos, acotada a esta rutina: `plan_progression`
         # trabaja con claves de ejercicio a secas.
         sessions_since_progress={
@@ -810,6 +875,8 @@ def decide(
         session=session,
         deload=deload,
         rotation_routine=rotation_routine,
+        propuesta=propuesta,
+        sesion_elegida=sesion_elegida,
         active_rules=active_rules,
         progression=progression,
         bike=bike,

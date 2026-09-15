@@ -254,6 +254,29 @@ def _fmt_kg(v: float) -> str:
     return s.replace(".", ",")  # 62,5 kg, que es como se lee en España
 
 
+# Cómo se cuenta un día en el que se eligió algo que no es fuerza.
+#
+# Escrito aquí y no sacado del `label` del config -"Bici", "Otro"- porque esto es
+# una frase y aquello es una etiqueta de un botón: "hoy has elegido Otro" no dice
+# lo que pasa, y lo que pasa es que hoy no se prescribe fuerza.
+#
+# La clave sale del YAML, así que puede haber una que no esté aquí. Ese caso no
+# revienta: cae en la frase genérica de abajo, que dice lo único que el motor
+# sabe con certeza de una elección que no es una rutina del ciclo.
+MOTIVOS_SIN_FUERZA = {
+    "bici": "hoy sales en bici: la fuerza se decide la próxima vez que toque",
+    "otro": "hoy entrenas otra cosa: la fuerza se decide la próxima vez que toque",
+}
+
+
+def _por_que_sin_fuerza(eleccion: str) -> str:
+    return MOTIVOS_SIN_FUERZA.get(
+        eleccion,
+        f"hoy has elegido «{eleccion}», que no es una rutina del ciclo: la "
+        f"fuerza se decide la próxima vez que toque",
+    )
+
+
 def _por_que_sin_registro(
     detalle: dict[str, bool | None] | None,
     estrenada: bool | None = None,
@@ -315,6 +338,7 @@ def evaluate_gate(
     rutina_estrenada: bool | None = None,
     titulo_rutina: str | None = None,
     va_a_entrenar: bool | None = None,
+    eleccion_sin_fuerza: str | None = None,
 ) -> tuple[bool, str]:
     """Puerta general. Devuelve (abierta, motivo).
 
@@ -323,12 +347,20 @@ def evaluate_gate(
     `compliance_ok`, que ya viene resuelto. Ninguno de los tres puede abrir
     una puerta que estaría cerrada ni cerrar una que estaría abierta.
 
-    `va_a_entrenar` sí decide, y es el único de los cuatro que lo hace. Son tres
-    estados: `False` cierra la puerta, `True` no hace nada y `None` -«no me lo
-    han dicho»- tampoco. Ese `None` es el de todos los días en que no se rellena
-    el formulario y el de todo el histórico anterior a que la pregunta
-    existiera; leerlo como un no habría congelado la progresión hacia atrás en
-    el archivo entero.
+    `va_a_entrenar` sí decide. Son tres estados: `False` cierra la puerta, `True`
+    no hace nada y `None` -«no me lo han dicho»- tampoco. Ese `None` es el de
+    todos los días en que no se rellena el formulario y el de todo el histórico
+    anterior a que la pregunta existiera; leerlo como un no habría congelado la
+    progresión hacia atrás en el archivo entero.
+
+    `eleccion_sin_fuerza` también, y es de la misma familia: la elección del
+    selector cuando no es una rutina del ciclo -`bici`, `otro`-. Va vacía en los
+    otros dos casos, o sea cuando se eligió una rutina y cuando no se contestó, y
+    entonces esta puerta no se entera de que el selector existe.
+
+    LAS DOS DICEN LO MISMO CON DISTINTAS PALABRAS: hoy no hay fuerza que
+    prescribir. Y ninguna de las dos impide que la rutina se escriba en Hevy;
+    esto decide qué se ANUNCIA, no qué se deja puesto en la aplicación.
     """
     # VA EL PRIMERO, ANTES INCLUSO QUE LA DESCARGA.
     #
@@ -344,6 +376,16 @@ def evaluate_gate(
     # por eso se puede escribir sin rodeos.
     if va_a_entrenar is False:
         return False, "hoy no entrenas: la progresión se decide la próxima vez que toque"
+
+    # Y justo después la otra mitad de la misma respuesta, por el mismo motivo y
+    # con el mismo cuidado de no reprochar nada.
+    #
+    # DETRÁS DE `va_a_entrenar` Y NO DELANTE. Las dos casi nunca coinciden -decir
+    # que no vas y a la vez elegir bici es contestar dos cosas distintas a la
+    # misma pregunta-, pero si coinciden gana la primera: es la respuesta a la
+    # pregunta que se hace antes, y el mensaje de ese día se lee de arriba abajo.
+    if eleccion_sin_fuerza:
+        return False, _por_que_sin_fuerza(eleccion_sin_fuerza)
 
     if deload_active and (prog_cfg.get("deload") or {}).get("freeze_progression", True):
         return False, "semana de descarga: la progresión está congelada"
@@ -787,6 +829,7 @@ def plan_progression(
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
     rutina_estrenada: bool | None = None,
     va_a_entrenar: bool | None = None,
+    eleccion_sin_fuerza: str | None = None,
 ) -> ProgressionPlan:
     """Decide la progresión de todos los ejercicios de una rutina.
 
@@ -867,6 +910,7 @@ def plan_progression(
         # motivo se lee en Telegram y en la vista de auditoría, no en un log.
         titulo_rutina=str(routine.get("title") or "") or None,
         va_a_entrenar=va_a_entrenar,
+        eleccion_sin_fuerza=eleccion_sin_fuerza,
     )
     (sets_ok, sets_why), (reps_ok, reps_why) = evaluate_volume_gates(
         prog_cfg, signals, signals.day, last_routine_light

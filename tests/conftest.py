@@ -197,6 +197,19 @@ def sig_completa(day: date, *, dias_historico: int = 7, **overrides) -> Signals:
     return s
 
 
+def eligiendo(s: Signals, eleccion: str) -> Signals:
+    """El mismo día, con el selector del check-in contestado.
+
+    No se pasa por `sig(day, chosen_session=...)`, y no es un descuido de la
+    firma: eso lo metería en `values`, que es el espacio de nombres que ven las
+    reglas y donde solo caben números y booleanos. Lo elegido vive en un campo
+    propio de `Signals`, igual que `rides`, y este ayudante existe para que los
+    tests lo pongan por el mismo sitio por el que lo pone `build_signals`.
+    """
+    s.sesion_elegida = eleccion
+    return s
+
+
 def ride(
     day: date,
     *,

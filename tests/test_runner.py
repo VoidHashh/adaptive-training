@@ -513,17 +513,17 @@ def test_la_decision_se_guarda_con_su_progresion(db, cfg):
 
 
 # ---------------------------------------------------------------------------
-# «Hoy no voy a entrenar»: la rutina se escribe en Hevy IGUAL
+# «Hoy no hago fuerza»: la rutina se escribe en Hevy IGUAL
 # ---------------------------------------------------------------------------
 #
 # EL ÚNICO TROZO DE ESTA PREGUNTA QUE NO VIVE EN EL MOTOR.
 #
-# Las otras cinco consecuencias de contestar que no -no prescribir, no subir
-# carga, no mover la rotación, no contar como saltado, contar normal si al final
-# se entrena- se comprueban sobre `decide` y `advance_state` en `test_decision`
-# y `test_message`, que son funciones puras. Ésta no: escribir en Hevy pasa en
-# `runner._escribir_hevy`, después de decidir, y por un camino al que
-# `va_a_entrenar` no llega ni tiene que llegar.
+# Las otras cinco consecuencias de declararlo -no prescribir, no subir carga, no
+# mover la rotación, no contar como saltado, contar normal si al final se
+# entrena- se comprueban sobre `decide` y `advance_state` en `test_decision` y
+# `test_message`, que son funciones puras. Ésta no: escribir en Hevy pasa en
+# `runner._escribir_hevy`, después de decidir, y por un camino al que lo
+# declarado no llega ni tiene que llegar.
 #
 # Que no llegue es justamente el motivo de probarlo aquí. El mensaje promete por
 # escrito «La rutina está escrita en Hevy de todas formas, por si cambias de
@@ -535,22 +535,64 @@ def test_la_decision_se_guarda_con_su_progresion(db, cfg):
 # razonable- no falla nada: el mensaje sigue llegando, sigue diciendo que la
 # rutina está ahí, y quien cambie de idea a las siete de la tarde abre Hevy y
 # encuentra la de la semana pasada.
+#
+# HAY TRES MANERAS DE DECIR «HOY NO TOCA FUERZA» Y LAS TRES VALEN IGUAL.
+#
+# Contestar que no al «¿vas a entrenar hoy?», elegir «bici» en el selector y
+# elegir «otro» son tres frases distintas para el mismo hecho, y ninguna de las
+# tres decide si la rutina se escribe. Se parametrizan juntas en vez de probar
+# solo la primera porque el `if` que sobra se escribe mirando UN campo: quien
+# ponga el atajo en `va_a_entrenar` deja `bici` a salvo por casualidad, y quien
+# lo ponga en `chosen_session` deja a salvo el «no voy». Probada una sola, la
+# otra mitad del agujero no la ve nadie.
+#
+# El argumento es del usuario y es el mismo en los tres casos: «si acabo yendo
+# al gimnasio, quiero la rutina puesta y no la de hace dos semanas».
 
 
-def _dije_que_no(db, cfg, **kw):
-    """La mañana de un día en el que el check-in contestó «no voy a entrenar»."""
-    upsert_checkin(db, LUNES, {"will_train": False}, config=cfg)
+# Las tres formas de declarar que hoy no hay fuerza, tal y como llegan del
+# formulario. `id` para que el nombre del test diga cuál falló.
+SIN_FUERZA = [
+    pytest.param({"will_train": False}, id="no_voy"),
+    pytest.param({"chosen_session": "bici"}, id="bici"),
+    pytest.param({"chosen_session": "otro"}, id="otro"),
+]
+
+
+def _declarando(db, cfg, respuestas, **kw):
+    """La mañana de un día en el que el check-in contestó `respuestas`."""
+    upsert_checkin(db, LUNES, respuestas, config=cfg)
     return corre(db, cfg, **kw)
 
 
-def test_decir_que_no_no_impide_que_la_rutina_llegue_a_hevy(db, cfg):
+@pytest.mark.parametrize("respuestas", SIN_FUERZA)
+def test_declarar_que_no_hay_fuerza_no_impide_que_la_rutina_llegue_a_hevy(
+    db, cfg, respuestas
+):
     """La promesa del mensaje, comprobada contra el hecho y no contra sí misma."""
     hevy, tg = HevyFalso(), TelegramFalso()
-    res = _dije_que_no(db, cfg, hevy=hevy, tg=tg)
+    res = _declarando(db, cfg, respuestas, hevy=hevy, tg=tg)
 
-    assert res.decision.va_a_entrenar is False, "el montaje no ha llegado al motor"
+    # Que el montaje ha llegado al motor: sin esto, un día en el que el check-in
+    # se perdiera por el camino pasaría el test como si nada, porque un día
+    # callado también escribe en Hevy.
+    llegado = {
+        "will_train": res.decision.va_a_entrenar,
+        "chosen_session": res.decision.sesion_elegida,
+    }
+    assert respuestas.items() <= llegado.items(), (
+        f"el montaje no ha llegado al motor: se contestó {respuestas} y en la "
+        f"decisión hay {llegado}"
+    )
+
+    # Y la fuerza no se prescribe, que es la otra mitad de lo declarado: si esto
+    # se cayera, el test de abajo seguiría en verde comparando dos días
+    # normales.
+    assert res.decision.progression is not None
+    assert res.decision.progression.gate_open is False
+
     assert res.hevy_status == "ok", (
-        f"se contestó «no voy» y la rutina no se ha escrito: "
+        f"se declaró {respuestas} y la rutina no se ha escrito: "
         f"{res.hevy_status} ({res.hevy_reason})"
     )
     assert hevy.llamadas, "no se ha llamado a Hevy siquiera"
@@ -559,26 +601,37 @@ def test_decir_que_no_no_impide_que_la_rutina_llegue_a_hevy(db, cfg):
     fila = db.scalars(select(HevyWrite)).first()
     assert fila is not None and fila.status == "ok"
 
-    # Las dos mitades juntas: se dice Y es verdad. Separadas, cada una puede
-    # sobrevivir a que la otra se caiga.
+
+def test_la_promesa_de_que_esta_escrita_se_dice_ademas_de_cumplirse(db, cfg):
+    """Las dos mitades juntas: se dice Y es verdad.
+
+    Separadas, cada una puede sobrevivir a que la otra se caiga. Va aparte de la
+    parametrización de arriba porque la frase hoy solo la dice el camino del «no
+    voy a entrenar»; la línea equivalente para `bici` y `otro` es trabajo del
+    mensaje y todavía no está escrita. Cuando lo esté, este test se pliega
+    dentro del otro.
+    """
+    tg = TelegramFalso()
+    _declarando(db, cfg, {"will_train": False}, hevy=HevyFalso(), tg=tg)
     assert "escrita en Hevy" in tg.enviados[0]
 
 
-def test_la_rutina_que_se_escribe_es_LA_MISMA_diga_lo_que_diga(db, cfg):
+@pytest.mark.parametrize("respuestas", SIN_FUERZA)
+def test_la_rutina_que_se_escribe_es_LA_MISMA_diga_lo_que_diga(db, cfg, respuestas):
     """No basta con que se escriba algo: tiene que escribirse lo de siempre.
 
     Un recorte a medias -escribir la rutina «por si acaso» pero sin los
     ejercicios que el ámbar ya había reducido, o con el peso de ayer en vez del
     de hoy- pasaría el test de arriba entero y dejaría en la aplicación una
-    sesión que no es la que el sistema ha decidido. La respuesta del formulario
-    es una intención sobre si se va; no toca NADA de lo que hay que levantar si
-    se va.
+    sesión que no es la que el sistema ha decidido. Lo que se declara por la
+    mañana es una intención sobre qué se va a hacer; no toca NADA de lo que hay
+    que levantar si al final se hace fuerza.
 
     Se comparan los dos payloads enteros, no el título ni el número de
     ejercicios: cualquier campo que alguien decida podar en el futuro sale aquí.
     """
-    dijo_que_no = HevyFalso()
-    _dije_que_no(db, cfg, hevy=dijo_que_no, tg=TelegramFalso())
+    declarado = HevyFalso()
+    _declarando(db, cfg, respuestas, hevy=declarado, tg=TelegramFalso())
 
     # El día normal contra el que se compara. En una base APARTE y no en un
     # segundo `corre` sobre la misma: `run_daily` guarda la decisión y el
@@ -588,10 +641,37 @@ def test_la_rutina_que_se_escribe_es_LA_MISMA_diga_lo_que_diga(db, cfg):
         callado = HevyFalso()
         corre(otra, cfg, hevy=callado, tg=TelegramFalso())
 
-    assert dijo_que_no.llamadas and callado.llamadas
-    assert dijo_que_no.llamadas == callado.llamadas, (
+    assert declarado.llamadas and callado.llamadas
+    assert declarado.llamadas == callado.llamadas, (
         "la rutina escrita en Hevy cambia según lo que se conteste en el "
-        "formulario: la pregunta es sobre si vas, no sobre qué levantas"
+        "formulario: la pregunta es sobre qué haces hoy, no sobre qué levantas"
+    )
+
+
+def test_elegir_otro_dia_del_ciclo_si_cambia_lo_que_se_escribe(db, cfg):
+    """El contraste que le da sentido al test de arriba.
+
+    «La misma rutina diga lo que diga» vale para las tres formas de declarar que
+    hoy no hay fuerza, y NO vale para elegir otro día del ciclo: ahí el sistema
+    tiene que escribir el Día 2, porque es el que se va a hacer. Sin este test,
+    aquella promesa la cumpliría igual de bien un `_escribir_hevy` que ignorase
+    el selector por completo, que es exactamente el fallo que el selector viene
+    a arreglar.
+    """
+    elegido = HevyFalso()
+    res = _declarando(
+        db, cfg, {"chosen_session": "dia_2"}, hevy=elegido, tg=TelegramFalso()
+    )
+    assert res.decision.rotation_routine == "dia_2"
+    assert res.decision.propuesta == "dia_1"
+
+    with _base_en_blanco() as otra:
+        callado = HevyFalso()
+        corre(otra, cfg, hevy=callado, tg=TelegramFalso())
+
+    assert elegido.llamadas != callado.llamadas, (
+        "se eligió el Día 2 y en Hevy ha acabado escrita la misma rutina que un "
+        "día callado: el selector no ha llegado a la escritura"
     )
 
 
