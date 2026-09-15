@@ -47,6 +47,8 @@ from app.repository import (
     guardar_adopciones,
     load_state,
     marcar_adopciones_contadas,
+    opciones_del_config,
+    preguntas_del_config,
     save_decision,
     save_state,
     serie_decisiones,
@@ -972,6 +974,111 @@ def test_los_deslizadores_validos_salen_del_yaml(cfg):
     claves = sliders_del_config(cfg)
     assert "yesterday_rpe" in claves
     assert len(claves) == 7
+
+
+# ---------------------------------------------------------------------------
+# El selector de sesión
+# ---------------------------------------------------------------------------
+#
+# La tercera categoría de respuesta. Se guarda por el mismo sitio que las otras
+# dos -es una columna de `checkins` como ellas- y se diferencia en dos cosas:
+# es una cadena, y a las cadenas sí hay que mirarles el valor.
+
+
+def test_el_selector_se_guarda_como_cualquier_otra_respuesta(db, cfg):
+    upsert_checkin(db, LUNES, {"fatigue": 4, "chosen_session": "dia_2"}, config=cfg)
+    fila = get_checkin(db, LUNES)
+    assert fila.chosen_session == "dia_2"
+
+
+def test_bici_y_otro_valen_igual_que_una_rutina_del_ciclo(db, cfg):
+    """Las dos existen para que «hice algo» no se cuente como «no contesté»."""
+    for eleccion in ("bici", "otro"):
+        upsert_checkin(db, LUNES, {"chosen_session": eleccion}, config=cfg)
+        assert get_checkin(db, LUNES).chosen_session == eleccion
+
+
+def test_una_eleccion_que_no_existe_es_un_error_y_no_una_fila_muda(db, cfg):
+    """El `fatiga` por `fatigue` un nivel más abajo: la clave está bien y miente
+    el contenido.
+
+    Y es peor que el de la clave, porque este no se ve. Un `dia_4` guardado en un
+    ciclo de tres no coincide con ninguna rutina, con ninguna propuesta y con
+    ningún `workout_log`: el día queda escrito y se comporta exactamente igual
+    que si no hubieras abierto el formulario.
+    """
+    with pytest.raises(ValueError, match="dia_4"):
+        upsert_checkin(db, LUNES, {"chosen_session": "dia_4"}, config=cfg)
+
+
+def test_la_eleccion_distingue_mayusculas(db, cfg):
+    """«Bici» no es `bici`, y dejarlo pasar sería inventar un cuarto estado."""
+    with pytest.raises(ValueError, match="Bici"):
+        upsert_checkin(db, LUNES, {"chosen_session": "Bici"}, config=cfg)
+
+
+def test_no_contestar_el_selector_sigue_siendo_valido(db, cfg):
+    """El tercer estado de siempre: la mayoría de los días no se toca."""
+    upsert_checkin(db, LUNES, {"fatigue": 4}, config=cfg)
+    assert get_checkin(db, LUNES).chosen_session is None
+
+
+def test_las_opciones_del_selector_salen_del_ciclo_y_no_de_una_lista_aparte(cfg):
+    """Si se enumeraran a mano, un `dia_4` nuevo no se podría elegir.
+
+    Es el fallo que ya se pagó una vez con el calendario fijo: el fichero estaba
+    impecable y sencillamente no nombraba `dia_3`.
+    """
+    assert opciones_del_config(cfg) == set(cfg.rotation_order()) | {"bici", "otro"}
+
+
+def test_el_ciclo_manda_tambien_al_guardar_y_no_solo_al_dibujar(db, cfg_copia):
+    """El de arriba no basta, y la diferencia no es académica.
+
+    Con el config real el ciclo es `dia_1, dia_2, dia_3` y cualquier lista
+    escrita a mano diría exactamente lo mismo: el test anterior la dejaría
+    pasar. Este mueve el ciclo -añade un día y quita otro- sin tocar la sección
+    del selector, que es la situación en la que las dos versiones se separan.
+
+    Lo que protege es que la lista que VALIDA sea la lista que OFRECE. Si se
+    separan, el formulario enseña un día que el guardado rechaza, o al revés; y
+    del segundo caso no se entera nadie hasta que un check-in real se guarda
+    apuntando a una rutina que ya no está en la rotación.
+    """
+    cfg_copia.raw["rotation"]["order"].append("dia_4")
+    assert "dia_4" in opciones_del_config(cfg_copia)
+    upsert_checkin(db, LUNES, {"chosen_session": "dia_4"}, config=cfg_copia)
+    assert get_checkin(db, LUNES).chosen_session == "dia_4"
+
+    # Y al revés: lo que sale del ciclo deja de poderse elegir el mismo día.
+    cfg_copia.raw["rotation"]["order"].remove("dia_3")
+    with pytest.raises(ValueError, match="dia_3"):
+        upsert_checkin(db, LUNES, {"chosen_session": "dia_3"}, config=cfg_copia)
+
+
+def test_el_selector_no_es_un_deslizador_ni_una_pregunta(cfg):
+    """Y por eso no llega a `signals.values`, que es lo que lo hace seguro.
+
+    `checkin_keys()` es la lista que `build_signals` vuelca en el espacio de
+    nombres de las reglas y la que recorre el análisis sacando series. Todo lo
+    que hay ahí es número o booleano. Meter aquí una cadena no daría un color
+    raro: daría un `float('dia_2')` la primera vez que alguien promedie el
+    histórico entero.
+    """
+    assert "chosen_session" not in cfg.checkin_keys()
+    assert "chosen_session" not in sliders_del_config(cfg)
+    assert "chosen_session" not in preguntas_del_config(cfg)
+
+
+def test_lo_elegido_viaja_en_los_valores_del_checkin(db, cfg):
+    """`checkin_values` vuelca la fila entera, y de ahí lo recoge `build_signals`.
+
+    Aquí sí tiene que estar: es el camino por el que llega al motor. Lo que no
+    puede es seguir desde `values` del check-in hasta `values` de las señales, y
+    de eso se encarga `build_signals` copiando solo las claves que conoce.
+    """
+    upsert_checkin(db, LUNES, {"chosen_session": "dia_3"}, config=cfg)
+    assert checkin_values(get_checkin(db, LUNES))["chosen_session"] == "dia_3"
 
 
 def test_los_comentarios_se_guardan_aparte(db, cfg):

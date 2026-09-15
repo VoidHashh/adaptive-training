@@ -32,7 +32,12 @@ from app.engine.rules import (
     RuleError,
     resolve_option,
 )
-from app.engine.signals import CLAVE_APETECE, CLAVE_VOY_A_ENTRENAR
+from app.engine.signals import (
+    CLAVE_APETECE,
+    CLAVE_SESION_ELEGIDA,
+    CLAVE_VOY_A_ENTRENAR,
+    ELECCIONES_SIN_FUERZA,
+)
 # Y la MISMA función con la que el motor averigua de qué habla una regla. Se
 # importa por lo mismo que `resolve_option` de arriba: aquí hace falta saber qué
 # señales mira un `when` para prohibir que mire las preguntas de Sí/No, y esa
@@ -87,6 +92,30 @@ VALID_SET_SOURCES = {"api", "heuristic", "api_then_heuristic"}
 VALID_PROGRESSION_TYPES = {"load", "double", "volume", "sets", "none"}
 # Cómo se reparte una subida de repeticiones entre las series efectivas.
 VALID_REP_APPLY_TO = {"lowest_first", "all_sets"}
+
+
+def opciones_selector(data: dict[str, Any]) -> list[str]:
+    """Todo lo que se puede elegir por la mañana, en orden de pantalla.
+
+    Recibe el YAML crudo y no un `Config` porque esta misma regla la necesita
+    `repository.opciones_del_config` para validar lo que llega del formulario, y
+    allí el `config` puede venir en dos formas -el objeto y el diccionario
+    pelado de algunos tests-. Escrita aquí y llamada desde allí hay UNA
+    implementación. Escrita dos veces habría dos listas capaces de decir cosas
+    distintas, y la peor de las dos discordancias posibles: la que valida lo que
+    se guarda no sería la que dibuja lo que se puede contestar.
+
+    EL CICLO SALE DE `rotation.order` Y NO SE REPITE EN LA SECCIÓN DEL SELECTOR.
+    Repetirlo sería poder escribirlo distinto: una lista que enumerase los días
+    a mano se quedaría sin el `dia_4` que alguien añadiera al ciclo, y la
+    pantalla ofrecería tres opciones mientras el sistema rota entre cuatro. Lo
+    único que el selector pone de su cosecha es lo que NO es fuerza -bici,
+    otro-, que por definición no puede salir de la rotación.
+    """
+    dias = [str(k) for k in ((data.get("rotation") or {}).get("order") or [])]
+    sel = data.get("checkin_selector") or {}
+    sin_fuerza = [str(o["key"]) for o in (sel.get("sin_fuerza") or []) if o.get("key")]
+    return dias + sin_fuerza
 
 
 class ConfigError(ValueError):
@@ -194,12 +223,30 @@ class Config:
         """
         return [p["key"] for p in self._data.get("checkin_preguntas", [])]
 
+    def selector(self) -> dict[str, Any]:
+        """La sección del selector de sesión, cruda."""
+        return self._data.get("checkin_selector") or {}
+
+    def opciones_selector(self) -> list[str]:
+        """Todo lo que se puede elegir hoy: el ciclo entero, más bici y otro."""
+        return opciones_selector(self._data)
+
     def checkin_keys(self) -> list[str]:
         """Todo lo que contesta el usuario por la mañana, en orden de pantalla.
 
         Para quien solo necesita recorrer las respuestas -las series, el
         histórico, la fotografía de señales- y no tiene nada que decidir sobre
         quién puede leerlas.
+
+        EL SELECTOR NO ESTÁ AQUÍ, y no es un olvido. Esta lista es la que
+        `build_signals` vuelca en `signals.values` y la que recorre el análisis
+        para sacar series y medias, y todo lo que hay en ella es un número o un
+        booleano. La respuesta del selector es una cadena -`dia_2`, `bici`- y lo
+        que rompe no es el color del día: es el `float()` de la primera media
+        que alguien calcule sobre el histórico completo.
+
+        Quien la quiera va a `Signals.sesion_elegida`, que es donde está, o a la
+        columna `checkins.chosen_session`, que es de donde sale.
         """
         return self.slider_keys() + self.pregunta_keys()
 
@@ -267,6 +314,12 @@ def _validate(data: dict[str, Any]) -> list[str]:
         # dicho"- y el mensaje vuelve a prescribir todos los días. Funcionaría,
         # y eso es lo malo: sería el comportamiento de antes con cara de normal.
         "checkin_preguntas",
+        # Y obligatoria por la misma razón una vez más: sin el selector, el
+        # formulario no pregunta qué se va a hacer, `chosen_session` se queda
+        # nula todos los días y el sistema vuelve a proponer sin enterarse nunca
+        # de que lo propuesto no era lo que se iba a hacer. Otra vez el
+        # comportamiento de antes con cara de normal.
+        "checkin_selector",
         "thresholds",
         "actions",
         "progression",
@@ -312,6 +365,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "adaptive_thresholds",
         "checkin_sliders",
         "checkin_preguntas",
+        "checkin_selector",
         "checkin_comment",
         "thresholds",
         "actions",
@@ -591,6 +645,72 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"el código la busca por ese nombre.",
         )
 
+    # --- el selector de sesión ----------------------------------------------
+    #
+    # Lo que se comprueba aquí es poco porque la sección dice poco: los días del
+    # ciclo NO se enumeran en ella -salen de `rotation.order`- y por eso no puede
+    # quedarse desincronizada del ciclo, que es el fallo que tendría si los
+    # repitiera. Lo único suyo son las dos opciones que no son fuerza.
+    sel = data["checkin_selector"]
+    require(isinstance(sel, dict), "checkin_selector tiene que ser un mapa")
+    if isinstance(sel, dict):
+        check_keys(sel, {"key", "label", "nota", "sin_fuerza"}, "checkin_selector")
+        # La clave la busca el código por su nombre, como `will_train`. Escrita
+        # distinta aquí, el formulario mandaría un campo que `upsert_checkin`
+        # rechaza, y el check-in entero fallaría con un error de clave
+        # desconocida: ruidoso, que es lo que se quiere.
+        require(
+            sel.get("key") == CLAVE_SESION_ELEGIDA,
+            f"checkin_selector.key tiene que ser '{CLAVE_SESION_ELEGIDA}': es el "
+            f"nombre de la columna de `checkins` y el que el motor busca. "
+            f"Está puesto '{sel.get('key')}'.",
+        )
+        require(
+            bool((sel.get("label") or "").strip()),
+            "checkin_selector.label está vacío: es el enunciado que se lee en el "
+            "móvil encima de las opciones.",
+        )
+
+        sin_fuerza = sel.get("sin_fuerza") or []
+        claves_sin_fuerza = [
+            o.get("key") for o in sin_fuerza if isinstance(o, dict)
+        ]
+        for o in sin_fuerza:
+            if isinstance(o, dict):
+                check_keys(o, {"key", "label"}, "checkin_selector.sin_fuerza")
+        # Éstas sí las busca el código una por una: `bici` no prescribe fuerza
+        # pero deja dicho que hubo actividad, y `otro` deja dicho que se entrenó
+        # sin plan. Si faltara una, el formulario no la ofrecería y el caso que
+        # cubre volvería a ser indistinguible de no contestar.
+        faltan = [c for c in ELECCIONES_SIN_FUERZA if c not in claves_sin_fuerza]
+        require(
+            not faltan,
+            f"a checkin_selector.sin_fuerza le faltan {faltan}. El motor las "
+            f"busca por ese nombre para saber que esa elección no prescribe "
+            f"fuerza; sin ellas el formulario solo dejaría elegir rutinas del "
+            f"ciclo y un día de bici no se podría declarar.",
+        )
+        # Una opción que se llamara como un día del ciclo haría que elegirla
+        # fuese ambiguo: el motor la trataría como rutina por estar en `order` y
+        # como no-fuerza por estar aquí, y cuál gana depende de en qué orden se
+        # pregunte.
+        chocan = sorted(set(claves_sin_fuerza) & set(data["rotation"].get("order") or []))
+        require(
+            not chocan,
+            f"checkin_selector.sin_fuerza usa {chocan}, que también están en "
+            f"`rotation.order`. Una elección o es una rutina del ciclo o no lo "
+            f"es, y llamándose igual es las dos cosas.",
+        )
+        # Y tampoco puede llamarse como una respuesta del formulario: las tres
+        # acaban siendo columnas de `checkins`, y `upsert_checkin` reparte por
+        # nombre.
+        chocan_form = sorted({sel.get("key")} & (slider_keys | pregunta_keys))
+        require(
+            not chocan_form,
+            f"checkin_selector.key usa {chocan_form}, que ya está en "
+            f"`checkin_sliders` o en `checkin_preguntas`.",
+        )
+
     # NINGUNA REGLA DEL SEMÁFORO PUEDE NOMBRARLAS, Y ESTO ES LO QUE LO IMPIDE
     # ----------------------------------------------------------------------
     # Los frenos de progresión y los disparadores de reglas especiales ya se
@@ -612,6 +732,20 @@ def _validate(data: dict[str, Any]) -> list[str]:
         if isinstance(r, dict)
     ]
     for rule in reglas_de_luz:
+        # El selector tampoco, y por un motivo distinto del de las preguntas: no
+        # es que no deba decidir el color, es que ni siquiera llega a `values`.
+        # Una regla que lo nombrara no daría error ni color raro -se saltaría
+        # como "falta el dato", todos los días, para siempre- y eso en el log se
+        # lee igual que un día sin reloj.
+        if CLAVE_SESION_ELEGIDA in senales_de_regla(rule):
+            errors.append(
+                f"regla '{rule.get('name')}': mira '{CLAVE_SESION_ELEGIDA}', que "
+                f"es el selector del check-in y no es una señal evaluable. Es una "
+                f"cadena -`dia_2`, `bici`- y no entra en `signals.values`, así que "
+                f"esta regla no dispararía nunca: se anotaría como saltada por "
+                f"falta de datos todas las mañanas, que en el log no se distingue "
+                f"de un día en que el reloj no sincronizó."
+            )
         usadas = sorted(senales_de_regla(rule) & pregunta_keys)
         require(
             not usadas,

@@ -16,6 +16,7 @@ from app.config_loader import load_config
 
 from app.engine.signals import (
     CLAVE_APETECE,
+    CLAVE_SESION_ELEGIDA,
     CLAVE_VOY_A_ENTRENAR,
     UNKNOWN,
     Checkin,
@@ -1294,3 +1295,74 @@ def test_ninguna_regla_del_semaforo_puede_leer_las_preguntas(cfg):
         for regla in cfg.raw["thresholds"].get(nivel) or []:
             usadas = senales_de_regla(regla) & preguntas
             assert not usadas, f"la regla '{regla.get('name')}' mira {usadas}"
+
+
+# ---------------------------------------------------------------------------
+# El selector de sesión
+# ---------------------------------------------------------------------------
+
+
+def _con_eleccion(cfg, eleccion):
+    return build_signals(
+        cfg,
+        LUNES,
+        metrics=[],
+        rides=[],
+        sessions=[],
+        checkin=Checkin(date=LUNES, values={CLAVE_SESION_ELEGIDA: eleccion}),
+        checkin_history=[],
+    )
+
+
+@pytest.mark.parametrize("eleccion", ["dia_1", "dia_3", "bici", "otro"])
+def test_lo_elegido_llega_al_motor_por_su_campo(cfg, eleccion):
+    assert _con_eleccion(cfg, eleccion).sesion_elegida == eleccion
+
+
+def test_sin_checkin_no_hay_eleccion_y_eso_no_es_un_fallo(cfg):
+    """La mayoría de las mañanas del sistema: decide a las 07:00 sin formulario."""
+    sig = build_signals(
+        cfg, LUNES, metrics=[], rides=[], sessions=[], checkin_history=[]
+    )
+    assert sig.sesion_elegida is None
+
+
+def test_lo_elegido_NO_entra_en_el_espacio_de_nombres_de_las_reglas(cfg):
+    """Es la mitad que de verdad protege algo, y va al revés que las preguntas.
+
+    Las dos preguntas de Sí/No SÍ entran en `values` -comparten bucle con los
+    deslizadores a propósito, para llegar gratis al histórico y a las series- y
+    lo que las frena es el validador del config. Con el selector no vale ese
+    arreglo: `values` se serializa en el snapshot y lo recorre el análisis
+    haciendo cuentas, así que una cadena ahí dentro no es un permiso de más, es
+    un tipo equivocado esperando a que alguien saque una media.
+
+    Por eso este camino no está cerrado con una prohibición sino con una
+    ausencia: el bucle copia `slider_keys + pregunta_keys`, y el selector no está
+    en ninguna de las dos.
+    """
+    sig = _con_eleccion(cfg, "dia_2")
+
+    assert CLAVE_SESION_ELEGIDA not in sig.values
+    assert sig.get(CLAVE_SESION_ELEGIDA) is None
+    assert CLAVE_SESION_ELEGIDA not in sig.snapshot()["values"]
+    assert sig.series(CLAVE_SESION_ELEGIDA) == {}
+
+    # Y lo que sí está en `values` sigue siendo todo numérico o booleano, que es
+    # la propiedad que esto defiende.
+    for clave, valor in sig.values.items():
+        assert not isinstance(valor, str) or valor in (UNKNOWN,), (
+            f"'{clave}' mete una cadena en el espacio de nombres evaluable"
+        )
+
+
+def test_elegir_una_rutina_no_toca_nada_de_lo_que_decide_el_color(cfg):
+    """El selector informa; no negocia el semáforo.
+
+    Dos mañanas idénticas salvo por lo que se eligió tienen que dar las mismas
+    señales evaluables. Si no, elegir «bici» sería una forma de pedir verde.
+    """
+    a = _con_eleccion(cfg, "dia_1")
+    b = _con_eleccion(cfg, "bici")
+    assert a.values == b.values
+    assert a.adaptive == b.adaptive

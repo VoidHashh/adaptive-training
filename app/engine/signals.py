@@ -67,6 +67,29 @@ UNKNOWN = "desconocida"
 CLAVE_APETECE = "wants_to_train"
 CLAVE_VOY_A_ENTRENAR = "will_train"
 
+# El selector de sesión: qué dijo que iba a hacer hoy.
+#
+# Aquí por lo mismo que las dos de arriba -el código la busca por su nombre- y
+# con una diferencia que importa: ésta NO está en `checkin_sliders` ni en
+# `checkin_preguntas`, que son las dos listas que el bucle de `build_signals`
+# vuelca en `values`. Su sitio es un campo propio de `Signals`, al lado de
+# `rides` y de `intense_count`, porque `values` es el espacio de nombres
+# evaluable y una cadena no se evalúa.
+CLAVE_SESION_ELEGIDA = "chosen_session"
+
+# Las dos elecciones que NO son una rutina del ciclo.
+#
+# Se distinguen de las demás en una sola cosa, y es la que tiene efecto: no
+# prescriben fuerza y no mueven nada del ciclo. Lo que sí hacen es dejar dicho
+# que ese día hubo actividad, que es lo que las separa de no contestar.
+#
+# `bici` no es lo mismo que la clasificación de salidas de `cycling`: aquélla
+# sale de Garmin y es un hecho medido, ésta es lo que uno declaró a las siete de
+# la mañana. Pueden no coincidir, y ése es el motivo de guardar las dos.
+ELECCION_BICI = "bici"
+ELECCION_OTRO = "otro"
+ELECCIONES_SIN_FUERZA = (ELECCION_BICI, ELECCION_OTRO)
+
 
 class IntensityCountConfigError(ValueError):
     """El bloque de recuento de intensas está mal configurado.
@@ -274,6 +297,20 @@ class Signals:
     # hecho ninguna intensa»- y se queda escrito en el histórico igual que uno
     # contado de verdad.
     intense_count: IntensityCount | None = None
+
+    # Lo que eligió en el selector del formulario: una clave de `rotation.order`,
+    # `bici`, `otro`, o `None` si no contestó.
+    #
+    # Campo propio y no una entrada de `values`, por la misma regla que `rides`:
+    # `values` solo admite señales evaluables, y esto es una cadena categórica.
+    # Metida ahí serviría para que una regla escribiera `{chosen_session: {gte:
+    # 7}}` -que no reventaría, simplemente no dispararía nunca- y para que el día
+    # que el análisis recorra `values` sacando medias se encuentre un `dia_2`
+    # donde esperaba un número.
+    #
+    # Y no tiene histórico en `history` por lo mismo. Cuando haga falta la serie
+    # de lo elegido, sale de `checkins` con una consulta que sabe que es texto.
+    sesion_elegida: str | None = None
 
     def get(self, name: str) -> Any:
         if name in self.values:
@@ -1215,6 +1252,13 @@ def build_signals(
         if checkin and checkin.values.get(key) is not None:
             hist[day] = checkin.values[key]
         sig.history[key] = hist
+
+    # El selector, a su campo y no a `values`. Ver `CLAVE_SESION_ELEGIDA`.
+    #
+    # Se lee de `checkin.values` porque ahí es donde lo deja `checkin_values`,
+    # que vuelca la fila entera; lo que no hace es seguir el camino de las otras
+    # respuestas hacia `sig.values`.
+    sig.sesion_elegida = checkin.values.get(CLAVE_SESION_ELEGIDA) if checkin else None
 
     # La discordancia: te apetecía y no vas, o no te apetecía y vas.
     #

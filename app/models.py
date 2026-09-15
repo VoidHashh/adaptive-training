@@ -250,6 +250,34 @@ class Checkin(Base):
     wants_to_train: Mapped[bool | None] = mapped_column(Boolean)
     will_train: Mapped[bool | None] = mapped_column(Boolean)
 
+    # Qué sesión dijo por la mañana que iba a hacer: una clave de
+    # `rotation.order`, o `bici`, o `otro`. Nula cuando no contestó, con el mismo
+    # significado de siempre -«no me lo han dicho»- y por el mismo motivo que las
+    # dos de arriba: un día sin formulario y un día en que eligió lo que tocaba
+    # no son el mismo día, y un valor por defecto los fundiría en uno.
+    #
+    # ES LO DECLARADO, NO LO HECHO, y esa distinción es la razón de que la
+    # columna esté aquí y no en `workout_log`. Lo que se levantó de verdad se lee
+    # de Hevy y manda sobre esto siempre: la rotación de mañana sale de
+    # `workout_log` y nunca de esta columna. Guardar la intención al lado del
+    # hecho es lo que permite preguntar en qué se diferencian, que es justo lo
+    # que hoy no se puede preguntar.
+    #
+    # TEXTO Y NO ENUM, y no es pereza: los valores válidos salen de
+    # `rotation.order`, que vive en el `config.yaml` y cambia sin migración. Un
+    # `Enum` de base de datos congelaría aquí una lista que allí es editable, y
+    # el día que se añadiera un `dia_4` la escritura fallaría en la capa más
+    # lejana al sitio donde se hizo el cambio. Quien comprueba que el valor sea
+    # uno de los posibles es `upsert_checkin`, que tiene el config a mano.
+    #
+    # Fuera de `checkin_sliders` y de `checkin_preguntas` a propósito, como las
+    # dos de arriba pero con una razón de más: además de que una elección no es
+    # una medida, esto es una CADENA. Esas dos listas son las que `build_signals`
+    # vuelca en `signals.values`, que es el espacio de nombres que ven las reglas
+    # y sobre el que el análisis hace cuentas. Un `dia_2` ahí dentro no da un
+    # color raro: da un `float('dia_2')` el día que alguien saque una media.
+    chosen_session: Mapped[str | None] = mapped_column(String(32))
+
     comments: Mapped[str | None] = mapped_column(Text)
 
 

@@ -477,6 +477,63 @@ checkin_preguntas:
       La rutina se escribe en Hevy igual. Un «no» solo hace que el mensaje de
       hoy no te la proponga.
 
+# -----------------------------------------------------------------------------
+# 2-ter. EL SELECTOR DE SESIÓN
+# -----------------------------------------------------------------------------
+# Qué vas a hacer hoy. El formulario lo pre-selecciona con lo que el sistema
+# propone, así que el caso normal -hacer lo que toca- es no tocar nada.
+#
+# PARA QUÉ SIRVE, QUE NO ES PARA MANDAR SOBRE LA ROTACIÓN
+# -------------------------------------------------------
+# Lo que gira el ciclo mañana es lo que se EJECUTÓ en Hevy, hoy y siempre. Esta
+# respuesta no lo toca: se puede declarar el Día 2 y acabar haciendo el Día 1, y
+# el que cuenta es el Día 1. Elegir aquí hace dos cosas, las dos de hoy:
+#
+#   1. Que la sesión que se escribe en Hevy sea la que vas a hacer, con SU
+#      progresión y SUS ajustes del semáforo. Sin esto, desviarse un día
+#      significaba levantar los pesos que esa rutina tuviera guardados de la
+#      última vez, sin los ajustes de esta mañana.
+#   2. Que quede escrito lo que dijiste al lado de lo que hiciste. De ahí sale
+#      saber si uno se salta el Día 1 a menudo, que es información sobre uno
+#      mismo y no se puede sacar de `workout_log` solo: ahí está lo que hiciste,
+#      no lo que ibas a hacer.
+#
+# LOS DÍAS DEL CICLO NO SE ENUMERAN AQUÍ
+# --------------------------------------
+# Salen de `rotation.order`, y sus nombres de `routines.<clave>.title`. Escribir
+# una segunda lista sería poder escribirla distinta: un `dia_4` añadido al ciclo
+# y olvidado aquí dejaría el formulario ofreciendo tres opciones mientras el
+# sistema rota entre cuatro, y el día que propusiera el Día 4 no habría forma de
+# aceptarlo. Lo único que se nombra abajo es lo que NO es una rutina.
+checkin_selector:
+  key: chosen_session
+  label: "¿Qué vas a hacer hoy?"
+  # Lo que evita el malentendido, que aquí es el simétrico del de `will_train`:
+  # si esto se leyera como «apúntame el entreno», elegir mal daría miedo y se
+  # dejaría siempre lo propuesto. Y entonces el dato recogido sería el reparo a
+  # tocar el selector, no la intención.
+  nota: >-
+    Lo que de verdad cuenta es lo que registres en Hevy. Esto solo sirve para
+    que la rutina de hoy sea la que vas a hacer.
+  # Las dos que no son fuerza. El motor las busca por estos nombres:
+  #
+  #   - `bici`: no prescribe fuerza y no mueve el ciclo, pero deja dicho que hubo
+  #     actividad. No se confunde con la clasificación de salidas de la sección
+  #     `cycling`, que sale de Garmin y es un hecho medido: esto es lo que
+  #     declaraste a las siete de la mañana, y pueden no coincidir.
+  #   - `otro`: entrenaste sin plan. Existe para que «hice algo» no tenga que
+  #     contarse como «no contesté», que es donde caía antes todo lo que no fuera
+  #     una de las tres rutinas.
+  #
+  # Ninguna de las dos cancela la escritura en Hevy, por lo mismo que un «no voy
+  # a entrenar» tampoco la cancela: si acabas yendo al gimnasio, la rutina tiene
+  # que estar puesta y no ser la de hace dos semanas.
+  sin_fuerza:
+    - key: bici
+      label: "Bici"
+    - key: otro
+      label: "Otro"
+
 checkin_comment:
   key: comments
   label: "Comentarios"

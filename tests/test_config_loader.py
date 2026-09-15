@@ -1545,3 +1545,114 @@ def test_el_desliza_de_las_ganas_sigue_pudiendo_decidir(cfg):
     ]
     assert any("training_desire" in senales_de_regla(r) for r in reglas)
     assert _validate(cfg.raw) == []
+
+
+# ---------------------------------------------------------------------------
+# El selector de sesión
+# ---------------------------------------------------------------------------
+#
+# La sección dice poco a propósito: los días del ciclo NO se enumeran en ella.
+# Casi todo lo que se comprueba aquí es que no se pueda empezar a enumerarlos.
+
+
+def test_sin_la_seccion_del_selector_no_se_arranca(cfg_copia):
+    """Faltando, el formulario no preguntaría y nadie lo notaría.
+
+    Es el mismo fallo de `checkin_preguntas`: `chosen_session` se quedaría nula
+    todos los días, el sistema seguiría proponiendo como siempre y todo
+    funcionaría. O sea, el comportamiento anterior con cara de normal, que es la
+    avería que este fichero existe para impedir.
+    """
+    del cfg_copia.raw["checkin_selector"]
+    assert "checkin_selector" in errores(cfg_copia.raw)
+
+
+def test_la_clave_del_selector_no_se_puede_renombrar(cfg_copia):
+    """La busca el código por su nombre, como `will_train`."""
+    cfg_copia.raw["checkin_selector"]["key"] = "rutina_elegida"
+    fallo = errores(cfg_copia.raw)
+    assert "chosen_session" in fallo
+
+
+@pytest.mark.parametrize("clave", ["bici", "otro"])
+def test_borrar_una_opcion_sin_fuerza_no_pasa_en_silencio(cfg_copia, clave):
+    """Sin ellas, un día de bici no se podría declarar.
+
+    Y no se podría declarar en silencio: el selector ofrecería solo rutinas del
+    ciclo, y un día de bici volvería a ser indistinguible de un día sin
+    contestar, que es justo la distinción que el selector viene a añadir.
+    """
+    cfg_copia.raw["checkin_selector"]["sin_fuerza"] = [
+        o for o in cfg_copia.raw["checkin_selector"]["sin_fuerza"] if o["key"] != clave
+    ]
+    fallo = errores(cfg_copia.raw)
+    assert clave in fallo
+
+
+def test_una_opcion_sin_fuerza_no_puede_llamarse_como_un_dia_del_ciclo(cfg_copia):
+    """Estando en las dos listas, elegirla es rutina y no-rutina a la vez.
+
+    Cuál gana dependería del orden en que se preguntara, que es la peor clase de
+    respuesta: la que es estable hasta que alguien reordena dos `if`.
+    """
+    cfg_copia.raw["checkin_selector"]["sin_fuerza"].append(
+        {"key": "dia_2", "label": "Día 2 pero en bici"}
+    )
+    fallo = errores(cfg_copia.raw)
+    assert "dia_2" in fallo
+
+
+def test_una_clave_inventada_en_el_selector_se_rechaza(cfg_copia):
+    """Lista blanca, como en el resto del fichero."""
+    cfg_copia.raw["checkin_selector"]["preseleccionar"] = "dia_1"
+    assert "preseleccionar" in errores(cfg_copia.raw)
+
+
+def test_una_regla_del_semaforo_no_puede_mirar_el_selector(cfg_copia):
+    """No por lo que haría, sino por lo que NO haría.
+
+    A diferencia de una pregunta de Sí/No -que sí llega a `values` y sí movería
+    el color-, el selector no llega. Una regla que lo nombrara no daría error ni
+    un ámbar injusto: se anotaría como saltada por falta de datos todas las
+    mañanas, para siempre, y en el log eso se lee igual que un día en que el
+    reloj no sincronizó. Una regla que nunca dispara y parece que podría es peor
+    que una regla que falla.
+    """
+    cfg_copia.raw["thresholds"]["amber"].append(
+        {
+            "name": "dia_de_bici",
+            "when": {"all": [{"chosen_session": {"eq": "bici"}}]},
+        }
+    )
+    fallo = errores(cfg_copia.raw)
+    assert "dia_de_bici" in fallo
+    assert "chosen_session" in fallo
+
+
+def test_las_opciones_son_el_ciclo_mas_las_dos_que_no_son_fuerza(cfg):
+    """Y en el orden de pantalla: primero el ciclo tal cual gira."""
+    assert cfg.opciones_selector() == [*cfg.rotation_order(), "bici", "otro"]
+
+
+def test_anadir_un_dia_al_ciclo_lo_hace_elegible_sin_tocar_el_selector(cfg_copia):
+    """La razón entera de no enumerar los días en la sección del selector.
+
+    El fallo que esto evita ya se pagó una vez: el calendario fijo estaba
+    impecable, con sus siete días escritos, y sencillamente no nombraba `dia_3`.
+    Todas las sesiones del Día 3 entraron como entrenos sueltos y sus cargas no
+    se movieron nunca. Con una segunda lista aquí, un `dia_4` nuevo se podría
+    proponer y no se podría aceptar.
+    """
+    cfg_copia.raw["rotation"]["order"] = [*cfg_copia.rotation_order(), "dia_4"]
+    assert "dia_4" in cfg_copia.opciones_selector()
+
+
+def test_el_selector_no_entra_en_las_claves_del_checkin(cfg):
+    """Lo que lo mantiene fuera del espacio de nombres de las reglas.
+
+    `checkin_keys()` es lo que `build_signals` vuelca en `signals.values` y lo
+    que recorre el análisis. Todo lo de esa lista es número o booleano; esto es
+    una cadena.
+    """
+    assert cfg.selector()["key"] not in cfg.checkin_keys()
+    assert cfg.checkin_keys() == cfg.slider_keys() + cfg.pregunta_keys()

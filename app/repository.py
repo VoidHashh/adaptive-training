@@ -33,7 +33,9 @@ from typing import Any
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
+from app.config_loader import opciones_selector
 from app.engine.decision import ActiveRule, EngineState
+from app.engine.signals import CLAVE_SESION_ELEGIDA
 from app.engine.tendencia import DecisionDia
 from app.models import (
     ExerciseTarget,
@@ -385,6 +387,27 @@ def preguntas_del_config(config: Any) -> list[str]:
     return [str(p["key"]) for p in (raw.get("checkin_preguntas") or []) if p.get("key")]
 
 
+def opciones_del_config(config: Any) -> set[str]:
+    """Lo que se puede elegir en el selector: el ciclo, más bici y otro.
+
+    La regla vive en `config_loader.opciones_selector` y aquí solo se la llama.
+    Lo que esta función añade es lo mismo que sus dos vecinas de arriba: aceptar
+    las dos formas de `config` que recorren el módulo -el objeto y el
+    diccionario pelado de algunos tests-.
+
+    No es reparto de tareas por gusto. Lo que se valida al guardar tiene que ser
+    exactamente lo que se ofrece en la pantalla, y la única manera de que no se
+    separen nunca es que sea la misma lista leída del mismo sitio; dos copias de
+    la regla se sostienen mientras nadie toque el ciclo, que es justo cuando
+    hace falta que aguanten.
+
+    Devuelve un conjunto y no una lista porque aquí solo se pregunta si algo
+    está dentro. El orden importa en el formulario, no en la validación.
+    """
+    raw = config.raw if hasattr(config, "raw") else (config or {})
+    return set(opciones_selector(raw))
+
+
 def upsert_checkin(
     session: Session,
     day: date,
@@ -404,15 +427,27 @@ def upsert_checkin(
     por `fatigue` escrito desde la PWA se guardaría en ninguna parte y el
     sistema decidiría sin ese dato, diciendo que el check-in está completo.
 
-    Lo que se admite es la UNIÓN de deslizadores y preguntas de Sí/No. Guardar es
-    la única operación en la que los dos tipos de respuesta son la misma cosa:
-    una columna de `checkins`. La diferencia entre ellos -que un deslizador puede
-    mover el semáforo y una pregunta no- se sostiene en el config y en
+    Lo que se admite es la UNIÓN de deslizadores, preguntas de Sí/No y el
+    selector. Guardar es la única operación en la que los tres tipos de respuesta
+    son la misma cosa: una columna de `checkins`. Lo que los separa -que un
+    deslizador puede mover el semáforo, que una pregunta no, y que el selector ni
+    siquiera llega a `signals.values`- se sostiene en el config y en
     `config_loader`, no aquí; meter ese criterio también en esta función sería
     tener la misma regla en dos sitios y que uno de los dos se quedase atrás.
+
+    EL SELECTOR ES EL ÚNICO AL QUE SE LE MIRA EL VALOR, y la asimetría es a
+    propósito. Un deslizador fuera de rango sigue siendo un número: se guarda,
+    se ve raro y se corrige. Una elección inventada -`dia_4` cuando el ciclo
+    tiene tres, un `Bici` con mayúscula- no se ve: se guarda, no coincide con
+    nada, y el sistema se comporta exactamente igual que si no hubieras
+    contestado. Es el mismo fallo que el `fatiga` por `fatigue` de un párrafo más
+    arriba, un nivel más abajo: la clave es correcta y lo que miente es el
+    contenido.
     """
     permitidas = (
-        set(sliders_del_config(config)) | set(preguntas_del_config(config))
+        set(sliders_del_config(config))
+        | set(preguntas_del_config(config))
+        | {CLAVE_SESION_ELEGIDA}
         if config is not None
         else None
     )
@@ -427,8 +462,18 @@ def upsert_checkin(
         if permitidas is not None and clave not in permitidas:
             raise ValueError(
                 f"el check-in trae '{clave}', que no está ni en `checkin_sliders` "
-                f"ni en `checkin_preguntas` del config. O sobra en el formulario o "
-                f"falta en el YAML."
+                f"ni en `checkin_preguntas` ni es el selector del config. O sobra "
+                f"en el formulario o falta en el YAML."
+            )
+
+    elegida = valores.get(CLAVE_SESION_ELEGIDA)
+    if elegida is not None and config is not None:
+        opciones = opciones_del_config(config)
+        if elegida not in opciones:
+            raise ValueError(
+                f"el check-in dice que hoy toca '{elegida}', que no es ninguna de "
+                f"las opciones: {sorted(opciones)}. Guardarlo dejaría el día "
+                f"contado como sin contestar, que es lo mismo que perderlo."
             )
 
     fila = session.scalars(
