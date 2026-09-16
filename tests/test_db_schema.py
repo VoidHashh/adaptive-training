@@ -52,6 +52,26 @@ def vieja(tmp_path):
     Base.metadata.create_all(eng)
 
     def envejecer(tabla: str, quitar: set[str]) -> None:
+        # QUITAR UNA COLUMNA QUE YA NO EXISTE NO ES QUITAR NADA.
+        # -------------------------------------------------------------------
+        # El filtro de abajo es `c.name not in quitar`: si el nombre que se pide
+        # quitar deja de ser una columna del modelo -se renombra, se borra, se
+        # escribe con una errata-, el filtro no descarta ninguna y la base
+        # "vieja" sale IDÉNTICA a la nueva. A partir de ahí `ensure_schema` no
+        # tiene nada que migrar, devuelve la lista de cambios vacía, y todos los
+        # tests que solo comprueban el estado FINAL pasan: la columna está,
+        # porque nunca se fue. La migración deja de estar probada y la suite
+        # sigue verde.
+        #
+        # De los diecisiete sitios que llaman a esto, solo unos pocos asertan
+        # que `cambios` no esté vacío. Los demás -incluidos los dos que
+        # comparan el esquema entero columna a columna- se quedarían mudos.
+        existentes = {c.name for c in Base.metadata.tables[tabla].columns}
+        assert quitar <= existentes, (
+            f"se pide envejecer {tabla} quitando {sorted(quitar - existentes)}, "
+            f"que no son columnas del modelo. La base 'vieja' saldría idéntica "
+            f"a la nueva y el test no probaría ninguna migración."
+        )
         cols = [c for c in Base.metadata.tables[tabla].columns if c.name not in quitar]
         nombres = ", ".join(f'"{c.name}"' for c in cols)
 

@@ -106,14 +106,34 @@ def _fuente(ruta: Path) -> str:
 
 
 def _ficheros() -> list[Path]:
+    """Los ficheros que la guarda tiene que mirar.
+
+    LA LISTA VACÍA ES EL PEOR RESULTADO POSIBLE Y NO SE PARECE A UN FALLO.
+    Esto alimenta un `parametrize`. Si `REPO_ROOT` apuntara mal, si una carpeta
+    se renombrara, o si el paquete acabara instalado de otra forma, el `rglob`
+    devolvería nada: cero casos generados, cero tests ejecutados, y pytest
+    informa de una guarda que pasa. La convención dejaría de vigilarse el mismo
+    día y la suite no bajaría ni un test de la cuenta que se mira.
+
+    Se comprueba también carpeta a carpeta y no solo el total: con tres
+    carpetas, que `app/` desaparezca del barrido deja las otras dos llenando la
+    lista y el total sigue siendo convincente.
+    """
     out: list[Path] = []
     for carpeta in CARPETAS:
-        out.extend(sorted((REPO_ROOT / carpeta).rglob("*.py")))
-    return [
+        encontrados = sorted((REPO_ROOT / carpeta).rglob("*.py"))
+        assert encontrados, (
+            f"la guarda no encuentra ni un .py en {REPO_ROOT / carpeta}: no está "
+            f"vigilando esa carpeta, y un parametrize sin casos pasa sin mirar nada"
+        )
+        out.extend(encontrados)
+    ficheros = [
         p
         for p in out
         if "__pycache__" not in p.parts and p.resolve() not in EXCEPTO
     ]
+    assert ficheros, "no queda ni un fichero que vigilar después de las exclusiones"
+    return ficheros
 
 
 def _ids_de_docstrings(arbol: ast.AST) -> set[int]:

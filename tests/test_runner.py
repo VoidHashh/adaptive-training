@@ -931,7 +931,8 @@ def test_si_archivar_falla_la_mañana_termina_y_se_dice(db, cfg, monkeypatch):
 
 
 def _entrenamiento_completo(
-    plan: dict, wid: str = "w1", day: date = LUNES, factor_peso: float = 1.0
+    plan: dict, wid: str = "w1", day: date = LUNES, factor_peso: float = 1.0,
+    *, sin_plan: bool = False,
 ) -> dict:
     """Un entrenamiento que cumple el plan entero, construido DESDE el plan.
 
@@ -942,7 +943,46 @@ def _entrenamiento_completo(
 
     `factor_peso` sirve para el caso contrario: 0.8 son las mismas reps con menos
     peso, que es exactamente la sesión que antes se colaba como limpia.
+
+    `sin_plan=True` ES OBLIGATORIO PARA LOS ENTRENAMIENTOS SUELTOS, Y ÉSE ES
+    TODO EL PUNTO
+    ---------------------------------------------------------------------------
+    Esta función lee `plan["exercises"]` y `plan["hevy_routine_id"]` con `.get`,
+    y el plan que recibe viene de `planned_session()`, que devuelve lo que el
+    motor serializó ese día. O sea: la forma del diccionario la decide código
+    que está a cuatro ficheros de aquí y puede cambiar sin que nadie mire este
+    módulo.
+
+    Si `exercises` deja de llamarse así, esto devuelve un entrenamiento de CERO
+    ejercicios. Y un entrenamiento de cero ejercicios cumple cualquier cosa que
+    se le pida: `run_reconcile` lo puntúa como sesión perfecta, las rachas
+    avanzan, y `test_reconciliar_avanza_la_racha` sigue verde sin haber
+    ejecutado nada. El peor es
+    `test_reconciliar_dos_veces_no_cuenta_dos_veces`, cuya afirmación central es
+    `segunda == primera`: con las dos mitades vacías eso es `{} == {}`, verde
+    para siempre.
+
+    Si lo que desaparece es `hevy_routine_id`, el `routine_id` sale a `None`,
+    que NO es una etiqueta que falta: es la etiqueta de «entrenamiento suelto».
+    Eso ya pasó una vez y está contado tres párrafos más abajo.
+
+    Trece llamadas de este módulo pasan `{"exercises": []}` a propósito -son los
+    tests del entrenamiento por libre-, así que el aviso no puede ser
+    incondicional. Tiene que ser una declaración: quien quiera un entrenamiento
+    sin plan lo dice, y quien no lo diga y se quede sin plan es que algo se ha
+    roto.
     """
+    assert sin_plan or plan.get("exercises"), (
+        f"plan sin ejercicios para {wid}: un entrenamiento vacío cumple "
+        "cualquier cosa que se le compare y el test no mediría nada. Si el "
+        "entrenamiento suelto es lo que se busca, pásalo con `sin_plan=True`."
+    )
+    assert sin_plan or plan.get("hevy_routine_id"), (
+        f"plan sin `hevy_routine_id` para {wid}: `routine_id` saldría a None, "
+        "que es la etiqueta de «entrenamiento suelto», y la sesión se "
+        "registraría como hecha por libre haciendo exactamente lo que el plan "
+        "pedía. Si eso es lo que se busca, pásalo con `sin_plan=True`."
+    )
     ejercicios = []
     for ex in plan.get("exercises") or []:
         ejercicios.append(
@@ -1073,7 +1113,7 @@ def test_un_dia_sin_decision_guardada_no_reconcilia_nada(db, cfg):
     las métricas, ni en el volumen, ni en el presupuesto de intensas. Queda
     registrado y marcado como fuera del plan, con el motivo escrito.
     """
-    w = _entrenamiento_completo({"exercises": []}, wid="sin_plan")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="sin_plan")
     res = run_reconcile(db, cfg, LUNES, workouts=[w])
 
     assert not res.avanzado, "sin plan no hay nada que progresar"
@@ -1143,14 +1183,20 @@ def _ejecuta(media: dict, *, wid: str, rid: str) -> dict:
 
     Con las dos mitades ya separadas en el plan no hay nada que filtrar, así que
     la función ya no puede quedarse callada: si le dan un plan vacío, revienta.
+
+    El `rid` se le da a `_entrenamiento_completo` DENTRO del plan en vez de
+    pegarlo encima del resultado. Es la misma idea una capa más abajo: parcheado
+    después, la comprobación de que el plan trae rutina no vería nunca este
+    camino, y esta función volvería a ser la única que sabe que aquí hace falta
+    un `routine_id`.
     """
     assert media.get("exercises"), (
         f"plan vacío para {wid}: un entrenamiento sin ejercicios cumple "
         "cualquier cosa y el test no comprobaría nada"
     )
-    w = _entrenamiento_completo({"exercises": media["exercises"]}, wid=wid)
-    w["routine_id"] = rid
-    return w
+    return _entrenamiento_completo(
+        {"exercises": media["exercises"], "hevy_routine_id": rid}, wid=wid
+    )
 
 
 def test_el_hiit_previsto_para_hoy_no_sale_como_fuera_del_plan(db, cfg_lunes):
@@ -1191,7 +1237,7 @@ def test_un_hiit_que_el_plan_no_pedia_queda_visible_con_su_motivo(db, cfg):
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     assert _plan_guardado(db).get("hiit_block") is None
 
-    w = _entrenamiento_completo({"exercises": []}, wid="hiit_suelto")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="hiit_suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
 
     res = run_reconcile(db, cfg, LUNES, workouts=[w])
@@ -1216,7 +1262,7 @@ def test_el_hiit_que_pedia_el_plan_se_nombra_por_su_titulo(db, cfg_lunes):
         "el escenario ya no lleva HIIT; el test hay que rehacerlo"
     )
 
-    w = _entrenamiento_completo({"exercises": []}, wid="el_otro_hiit")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="el_otro_hiit")
     w["routine_id"] = _rid(cfg_lunes, "hiit_dia_2")
     run_reconcile(db, cfg_lunes, LUNES, workouts=[w])
 
@@ -1251,7 +1297,7 @@ def test_un_entrenamiento_de_un_dia_que_no_planificaba_fuerza_se_registra_igual(
         f"el escenario necesita un día rojo y salió {plan.get('kind')}"
     )
 
-    w = _entrenamiento_completo({"exercises": []}, wid="rojo", day=LUNES)
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="rojo", day=LUNES)
     res = run_reconcile(db, cfg, LUNES, workouts=[w])
 
     assert not res.avanzado
@@ -1311,7 +1357,7 @@ def _declaro_y_entreno(db, cfg, *, declara, ejecuta, pesos_de=None, estado_pesos
     res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     planificada = _plan_guardado(db).get("routine")
 
-    w = _entrenamiento_completo({"exercises": []}, wid="otro_dia")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="otro_dia")
     w["routine_id"] = _rid(cfg, ejecuta)
     run_reconcile(db, cfg, LUNES, workouts=[w])
 
@@ -1436,7 +1482,7 @@ def test_una_rutina_de_fuera_del_ciclo_conserva_el_motivo_de_siempre(db, cfg):
     upsert_checkin(db, LUNES, {"chosen_session": "dia_2"}, config=cfg)
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
 
-    w = _entrenamiento_completo({"exercises": []}, wid="hiit_suelto")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="hiit_suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
     run_reconcile(db, cfg, LUNES, workouts=[w])
 
@@ -1469,7 +1515,7 @@ def test_una_rutina_del_config_que_no_esta_en_la_rotacion_tampoco_entra(db, cfg_
     assert "movilidad" not in cfg_copia.raw["rotation"]["order"]
 
     corre(db, cfg_copia, hevy=HevyFalso(), tg=TelegramFalso())
-    w = _entrenamiento_completo({"exercises": []}, wid="movilidad")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="movilidad")
     w["routine_id"] = "rid-movilidad"
     run_reconcile(db, cfg_copia, LUNES, workouts=[w])
 
@@ -1517,7 +1563,7 @@ def test_reconciliar_una_noche_vieja_no_fecha_los_pesos_en_el_futuro(db, cfg):
     db.query(WorkoutLog).delete()
     db.flush()
 
-    w = _entrenamiento_completo({"exercises": []}, wid="otra_vez")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="otra_vez")
     w["routine_id"] = _rid(cfg, "dia_1")
     run_reconcile(db, cfg, LUNES, workouts=[w])
 
@@ -2250,7 +2296,7 @@ def test_el_entreno_fuera_del_plan_se_cuenta_en_el_mensaje_de_la_manana(db, cfg)
     para entenderlo, a las nueve de la mañana y desde el móvil, es no avisar.
     """
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
-    w = _entrenamiento_completo({"exercises": []}, wid="hiit_suelto")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="hiit_suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
     w["title"] = "HIIT Día 1"
     run_reconcile(db, cfg, LUNES, workouts=[w])
@@ -2270,7 +2316,7 @@ def test_si_telegram_falla_el_entreno_suelto_se_cuenta_al_dia_siguiente(db, cfg)
     Telegram caído no tumbe la mañana, así que sellar al leer daría por contado
     un entrenamiento que nadie llegó a ver nunca."""
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
-    w = _entrenamiento_completo({"exercises": []}, wid="suelto")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
     run_reconcile(db, cfg, LUNES, workouts=[w])
 
@@ -2289,7 +2335,7 @@ def test_un_entreno_suelto_ya_contado_no_se_repite_cada_manana(db, cfg):
     """Una línea que sale todos los días se aprende a saltar, y con ella se
     saltan las que sí cambian."""
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
-    w = _entrenamiento_completo({"exercises": []}, wid="suelto")
+    w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
     run_reconcile(db, cfg, LUNES, workouts=[w])
 
@@ -2358,6 +2404,16 @@ def _seis_semanas(db, cfg, *, reconciliar: bool) -> _Simulacion:
                     db, cfg, d,
                     workouts=[_entrenamiento_completo(plan, wid=f"w{i}", day=d)],
                 )
+    # EL `if` DE ARRIBA ES UNA PUERTA QUE PUEDE CERRARSE SOLA.
+    # Los 42 días de esta simulación son verdes por construcción -el check-in va
+    # tranquilo y las métricas son planas-, así que los 42 planifican fuerza. Si
+    # `exercises` dejara de llamarse así, el `if` sería falso las 42 veces: cero
+    # reconciliaciones, cero subidas, y la simulación mediría seis semanas de no
+    # hacer nada mientras su nombre sigue diciendo seis semanas de entrenar.
+    assert sum(rutinas.values()) == 42, (
+        f"{sum(rutinas.values())} de 42 días verdes han salido sin ejercicios; "
+        "la simulación no está simulando lo que dice"
+    )
     filas = db.scalars(select(WorkoutLog)).all()
     return _Simulacion(
         tipos=tipos,
