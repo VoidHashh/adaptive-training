@@ -551,6 +551,29 @@ checkin_comment:
 # se anota como skipped en el log (no se asume ni bien ni mal).
 
 thresholds:
+  # UN VERDE SIN DATOS SALE ÁMBAR.
+  #
+  # Si al acabar las dos pasadas no ha disparado ninguna regla PERO alguna se
+  # quedó sin evaluar porque el reloj todavía no había subido la noche, el día
+  # no sale verde: sale ámbar, y el mensaje lo dice con esas palabras. El motivo
+  # no es estadístico, es de espalda: no mirar y estar bien no pueden pintarse
+  # igual, y con una hernia L4-L5 el error barato es el de más.
+  #
+  # El caso real es el del check-in a las 06:23, antes de que Garmin tenga la
+  # noche. Ese ámbar nace PROVISIONAL: a las 09:00 se vuelve a pedir el
+  # wellness, y si llega, el día se recalcula. Si de eso sale verde, el mensaje
+  # lo anuncia como anulación -en negrita, debajo de la cabecera- igual que ya
+  # lo anunciaba cuando el cambio iba al revés.
+  #
+  # Solo cuenta lo que sube el reloj. Un verde decidido sin check-in también es
+  # ciego, y a propósito NO lo promueve: ver `_verde_a_ciegas` en
+  # `app/engine/rules.py`, donde está escrito por qué.
+  #
+  # Poniendo `false` se vuelve al comportamiento de antes. Está aquí y no
+  # enterrado en el motor para que se lea en el mismo sitio que las reglas que
+  # modula.
+  ambar_sin_datos: true
+
   red:
     - name: lumbar_alto
       description: "Molestia lumbar >= 7"
@@ -562,10 +585,26 @@ thresholds:
       requires: [hrv, hrv_baseline]
       when: {hrv_ratio: {lt: 0.85, consecutive_days: 2}}
 
-    - name: fc_reposo_disparada
-      description: "FC en reposo >= media 7d + 7 lpm"
-      requires: [rhr, rhr_baseline]
-      when: {rhr_delta: {gte: 7}}
+    # AQUÍ ESTABA `fc_reposo_disparada`, Y SE HA IDO. Léelo antes de reescribirla.
+    #
+    # Pedía `rhr_delta >= 7`: el pulso de reposo siete latidos por encima de la
+    # media de siete días. En 186 días con dato -181 con pulso medible- disparó
+    # CERO veces. No "pocas": cero.
+    #
+    # No es mala suerte, es aritmética. El `rhr_delta` más alto de todo el
+    # histórico es +4,60, y el percentil 99 anda por +4. Mi pulso de reposo no
+    # se mueve siete latidos; para que esta regla disparase una sola vez haría
+    # falta algo que no ha pasado en medio año. Era una condición copiada de un
+    # umbral genérico, no medida sobre mí.
+    #
+    # Una regla que no puede disparar no es "una red de seguridad por si acaso":
+    # es una línea que se lee, se evalúa cada mañana y siempre dice que no,
+    # dando la impresión de que el pulso está vigilado cuando no lo está. Si
+    # algún día hace falta un rojo por pulso, el umbral hay que sacarlo de mi
+    # distribución -p99 + algo-, no de un número redondo.
+    #
+    # Se fue junto con `fc_reposo_elevada`, que está en el bloque ámbar de abajo
+    # y tiene su propia lápida con el motivo, que es distinto y más interesante.
 
     - name: sueno_muy_corto
       description: "Menos de 5 h de sueño"
@@ -596,10 +635,42 @@ thresholds:
       requires: [hrv, hrv_baseline]
       when: {hrv_ratio: {lt: 0.90}}
 
-    - name: fc_reposo_elevada
-      description: "FC en reposo >= media 7d + 4 lpm"
-      requires: [rhr, rhr_baseline]
-      when: {rhr_delta: {gte: 4}}
+    # AQUÍ ESTABA `fc_reposo_elevada`, Y SE HA IDO. Léelo antes de reescribirla.
+    #
+    # Pedía `rhr_delta >= 4`. Y OJO, porque esta no murió por no ver nada: el
+    # pulso de reposo SÍ distingue. Sobre 186 días, con una tasa de fondo de
+    # 22,1 % de días con `hrv_ratio < 0,90`:
+    #
+    #     >= 2,0 lpm   40 disparos   26/40 (65 %)   p = 0,0000
+    #     >= 3,0 lpm   27 disparos   17/27 (63 %)   p = 0,0000
+    #     >= 4,0 lpm    6 disparos    4/6  (67 %)   p = 0,0243
+    #
+    # Murió por la segunda pregunta, que es la que importa: ¿cuántos días PINTA
+    # ELLA? Con el umbral que tenía, uno. Uno en 186 días:
+    #
+    #     2026-08-05   rhr_delta +4,60 · hrv_ratio 0,936 · ninguna otra regla
+    #
+    # Los otros cinco disparos venían todos acompañados de `hrv_baja_1d` o de
+    # `sueno_corto`, que ya habían puesto el día en ámbar por su cuenta. Y bajar
+    # el umbral no lo arregla: a >= 2,0 lpm pinta 9 días ella sola, a >= 3,0
+    # pinta 6, a >= 3,5 pinta 2. En NINGÚN umbral hay un solo día propio con el
+    # cuerpo bajo.
+    #
+    # Ese último "ninguno" hay que leerlo con cuidado, porque no es un hallazgo:
+    # un día propio es, por definición, un día en que `hrv_baja_1d` no disparó,
+    # y `hrv_baja_1d` ES `hrv_ratio < 0,90`, que es el criterio. O sea que un
+    # día propio NO PUEDE tener el cuerpo bajo. La cuenta que sí dice algo es la
+    # otra: los 6 o 9 días que recorta ella sola, y que son días con la HRV
+    # normal. Eso son sesiones perdidas.
+    #
+    # El resumen es que `rhr_delta` es un buen TERMÓMETRO y un mal INTERRUPTOR:
+    # sube cuando el cuerpo está mal, pero nunca antes ni en lugar de la HRV, y
+    # cuando habla solo es porque se ha equivocado. Sigue siendo una señal viva
+    # -se calcula, se guarda, se pinta en el panel y se puede mirar-; lo que se
+    # ha ido es su voto.
+    #
+    # Se fue con `fc_reposo_disparada`, que está arriba en el bloque rojo y que
+    # no llegó a disparar ni una vez en todo el histórico.
 
     - name: sueno_corto
       description: "Entre 5 h y 6,5 h de sueño"

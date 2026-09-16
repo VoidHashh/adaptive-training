@@ -101,6 +101,32 @@ COMPARISONS = {
 ADAPTIVE_SUFFIX = "_adaptive"
 OPTION_SUFFIX = "_option"
 
+# Las medidas que sube el reloj mientras duermes. Viven aquí, y no en el
+# `scheduler` donde nacieron, porque desde que existe el ámbar por precaución
+# hay DOS sitios que tienen que estar de acuerdo sobre qué es «un dato del
+# reloj»: el motor, que promueve el verde ciego, y el scheduler, que decide si
+# vale la pena volver a preguntarle a Garmin. Si las dos listas se separasen, el
+# motor pintaría un ámbar provisional que la recomputación no sabría deshacer -y
+# un ámbar provisional que no se puede deshacer es un ámbar a secas-.
+#
+# Deliberadamente NO están las derivadas (`hrv_ratio`, `hrv_baseline`,
+# `rhr_delta`, `rhr_baseline`). Una base que falta no la arregla refrescar el
+# dato de esta noche: le faltan días de historia. Y viajan acompañadas -la regla
+# `hrv_baja_1d` se salta con `["hrv", "hrv_baseline"]`, no con `hrv_ratio` a
+# secas-, así que mirar las directas ya las cubre.
+MEDIDAS_DEL_RELOJ = frozenset(
+    {"hrv", "rhr", "sleep_min", "sleep_score", "body_battery"}
+)
+
+# El nombre con el que se guarda el ámbar por precaución. No es una regla del
+# YAML -no puede serlo, ver `evaluate_light`- pero se escribe en
+# `fired_rules_json` y en `trigger_rule` como cualquier otra, para que el
+# mensaje, el registro y la auditoría no necesiten un caso especial.
+REGLA_SIN_DATOS = "ambar_sin_datos"
+
+# El interruptor, dentro de `thresholds` y al lado de las reglas que modula.
+CLAVE_PRECAUCION = "ambar_sin_datos"
+
 
 class RuleError(ValueError):
     """Regla mal escrita en el YAML. Es un error de programación, no de datos."""
@@ -372,12 +398,55 @@ def evaluate_rule(
     return result
 
 
+def _verde_a_ciegas(skipped: list[RuleResult]) -> list[RuleResult]:
+    """De las reglas saltadas, las que se saltaron por un dato del reloj.
+
+    Solo el reloj, y es una frontera pensada, no una simplificación. Un verde
+    también puede salir sin mirar media hoja de reglas cuando no hay check-in
+    -`lumbar_medio`, `cervicales_hombros` y `cansancio_alto` se saltan las
+    tres-, y por el principio que rige esto («no mirar y estar bien no pueden
+    pintarse igual») ese verde es igual de ciego.
+
+    La diferencia no está en el principio: está en que uno se puede deshacer y
+    el otro no. El ámbar por precaución nace PROVISIONAL: a las 09:00 el
+    scheduler vuelve a pedirle la noche a Garmin, y si llega, recalcula y anuncia
+    el cambio como anulación. Para el check-in no hay ese rescate -nadie vuelve a
+    preguntarle al usuario por la mañana de ayer-, así que un ámbar por falta de
+    check-in se quedaría puesto para siempre sin camino de vuelta a verde. Y un
+    ámbar del que no se sale no avisa de nada: castiga.
+
+    Queda dicho aquí en vez de omitido en silencio, porque es la mitad del
+    problema que este arreglo NO resuelve.
+    """
+    return [r for r in skipped if set(r.missing) & MEDIDAS_DEL_RELOJ]
+
+
 def evaluate_light(config: Any, signals: Signals) -> LightDecision:
     """Rojo primero, luego ámbar, luego verde.
 
     Se evalúan TODAS las reglas de un nivel aunque la primera ya haya disparado:
     el mensaje de Telegram dice cuál lo ha disparado, pero el log guarda todas,
     que es lo que hace depurable un ámbar raro tres semanas después.
+
+    Y UN VERDE SIN DATOS NO ES UN VERDE
+    -----------------------------------
+    Si al final de las dos pasadas no ha disparado nada PERO alguna regla se
+    quedó sin evaluar porque Garmin todavía no había subido la noche, el color
+    no se queda en verde: sube a ámbar y se anota la regla sintética
+    `ambar_sin_datos` como disparo.
+
+    No puede escribirse como una regla del YAML, y conviene entender por qué
+    antes de intentarlo. Una regla dispara cuando su `when` sale cierto, y un
+    `when` sobre un dato que no está sale INDETERMINADO, que es exactamente lo
+    que significa `SKIPPED`. O sea: la condición que habría que escribir es «esta
+    regla se saltó», y eso no es una propiedad de las señales -que es lo único
+    que la gramática sabe mirar-, es una propiedad del resultado de evaluar. El
+    lenguaje de reglas no puede hablar de sí mismo.
+
+    Lo que sí está en el YAML es el interruptor, `thresholds.ambar_sin_datos`.
+    Apagarlo devuelve el comportamiento de antes. Está ahí para que la decisión
+    se lea en el fichero que se lee, y no haya que venir al motor a descubrir por
+    qué una mañana sin HRV salió ámbar.
     """
     raw = config.raw if hasattr(config, "raw") else config
     thresholds = raw.get("thresholds", {}) or {}
@@ -401,6 +470,38 @@ def evaluate_light(config: Any, signals: Signals) -> LightDecision:
             light = level
             trigger = level_fired[0].name
         fired.extend(level_fired)
+
+    # El ámbar por precaución. Va DESPUÉS del bucle y solo sobre verde: si ya
+    # hay rojo o ámbar por una regla de verdad, el color no cambia y el disparo
+    # que lo explica tampoco. Aquí solo se corrige el verde que en realidad era
+    # un «no lo sé».
+    if light == "green" and thresholds.get(CLAVE_PRECAUCION, True):
+        ciegas = _verde_a_ciegas(skipped)
+        if ciegas:
+            faltan = sorted(
+                {m for r in ciegas for m in r.missing if m in MEDIDAS_DEL_RELOJ}
+            )
+            aviso = RuleResult(
+                name=REGLA_SIN_DATOS,
+                level="amber",
+                status=FIRED,
+                description=(
+                    "ámbar por precaución: el semáforo se ha decidido sin poder "
+                    "mirar el bienestar"
+                ),
+            )
+            # `missing` lleva las MEDIDAS y `detail` las REGLAS, y no es lo
+            # mismo: el mensaje al usuario habla de medidas -«no se ha podido
+            # evaluar la variabilidad»- y la depuración de tres semanas después
+            # necesita saber qué reglas quedaron mudas.
+            aviso.missing = faltan
+            aviso.detail = [
+                "reglas sin evaluar: " + ", ".join(sorted(r.name for r in ciegas))
+            ]
+            light = "amber"
+            trigger = REGLA_SIN_DATOS
+            fired.append(aviso)
+            evaluated.append(aviso)
 
     return LightDecision(
         light=light,

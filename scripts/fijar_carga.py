@@ -232,6 +232,26 @@ def nuevas_series(
     return salida
 
 
+def huerfanas(cfg, filas: dict[tuple[str, str], Any]) -> list[tuple[str, str]]:
+    """Las claves con fila en la base que el `config.yaml` ya no declara.
+
+    Se comprueba el PAR (rutina, ejercicio) y no solo el ejercicio, que es la
+    diferencia que importa: `plancha_lateral` existe en `dia_1`, `dia_2` y
+    `dia_3`, y `remo_maquina` existe -pero en `hiit_dia_1`, no en `dia_1`. Mirar
+    solo la clave del ejercicio daría por buena una fila que está colgada de la
+    rutina equivocada, que es justo la clase de huérfana que apareció aquí.
+
+    Una rutina entera que desaparece del YAML cae sola: ninguno de sus pares
+    encuentra sitio.
+    """
+    declaradas = {
+        (str(rk), str(ex.get("key")))
+        for rk, rutina in (cfg.routines or {}).items()
+        for ex in ((rutina or {}).get("exercises") or [])
+    }
+    return sorted(k for k in filas if k not in declaradas)
+
+
 def efectivas_del_yaml(cfg, routine_key: str, exercise_key: str) -> list[dict[str, Any]]:
     """El punto de partida del fichero, para un ejercicio que aún no tiene fila."""
     rutina = (cfg.routines or {}).get(routine_key) or {}
@@ -248,6 +268,83 @@ def _pinta(series: list[dict[str, Any]]) -> str:
     return " · ".join(
         f"{s.get('reps', '?')}×{(s.get('weight_kg') or 0):g} kg" for s in series
     )
+
+
+def _borrar_huerfanas(s, cfg, filas: dict[tuple[str, str], Any], *, aplicar: bool) -> int:
+    """Quitar de la base las filas que el YAML ya no reconoce.
+
+    `auditar_cargas.py` sabe encontrarlas desde el principio y remata diciendo
+    que se arreglan con este guion, que hasta hoy solo sabía CAMBIAR una carga.
+    Una huérfana no se arregla cambiándole el peso: sobra entera. El consejo
+    mandaba a una herramienta que no podía hacer lo que anunciaba.
+
+    ANTES DE BORRAR SE ENSEÑA LO QUE HAY DENTRO, y no es cortesía. Una fila de
+    `exercise_targets` puede llevar la única copia de una carga que costó meses
+    de progresión: `config.yaml` guarda el punto de PARTIDA y la columna
+    `current_sets_json` guarda dónde se ha llegado. Borrar eso porque el
+    ejercicio cambió de sitio en el YAML sería tirar el histórico para arreglar
+    una etiqueta. Con la carga a la vista, la diferencia entre «sobra» y «esto
+    hay que moverlo, no borrarlo» se decide mirando, no confiando.
+
+    No mueve nada, a propósito. Mover una fila de `dia_1/plancha_frontal` a
+    `hiit_dia_1/plancha_frontal` es una decisión sobre el PROGRAMA -si ese
+    ejercicio sigue siendo el mismo ejercicio en su sitio nuevo- y no sobre los
+    datos. Se hace a mano, con `fijar_carga.py <rutina> <ejercicio> <pesos>`
+    sobre la clave nueva y borrando la vieja después.
+    """
+    sobran = huerfanas(cfg, filas)
+    if not sobran:
+        print("No hay ninguna fila huérfana: todas las cargas guardadas "
+              "corresponden a un ejercicio que el config.yaml declara.")
+        return 0
+
+    print(f"{len(sobran)} fila(s) que el config.yaml ya no declara:\n")
+    con_carga = []
+    for rk, ek in sobran:
+        f = filas[(rk, ek)]
+        try:
+            series = json.loads(f.current_sets_json or "[]")
+        except ValueError:
+            series = []
+            print(f"  {rk:>10} / {ek:<28} JSON ilegible")
+            continue
+        pintada = _pinta(series) if series else "sin carga guardada"
+        if series:
+            con_carga.append(f"{rk}/{ek}")
+        print(
+            f"  {rk:>10} / {ek:<28} {pintada}"
+            f"   (racha {f.clean_streak}, últ. {f.updated_at})"
+        )
+
+    if con_carga:
+        # El aviso va aquí y no al final porque al final ya se ha decidido.
+        print(
+            f"\n  OJO: {len(con_carga)} de ellas SÍ llevan carga guardada "
+            f"({', '.join(con_carga)}).\n"
+            f"  Esa carga no está en ningún otro sitio. Si el ejercicio sigue "
+            f"en el programa\n  bajo otra clave, primero ponla allí y borra "
+            f"después."
+        )
+
+    if not aplicar:
+        print("\n(simulación: no se ha borrado nada. Repite con --aplicar)")
+        return 0
+
+    if len(sobran) == len(filas):
+        # Todas huérfanas significa que el YAML y la base no se están mirando:
+        # un `config.yaml` que no cargó, o la base de otra instalación. Borrarlo
+        # todo en ese estado es el peor resultado posible de una limpieza.
+        print(
+            "\nME NIEGO: sobran TODAS las filas de la base. Eso no es un resto "
+            "de\n  ejercicios retirados, es un config.yaml que no corresponde a "
+            "esta base."
+        )
+        return 1
+
+    for clave in sobran:
+        s.delete(filas[clave])
+    print(f"\nBorradas {len(sobran)} fila(s).")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,6 +376,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--aunque-este-vacia", action="store_true",
         help="permitir escribir en una base sin ninguna carga (instalación nueva)",
+    )
+    p.add_argument(
+        "--borrar-huerfanas", action="store_true",
+        help="borrar las filas de ejercicios que el config.yaml ya no declara "
+             "(las que `auditar_cargas.py` llama HUÉRFANA)",
     )
     args = p.parse_args(argv)
 
@@ -312,6 +414,9 @@ def main(argv: list[str] | None = None) -> int:
             (f.routine_key, f.exercise_key): f
             for f in s.scalars(select(ExerciseTarget)).all()
         }
+
+        if args.borrar_huerfanas:
+            return _borrar_huerfanas(s, cfg, filas, aplicar=args.aplicar)
 
         if not args.rutina:
             if not filas:

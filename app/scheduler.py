@@ -65,6 +65,7 @@ from apscheduler.triggers.date import DateTrigger
 from app import repository as repo
 from app.db import session_scope
 from app.engine.decision import DecisionAnulada
+from app.engine.rules import MEDIDAS_DEL_RELOJ
 from app.integrations.telegram import escapar_html
 from app.runner import run_aviso_percepcion, run_daily, run_reconcile
 
@@ -86,16 +87,17 @@ RETRASO_BACKFILL_S = 90
 # a esa hora Garmin no tenía la noche, y volver a preguntarle un rato después
 # puede arreglarlo.
 #
-# Deliberadamente NO están aquí las derivadas (`hrv_ratio`, `rhr_delta`,
-# `hrv_baseline`, `rhr_baseline`). Una base que falta no la arregla refrescar el
-# dato de hoy: le faltan días de historia, y meterla en esta lista convertiría
-# cada mañana de una instalación recién estrenada en una recomputación
-# garantizada que nunca puede salir bien. Además viajan acompañadas -la regla
-# `fc_reposo_disparada` se salta con `["rhr", "rhr_delta"]`, no con `rhr_delta`
-# a secas-, así que mirar las directas ya las cubre.
-MEDIDAS_DE_GARMIN = frozenset(
-    {"hrv", "rhr", "sleep_min", "sleep_score", "body_battery"}
-)
+# LA LISTA YA NO SE ESCRIBE AQUÍ. Vive en `app/engine/rules.py`, que es quien
+# la usa para promover a ámbar el verde decidido a ciegas, y este módulo la
+# importa. Eran dos copias del mismo conjunto en dos ficheros, y el día que se
+# separasen el motor pintaría un ámbar provisional que esta función no sabría
+# que hay que deshacer: la decisión se quedaría ámbar para siempre y el usuario
+# vería un semáforo prudente sin forma de saber que ya no lo es.
+#
+# El nombre local se conserva -lo usan los tests y se lee mejor desde aquí-,
+# pero es el MISMO objeto, no una copia: `is` da cierto y no hay nada que
+# sincronizar. Por qué no están las derivadas está explicado en el original.
+MEDIDAS_DE_GARMIN = MEDIDAS_DEL_RELOJ
 
 
 def _medidas_que_faltaban(fila: Any) -> set[str]:

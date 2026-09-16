@@ -43,6 +43,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.engine.luces import NOMBRE_LUZ as _NOMBRE_LUZ
+from app.engine.rules import REGLA_SIN_DATOS
 from app.engine.sets import warmup_flags
 # Sí, un módulo del motor importando de `integrations`. Es deliberado: este
 # fichero YA escribe `<b>` y `<i>`, o sea que ya está casado con el dialecto
@@ -484,6 +485,48 @@ def _lineas_anulacion(decision: Any, tz: str | None) -> list[str]:
     ]
 
 
+def _lineas_sin_datos(decision: Any) -> list[str]:
+    """«Esto es ámbar porque no he podido mirar», dicho con esas palabras.
+
+    Va arriba, pegado a la cabecera y justo debajo de la anulación si la hay, y
+    NO dentro de «Decidido con datos incompletos», que es donde cabría por
+    parecido. Aquel bloque enumera degradaciones de una decisión que ya está
+    tomada; esto ES la decisión: explica el color que encabeza el mensaje. Leído
+    treinta líneas más abajo, entre seis apuntes, el usuario habría recortado la
+    sesión un cuarto sin saber que el motivo era un hueco y no su cuerpo.
+
+    Tampoco va dentro de «Por qué», que es el sitio natural para la regla que
+    dispara, por una razón tonta y decisiva: ese bloque se apaga con
+    `include_reasoning: false`, y entonces el único ámbar del sistema que no
+    significa «estás peor» se quedaría sin explicación ninguna.
+
+    Las medidas se nombran una a una en vez de con una frase fija. La frase fija
+    -«no se han podido evaluar HRV, pulso en reposo ni sueño»- diría tres cosas
+    las mañanas en que solo falta una, y a las dos semanas el aviso se leería
+    como una plantilla y no como un dato.
+    """
+    disparo = next(
+        (r for r in decision.light_decision.fired if r.name == REGLA_SIN_DATOS),
+        None,
+    )
+    if disparo is None:
+        return []
+
+    medidas = list(disparo.missing)
+    if not medidas:  # pragma: no cover - el motor nunca lo produce vacío
+        que = "el bienestar"
+    else:
+        que = _enumerar(medidas)
+    return [
+        "",
+        f"🟡 <b>Ámbar por precaución: no {_concordar(medidas, 'se ha', 'se han')} "
+        f"podido evaluar {escapar_html(que)}.</b> A esta hora el reloj todavía no "
+        f"había subido la noche. No es que estés peor: es que no se ha podido "
+        f"mirar, y no mirar no se pinta de verde. Si el dato llega luego, el día "
+        f"se recalcula y te aviso.",
+    ]
+
+
 def _hora_local(cuando: Any, tz: str | None) -> str:
     """HH:MM en la hora del usuario, a partir de un sello guardado en UTC.
 
@@ -550,6 +593,8 @@ def render_telegram(decision: Any, config: Any = None) -> str:
             if decision.deload.reason else ""
         )
         L.append(f"🔻 <i>Semana de descarga{motivo_dl}</i>")
+
+    L.extend(_lineas_sin_datos(decision))
 
     # --- la sesión ----------------------------------------------------------
     s = decision.session

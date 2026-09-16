@@ -39,7 +39,7 @@ las que miden otro canal -pulso de reposo, sueño- el test sí dice algo.
 
 Uso:
     python scripts/medir_reglas.py
-    python scripts/medir_reglas.py --regla fc_reposo_elevada --barrido 3,4,5,6,7
+    python scripts/medir_reglas.py --regla hrv_baja_1d --senal hrv_ratio --barrido 0.85,0.90,0.95
 """
 
 from __future__ import annotations
@@ -150,6 +150,11 @@ def construir(cfg, metricas, salidas, desde: date, hasta: date) -> list[dict]:
             "hrv_ratio": sig.get("hrv_ratio"),
             "rhr_delta": sig.get("rhr_delta"),
             "sleep_min": sig.get("sleep_min"),
+            # `sleep_score` no dispara ninguna regla del semáforo -lo dice el
+            # comentario de `config.yaml`-, pero se arrastra igual porque la
+            # pregunta "¿y si la regla mirase la nota en vez de los minutos?"
+            # no se puede contestar sin el dato delante.
+            "sleep_score": sig.get("sleep_score"),
         })
         d += timedelta(days=1)
     return dias
@@ -237,6 +242,24 @@ def pinta_tabla(filas: list[dict], niveles: dict[str, str], fondo: float, n_dias
               f"{f['salta']:6d} {cuerpo:>9s} {f['sola']:5d} {p:>9s} {q:>9s}  {ver}")
 
 
+# De qué lado está lo malo. `rhr_delta` alto es un pulso disparado; `sleep_min`
+# bajo es una mala noche. Barrer las dos con `>= corte` mide, en el caso del
+# sueño, exactamente el grupo contrario al que la regla castiga.
+SENTIDO = {"rhr_delta": "alto", "hrv_ratio": "bajo",
+           "sleep_min": "bajo", "sleep_score": "bajo"}
+
+
+def sentido_de(señal: str) -> str:
+    return SENTIDO.get(señal, "alto")
+
+
+def dispara_en(dia: dict, señal: str, corte: float, sentido: str) -> bool:
+    v = dia.get(señal)
+    if v is None:
+        return False
+    return v >= corte if sentido == "alto" else v < corte
+
+
 def pinta_distribucion(dias: list[dict], señal: str, cortes: list[float]) -> None:
     vals = sorted(d[señal] for d in dias if d.get(señal) is not None)
     if not vals:
@@ -255,23 +278,27 @@ def pinta_distribucion(dias: list[dict], señal: str, cortes: list[float]) -> No
     print("  percentiles: " + "  ".join(
         f"p{p:g}={percentil(vals, p):+.2f}" for p in pcts))
     print()
-    print(f"    {'corte':>8s} {'días >=':>9s} {'% de los días':>15s}")
+    sentido = sentido_de(señal)
+    signo = ">=" if sentido == "alto" else "<"
+    print(f"    {'corte':>8s} {'días ' + signo:>9s} {'% de los días':>15s}")
     for c in cortes:
-        k = sum(1 for v in vals if v >= c)
+        k = sum(1 for v in vals if (v >= c if sentido == "alto" else v < c))
         print(f"    {c:>8.1f} {k:>9d} {100*k/n:>14.1f}%")
 
 
 def pinta_barrido(cfg, dias: list[dict], señal: str, cortes: list[float],
                   fondo: float) -> None:
     """El mismo test a cada umbral candidato. Es el que decide si subirlo."""
+    sentido = sentido_de(señal)
     print("\n" + "=" * ANCHO)
     print(f"  BARRIDO DE UMBRAL SOBRE {señal} — ¿alguno distingue algo?")
     print("=" * ANCHO)
+    print(f"  dispara con {señal} {'>=' if sentido == 'alto' else '<'} umbral")
     print(f"    {'umbral':>8s} {'dispara':>8s} {'cuerpo bajo':>13s} {'tasa':>7s} "
           f"{'p':>9s} {'q':>9s}")
     crudos = []
     for c in cortes:
-        dd = [d for d in dias if d.get(señal) is not None and d[señal] >= c
+        dd = [d for d in dias if dispara_en(d, señal, c, sentido)
               and cuerpo_bajo(d) is not None]
         ac = sum(1 for d in dd if cuerpo_bajo(d))
         p = binomial_cola(ac, len(dd), fondo) if dd else None
@@ -296,14 +323,14 @@ def pinta_barrido(cfg, dias: list[dict], señal: str, cortes: list[float],
           f"{'falsas alarmas':>16s}")
     for c in cortes:
         propios = [d for d in dias
-                   if d.get(señal) is not None and d[señal] >= c
+                   if dispara_en(d, señal, c, sentido)
                    and color(d["disparadas"], excluir=nombre_regla(señal)) == "green"]
         bajos = [d for d in propios if cuerpo_bajo(d)]
         falsas = [d for d in propios if cuerpo_bajo(d) is False]
         print(f"    {c:>8.1f} {len(propios):>8d} {len(bajos):>20d} {len(falsas):>16d}")
         for d in falsas:
             hrv = f"{d['hrv_ratio']:.3f}" if d["hrv_ratio"] is not None else "—"
-            print(f"             {d['dia']}  rhr_delta {d[señal]:+.2f}  "
+            print(f"             {d['dia']}  {señal} {d[señal]:+.2f}  "
                   f"hrv_ratio {hrv}  (el cuerpo decía que no)")
 
 
@@ -330,10 +357,13 @@ def pinta_dias(titulo: str, dias: list[dict], nombre: str) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--regla", default="fc_reposo_elevada",
+    # `sueno_corto` y no `fc_reposo_elevada`: esa ya no existe -ver su lápida en
+    # `config.yaml`- y un valor por defecto que apunta a una regla borrada haría
+    # que el guion abriese siempre con "no existe ninguna regla llamada así".
+    p.add_argument("--regla", default="sueno_corto",
                    help="la regla que se mira en detalle")
-    p.add_argument("--señal", "--senal", dest="senal", default="rhr_delta")
-    p.add_argument("--barrido", default="3,4,5,6,7")
+    p.add_argument("--señal", "--senal", dest="senal", default="sleep_min")
+    p.add_argument("--barrido", default="330,360,390,420,450")
     args = p.parse_args()
 
     cortes = [float(x) for x in args.barrido.split(",") if x.strip()]

@@ -20,7 +20,7 @@ import pytest
 from app.engine.decision import EngineState, advance_state, decide
 from app.engine.signals import Signals
 
-from tests.conftest import LUNES, eligiendo, sig
+from tests.conftest import LUNES, eligiendo, sig, sig_completa
 
 JUEVES = LUNES + timedelta(days=3)
 
@@ -58,7 +58,7 @@ def _tocados(s) -> set[str]:
 
 
 def test_un_dia_sin_señales_malas_es_verde_y_entrena_entero(cfg):
-    d = decide(cfg, LUNES, sig(LUNES), EngineState())
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
     assert d.light == "green"
     assert d.session.kind == "full"
     assert d.session.routine_key == "dia_1"
@@ -216,7 +216,7 @@ def test_da_igual_el_dia_de_la_semana_que_sea(cfg):
     st = EngineState(last_strength=("dia_1", LUNES))
     for salto in range(7):
         dia = LUNES + timedelta(days=1 + salto)
-        d = decide(cfg, dia, sig(dia), st)
+        d = decide(cfg, dia, sig_completa(dia), st)
         assert d.rotation_routine == "dia_2", f"{dia} ({dia.strftime('%A')}) se ha salido"
         assert d.session.kind == "full"
 
@@ -302,7 +302,7 @@ def test_lo_elegido_se_lleva_los_ajustes_de_hoy_y_no_los_de_su_ultima_vez(cfg):
     # quita una serie efectiva a cada uno sin retirar ninguno. Contar
     # ejercicios da nueve en los dos casos y el test pasaría con la sesión sin
     # tocar.
-    verde = decide(cfg, LUNES, eligiendo(sig(LUNES), "dia_2"), EngineState())
+    verde = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), "dia_2"), EngineState())
     assert _series(ambar.session) < _series(verde.session)
 
     # Y lo recortado son los ejercicios del Día 2, uno por uno. Si el semáforo
@@ -348,7 +348,7 @@ def test_bici_y_otro_no_prescriben_fuerza_pero_dejan_la_rutina_puesta(
     mañana es una intención, y si a las siete de la tarde se cambia de idea, lo
     que tiene que haber en Hevy es la sesión de HOY y no la de hace dos semanas.
     """
-    d = decide(cfg, LUNES, eligiendo(sig(LUNES), eleccion), EngineState())
+    d = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), eleccion), EngineState())
 
     assert d.progression is not None
     assert not d.progression.gate_open
@@ -781,7 +781,7 @@ def test_las_rachas_son_por_rutina_y_ejercicio(cfg):
     """
     st = EngineState()
     for dia in (date(2026, 9, 7), date(2026, 9, 9)):
-        d = decide(cfg, dia, sig(dia), st)
+        d = decide(cfg, dia, sig_completa(dia), st)
         st = advance_state(st, d, executed={e["key"]: True for e in d.session.exercises})
 
     planchas = {k: v for k, v in st.clean_sessions.items() if "plancha_lateral" in k[1]}
@@ -867,7 +867,7 @@ def test_en_frio_la_puerta_se_cierra_en_vez_de_abrirse(cfg):
     reconciliación?- justo el día que estrenas el ciclo, que es cuando más
     veces se va a leer.
     """
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), EngineState())
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
     assert d.progression is not None
     assert not d.progression.gate_open
     assert d.progression.estreno is True
@@ -894,7 +894,7 @@ def test_una_rutina_con_historia_no_se_presenta_como_estrenada(cfg):
     registro que falta seguirá faltando- y no habría nada que lo explicara.
     """
     st = EngineState(compliance={("dia_1", "un_ejercicio_que_ya_no_existe"): True})
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+    d = decide(cfg, LUNES, sig_completa(LUNES), st)
 
     assert not d.progression.gate_open
     assert d.progression.estreno is False
@@ -951,7 +951,7 @@ def test_un_ejercicio_nuevo_en_una_rutina_en_marcha_frena_a_toda_la_rutina(cfg):
         compliance={("dia_1", k): True for k in keys if k != nuevo},
         clean_sessions={("dia_1", k): 5 for k in keys},
     )
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+    d = decide(cfg, LUNES, sig_completa(LUNES), st)
 
     assert not d.progression.gate_open
     assert nuevo in d.progression.gate_reason, "hay que decir CUÁL falta"
@@ -966,7 +966,7 @@ def test_con_todos_registrados_y_cumplidos_la_puerta_se_abre(cfg):
         compliance={("dia_1", k): True for k in keys},
         clean_sessions={("dia_1", k): 5 for k in keys},
     )
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+    d = decide(cfg, LUNES, sig_completa(LUNES), st)
 
     assert d.progression.gate_open, d.progression.gate_reason
     assert d.progression.changes, "con todo en regla algo tiene que subir"
@@ -985,7 +985,7 @@ def test_una_sola_sesion_reconciliada_desbloquea_la_rutina_entera(cfg):
     Este test es la alarma de eso.
     """
     st = EngineState()
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+    d = decide(cfg, LUNES, sig_completa(LUNES), st)
     st = advance_state(st, d, executed={e["key"]: True for e in d.session.exercises})
 
     keys_cfg = [e["key"] for e in cfg.raw["routines"][d.session.routine_key]["exercises"]]
@@ -1009,7 +1009,7 @@ def test_un_incumplimiento_confirmado_manda_sobre_los_que_faltan(cfg):
         compliance={("dia_1", keys[0]): False, ("dia_1", keys[1]): None},
         clean_sessions={("dia_1", k): 5 for k in keys},
     )
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), st)
+    d = decide(cfg, LUNES, sig_completa(LUNES), st)
 
     assert not d.progression.gate_open
     assert "no se completaron" in d.progression.gate_reason
@@ -1022,7 +1022,7 @@ def test_un_incumplimiento_confirmado_manda_sobre_los_que_faltan(cfg):
 
 
 def test_la_decision_se_puede_guardar_como_json(cfg):
-    d = decide(cfg, LUNES, sig(LUNES), EngineState())
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
     recargada = json.loads(json.dumps(d.to_dict(), ensure_ascii=False))
     assert recargada["light"] == "green"
     assert "inputs" in recargada, "sin la fotografía de señales no se puede auditar"
@@ -1038,12 +1038,12 @@ def test_el_estreno_viaja_en_el_json_y_no_solo_en_la_prosa(cfg):
     subcadenas contra un texto que para entonces puede estar reescrito, que es
     exactamente la fragilidad que el booleano existe para evitar.
     """
-    d = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), EngineState())
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
     recargada = json.loads(json.dumps(d.to_dict(), ensure_ascii=False))
     assert recargada["progression"]["estreno"] is True
 
     con_historia = EngineState(compliance={("dia_1", "lo_que_sea"): True})
-    d2 = decide(cfg, LUNES, sig(LUNES, lower_discomfort=1), con_historia)
+    d2 = decide(cfg, LUNES, sig_completa(LUNES), con_historia)
     assert json.loads(json.dumps(d2.to_dict()))["progression"]["estreno"] is False
 
 

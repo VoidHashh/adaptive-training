@@ -277,7 +277,7 @@ def test_una_regla_que_quita_el_hiit_no_dice_el_motivo_al_reves(cfg_hiit, estado
     HIIT pero algo lo ha quitado", y ahí `why` vale "semana 1, verde y dia_1
     lo admite": el motivo de que SÍ tocara, presentado como el de que no."""
     cfg_hiit.raw["actions"]["green"]["allow_hiit"] = False
-    d = decision(cfg_hiit, estado=estado_hiit)
+    d = decision_completa(cfg_hiit, estado=estado_hiit)
     nota = next((n for n in d.session.notes if n.startswith("sin HIIT")), None)
     assert nota is not None
     assert "lo admite" not in nota, f"el motivo está del revés: {nota!r}"
@@ -290,7 +290,7 @@ def test_el_hiit_se_nombra_por_su_titulo_y_no_por_su_clave(cfg_hiit, estado_hiit
     `hevy_routine_id`. Los ejercicios y la rutina de fuerza ya se traducían;
     el bloque HIIT era el único identificador crudo que quedaba en pantalla.
     """
-    d = decision(cfg_hiit, estado=estado_hiit)
+    d = decision_completa(cfg_hiit, estado=estado_hiit)
     assert d.session.hiit_block == "hiit_dia_1", (
         f"el escenario ya no programa HIIT: {d.session.notes}"
     )
@@ -307,7 +307,7 @@ def test_un_bloque_de_hiit_sin_titulo_se_nombra_feo_pero_no_en_blanco(
     del HIIT sin nada detrás se leería como que hoy no hay HIIT, que es
     exactamente lo contrario de lo que pasa."""
     cfg_hiit.raw["routines"]["hiit_dia_1"].pop("title", None)
-    d = decision(cfg_hiit, estado=estado_hiit)
+    d = decision_completa(cfg_hiit, estado=estado_hiit)
     assert d.session.hiit_block == "hiit_dia_1"
     assert "HIIT:</b> hiit_dia_1" in render_telegram(d, cfg_hiit)
 
@@ -319,7 +319,7 @@ def test_un_bloque_de_hiit_que_no_existe_se_dice_en_vez_de_desaparecer(
     `routines`, y la sesión salía sin él sin una sola línea en ninguna parte.
     Una errata en `hiit.blocks` borraba el HIIT del programa en silencio."""
     cfg_hiit.raw["hiit"]["blocks"]["dia_1"] = "bloque_que_no_existe"
-    d = decision(cfg_hiit, estado=estado_hiit)
+    d = decision_completa(cfg_hiit, estado=estado_hiit)
     assert d.session.hiit_block is None
     nota = next((n for n in d.session.notes if n.startswith("sin HIIT")), None)
     assert nota is not None, f"el bloque desapareció sin decir nada: {d.session.notes}"

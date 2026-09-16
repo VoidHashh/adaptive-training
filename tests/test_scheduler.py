@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app import repository as repo
 from app.models import Base, Decision as DecisionRow
+from app.engine.rules import REGLA_SIN_DATOS
 from app.scheduler import (
     MARGEN_S,
     _avisador,
@@ -286,7 +287,9 @@ def test_la_recomputacion_cuenta_que_anula_a_la_de_antes(en_memoria, cfg):
     assert a is not None
     assert a.anterior == previa.light
     assert a.fuente_anterior == "checkin"
-    assert "hrv" in a.medidas and "rhr" in a.medidas
+    # `hrv` y `sleep_min`, no `rhr`. Ver el test de abajo: al borrar las dos
+    # reglas de pulso, `rhr` dejó de ser deducible de `skipped_rules_json`.
+    assert "hrv" in a.medidas and "sleep_min" in a.medidas
     assert tg.enviados, "una recomputación que no se cuenta no sirve de nada"
     assert "♻️" in tg.enviados[-1], (
         "el mensaje de las 09:00 tiene que presentarse como lo que es"
@@ -309,6 +312,21 @@ def test_el_historico_explica_el_cambio_sin_columna_nueva(en_memoria, cfg):
     Este test fija esa reconstrucción. Si algún día deja de poder hacerse, la
     columna pasa de innecesaria a imprescindible y hay que enterarse aquí y no
     tres meses después, delante de una fila muda.
+
+    LO QUE YA NO SE RECONSTRUYE, Y POR QUÉ
+    --------------------------------------
+    Aquí se pedían `hrv` y `rhr`. `rhr` se ha caído, y no por un fallo: esta
+    lista se deduce de los `missing` de las reglas SALTADAS, así que solo puede
+    hablar de medidas de las que dependa alguna regla. Al borrar
+    `fc_reposo_elevada` y `fc_reposo_disparada` -sus lápidas están en
+    `config.yaml`- el pulso de reposo dejó de tener ninguna, y con ello dejó de
+    dejar rastro aquí.
+
+    El dato NO se ha perdido: se sigue pidiendo, se sigue guardando en
+    `daily_metrics` y se sigue pintando. Lo que se ha perdido es poder deducir
+    A QUÉ HORA llegó mirando solo las decisiones. Es el precio de la lápida y se
+    escribe aquí para que sea una decisión y no una sorpresa: el día que el
+    pulso vuelva a tener regla, esta reconstrucción vuelve sola.
     """
     import json
 
@@ -332,9 +350,58 @@ def test_el_historico_explica_el_cambio_sin_columna_nueva(en_memoria, cfg):
         }
 
     llego = faltaban(filas[0]) - faltaban(filas[1])
-    assert {"hrv", "rhr"} <= llego, (
+    assert {"hrv", "sleep_min"} <= llego, (
         "de las dos filas tiene que poder deducirse qué subió el reloj a las "
         f"09:00, y de estas se deduce {sorted(llego)}"
+    )
+
+
+def test_el_ambar_por_precaucion_se_deshace_y_se_cuenta(en_memoria, cfg):
+    """El ciclo entero del arreglo, de punta a punta y en el sentido nuevo.
+
+    Hasta ahora la anulación solo se veía cuando el día EMPEORABA al llegar el
+    dato: se había decidido verde a ciegas y la HRV lo bajaba a ámbar. Desde que
+    un verde ciego sale ámbar por precaución, el caso normal es el contrario -el
+    día MEJORA-, y ese es justo el que corre peligro de pasar callando: un
+    segundo mensaje diciendo «verde» sin explicar nada se lee como si el de las
+    06:23 nunca hubiera existido, o peor, como dos semáforos contradictorios del
+    mismo día sin forma de saber cuál manda.
+
+    Se comprueba la cadena completa porque cada eslabón se rompe por su cuenta:
+    que la decisión ciega salga ámbar, que la recomputación siga disparándose
+    -depende de `skipped_rules_json`, que la promoción NO debe contaminar-, que
+    el color acabe en verde, y que el mensaje lo anuncie como anulación.
+    """
+    previa = _manana_a_ciegas(en_memoria, cfg)
+    assert previa.light == "amber", (
+        "la mañana a ciegas tiene que salir ámbar por precaución; si sale verde "
+        "es que la promoción no está actuando y el resto del test no mide nada"
+    )
+    assert previa.trigger_rule == REGLA_SIN_DATOS
+
+    tg = TelegramFalso()
+    res = job_decision(
+        cfg, day=LUNES, fetch=fetch_falso,
+        hevy_client=HevyFalso(), telegram_client=tg,
+    )
+
+    assert res is not None
+    assert res.decision.light == "green", (
+        "con la noche ya subida y un check-in tranquilo, no queda nada que "
+        "ponga el día en ámbar"
+    )
+    a = res.decision.anulacion
+    assert a is not None and a.anterior == "amber"
+    assert a.cambia_el_color("green")
+
+    ultimo = tg.enviados[-1]
+    assert "♻️" in ultimo and "<b>" in ultimo, (
+        "cuando el color cambia, la anulación va en negrita y es la noticia del "
+        "día: el mensaje anterior ya no vale"
+    )
+    assert "Ámbar por precaución" not in ultimo, (
+        "el aviso es de la decisión de las 06:23, no de esta: repetirlo aquí "
+        "diría que el verde también se ha decidido a ciegas"
     )
 
 

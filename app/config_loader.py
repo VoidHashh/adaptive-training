@@ -27,8 +27,10 @@ import yaml
 
 from app.engine.rules import (
     ADAPTIVE_SUFFIX,
+    CLAVE_PRECAUCION,
     COMPARISONS,
     OPTION_SUFFIX,
+    REGLA_SIN_DATOS,
     RuleError,
     resolve_option,
 )
@@ -805,6 +807,22 @@ def _validate(data: dict[str, Any]) -> list[str]:
         )
 
     # --- reglas del semáforo ------------------------------------------------
+    #
+    # El interruptor del ámbar por precaución. Se valida el TIPO y no solo la
+    # presencia porque el defecto es `True` y la lectura es
+    # `thresholds.get(...) is not False`... es decir, cualquier cosa que no sea
+    # un booleano se comportaría como encendido. Escribir `ambar_sin_datos: "no"`
+    # -que es lo que sale solo si uno escribe rápido- dejaría la precaución
+    # puesta creyendo haberla quitado, y la única señal sería un ámbar
+    # inexplicable en la primera mañana en que el reloj llegue tarde.
+    if CLAVE_PRECAUCION in data["thresholds"]:
+        require(
+            isinstance(data["thresholds"][CLAVE_PRECAUCION], bool),
+            f"thresholds.{CLAVE_PRECAUCION} tiene que ser true o false, y vale "
+            f"{data['thresholds'][CLAVE_PRECAUCION]!r}. Es el interruptor que "
+            f"decide si un verde decidido sin los datos del reloj sale ámbar.",
+        )
+
     seen_names: set[str] = set()
     for light in ("red", "amber"):
         for rule in data["thresholds"].get(light, []):
@@ -842,6 +860,55 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 "añadía por su cuenta eran falsas alarmas, y un ámbar gastado es "
                 "una sesión recortada de verdad."
                 .format(light),
+            )
+            # Las dos de pulso de reposo. `fc_reposo_disparada` se rechaza por
+            # nombre porque su gramática también era impecable y porque el
+            # motivo para no reescribirla no se ve leyendo la regla: hay que
+            # haber mirado la distribución del `rhr_delta` para saber que pedía
+            # algo que no puede pasar.
+            require(
+                name != "fc_reposo_disparada",
+                "thresholds.{}.fc_reposo_disparada ya no existe. Pedía "
+                "`rhr_delta >= 7` y en 186 días disparó CERO veces: el máximo "
+                "histórico de tu rhr_delta es +4,60. No era estricta, era "
+                "inalcanzable, y una regla que no puede disparar da la "
+                "impresión de que el pulso está vigilado cuando no lo está. Si "
+                "vuelve a hacer falta un rojo por pulso, el umbral hay que "
+                "sacarlo de tu distribución, no de un número redondo."
+                .format(light),
+            )
+            # Y esta es la más fácil de reescribir de las cuatro, porque los
+            # números del test le dan la razón. Por eso el mensaje empieza por
+            # ahí: no murió por no ver nada.
+            require(
+                name != "fc_reposo_elevada",
+                "thresholds.{}.fc_reposo_elevada ya no existe. Y OJO, porque "
+                "esta SÍ distingue: a `rhr_delta >= 2` acierta 26/40 contra un "
+                "fondo de 22,1 %, p = 0,0000. Murió por la otra pregunta: con "
+                "el umbral que tenía pintaba el color ella sola UN día en 186 "
+                "(2026-08-05, hrv_ratio 0,936, ninguna otra regla), y bajando "
+                "el umbral solo crecen los días que recorta con la HRV normal "
+                "(9 a >=2,0; 6 a >=3,0). El pulso de reposo es buen termómetro "
+                "y mal interruptor: sube cuando el cuerpo está mal, pero nunca "
+                "antes que la HRV, y cuando habla solo es que se ha "
+                "equivocado. La señal sigue viva y en el panel; lo que se fue "
+                "es su voto."
+                .format(light),
+            )
+            # Y el nombre reservado. No es una lápida como las cuatro de
+            # arriba: es una colisión. `ambar_sin_datos` lo escribe el motor
+            # como disparo sintético cuando promueve un verde ciego, y una
+            # regla del YAML con ese nombre convertiría dos cosas distintas en
+            # la misma entrada de `fired_rules_json` y de `trigger_rule`.
+            # Nadie podría luego distinguir en el histórico un ámbar por
+            # precaución de un ámbar por regla.
+            require(
+                name != REGLA_SIN_DATOS,
+                f"thresholds.{light}.{REGLA_SIN_DATOS}: ese nombre está "
+                f"reservado. Lo usa el motor para el ámbar por precaución "
+                f"-el verde que se decidió sin los datos del reloj- y se "
+                f"guarda en `trigger_rule` como una regla más. Con dos cosas "
+                f"llamadas igual, el histórico deja de poder distinguirlas.",
             )
             seen_names.add(name)
             require("when" in rule, f"la regla '{name}' no tiene bloque 'when'")

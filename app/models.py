@@ -93,7 +93,31 @@ class DailyMetrics(Base):
     raw_json: Mapped[str | None] = mapped_column(Text)
     fetch_status: Mapped[str] = mapped_column(String(16), default="ok")  # ok|partial|error
     fetch_error: Mapped[str | None] = mapped_column(Text)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # `onupdate` además del `server_default`, por la misma razón que los tres
+    # `updated_at` de más abajo, pero con una consecuencia peor: aquí lo que se
+    # falseaba no era la fecha de una fila de configuración, era CUÁNDO LLEGÓ EL
+    # DATO.
+    #
+    # `upsert_daily_metrics` crea la fila en cuanto se pregunta, aunque a esa
+    # hora Garmin todavía no tenga la noche, y la rellena más tarde cuando el
+    # reloj sube. Sin `onupdate`, `fetched_at` se quedaba clavado en el instante
+    # de la PRIMERA pregunta: una fila con la HRV dentro decía haberse traído a
+    # una hora en la que esa HRV no existía. Se vio el 2026-09-15, con la fila
+    # marcando 04:23:33 y la decisión de ese mismo segundo registrando `hrv:
+    # null`; parecía un fallo de fusión y era esta columna mintiendo.
+    #
+    # Por eso la pregunta "¿cuánto tarda Garmin en tener el dato después de
+    # sincronizar?" no se podía contestar con la base: la única columna que
+    # podía medirlo era justo la que borraba la prueba. Con `onupdate` pasa a
+    # significar "la última vez que esta fila cambió", y la latencia sale de
+    # restarle la fecha del día.
+    #
+    # Es lado-Python, no DDL, así que no necesita migración. Y NO arregla el
+    # pasado: las filas ya escritas siguen diciendo su hora de nacimiento. La
+    # medición empieza a valer a partir de hoy.
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     # NULL = la fila se escribió el día que le toca, con el sistema en marcha.
     # Con fecha = se rellenó DESPUÉS, pidiéndole a Garmin un día ya pasado.
@@ -207,7 +231,15 @@ class Activity(Base):
     # `data/cache/activities.json`, que se fusiona en cada refresco y nunca se
     # poda. La columna estuvo declarada aquí sin que nadie la escribiera nunca,
     # que es peor que no tenerla: parecía una copia de seguridad y no lo era.
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    #
+    # `onupdate` por lo mismo que en `daily_metrics`: `upsert_activities` busca
+    # la fila por `garmin_activity_id` y la reescribe campo a campo cada vez que
+    # la salida se vuelve a pedir -y se vuelve a pedir, porque la carga y los
+    # tiempos por zona tardan a veces en cuajar en Garmin-. Sin él, la columna
+    # decía cuándo se vio la salida por primera vez, no cuándo se completó.
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     __table_args__ = (Index("ix_activities_date_cycling", "date", "is_cycling"),)
 
@@ -612,7 +644,12 @@ class WorkoutLog(Base):
     reported_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     raw_json: Mapped[str | None] = mapped_column(Text)
-    fetched_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # `onupdate` por lo mismo que en `daily_metrics` y en `activities`: la fila
+    # de un entreno se reescribe cuando la reconciliación lo vuelve a mirar, y
+    # sin él la columna se quedaba en el primer vistazo.
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     __table_args__ = (
         Index("ix_workout_log_sueltos", "unplanned", "reported_at", "date"),

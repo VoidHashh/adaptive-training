@@ -13,9 +13,12 @@ from __future__ import annotations
 import pytest
 
 from app.config_loader import load_config
+from app.models import ExerciseTarget
+from tests.dobles import doble_de
 from scripts.fijar_carga import (
     CargaInvalida,
     efectivas_del_yaml,
+    huerfanas,
     nuevas_series,
     parsea_series,
 )
@@ -143,3 +146,101 @@ def test_un_ejercicio_que_no_esta_en_esa_rutina_no_inventa_series():
     c = load_config("config.yaml")
     assert efectivas_del_yaml(c, "dia_1", "ejercicio_fantasma") == []
     assert efectivas_del_yaml(c, "rutina_fantasma", "extension_cuadriceps") == []
+
+
+# ---------------------------------------------------------------------------
+# Las huérfanas
+#
+# El 2026-09-15 se registró el Día 1 y el bloque HIIT como UN SOLO
+# entrenamiento de Hevy. La reconciliación atribuye el día entero a la rutina
+# de fuerza, así que `apply_execution` y `adoptar_cargas` recibieron
+# `routine_key="dia_1"` con una lista de ejercicios que llevaba pegados los
+# cinco del bloque, y sembraron cinco filas `dia_1/remo_maquina`,
+# `dia_1/suitcase_carry`, `dia_1/air_bike`, `dia_1/plancha_frontal` y
+# `dia_1/wall_ball`. Esas claves no existen en `dia_1`: existen en
+# `hiit_dia_1`. Nadie las vuelve a leer nunca.
+# ---------------------------------------------------------------------------
+
+
+@doble_de(ExerciseTarget)
+class _FilaFalsa:
+    """Lo justo que mira `huerfanas`: la clave. El resto de la fila no lo toca.
+
+    Se declara doble de `ExerciseTarget` y no ayudante suelto porque eso es lo
+    que es: si mañana la fila deja de tener `routine_key` o `exercise_key`,
+    quiero que salte aquí y no que estos tests sigan en verde midiendo una
+    columna que ya no existe.
+    """
+
+    def __init__(self, routine_key: str, exercise_key: str) -> None:
+        self.routine_key, self.exercise_key = routine_key, exercise_key
+
+
+def _filas(*claves: tuple[str, str]) -> dict[tuple[str, str], object]:
+    return {k: _FilaFalsa(*k) for k in claves}
+
+
+def test_la_huerfana_se_detecta_por_el_par_y_no_por_el_ejercicio(cfg):
+    """El caso real, y el que un chequeo por clave suelta daría por bueno.
+
+    `remo_maquina` SÍ está en el `config.yaml`: está en `hiit_dia_1`. Mirar solo
+    la clave del ejercicio lo encontraría, diría que todo cuadra y dejaría la
+    fila colgada de `dia_1` para siempre. Lo que está mal no es el ejercicio, es
+    de qué rutina cuelga.
+    """
+    sobran = huerfanas(cfg, _filas(("dia_1", "remo_maquina")))
+    assert sobran == [("dia_1", "remo_maquina")]
+    assert huerfanas(cfg, _filas(("hiit_dia_1", "remo_maquina"))) == []
+
+
+def test_las_cinco_del_15_de_septiembre_son_huerfanas_y_en_su_sitio_no(cfg):
+    """Las cinco de verdad, contra el config real y en las dos direcciones.
+
+    La segunda mitad importa tanto como la primera: si `hiit_dia_1/<clave>`
+    también saliera huérfana, el guion estaría llamando huérfano a medio
+    programa y el borrado se llevaría por delante el bloque entero.
+    """
+    claves = ("remo_maquina", "suitcase_carry", "air_bike", "plancha_frontal",
+              "wall_ball")
+    assert huerfanas(cfg, _filas(*(("dia_1", k) for k in claves))) == sorted(
+        ("dia_1", k) for k in claves
+    )
+    assert huerfanas(cfg, _filas(*(("hiit_dia_1", k) for k in claves))) == []
+
+
+def test_un_ejercicio_que_esta_en_tres_rutinas_no_sale_huerfano_en_ninguna(cfg):
+    """`plancha_lateral` vive en `dia_1`, `dia_2` y `dia_3` a la vez.
+
+    Es el reverso del test de arriba. Un chequeo por par mal escrito -que
+    comparase contra los ejercicios de UNA rutina- lo declararía huérfano en
+    dos de las tres, y borraría cargas vivas.
+    """
+    assert huerfanas(cfg, _filas(
+        ("dia_1", "plancha_lateral"),
+        ("dia_2", "plancha_lateral"),
+        ("dia_3", "plancha_lateral"),
+    )) == []
+
+
+def test_una_rutina_entera_que_desaparece_del_yaml_cae_sola(cfg):
+    """Sin caso especial: ninguno de sus pares encuentra sitio."""
+    assert huerfanas(cfg, _filas(
+        ("dia_9", "prensa_horizontal"), ("dia_9", "plancha_lateral")
+    )) == [("dia_9", "plancha_lateral"), ("dia_9", "prensa_horizontal")]
+
+
+def test_la_base_limpia_no_tiene_nada_que_borrar(cfg):
+    """Todo lo que el YAML declara está a salvo, ejercicio a ejercicio.
+
+    Este es el test que convierte el guion en algo que se puede lanzar sin
+    mirar: recorre el `config.yaml` entero y exige que NINGUNA de sus claves
+    salga huérfana. El día que alguien cambie `huerfanas` y se le escape una
+    comparación, esto lo dice antes de que el borrado se lo lleve puesto.
+    """
+    todas = _filas(*(
+        (str(rk), str(ex.get("key")))
+        for rk, rutina in (cfg.routines or {}).items()
+        for ex in ((rutina or {}).get("exercises") or [])
+    ))
+    assert len(todas) > 30, "el config real tiene ejercicios de sobra"
+    assert huerfanas(cfg, todas) == []
