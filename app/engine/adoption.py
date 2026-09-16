@@ -237,6 +237,7 @@ def adoptar_cargas(
     exercises: list[dict[str, Any]],
     pesos_hechos: dict[str, float | None],
     limpio: dict[str, bool],
+    motivos: dict[str, str],
     set_cfg: dict[str, Any],
     prog_cfg: dict[str, Any],
 ) -> list[Adopcion]:
@@ -247,7 +248,11 @@ def adoptar_cargas(
     que se mide quedarse corto. `pesos_hechos` es el peso de la serie efectiva
     más pesada de cada ejercicio, o None si el ejercicio no aparece o no lleva
     peso apuntado. `limpio` es el cumplimiento por ejercicio que ya calcula
-    `workout_compliance`.
+    `workout_compliance`, y `motivos` la causa de cada incumplimiento tal y como
+    la nombra `motivos_incumplimiento`.
+
+    `limpio` sigue mandando sobre `motivos`: quien decide es el veredicto, y un
+    motivo que no llegue solo deja la frase más pobre, nunca una carga más alta.
 
     Devuelve TODAS las adopciones consideradas, aplicadas y rechazadas. Las
     rechazadas también salen: un tope que actúa sin decirlo es un tope que nadie
@@ -290,13 +295,18 @@ def adoptar_cargas(
         if hecho > objetivo:
             _reset_por_debajo(state, clave)
             if not limpio.get(key, False):
+                # Sin motivo no se inventa uno. Decir «a las reps objetivo»
+                # cuando no consta mandaría a revisar un número que a lo mejor
+                # estaba bien, y esa frase viaja al móvil junto a una carga que
+                # no ha subido: es justo cuando más caro sale equivocarse.
+                porque = motivos.get(key) or "no consta en qué se quedó corto"
                 salida.append(
                     Adopcion(
                         routine_key, key, str(ex.get("name", key)), ARRIBA,
                         prescrito or None, hecho, objetivo, None, False,
-                        f"se levantaron {_fmt_kg(hecho)} kg pero la sesión no se "
-                        f"completó a las reps objetivo: un peso mayor con series "
-                        f"cortas no es un objetivo nuevo",
+                        f"se levantaron {_fmt_kg(hecho)} kg pero el ejercicio no "
+                        f"quedó completo ({porque}): un peso mayor sobre una serie "
+                        f"que se queda corta no es un objetivo nuevo",
                     )
                 )
                 continue

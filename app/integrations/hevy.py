@@ -306,15 +306,26 @@ def _emparejar(
                 f"'set_types' o el marcado de las series."
             )
 
-        candidatos = hechos.get(str(ex.get("template_id") or "")) or hechos.get(
-            str(ex.get("name") or "")
+        # La presencia se mira por la CLAVE, no por si la lista trae algo. Un
+        # ejercicio abierto en Hevy y dejado sin una sola serie apuntada entra
+        # aquí con lista vacía, y tratar esa vacía como "no aparece" fundía dos
+        # cosas distintas: «no lo hice» y «lo hice y no lo apunté». Ninguna de
+        # las dos cumple, pero solo de la segunda hay rastro de haber estado
+        # ahí, y el mensaje de la noche puede decirlo en vez de acusar.
+        presente = next(
+            (
+                c
+                for c in (str(ex.get("template_id") or ""), str(ex.get("name") or ""))
+                if c in hechos
+            ),
+            None,
         )
         reales = (
             None
-            if not candidatos
+            if presente is None
             else [
                 s
-                for s in candidatos
+                for s in hechos[presente]
                 if str(s.get("type", "normal")).lower() not in {"warmup", "warm_up"}
             ]
         )
@@ -342,16 +353,75 @@ def workout_compliance(
     Un ejercicio del plan que no aparece en el entrenamiento cuenta como NO
     cumplido. Es lo prudente: si no está, o no se hizo o no se registró, y en
     ninguno de los dos casos hay pruebas de que se completara.
+
+    El veredicto se saca de `motivos_incumplimiento` y no de una segunda cuenta
+    en paralelo: cumplir es exactamente no tener motivo. Contarlo dos veces
+    dejaría abierta la puerta a que el mensaje explicara un fallo que el estado
+    no tiene, o peor, a que el estado castigara un fallo que nadie sabe nombrar.
     """
-    salida: dict[str, bool] = {}
+    return {
+        key: motivo is None
+        for key, motivo in _motivos(workout, planned, config).items()
+    }
+
+
+# Un ejercicio que no aparece no dice por sí solo qué pasó, y esta frase es lo
+# único honesto que se puede escribir. Es una constante porque quien une los
+# entrenamientos de un día -una sesión partida en dos ratos es normal- necesita
+# reconocerla para preferir el motivo del rato donde el ejercicio SÍ estaba.
+SIN_RASTRO = "no aparece en el entrenamiento: o no se hizo, o se hizo sin apuntarlo"
+
+
+def motivos_incumplimiento(
+    workout: dict[str, Any],
+    planned: Any,
+    config: Any = None,
+) -> dict[str, str]:
+    """Por qué NO cumplió cada ejercicio que no cumplió. Los demás no salen.
+
+    Existe porque `workout_compliance` devuelve un booleano y el booleano se
+    traga la causa. Con esa pérdida, el mensaje de la noche tenía que inventarse
+    una: decía «no se completó a las reps objetivo» SIEMPRE, también cuando las
+    reps estaban perfectas y lo que se había quedado corto era el peso. Mandaba
+    a revisar unas reps que estaban bien mientras callaba lo que de verdad había
+    fallado.
+    """
+    return {
+        key: motivo
+        for key, motivo in _motivos(workout, planned, config).items()
+        if motivo is not None
+    }
+
+
+def _motivos(
+    workout: dict[str, Any],
+    planned: Any,
+    config: Any = None,
+) -> dict[str, str | None]:
+    """Cada ejercicio del plan con su motivo, o `None` si cumplió."""
+    salida: dict[str, str | None] = {}
     for key, (objetivo, reales) in _emparejar(workout, planned, config).items():
-        if reales is None or len(reales) < len(objetivo):
-            salida[key] = False
-            continue
-        salida[key] = all(
-            _alcanza(real, plan) for real, plan in zip(reales, objetivo)
-        )
+        salida[key] = _motivo(objetivo, reales)
     return salida
+
+
+def _motivo(
+    objetivo: list[dict[str, Any]], reales: list[dict[str, Any]] | None
+) -> str | None:
+    if reales is None:
+        return SIN_RASTRO
+    if objetivo and not reales:
+        return (
+            "está en el entrenamiento pero sin una sola serie efectiva apuntada: "
+            "se hizo y no se registró, o se abrió y se dejó"
+        )
+    if len(reales) < len(objetivo):
+        return f"se apuntaron {len(reales)} de las {len(objetivo)} series"
+    for i, (real, plan) in enumerate(zip(reales, objetivo), start=1):
+        falla = _falla(real, plan)
+        if falla is not None:
+            return f"la serie {i} {falla}"
+    return None
 
 
 def pesos_ejecutados(
@@ -389,9 +459,30 @@ def pesos_ejecutados(
 # escribe aquí, una vez, en vez de repartirla por comparaciones sueltas.
 CAMPOS_SERIE = (("reps", "reps"), ("duration_s", "duration_seconds"))
 
+# Cómo se lee cada magnitud cuando se queda corta. Las frases están escritas
+# enteras, y no compuestas con el nombre del campo, porque "reps" es femenino y
+# "segundos" masculino: «no lleva segundos apuntadas» en el móvil parece un
+# fallo del sistema y hace dudar del aviso correcto que lo acompaña.
+FRASES_SERIE = {
+    "reps": ("no lleva reps apuntadas", "se quedó en {hecho} de las {pedido} reps"),
+    "duration_s": (
+        "no lleva segundos apuntados",
+        "se quedó en {hecho} de los {pedido} segundos",
+    ),
+}
+
+
+def _num(x: Any) -> str:
+    return f"{float(x):g}".replace(".", ",")
+
 
 def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
-    """¿Una serie ejecutada cumple lo que se le pedía?
+    """¿Una serie ejecutada cumple lo que se le pedía? Las reglas, en `_falla`."""
+    return _falla(real, plan) is None
+
+
+def _falla(real: dict[str, Any], plan: dict[str, Any]) -> str | None:
+    """En qué se quedó corta una serie ejecutada, o `None` si cumple.
 
     Solo se miran las magnitudes que el plan pide. Un ejercicio por tiempo no
     tiene reps, y exigirle reps lo dejaría siempre en "no cumplido": la plancha
@@ -424,6 +515,13 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
 
     El peso no vale como magnitud medible a estos efectos: "60 kg" sin reps ni
     segundos no dice si la serie se terminó. Por eso no marca `comprobado`.
+
+    DEVUELVE LA FRASE Y NO UN BOOLEANO
+    ----------------------------------
+    Porque el booleano se tragaba la causa y quien tenía que explicarla se la
+    inventaba. El mensaje de la noche decía «no se completó a las reps objetivo»
+    en los cinco casos, también cuando las reps estaban clavadas y lo corto era
+    el peso: mandaba a mirar un número que estaba bien y callaba el que no.
     """
     comprobado = False
     for campo_plan, campo_real in CAMPOS_SERIE:
@@ -431,9 +529,12 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
         if objetivo is None:
             continue
         comprobado = True
+        sin_dato, corta = FRASES_SERIE[campo_plan]
         hecho = real.get(campo_real)
-        if hecho is None or float(hecho) < float(objetivo):
-            return False
+        if hecho is None:
+            return sin_dato
+        if float(hecho) < float(objetivo):
+            return corta.format(hecho=_num(hecho), pedido=_num(objetivo))
 
     if not comprobado:
         raise HevyError(
@@ -446,14 +547,16 @@ def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
     if objetivo_kg is not None and float(objetivo_kg) > 0:
         hecho_kg = real.get("weight_kg")
         if hecho_kg is None:
-            return False
+            return "no lleva peso apuntado"
         # El epsilon es para el ruido de coma flotante -62,5 escrito y leído por
         # dos caminos distintos-, no una tolerancia de carga. Medio kilo de menos
         # sigue siendo medio kilo de menos.
         if float(hecho_kg) < float(objetivo_kg) - 1e-6:
-            return False
+            return (
+                f"se hizo a {_num(hecho_kg)} kg y pedía {_num(objetivo_kg)}"
+            )
 
-    return True
+    return None
 
 
 # ---------------------------------------------------------------------------

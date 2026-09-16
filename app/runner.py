@@ -755,8 +755,10 @@ def run_reconcile(
     """
     from app.engine.adoption import adoptar_cargas
     from app.integrations.hevy import (
+        SIN_RASTRO,
         _fecha_workout,
         claves_hiit,
+        motivos_incumplimiento,
         pesos_ejecutados,
         routine_key_de,
         workout_compliance,
@@ -812,6 +814,7 @@ def run_reconcile(
 
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
+    motivos: dict[str, str] = {}
     if es_fuerza:
         # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos del
         # día lo completó: partir la sesión en dos ratos es normal y no debería
@@ -820,6 +823,13 @@ def run_reconcile(
         for w in nuevos:
             for key, ok in workout_compliance(w, plan_obj, cfg).items():
                 executed[key] = executed.get(key, False) or ok
+            # El motivo se une con el mismo criterio, y por eso «no aparece» cede
+            # ante cualquier otro: en una sesión partida en dos, el ejercicio no
+            # está en uno de los dos ratos por definición, y quedarse con esa
+            # frase taparía lo que sí se vio en el rato donde estaba.
+            for key, porque in motivos_incumplimiento(w, plan_obj, cfg).items():
+                if motivos.get(key, SIN_RASTRO) == SIN_RASTRO:
+                    motivos[key] = porque
             # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
             # une con un OR: partir la sesión en dos ratos es normal, y la serie
             # más pesada del día es la más pesada de los dos ratos.
@@ -828,6 +838,9 @@ def run_reconcile(
                     continue
                 previo = pesos.get(key)
                 pesos[key] = kg if previo is None else max(previo, kg)
+        # Lo que acabó completo no tiene nada que explicar, aunque en uno de los
+        # ratos se quedara corto.
+        motivos = {k: v for k, v in motivos.items() if not executed.get(k)}
     res.executed = executed
     res.pesos = pesos
 
@@ -989,6 +1002,7 @@ def run_reconcile(
         exercises=plan.get("exercises") or [],
         pesos_hechos=pesos,
         limpio=executed,
+        motivos=motivos,
         set_cfg=(raw.get("set_types") or {}),
         prog_cfg=(raw.get("progression") or {}),
     )

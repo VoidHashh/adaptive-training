@@ -81,6 +81,7 @@ def adoptar(
     pesos: dict[str, float | None],
     limpio: dict[str, bool] | None = None,
     prog: dict[str, Any] | None = None,
+    motivos: dict[str, str] | None = None,
 ):
     return adoptar_cargas(
         estado,
@@ -88,6 +89,7 @@ def adoptar(
         exercises=plan,
         pesos_hechos=pesos,
         limpio=limpio if limpio is not None else {k: True for k in pesos},
+        motivos=motivos or {},
         set_cfg=SETS_CFG,
         prog_cfg=prog or PROG,
     )
@@ -193,12 +195,46 @@ def test_no_se_adopta_hacia_arriba_una_sesion_que_no_se_completo():
     justamente en el fallo.
     """
     e = estado_en(60)
-    (a,) = adoptar(e, [ejercicio(60)], {"hip_thrust": 70}, {"hip_thrust": False})
+    (a,) = adoptar(
+        e, [ejercicio(60)], {"hip_thrust": 70}, {"hip_thrust": False},
+        motivos={"hip_thrust": "la serie 2 se quedó en 4 de las 10 reps"},
+    )
 
     assert a.aplicada is False
     assert a.direccion == ARRIBA
-    assert "no se completó" in a.motivo
+    assert "no quedó completo" in a.motivo
     assert tope_efectivo(e.current_sets[CLAVE]) == 60, "el objetivo no debía moverse"
+
+
+def test_el_motivo_de_no_adoptar_dice_lo_que_falló_y_no_una_frase_de_plantilla():
+    """Lo corto fue el PESO, y eso es lo que tiene que leerse.
+
+    Antes la frase decía «no se completó a las reps objetivo» pasara lo que
+    pasara, así que en este caso mandaba a revisar unas reps que estaban
+    clavadas y callaba el kilaje, que era lo único que había fallado.
+    """
+    e = estado_en(60)
+    (a,) = adoptar(
+        e, [ejercicio(60)], {"hip_thrust": 70}, {"hip_thrust": False},
+        motivos={"hip_thrust": "la serie 3 se hizo a 50 kg y pedía 60"},
+    )
+
+    assert "se hizo a 50 kg y pedía 60" in a.motivo
+    assert "reps" not in a.motivo
+
+
+def test_sin_motivo_no_se_inventa_uno():
+    """Si no consta la causa, se dice que no consta.
+
+    Nombrar una magnitud al azar en el mismo aviso que explica por qué NO ha
+    subido la carga es la forma más cara de equivocarse: manda a corregir algo
+    que a lo mejor estaba bien.
+    """
+    e = estado_en(60)
+    (a,) = adoptar(e, [ejercicio(60)], {"hip_thrust": 70}, {"hip_thrust": False})
+
+    assert "no consta" in a.motivo
+    assert "reps" not in a.motivo
 
 
 def test_la_subida_se_mide_contra_el_objetivo_y_no_contra_el_plan_del_dia():

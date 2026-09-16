@@ -16,11 +16,13 @@ from datetime import date, timedelta
 import pytest
 
 from app.integrations.hevy import (
+    SIN_RASTRO,
     HevyClient,
     HevyError,
     _alcanza,
     _fecha_workout,
     claves_hiit,
+    motivos_incumplimiento,
     pesos_ejecutados,
     routine_key_de,
     workout_compliance,
@@ -278,6 +280,116 @@ def test_un_plan_todo_calentamiento_es_error_y_no_un_cumple():
     w = workout(hecho("T-movilidad", {"reps": 10}, {"reps": 10}))
     with pytest.raises(HevyError, match="todas .*de calentamiento|calentamiento"):
         workout_compliance(w, plan, CFG_SETS)
+
+
+# ---------------------------------------------------------------------------
+# motivos_incumplimiento: POR QUÉ no cumplió
+# ---------------------------------------------------------------------------
+#
+# El booleano de `workout_compliance` se traga la causa, y quien tenía que
+# explicarla se la inventaba: el mensaje de la noche decía «no se completó a las
+# reps objetivo» en los cinco casos posibles, también cuando las reps estaban
+# clavadas y lo corto era el peso.
+
+
+def test_lo_que_falló_fue_el_peso_y_eso_es_lo_que_se_dice():
+    """El caso de la patada atrás: diez reps de diez, y 50 kg donde pedía 60."""
+    plan = Plan(ejercicio("patada_atras", sets=[serie(reps=10, weight_kg=60)]))
+    w = workout(hecho("T-patada_atras", {"reps": 10, "weight_kg": 50}))
+    assert motivos_incumplimiento(w, plan, CFG_SETS) == {
+        "patada_atras": "la serie 1 se hizo a 50 kg y pedía 60"
+    }
+
+
+def test_lo_que_falló_fueron_las_reps_y_se_dice_cuál_serie():
+    plan = Plan(ejercicio("hip_thrust", sets=[serie(reps=10)] * 2))
+    w = workout(hecho("T-hip_thrust", {"reps": 10}, {"reps": 4}))
+    assert motivos_incumplimiento(w, plan, CFG_SETS) == {
+        "hip_thrust": "la serie 2 se quedó en 4 de las 10 reps"
+    }
+
+
+def test_un_ejercicio_por_tiempo_habla_de_segundos_y_no_de_reps():
+    """La plancha no tiene reps. Nombrarlas sería mandar a mirar algo que no existe."""
+    plan = Plan(ejercicio("plancha", sets=[serie(duration_s=45)]))
+    w = workout(hecho("T-plancha", {"duration_seconds": 30}))
+    assert motivos_incumplimiento(w, plan, CFG_SETS) == {
+        "plancha": "la serie 1 se quedó en 30 de los 45 segundos"
+    }
+
+
+def test_faltan_series_y_se_dice_cuántas():
+    plan = Plan(ejercicio("hip_thrust", sets=[serie(reps=10)] * 3))
+    w = workout(hecho("T-hip_thrust", {"reps": 10}, {"reps": 10}))
+    assert motivos_incumplimiento(w, plan, CFG_SETS) == {
+        "hip_thrust": "se apuntaron 2 de las 3 series"
+    }
+
+
+def test_lo_que_cumple_no_sale_en_los_motivos():
+    plan = Plan(
+        ejercicio("hip_thrust", sets=[serie(reps=10)]),
+        ejercicio("remo", sets=[serie(reps=12)]),
+    )
+    w = workout(hecho("T-hip_thrust", {"reps": 10}), hecho("T-remo", {"reps": 3}))
+    assert list(motivos_incumplimiento(w, plan, CFG_SETS)) == ["remo"]
+
+
+def test_el_veredicto_y_el_motivo_no_pueden_contradecirse():
+    """Cumplir es exactamente no tener motivo, y se saca de la misma cuenta.
+
+    Dos cuentas en paralelo dejarían la puerta abierta a que el mensaje
+    explicara un fallo que el estado no tiene, o a que el estado castigara un
+    fallo que nadie sabe nombrar.
+    """
+    plan = Plan(
+        ejercicio("hip_thrust", sets=[serie(reps=10, weight_kg=60)] * 2),
+        ejercicio("remo", sets=[serie(reps=12)]),
+        ejercicio("peso_muerto", sets=[serie(reps=8)]),
+    )
+    w = workout(
+        hecho("T-hip_thrust", {"reps": 10, "weight_kg": 60}, {"reps": 10, "weight_kg": 55}),
+        hecho("T-remo", {"reps": 12}),
+    )
+    cumple = workout_compliance(w, plan, CFG_SETS)
+    porques = motivos_incumplimiento(w, plan, CFG_SETS)
+    assert {k for k, v in cumple.items() if not v} == set(porques)
+
+
+# --- «no lo hice» contra «lo hice y no lo apunté» --------------------------
+
+
+def test_un_ejercicio_que_no_aparece_dice_que_no_se_puede_distinguir():
+    """No hay rastro, y eso es lo único honesto que se puede escribir."""
+    plan = Plan(ejercicio("suitcase_carry", sets=[serie(duration_s=40)]))
+    w = workout(hecho("T-otro", {"reps": 10}))
+    assert motivos_incumplimiento(w, plan, CFG_SETS) == {
+        "suitcase_carry": SIN_RASTRO
+    }
+    assert "no se hizo" in SIN_RASTRO and "sin apuntarlo" in SIN_RASTRO
+
+
+def test_un_ejercicio_abierto_y_dejado_en_blanco_no_es_lo_mismo_que_no_hacerlo():
+    """`suitcase_carry` con la lista de series vacía SÍ estaba en la sesión.
+
+    Fundirlo con "no aparece" contaba como no hecho algo de lo que sí hay
+    rastro de haber estado ahí. Sigue sin cumplir -no hay prueba de que se
+    completara- pero el motivo es otro y se puede leer.
+    """
+    plan = Plan(ejercicio("suitcase_carry", sets=[serie(duration_s=40)]))
+    w = workout(hecho("T-suitcase_carry"))
+    motivo = motivos_incumplimiento(w, plan, CFG_SETS)["suitcase_carry"]
+    assert motivo != SIN_RASTRO
+    assert "sin una sola serie efectiva apuntada" in motivo
+    assert workout_compliance(w, plan, CFG_SETS) == {"suitcase_carry": False}
+
+
+def test_un_ejercicio_solo_con_calentamiento_dice_lo_mismo():
+    """Aparecer con calentamiento y nada más tampoco es prueba de haberlo hecho."""
+    plan = Plan(ejercicio("suitcase_carry", sets=[serie(duration_s=40)]))
+    w = workout(hecho("T-suitcase_carry", {"duration_seconds": 20, "type": "warmup"}))
+    motivo = motivos_incumplimiento(w, plan, CFG_SETS)["suitcase_carry"]
+    assert "sin una sola serie efectiva apuntada" in motivo
 
 
 # ---------------------------------------------------------------------------
