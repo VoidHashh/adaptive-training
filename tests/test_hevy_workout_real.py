@@ -61,7 +61,46 @@ class _Plan:
 def plan(cfg):
     ejercicios = ((cfg.raw.get("routines") or {}).get(RUTINA) or {}).get("exercises")
     assert ejercicios, f"la rutina '{RUTINA}' ya no está en el config"
+    assert all(e.get("key") for e in ejercicios), (
+        f"hay ejercicios de '{RUTINA}' sin `key`: {[e for e in ejercicios if not e.get('key')]}. "
+        "`_emparejar` los salta en silencio y saldrían del emparejado sin estar."
+    )
     return _Plan(ejercicios)
+
+
+def _parejas(entreno: dict, plan) -> dict:
+    """`_emparejar` con la comprobación de que ha emparejado ALGO.
+
+    UN DICCIONARIO VACÍO PASA CUATRO DE LOS TESTS DE ESTE FICHERO SIN MIRAR
+    NADA, Y ES EL RESULTADO MÁS FÁCIL DE PRODUCIR QUE HAY.
+    `_emparejar` construye su salida recorriendo `planned.exercises` y hace
+    `continue` en cuanto un ejercicio no trae `key`. O sea que el día que la
+    clave de ejercicio se llame de otra forma en el `config.yaml` -o que
+    `_emparejar` decida no incluir los ejercicios que no aparecen en el
+    entreno-, esto devuelve `{}`. Y entonces:
+
+      - `assert not sin_casar` es `assert not []`: cierto;
+      - `assert all(not r for ... in parejas.values())` es `all([])`: cierto;
+      - el bucle del calentamiento no da ni una vuelta, así que sus aserciones
+        no se ejecutan.
+
+    Los cuatro aprueban, y lo que este fichero entero existe para vigilar -que
+    el contrato con Hevy no se haya movido- deja de vigilarse sin que la cuenta
+    de tests baje ni uno. Es exactamente el modo de fallo que describe el
+    docstring del módulo, una capa por encima: el código sí avisaría, si alguien
+    lo estuviera mirando.
+
+    Se exige una entrada POR EJERCICIO del plan y no solo que no esté vacío:
+    emparejar tres de once y callar los otros ocho es la misma avería en
+    pequeño, y es la que más se parece a un cambio real.
+    """
+    parejas = _emparejar(entreno, plan, None)
+    assert set(parejas) == {str(e["key"]) for e in plan.exercises}, (
+        "`_emparejar` no ha devuelto una entrada por ejercicio del plan: "
+        f"faltan {sorted({str(e['key']) for e in plan.exercises} - set(parejas))}. "
+        "Sin ellas, las comprobaciones de este fichero pasan en vacío."
+    )
+    return parejas
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +146,7 @@ def test_todos_los_ejercicios_del_plan_casan_con_el_entreno_real(entreno, plan):
     en el log ni en el mensaje de la mañana. Por eso se comprueba que casan
     TODOS y no que casa alguno.
     """
-    parejas = _emparejar(entreno, plan, None)
+    parejas = _parejas(entreno, plan)
     sin_casar = sorted(k for k, (_obj, reales) in parejas.items() if not reales)
     assert not sin_casar, (
         f"{len(sin_casar)} ejercicio(s) del plan no encuentran sus series en el "
@@ -125,7 +164,7 @@ def test_el_emparejamiento_va_por_template_id_y_no_por_el_nombre(entreno, plan):
     for ex in tocado["exercises"]:
         ex["title"] = "OTRO NOMBRE QUE NO COINCIDE CON NADA"
 
-    parejas = _emparejar(tocado, plan, None)
+    parejas = _parejas(tocado, plan)
     sin_casar = sorted(k for k, (_o, r) in parejas.items() if not r)
     assert not sin_casar, f"se estaba emparejando por el nombre: {sin_casar}"
 
@@ -142,7 +181,7 @@ def test_si_el_id_cambia_de_nombre_de_campo_se_nota(entreno, plan):
         ex["template_id"] = ex.pop("exercise_template_id")
         ex["title"] = "tampoco por aquí"
 
-    parejas = _emparejar(tocado, plan, None)
+    parejas = _parejas(tocado, plan)
     assert all(not r for _o, r in parejas.values()), (
         "el escenario ya no reproduce la deriva; hay que rehacer el test"
     )
@@ -155,7 +194,7 @@ def test_si_el_id_cambia_de_nombre_de_campo_se_nota(entreno, plan):
 
 def test_el_calentamiento_no_cuenta_como_trabajo(entreno, plan):
     """40 kg de calentamiento no pueden adoptarse como la carga del día."""
-    parejas = _emparejar(entreno, plan, None)
+    parejas = _parejas(entreno, plan)
     for key, (_objetivo, reales) in parejas.items():
         for s in reales or []:
             assert str(s.get("type", "normal")).lower() not in {"warmup", "warm_up"}, (
