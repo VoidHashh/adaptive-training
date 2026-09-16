@@ -47,6 +47,12 @@ from app.engine.signals import (
 # sabe evaluar, y la garantía de que el semáforo no puede mirar `will_train`
 # quedaría en papel mojado justo en el caso raro.
 from app.engine.tendencia import senales_de_regla
+# El catálogo de lo que `build_signals` fabrica de verdad, leído del mismo sitio
+# que lo fabrica. Una lista de nombres copiada aquí se quedaría atrás a la
+# primera señal nueva y entonces el validador rechazaría nombres BUENOS, que es
+# peor que no validar: el sistema no arranca y el error acusa a un fichero de
+# configuración que está bien.
+from app.engine.signals import senales_producidas
 # La MISMA función que usa el motor por la mañana para decidir cuántos días de
 # salidas hay que tener en caché. Se importa en vez de reimplementar el `max`
 # aquí: dos versiones del mismo criterio en dos ficheros divergen a la primera
@@ -1187,6 +1193,71 @@ def _validate(data: dict[str, Any]) -> list[str]:
             brake.get("blocks") in ("all", "last_session_only"),
             f"freno '{brake.get('name')}': 'blocks' debe ser 'all' o 'last_session_only'",
         )
+
+    # --- NINGÚN NOMBRE DE SEÑAL PUEDE SER UN NOMBRE QUE NO FABRICA NADIE ----
+    #
+    # Es el fallo que no da error. El motor -`evaluate_gate`, las reglas del
+    # semáforo, los disparadores- resuelve cada señal con `signals.get(nombre)`,
+    # y un nombre que nadie escribe devuelve `None`, que todo el sistema trata
+    # como «hoy no hay dato». Una errata en un `source` no revienta: convierte
+    # el freno en un freno que se salta TODAS las mañanas por falta de datos, y
+    # en el log eso se lee exactamente igual que un día en que el reloj no
+    # sincronizó. El freno sigue escrito, comentado y validado, y no salta
+    # jamás.
+    #
+    # Es literalmente lo que pasó con `yesterday_routine`, solo que por el otro
+    # lado del `get`: la clave se nombraba en el YAML, nadie la producía, y
+    # `last_session_only` bloqueó las tres rutinas durante toda la vida del
+    # sistema sin que nada lo dijera.
+    #
+    # El catálogo sale de `signals.py` y se compara con lo que `build_signals`
+    # deja de verdad en `values` (`test_signals`), así que no puede quedarse
+    # atrás y empezar a rechazar nombres buenos.
+    catalogo = senales_producidas(data)
+
+    def check_senal(nombre: Any, donde: str) -> None:
+        if nombre is None or nombre in catalogo:
+            return
+        cerca = sorted(n for n in catalogo if n.startswith(str(nombre)[:4]))
+        pista = f" ¿Querías decir {', '.join(cerca)}?" if cerca else ""
+        errors.append(
+            f"{donde}: la señal '{nombre}' no la produce nadie. No está entre "
+            f"las que escribe `build_signals`, así que valdría `None` todos los "
+            f"días y quien la mire se saltaría por falta de datos para siempre, "
+            f"sin dar error ni decirlo.{pista}"
+        )
+
+    for brake in data["progression"].get("brakes", []):
+        check_senal(brake.get("source"), f"freno '{brake.get('name')}'")
+        # `last_session_only` acota el freno a la rutina de la sesión de ayer, y
+        # el motor lee esa rutina de `yesterday_routine`. Sin esa señal el `in
+        # (None, routine_key)` se cumple para cualquier rutina y el modo es
+        # indistinguible de `all`: un freno más ancho de lo que dice el YAML.
+        if str(brake.get("blocks", "all")) == "last_session_only":
+            require(
+                "yesterday_routine" in catalogo,
+                f"freno '{brake.get('name')}': usa 'blocks: last_session_only', "
+                f"que necesita la señal 'yesterday_routine' para saber a qué "
+                f"rutina acotarse. Sin ella bloquearía TODAS, que es lo "
+                f"contrario de lo que pide esta línea.",
+            )
+
+    for rule in data.get("special_rules") or []:
+        check_senal(
+            (rule.get("trigger") or {}).get("source"),
+            f"regla '{rule.get('name')}'.trigger",
+        )
+
+    for nivel in ("red", "amber"):
+        for rule in data["thresholds"].get(nivel) or []:
+            if not isinstance(rule, dict):
+                continue
+            for senal in sorted(senales_de_regla(rule)):
+                check_senal(senal, f"regla '{rule.get('name')}'")
+
+    for nombre, spec in (data.get("adaptive_thresholds") or {}).items():
+        if isinstance(spec, dict):
+            check_senal(spec.get("metric"), f"adaptive_thresholds.{nombre}")
 
     # --- umbrales adaptativos ----------------------------------------------
     adaptive = data.get("adaptive_thresholds", {})

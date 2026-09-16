@@ -1112,6 +1112,77 @@ def rutina_de_ayer(sessions: Sequence[StrengthSession], day: date) -> str | None
 
 
 # ---------------------------------------------------------------------------
+# El catálogo de lo que existe
+# ---------------------------------------------------------------------------
+
+# Las señales que `build_signals` escribe SIEMPRE, se llame como se llame el
+# resto del fichero de configuración. Las demás -los deslizadores, las
+# preguntas, el recuento de intensas- dependen del YAML y las añade
+# `senales_producidas`.
+SENALES_FIJAS = frozenset(
+    {
+        # Lo que da el reloj, tal cual.
+        "hrv",
+        "rhr",
+        "sleep_min",
+        "sleep_score",
+        "body_battery",
+        # Y lo mismo contra la línea base del propio usuario.
+        "hrv_baseline",
+        "hrv_ratio",
+        "rhr_baseline",
+        "rhr_delta",
+        # Carga de las salidas en ventana rodante.
+        "load_2d",
+        "load_7d",
+        "yesterday_ride_level",
+        "yesterday_routine",
+        # Derivada del formulario: te apetecía y no vas, o al revés.
+        "discordancia",
+    }
+)
+
+
+def senales_producidas(config: Any) -> set[str]:
+    """Todo lo que `build_signals` puede llegar a escribir en `values`.
+
+    Existe para que el YAML no pueda nombrar una señal que no fabrica nadie.
+    Ese fallo no da error ni color raro: `evaluate_gate` y las reglas hacen
+    `signals.get(nombre)`, y un nombre que no existe devuelve `None`, que se
+    trata como «hoy no hay dato». Un freno con una errata en `source` se anota
+    como saltado por falta de datos TODAS las mañanas, y en el log eso se lee
+    igual que un día en que el reloj no sincronizó. El freno está escrito,
+    validado, comentado, y no salta nunca.
+
+    Es un catálogo y no una lista suelta: `test_signals` comprueba que coincide
+    EXACTAMENTE con lo que `build_signals` deja en `values` para este mismo
+    config. Una señal nueva sin su entrada aquí rompe ese test, que es lo que
+    impide que el catálogo se quede atrás y empiece a rechazar nombres buenos.
+    """
+    raw = config.raw if hasattr(config, "raw") else config
+    nombres = set(SENALES_FIJAS)
+
+    if hasattr(config, "checkin_keys"):
+        nombres |= set(config.checkin_keys())
+    else:
+        nombres |= {s["key"] for s in raw.get("checkin_sliders") or []}
+        nombres |= {p["key"] for p in raw.get("checkin_preguntas") or []}
+
+    # El recuento de intensas lleva su ventana en el nombre y se apaga desde el
+    # YAML, así que aquí no hay un nombre fijo que escribir: hay el que salga.
+    # Se leen las mismas dos condiciones que mira `intensity_count`, porque con
+    # el bloque apagado la señal no se escribe y nombrarla sería nombrar algo
+    # que no existe.
+    cuenta = (
+        ((raw.get("cycling") or {}).get("recommendation") or {}).get("intensity_count")
+    ) or {}
+    if cuenta and cuenta.get("enabled", True) and isinstance(cuenta.get("window_days"), int):
+        nombres.add(f"intense_count_{cuenta['window_days']}d")
+
+    return nombres
+
+
+# ---------------------------------------------------------------------------
 # Construcción del conjunto de señales
 # ---------------------------------------------------------------------------
 

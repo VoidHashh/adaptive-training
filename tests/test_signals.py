@@ -34,6 +34,7 @@ from app.engine.signals import (
     resolve_adaptive_threshold,
     rolling_load,
     rutina_de_ayer,
+    senales_producidas,
     week_start,
     zone_percentages,
 )
@@ -902,6 +903,55 @@ def test_lo_de_anteayer_no_es_lo_de_ayer():
 # ---------------------------------------------------------------------------
 # build_signals contra el config real
 # ---------------------------------------------------------------------------
+
+
+def test_el_catalogo_de_senales_es_exactamente_lo_que_se_produce(cfg):
+    """El test que sostiene el validador de `source`.
+
+    `config_loader` rechaza el arranque si el YAML nombra una señal que no
+    fabrica nadie. Eso solo se puede hacer con una lista, y una lista escrita a
+    mano se queda atrás a la primera señal nueva: entonces el validador empieza
+    a rechazar nombres BUENOS, que es peor que no validar, porque el sistema no
+    arranca y el error señala al fichero de configuración, que está bien.
+
+    Así que la lista no puede diferir de la producción ni en un nombre, en
+    ninguna de las dos direcciones. Este test es esa igualdad.
+    """
+    s = build_signals(
+        cfg,
+        LUNES,
+        metrics=[DayMetrics(date=LUNES, hrv=60.0, rhr=50.0)],
+        rides=[],
+        sessions=[],
+        checkin_history=[],
+    )
+    assert set(s.values) == senales_producidas(cfg)
+
+
+def test_el_recuento_apagado_no_entra_en_el_catalogo(cfg_copia):
+    """Con el bloque apagado la señal no se escribe, así que no existe.
+
+    Y si no existe, nombrarla desde el YAML tiene que doler igual que nombrar
+    una que no se haya escrito nunca: el freno que la mirara se saltaría todos
+    los días por falta de datos.
+    """
+    rec = cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]
+    assert any(n.startswith("intense_count_") for n in senales_producidas(cfg_copia))
+    rec["enabled"] = False
+    assert not any(n.startswith("intense_count_") for n in senales_producidas(cfg_copia))
+
+
+def test_el_catalogo_lleva_la_ventana_que_dice_el_config(cfg_copia):
+    """El nombre lleva la ventana dentro: cambiarla cambia la señal."""
+    cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]["window_days"] = 10
+    nombres = senales_producidas(cfg_copia)
+    assert "intense_count_10d" in nombres
+    assert "intense_count_7d" not in nombres
+
+
+def test_el_selector_no_es_una_senal(cfg):
+    """No llega a `values` a propósito: es una cadena, no una medida."""
+    assert CLAVE_SESION_ELEGIDA not in senales_producidas(cfg)
 
 
 def test_la_rutina_de_ayer_llega_a_las_senales(cfg):

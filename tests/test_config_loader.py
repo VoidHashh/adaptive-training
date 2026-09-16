@@ -181,6 +181,83 @@ def test_on_missing_solo_admite_block_o_skip(cfg_copia):
     assert "on_missing" in errores(cfg_copia.raw)
 
 
+# ---------------------------------------------------------------------------
+# Nombres de señal que no fabrica nadie
+#
+# El motor resuelve cada señal con `signals.get(nombre)`, así que una errata no
+# revienta: devuelve `None`, que todo el sistema lee como «hoy no hay dato». El
+# freno queda escrito, comentado y validado, y se salta todas las mañanas por
+# falta de datos. En el log eso es indistinguible de un día sin sincronizar el
+# reloj.
+#
+# Pasó de verdad, por el otro lado del `get`: `yesterday_routine` se nombraba
+# en el motor, no la producía nadie, y `last_session_only` bloqueó las tres
+# rutinas durante toda la vida del sistema sin decirlo.
+# ---------------------------------------------------------------------------
+
+
+def test_una_errata_en_la_señal_de_un_freno_no_arranca(cfg_copia):
+    cfg_copia.raw["progression"]["brakes"][0]["source"] = "yesterday_rpee"
+    assert "no la produce nadie" in errores(cfg_copia.raw)
+
+
+def test_el_error_de_señal_propone_los_nombres_parecidos(cfg_copia):
+    """Una errata se arregla sola si el mensaje enseña el nombre bueno."""
+    cfg_copia.raw["progression"]["brakes"][0]["source"] = "yesterday_rpee"
+    assert "yesterday_rpe" in errores(cfg_copia.raw)
+
+
+def test_una_errata_en_la_señal_de_una_regla_del_semáforo_no_arranca(cfg_copia):
+    regla = cfg_copia.raw["thresholds"]["amber"][0]
+    regla["when"] = {"hrv_ratioo": {"lt": 0.9}}
+    msg = errores(cfg_copia.raw)
+    assert "no la produce nadie" in msg
+    assert "hrv_ratioo" in msg
+
+
+def test_una_errata_en_el_disparador_de_una_regla_especial_no_arranca(cfg_copia):
+    _regla(cfg_copia.raw, "retirada_peso_muerto")["trigger"]["source"] = "lower_discomfor"
+    assert "no la produce nadie" in errores(cfg_copia.raw)
+
+
+def test_last_session_only_sin_la_señal_que_lo_acota_no_arranca(cfg_copia, monkeypatch):
+    """El estado exacto en el que estuvo el sistema hasta que se produjo
+    `yesterday_routine`: el YAML pedía acotar el freno a una rutina y el motor
+    no tenía con qué, así que bloqueaba las tres. Si la señal se vuelve a
+    perder, que no arranque en vez de volver a bloquear de más en silencio."""
+    from app.engine import signals as mod
+
+    monkeypatch.setattr(mod, "SENALES_FIJAS", mod.SENALES_FIJAS - {"yesterday_routine"})
+    freno = next(
+        b for b in cfg_copia.raw["progression"]["brakes"]
+        if b.get("blocks") == "last_session_only"
+    )
+    msg = errores(cfg_copia.raw)
+    assert "bloquearía TODAS" in msg
+    assert freno["name"] in msg
+
+
+def test_el_recuento_de_intensas_se_puede_nombrar_mientras_esté_encendido(cfg_copia):
+    cfg_copia.raw["thresholds"]["amber"][0]["when"] = {"intense_count_7d": {"gte": 3}}
+    assert "no la produce nadie" not in errores(cfg_copia.raw)
+
+
+def test_nombrar_el_recuento_de_intensas_apagado_no_arranca(cfg_copia):
+    """Apagar el bloque deja de escribir la señal. Una regla que la nombre
+    seguiría en el fichero, sin dar error, sin saltar nunca."""
+    cfg_copia.raw["thresholds"]["amber"][0]["when"] = {"intense_count_7d": {"gte": 3}}
+    cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]["enabled"] = False
+    assert "no la produce nadie" in errores(cfg_copia.raw)
+
+
+def test_cambiar_la_ventana_del_recuento_invalida_el_nombre_viejo(cfg_copia):
+    """La ventana va dentro del nombre de la señal. Cambiarla en el config y
+    dejar la regla apuntando a `intense_count_7d` es la misma avería."""
+    cfg_copia.raw["thresholds"]["amber"][0]["when"] = {"intense_count_7d": {"gte": 3}}
+    cfg_copia.raw["cycling"]["recommendation"]["intensity_count"]["window_days"] = 10
+    assert "no la produce nadie" in errores(cfg_copia.raw)
+
+
 def test_un_disparador_no_puede_ser_por_señal_y_por_calendario_a_la_vez(cfg_copia):
     _regla(cfg_copia.raw, "semana_de_descarga")["trigger"]["source"] = "fatigue"
     assert "solo uno de los dos" in errores(cfg_copia.raw)
