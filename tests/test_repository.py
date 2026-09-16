@@ -43,10 +43,12 @@ from app.repository import (
     columnas_actividad_sin_escribir,
     checkin_values,
     current_decision,
+    fusionar_metricas,
     get_checkin,
     guardar_adopciones,
     load_state,
     marcar_adopciones_contadas,
+    metricas_guardadas,
     opciones_del_config,
     preguntas_del_config,
     save_decision,
@@ -1424,3 +1426,95 @@ def test_la_serie_no_recorta_el_historico(db):
         db.add(DecisionRow(date=LUNES - timedelta(days=i), light="green"))
     db.commit()
     assert len(serie_decisiones(db, hasta=LUNES)) == 400
+
+
+# ---------------------------------------------------------------------------
+# El wellness guardado, que hasta ahora tampoco leía nadie
+#
+# `upsert_daily_metrics` escribía seis meses de wellness y la mañana decidía con
+# los ocho días que acababa de pedirle a Garmin. Lo guardado estaba a un SELECT
+# de distancia y no se abría nunca.
+# ---------------------------------------------------------------------------
+
+
+def _fila_wellness(dia, **kw):
+    from app.models import DailyMetrics
+
+    return DailyMetrics(date=dia, **kw)
+
+
+def test_las_metricas_guardadas_salen_ordenadas_y_acotadas(db):
+    for i in range(5):
+        db.add(_fila_wellness(LUNES - timedelta(days=i), hrv=60 + i, rhr=50))
+    db.commit()
+    leidas = metricas_guardadas(db, desde=LUNES - timedelta(days=3), hasta=LUNES)
+    assert [m.date for m in leidas] == [LUNES - timedelta(days=i) for i in (3, 2, 1, 0)]
+    assert leidas[-1].hrv == 60
+
+
+def test_las_metricas_guardadas_conservan_los_huecos(db):
+    """Un `None` guardado tiene que llegar como `None`.
+
+    Rellenarlo con la media, o con el último valor conocido, convertiría «esa
+    noche no dormí con el reloj» en «dormí y salió normal», que es la mentira
+    que vuelve inútil una línea base.
+    """
+    db.add(_fila_wellness(LUNES, hrv=None, rhr=48))
+    db.commit()
+    (m,) = metricas_guardadas(db, desde=LUNES, hasta=LUNES)
+    assert m.hrv is None
+    assert m.rhr == 48
+
+
+def test_lo_fresco_manda_sobre_lo_guardado():
+    """Garmin corrige hacia atrás: el sueño de anoche se reescribe por la mañana."""
+    from app.engine.signals import DayMetrics
+
+    fusion = fusionar_metricas(
+        [DayMetrics(date=LUNES, sleep_min=400, hrv=60)],
+        [DayMetrics(date=LUNES, sleep_min=455)],
+    )
+    assert [m.sleep_min for m in fusion] == [455]
+
+
+def test_un_hueco_de_hoy_no_borra_un_dato_de_la_base():
+    """La avería que hace cara la fusión perezosa.
+
+    Si esta mañana falla la llamada de sueño y las otras contestan, la fila
+    fresca trae `sleep_min=None`. Sustituyendo la fila entera, el sueño de esa
+    noche desaparecería de la decisión aunque lleve semanas guardado.
+    """
+    from app.engine.signals import DayMetrics
+
+    fusion = fusionar_metricas(
+        [DayMetrics(date=LUNES, hrv=60, sleep_min=430)],
+        [DayMetrics(date=LUNES, hrv=58, sleep_min=None)],
+    )
+    assert fusion[0].hrv == 58
+    assert fusion[0].sleep_min == 430
+
+
+def test_la_fusion_trae_los_dias_que_solo_estan_en_un_lado():
+    """Hoy solo está en lo fresco -se archiva al final de la mañana- y los
+    noventa de atrás solo están en la base."""
+    from app.engine.signals import DayMetrics
+
+    fusion = fusionar_metricas(
+        [DayMetrics(date=LUNES - timedelta(days=i), hrv=60) for i in (3, 2, 1)],
+        [DayMetrics(date=LUNES, hrv=61)],
+    )
+    assert [m.date for m in fusion] == [
+        LUNES - timedelta(days=i) for i in (3, 2, 1, 0)
+    ]
+
+
+def test_la_fusion_sale_ordenada_por_fecha():
+    """`_baseline_for` busca por fecha en un dict, pero la serie de sueño se
+    lee por tramos y un orden inestable movería la media sin que cambie un dato."""
+    from app.engine.signals import DayMetrics
+
+    fusion = fusionar_metricas(
+        [DayMetrics(date=LUNES - timedelta(days=i)) for i in (1, 5, 3)],
+        [DayMetrics(date=LUNES - timedelta(days=i)) for i in (0, 4, 2)],
+    )
+    assert [m.date for m in fusion] == sorted(m.date for m in fusion)

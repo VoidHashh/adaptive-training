@@ -46,7 +46,7 @@ from app.engine.message import render_telegram
 from app.engine.recalibracion import evaluar_recalibracion
 from app.engine.rotacion import pendientes as rutinas_pendientes
 from app.engine.session_builder import orden_de_rotacion
-from app.engine.signals import Checkin, build_signals
+from app.engine.signals import DIAS_DE_HISTORIA, Checkin, build_signals
 from app.engine.tendencia import DecisionDia, evaluar_tendencia
 from app.integrations.telegram import escapar_html
 from app.models import HevyWrite, Notification, WorkoutLog
@@ -134,6 +134,41 @@ class AvisoResult:
 
 
 # ---------------------------------------------------------------------------
+# Cuánto wellness hace falta tener delante
+# ---------------------------------------------------------------------------
+
+
+def dias_de_wellness_en_memoria(cfg: Any) -> int:
+    """Cuántos días de wellness necesita la mañana, contando hacia atrás.
+
+    NO es lo mismo que `scheduler.dias_de_wellness`, y confundirlos fue el
+    fallo. Aquel dice cuántos días hay que PEDIRLE A GARMIN, y es pequeño a
+    propósito: el wellness se consulta día a día, cada día son varias llamadas,
+    y lo que ya se leyó una vez está guardado. Este dice cuántos días hay que
+    TENER DELANTE para decidir, que es otra pregunta y sale mucho más grande.
+
+    Durante toda la vida del sistema hubo una sola respuesta para las dos, la
+    pequeña, porque nadie leía `daily_metrics` al decidir. Ocho días de wellness
+    para un motor que compara el último mes con los dos anteriores.
+
+    Los dos sumandos salen de su propio sitio:
+
+    - `DIAS_DE_HISTORIA + baseline.window_days`. `build_signals` reconstruye la
+      línea base y su derivada para los últimos `DIAS_DE_HISTORIA` días, y la
+      base del más antiguo mira los `window_days` ANTERIORES a él. Con el config
+      actual, 21.
+    - `trend.ventana_larga_dias`. El cualificador de sueño compara la media de
+      los últimos 30 días contra la de los 60 anteriores. Con el config actual,
+      90, y por eso manda.
+    """
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    base = int((raw.get("baseline") or {}).get("window_days", 7))
+    trend = raw.get("trend") or {}
+    larga = int(trend.get("ventana_larga_dias", 0)) if trend.get("enabled") else 0
+    return max(DIAS_DE_HISTORIA + base, larga)
+
+
+# ---------------------------------------------------------------------------
 # La mañana
 # ---------------------------------------------------------------------------
 
@@ -163,6 +198,9 @@ def run_daily(
     dónde salen los datos es decisión de quien llama -Garmin, la caché, o datos
     de ejemplo en un ensayo- y meterla dentro haría imposible probar el resto
     sin red.
+
+    Lo que sí se lee aquí es la MEMORIA: `metrics` es lo que Garmin acaba de
+    contestar, y lo que ya se sabía está en la base. Ver abajo.
     """
     checkin_row = repo.get_checkin(session, day)
     valores = repo.checkin_values(checkin_row)
@@ -180,10 +218,50 @@ def run_daily(
     # solo dato. 90 días y no 14 porque un percentil sobre dos semanas de
     # respuestas no es un percentil, y porque estos datos son diez filas: leer
     # tres meses no cuesta nada.
+    # --- el wellness que se sabe, no solo el que se acaba de leer ------------
+    #
+    # `metrics` trae la ventana corta de Garmin: `baseline.window_days + 1`, que
+    # con el config actual son OCHO días. Con esos ocho se construía todo, y
+    # `daily_metrics` -seis meses guardados, a un SELECT de distancia- no la
+    # leía nadie para decidir. Dos averías, las dos silenciosas:
+    #
+    # 1. LAS LÍNEAS BASE DE LOS DÍAS ANTERIORES SALÍAN RECORTADAS. La base de
+    #    ayer mira los siete días anteriores a ayer, y el más viejo de esos
+    #    siete caía fuera de la ventana. Quedaba por encima del mínimo, así que
+    #    no había nota ni error: solo una media calculada sobre seis días en vez
+    #    de siete. Eso mueve `hrv_ratio`, y `hrv_ratio` de ayer es lo que mira
+    #    `consecutive_days: 2`. Medido sobre los 167 días del histórico, el
+    #    color cambia en CUATRO: el 19/04 se perdía un rojo de verdad y el
+    #    31/03, el 11/04 y el 22/06 salían rojos que con el histórico entero son
+    #    ámbar.
+    #
+    # 2. EL CUALIFICADOR DE SUEÑO NO HABLÓ NUNCA. Compara la media de los
+    #    últimos 30 días con la de los 60 anteriores: con ocho días delante no
+    #    llega ni a la cobertura mínima, así que contestaba «no hay serie
+    #    suficiente» todas las mañanas. 185 días acusando al dato, con el dato
+    #    en la base.
+    #
+    # Se fusiona en vez de sustituir porque lo fresco también hace falta: hoy
+    # todavía no está guardado -esto se archiva al final de la mañana- y Garmin
+    # corrige hacia atrás el sueño y el body battery de ayer.
+    #
+    # `metrics` a secas sigue siendo lo que se ARCHIVA más abajo. Guardar la
+    # lista fusionada reescribiría noventa filas cada mañana y les recalcularía
+    # el `fetch_status`, que es justo la marca que distingue «no se pudo leer»
+    # de «se leyó y no había».
+    wellness = repo.fusionar_metricas(
+        repo.metricas_guardadas(
+            session,
+            desde=day - timedelta(days=dias_de_wellness_en_memoria(cfg)),
+            hasta=day,
+        ),
+        metrics,
+    )
+
     signals = build_signals(
         cfg,
         day,
-        metrics=metrics,
+        metrics=wellness,
         rides=rides,
         checkin=checkin,
         sessions=repo.sesiones_ejecutadas(
@@ -235,8 +313,8 @@ def run_daily(
         day,
         repo.serie_decisiones(session, hasta=day - timedelta(days=1))
         + [DecisionDia(day, decision.light, decision.trigger_rule)],
-        sleep_score={m.date: m.sleep_score for m in metrics},
-        sleep_min={m.date: m.sleep_min for m in metrics},
+        sleep_score={m.date: m.sleep_score for m in wellness},
+        sleep_min={m.date: m.sleep_min for m in wellness},
     )
 
     # Qué rutina del ciclo lleva más de una vuelta sin hacerse. No cambia la

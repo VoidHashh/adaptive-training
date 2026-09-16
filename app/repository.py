@@ -1181,6 +1181,74 @@ def upsert_daily_metrics(
     return tocados
 
 
+def metricas_guardadas(
+    session: Session, *, desde: date, hasta: date
+) -> list[Any]:
+    """El wellness que ya está en la base, en el tramo pedido, ambos incluidos.
+
+    La pareja de `upsert_daily_metrics`: durante meses esta tabla se escribió y
+    no la leyó nadie para decidir. Cada mañana se le pedían a Garmin ocho días
+    -`baseline.window_days + 1`- y con esos ocho se construía todo, teniendo seis
+    meses guardados en disco a un `SELECT` de distancia.
+
+    `raw_json` NO se trae a propósito. Son las respuestas completas de Garmin,
+    varios kilobytes por día, y ningún consumidor de esta lista las mira: el
+    motor saca los cinco números y la capa de tendencia dos de ellos. Arrastrar
+    noventa días de crudo por cada decisión es pagar por algo que nadie abre.
+    """
+    from app.engine.signals import DayMetrics
+    from app.models import DailyMetrics
+
+    filas = session.scalars(
+        select(DailyMetrics)
+        .where(DailyMetrics.date >= desde, DailyMetrics.date <= hasta)
+        .order_by(DailyMetrics.date)
+    ).all()
+    return [
+        DayMetrics(
+            date=f.date,
+            hrv=f.hrv,
+            rhr=f.rhr,
+            sleep_min=f.sleep_min,
+            sleep_score=f.sleep_score,
+            body_battery=f.body_battery,
+        )
+        for f in filas
+    ]
+
+
+def fusionar_metricas(guardadas: Sequence[Any], frescas: Sequence[Any]) -> list[Any]:
+    """La memoria de la base debajo, lo que Garmin acaba de contestar encima.
+
+    Se fusiona campo a campo y no día a día, con la MISMA regla que
+    `upsert_daily_metrics`: un `None` de la lectura de esta mañana no pisa un
+    número guardado. Cambiar la fila entera seria más corto y estaría mal: si
+    hoy falla la llamada de sueño y las otras contestan, la fila fresca trae
+    `sleep_min=None`, y con ella encima el sueño de esa noche desaparecería de
+    la decisión aunque esté en la base desde hace semanas.
+
+    Lo fresco manda cuando hay dato porque Garmin corrige hacia atrás: el sueño
+    de anoche se reescribe durante la mañana, y una salida tardía mueve el body
+    battery de ayer. Lo guardado es más antiguo por definición.
+    """
+    from dataclasses import replace
+
+    campos = ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery")
+    por_dia: dict[date, Any] = {m.date: m for m in guardadas}
+    for nueva in frescas:
+        vieja = por_dia.get(nueva.date)
+        if vieja is None:
+            por_dia[nueva.date] = nueva
+            continue
+        traidos = {
+            c: v for c in campos if (v := getattr(nueva, c, None)) is not None
+        }
+        if getattr(nueva, "raw", None) is not None:
+            traidos["raw"] = nueva.raw
+        por_dia[nueva.date] = replace(vieja, **traidos)
+    return [por_dia[d] for d in sorted(por_dia)]
+
+
 # Lo que `upsert_activities` copia tal cual de la salida. Está aquí fuera y no
 # inline en el bucle para que el test que busca huecos lea LA MISMA lista que
 # se recorre, y no una copia suya que puede quedarse atrás sin que se note.

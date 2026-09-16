@@ -1209,6 +1209,19 @@ def _baseline_for(
     return mean_excluding_outliers(values, exclude_outliers)
 
 
+# Cuántos días hacia atrás se reconstruyen las líneas base y sus derivadas. No
+# es cosmético: `consecutive_days` compara la señal de hoy con la de los días
+# anteriores leyéndola de `sig.history`, así que un día que no se reconstruye es
+# un día que esas reglas no pueden mirar.
+#
+# Tiene nombre porque quien lee los datos necesita saberlo: para reconstruir la
+# derivada de hace `DIAS_DE_HISTORIA` días hace falta la línea base de ese día,
+# y esa mira `baseline.window_days` días ANTERIORES a él. O sea que la ventana
+# de wellness que hay que tener delante es la suma de los dos, no este número
+# solo. Ver `runner.dias_de_wellness_en_memoria`.
+DIAS_DE_HISTORIA = 14
+
+
 def build_signals(
     config: Any,
     day: date,
@@ -1217,7 +1230,7 @@ def build_signals(
     sessions: Sequence[StrengthSession],
     checkin_history: Sequence[Checkin],
     checkin: Checkin | None = None,
-    history_days: int = 14,
+    history_days: int = DIAS_DE_HISTORIA,
 ) -> Signals:
     """Construye el `Signals` de un día a partir de los datos crudos.
 

@@ -775,6 +775,133 @@ def test_un_hueco_de_hoy_no_borra_el_dato_de_ayer(db, cfg):
     assert fila.rhr == 51.0, "y el dato que SÍ venía tiene que actualizarse"
 
 
+# ---------------------------------------------------------------------------
+# El wellness que se SABE, no solo el que se acaba de leer
+#
+# `metrics` es la ventana corta de Garmin: `baseline.window_days + 1`, ocho días
+# con el config de hoy. Es pequeña a propósito, porque el wellness se pide día a
+# día y cada día son varias llamadas. Lo que estaba mal era decidir con ella:
+# `daily_metrics` llevaba seis meses escritos y nadie los abría para decidir.
+# ---------------------------------------------------------------------------
+
+
+def _wellness_en_la_base(db, day, n, **kw):
+    """`n` días de wellness guardados terminando en `day`, ambos incluidos."""
+    from app.models import DailyMetrics
+
+    for i in range(n):
+        db.add(DailyMetrics(date=day - timedelta(days=i), **kw))
+    db.flush()
+
+
+def test_la_ventana_larga_de_la_tendencia_manda_sobre_la_de_las_bases(cfg):
+    """Con el config real gana el cualificador de sueño: 90 días.
+
+    No es un número elegido, es el máximo de dos exigencias que vienen cada una
+    de su sitio. Si mañana la ventana larga se acorta por debajo de 21, mandaría
+    la otra; el test de abajo comprueba ese lado.
+    """
+    from app.runner import dias_de_wellness_en_memoria
+
+    assert dias_de_wellness_en_memoria(cfg) == cfg.raw["trend"]["ventana_larga_dias"]
+    assert dias_de_wellness_en_memoria(cfg) == 90
+
+
+def test_sin_capa_de_tendencia_siguen_haciendo_falta_las_lineas_base(cfg_copia):
+    """Apagar la tendencia no devuelve el sistema a los ocho días.
+
+    `build_signals` reconstruye catorce días de derivadas, y la base del más
+    viejo mira los siete ANTERIORES a él. Ese suelo no lo pone la tendencia.
+    """
+    from app.engine.signals import DIAS_DE_HISTORIA
+    from app.runner import dias_de_wellness_en_memoria
+
+    cfg_copia.raw["trend"]["enabled"] = False
+    esperado = DIAS_DE_HISTORIA + cfg_copia.raw["baseline"]["window_days"]
+    assert dias_de_wellness_en_memoria(cfg_copia) == esperado
+    assert esperado == 21
+
+
+def test_la_mañana_decide_con_lo_guardado_y_no_solo_con_lo_leido(db, cfg, monkeypatch):
+    """Que el motor reciba la memoria, no la ventana de la mañana.
+
+    La avería medida: la línea base de AYER mira los siete días anteriores a
+    ayer, y el séptimo caía fuera de la ventana corta. La media salía sobre seis
+    días, por encima del mínimo, sin nota y sin error. Eso mueve `hrv_ratio` de
+    ayer, que es lo que lee `consecutive_days: 2`. Sobre los 167 días del
+    histórico el color cambiaba en cuatro: un rojo de verdad perdido el 19/04 y
+    tres rojos falsos el 31/03, el 11/04 y el 22/06.
+    """
+    visto: dict[str, object] = {}
+    real = run_daily.__globals__["build_signals"]
+
+    def espia(config, day, *, metrics, **kw):
+        visto["metrics"] = list(metrics)
+        return real(config, day, metrics=metrics, **kw)
+
+    monkeypatch.setitem(run_daily.__globals__, "build_signals", espia)
+
+    _wellness_en_la_base(db, LUNES - timedelta(days=8), 60, hrv=61.0, rhr=49.0)
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+
+    fechas = {m.date for m in visto["metrics"]}
+    assert LUNES - timedelta(days=8) in fechas, (
+        "la línea base de ayer se sigue calculando sobre seis días"
+    )
+    assert len(fechas) > len(metricas()), "solo ha llegado la ventana de Garmin"
+
+
+def test_la_serie_de_sueño_de_la_tendencia_llega_al_mes_de_referencia(
+    db, cfg, monkeypatch
+):
+    """El cualificador de sueño lleva 185 días mudo, y culpando al dato.
+
+    Compara la media de los últimos 30 días contra la de los 60 anteriores. Con
+    ocho días delante no llegaba ni a la cobertura mínima, así que contestaba
+    «no hay serie suficiente» todas las mañanas con la serie entera en la base.
+    """
+    visto: dict[str, object] = {}
+    real = run_daily.__globals__["evaluar_tendencia"]
+
+    def espia(config, day, serie, *, sleep_score, sleep_min):
+        visto["sleep_min"] = dict(sleep_min)
+        return real(config, day, serie, sleep_score=sleep_score, sleep_min=sleep_min)
+
+    monkeypatch.setitem(run_daily.__globals__, "evaluar_tendencia", espia)
+
+    larga = cfg.raw["trend"]["ventana_larga_dias"]
+    _wellness_en_la_base(db, LUNES, larga, sleep_min=430, sleep_score=78)
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+
+    serie = visto["sleep_min"]
+    vistos = sum(
+        1 for i in range(larga) if serie.get(LUNES - timedelta(days=i)) is not None
+    )
+    assert vistos == larga, f"solo llegan {vistos} de los {larga} días que compara"
+
+
+def test_archivar_sigue_guardando_solo_lo_que_garmin_acaba_de_contestar(db, cfg):
+    """Lo fusionado se DECIDE con ello, no se vuelve a escribir.
+
+    Guardarlo reescribiría noventa filas cada mañana y les recalcularía el
+    `fetch_status`. Un día marcado `error` -no se pudo leer, hay que volver- se
+    convertiría en `partial` -se leyó y no había, no se vuelve-, y el backfill
+    dejaría de reintentarlo. La marca desaparece justo en los días que la
+    necesitan.
+    """
+    from app.models import DailyMetrics
+
+    viejo = LUNES - timedelta(days=40)
+    db.add(DailyMetrics(date=viejo, fetch_status="error", fetch_error="502 de Garmin"))
+    db.flush()
+
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+
+    fila = db.scalars(select(DailyMetrics).where(DailyMetrics.date == viejo)).first()
+    assert fila.fetch_status == "error", "archivar la fusión ha borrado el reintento"
+    assert fila.fetch_error == "502 de Garmin"
+
+
 def test_si_archivar_falla_la_mañana_termina_y_se_dice(db, cfg, monkeypatch):
     """Perder un día de histórico es malo; quedarse sin plan por eso, peor.
 
