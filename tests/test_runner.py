@@ -23,6 +23,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, apply_execution
+from app.engine.signals import DayMetrics
 from app.models import Base, Decision, HevyWrite, Notification, WorkoutLog
 from app.repository import load_state, save_decision, save_state, upsert_checkin
 from app.runner import run_daily, run_reconcile
@@ -2077,18 +2078,25 @@ def test_una_racha_larga_llega_al_mensaje(db, cfg):
     """La prueba de punta a punta: base de datos → capa → Telegram.
 
     Hoy tiene que salir no verde también: la racha se cuenta hacia atrás desde
-    hoy, así que un verde hoy la corta por definición. Se fuerza con 5 h 40 de
-    sueño, que es lo que dispara `sueno_corto`.
+    hoy, así que un verde hoy la corta por definición. Se fuerza con una HRV
+    hundida UN solo día -53 sobre una base de 60, ratio 0,88- que es lo que
+    dispara `hrv_baja_1d`. Un día solo y no dos, que dos serían `hrv_hundida_2d`
+    y el día saldría rojo.
     """
     for i in range(45, 0, -1):
         luz = "amber" if i <= 8 else "green"
         db.add(Decision(date=LUNES - timedelta(days=i), light=luz,
-                        trigger_rule="sueno_corto" if luz == "amber" else None))
+                        trigger_rule="hrv_baja_1d" if luz == "amber" else None))
     db.commit()
     tg = TelegramFalso()
     res = run_daily(
         db, cfg, LUNES,
-        metrics=dias(LUNES, 10, hrv=60.0, rhr=50.0, sleep_min=340, sleep_score=80),
+        metrics=[
+            DayMetrics(date=LUNES, hrv=53.0, rhr=50.0, sleep_min=450,
+                       sleep_score=80),
+            *dias(LUNES - timedelta(days=1), 9, hrv=60.0, rhr=50.0,
+                  sleep_min=450, sleep_score=80),
+        ],
         rides=[], hevy_client=HevyFalso(), telegram_client=tg,
     )
     assert res.decision.light == "amber", "el montaje tenía que dar un día no verde"

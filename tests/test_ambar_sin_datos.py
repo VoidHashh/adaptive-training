@@ -90,7 +90,7 @@ def test_el_disparo_dice_qué_reglas_se_quedaron_mudas(cfg):
 
     detalle = " ".join(aviso.detail)
     assert "hrv_baja_1d" in detalle
-    assert "sueno_corto" in detalle
+    assert "sueno_muy_corto" in detalle
 
 
 def test_el_ambar_por_precaucion_no_contamina_las_reglas_saltadas(cfg):

@@ -895,7 +895,31 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 "es su voto."
                 .format(light),
             )
-            # Y el nombre reservado. No es una lápida como las cuatro de
+            # Y la quinta, que es la que costó matar y la más fácil de querer
+            # de vuelta: era el 56 % de los ámbares. Se rechaza por nombre
+            # porque la tentación no es reescribirla igual, es reescribirla
+            # «mejor» -con la nota en vez de los minutos-, y esa variante SÍ
+            # distingue. El motivo por el que aun así no vale no se ve leyendo
+            # ninguna regla: hay que haber hecho la prueba de anticipación.
+            require(
+                name != "sueno_corto",
+                "thresholds.{}.sueno_corto ya no existe. Pedía 5-6,5 h de "
+                "sueño y era la regla más ruidosa del sistema: 58 disparos en "
+                "186 días y 44 ámbares pintados ella sola, 44 de 79. Se "
+                "midieron 53 variantes (minutos, sleep_score, las dos "
+                "combinadas, dos noches seguidas) con BH una sola vez. Los "
+                "minutos no distinguen nada (mejor q = 0,83, y el barrido sube "
+                "con MÁS sueño). `sleep_score` sí, y mucho (<70 acierta 8/11, "
+                "q = 0,0079). Pero repetido solo sobre los días en que "
+                "hrv_baja_1d NO avisa -que es donde un ámbar informaría de "
+                "algo- NINGUNA de las 53 gana al fondo del 19,3 %: todas "
+                "q = 1,0000, y `score<70` acierta 0 de 3. No es una señal "
+                "adelantada, es un eco de la HRV. Si vuelve a hacer falta una "
+                "regla de sueño, primero la prueba de anticipación; si no la "
+                "pasa, no informa: recorta."
+                .format(light),
+            )
+            # Y el nombre reservado. No es una lápida como las cinco de
             # arriba: es una colisión. `ambar_sin_datos` lo escribe el motor
             # como disparo sintético cuando promueve un verde ciego, y una
             # regla del YAML con ese nombre convertiría dos cosas distintas en

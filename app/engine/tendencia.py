@@ -123,6 +123,37 @@ TEMAS: tuple[tuple[str, str], ...] = (
     ("weekend_", "el fin de semana en bici"),
 )
 
+# LAS REGLAS QUE YA NO EXISTEN PERO SIGUEN EN EL HISTÓRICO.
+#
+# `tema_de_regla` averigua el tema leyendo el `requires` de la regla en el
+# `config.yaml`. Eso funciona mientras la regla exista; cuando se borra, su
+# `trigger_rule` sigue escrito en las decisiones de los meses anteriores y la
+# búsqueda no encuentra nada, así que caía al último `return` y devolvía el
+# nombre crudo entre comillas.
+#
+# Son dos averías, y la segunda es la fea:
+#
+#   - una semana que hablaba de UNA cosa se parte en dos temas y se queda sin
+#     dominante, así que el detector se calla justo en las semanas que tenía
+#     más claras;
+#   - y si el nombre crudo gana, el mensaje de las 7 de la mañana le enseña al
+#     usuario el nombre interno de una regla que ya no existe.
+#
+# No se arregla solo con el tiempo: `carga_acumulada`, `resaca_finde` y las dos
+# de FC llevan semanas en este estado. Borrar una regla no borra lo que decidió.
+#
+# Esta tabla es la parte de la lápida que el histórico necesita. La lápida que
+# explica POR QUÉ murió cada una está en `config.yaml`, donde estaba la regla, y
+# en `app/config_loader.py`, que impide reescribirla; aquí solo hace falta de
+# qué hablaba, para que los días que pintó se sigan pudiendo agrupar.
+TEMAS_RETIRADOS: dict[str, str] = {
+    "sueno_corto": "el sueño",
+    "fc_reposo_elevada": "la FC en reposo",
+    "fc_reposo_disparada": "la FC en reposo",
+    "carga_acumulada": "la carga acumulada",
+    "resaca_finde": "el fin de semana en bici",
+}
+
 ORDINALES = {
     2: "segunda", 3: "tercera", 4: "cuarta", 5: "quinta", 6: "sexta",
     7: "séptima", 8: "octava", 9: "novena", 10: "décima", 11: "undécima",
@@ -276,6 +307,11 @@ def tema_de_regla(raw: dict[str, Any], nombre: str) -> str:
     Si la regla mezcla temas -`sin_ganas_y_reventado` mira cansancio Y ganas- no
     se elige uno de los dos: se devuelve el nombre de la regla. Resumir dos cosas
     en una sería perder justo lo que la regla tiene de particular.
+
+    Y si la regla YA NO EXISTE, se mira `TEMAS_RETIRADOS` antes de rendirse. El
+    histórico dura más que el `config.yaml`: los 44 días que pintó `sueno_corto`
+    siguen ahí después de borrarla, y sin esa tabla se convertían en un tema
+    propio llamado «sueno_corto» que además podía acabar impreso en el mensaje.
     """
     thresholds = (raw.get("thresholds") or {})
     for nivel in ("red", "amber"):
@@ -291,6 +327,8 @@ def tema_de_regla(raw: dict[str, Any], nombre: str) -> str:
             if len(temas) == 1:
                 return temas.pop()
             return f"«{nombre}»"
+    if nombre in TEMAS_RETIRADOS:
+        return TEMAS_RETIRADOS[nombre]
     return f"«{nombre}»"
 
 
@@ -461,10 +499,14 @@ def _semanas(
     contradijese a la del lunes sin que hubiera pasado nada nuevo.
 
     El dominante se busca por TEMA y no por nombre de regla, y no es cosmética:
-    `sueno_corto` y `sueno_muy_corto` son el mismo problema con dos intensidades,
-    igual que `hrv_baja_1d` y `hrv_hundida_2d`. Contarlas por separado parte en
-    dos una semana que habla de una sola cosa y deja sin dominante -o con el
-    dominante equivocado- semanas que lo tenían clarísimo.
+    `hrv_baja_1d` y `hrv_hundida_2d` son el mismo problema con dos intensidades,
+    igual que lo eran `sueno_corto` y `sueno_muy_corto` mientras las dos
+    existieron. Contarlas por separado parte en dos una semana que habla de una
+    sola cosa y deja sin dominante -o con el dominante equivocado- semanas que lo
+    tenían clarísimo.
+
+    Eso vale también hacia atrás: los días que pintó una regla ya retirada se
+    agrupan con los de su tema gracias a `TEMAS_RETIRADOS`. Ver `tema_de_regla`.
     """
     out: list[_Semana] = []
     inicio = week_start(day) - timedelta(days=7)

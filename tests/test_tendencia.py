@@ -23,12 +23,15 @@ YAML- y lo único que los sujeta es el histórico y esta batería.
 from __future__ import annotations
 
 import copy
+import re
 from datetime import date, timedelta
+from pathlib import Path
 
 import pytest
 
 from app.engine.tendencia import (
     NEUTRAS_SEGUIDAS_MAX,
+    TEMAS_RETIRADOS,
     DecisionDia,
     TendenciaError,
     evaluar_tendencia,
@@ -751,10 +754,8 @@ class TestCualificadorSueno:
 
 
 class TestTemas:
-    def test_las_dos_de_sueno_comparten_tema(self, cfg):
-        assert (tema_de_regla(cfg.raw, "sueno_corto")
-                == tema_de_regla(cfg.raw, "sueno_muy_corto")
-                == "el sueño")
+    def test_la_regla_de_sueno_que_queda_tiene_su_tema(self, cfg):
+        assert tema_de_regla(cfg.raw, "sueno_muy_corto") == "el sueño"
 
     def test_las_dos_de_hrv_comparten_tema(self, cfg):
         assert (tema_de_regla(cfg.raw, "hrv_baja_1d")
@@ -768,6 +769,66 @@ class TestTemas:
     def test_regla_inexistente_no_revienta(self, cfg):
         """Una regla borrada del YAML puede seguir viva en el histórico."""
         assert tema_de_regla(cfg.raw, "regla_que_ya_no_existe") == "«regla_que_ya_no_existe»"
+
+    # -- las que ya no existen pero siguen en `decisions` ---------------------
+
+    def test_una_regla_retirada_conserva_su_tema(self, cfg):
+        """`sueno_corto` pintó 44 días. Borrarla no borra esos 44 días.
+
+        Sin la tabla caía al `«nombre»` de emergencia, y eso son dos averías: la
+        semana que hablaba de UNA cosa se parte en dos temas y se queda sin
+        dominante -así que el detector se calla justo en las semanas que tenía
+        más claras- y, si el nombre crudo gana, el mensaje de las 7 de la mañana
+        enseña el nombre interno de una regla que ya no existe.
+        """
+        assert tema_de_regla(cfg.raw, "sueno_corto") == "el sueño"
+
+    def test_una_retirada_se_agrupa_con_la_viva_de_su_tema(self, cfg):
+        """Lo que de verdad importa: que caigan en el MISMO tema.
+
+        Una semana con tres días de `sueno_corto` y uno de `sueno_muy_corto` era
+        una semana sobre el sueño, y lo sigue siendo después del borrado.
+        """
+        assert tema_de_regla(cfg.raw, "sueno_corto") == tema_de_regla(
+            cfg.raw, "sueno_muy_corto"
+        )
+        assert tema_de_regla(cfg.raw, "fc_reposo_elevada") == tema_de_regla(
+            cfg.raw, "fc_reposo_disparada"
+        ) == "la FC en reposo"
+
+    def test_ninguna_retirada_sigue_declarada_en_el_yaml(self, cfg):
+        """La tabla es de MUERTAS. Una viva ahí dentro la taparía.
+
+        `tema_de_regla` mira el YAML primero, así que hoy la entrada sobrante
+        sería inofensiva; el día que alguien invierta el orden por eficiencia,
+        una regla cuyo `when` ha cambiado seguiría contando el tema viejo. Se
+        comprueba ahora, que es cuando es barato.
+        """
+        vivas = {
+            r["name"]
+            for nivel in ("red", "amber")
+            for r in (cfg.raw["thresholds"].get(nivel) or [])
+        }
+        assert not (vivas & set(TEMAS_RETIRADOS)), (
+            "una regla que existe no puede tener lápida"
+        )
+
+    def test_las_retiradas_son_las_que_el_config_loader_prohibe(self, cfg):
+        """Las dos listas son la misma cosa vista desde dos sitios.
+
+        `config_loader` rechaza por nombre las reglas borradas para que nadie
+        las reescriba; `TEMAS_RETIRADOS` las traduce para que el histórico que
+        dejaron se siga pudiendo leer. Si se borra una sexta regla y solo se
+        toca una de las dos, el detector de tendencias vuelve a enseñar jerga, y
+        eso no lo nota nadie hasta que el mensaje sale mal un martes.
+        """
+        fuente = Path("app/config_loader.py").read_text(encoding="utf-8")
+        prohibidas = set(re.findall(r'name != "([a-z0-9_]+)"', fuente))
+        assert prohibidas, "el guardián de nombres ha cambiado de forma"
+        assert prohibidas == set(TEMAS_RETIRADOS), (
+            f"solo en config_loader: {prohibidas - set(TEMAS_RETIRADOS)}; "
+            f"solo en TEMAS_RETIRADOS: {set(TEMAS_RETIRADOS) - prohibidas}"
+        )
 
     def test_todas_las_reglas_reales_tienen_tema(self, cfg):
         """Si alguien añade una regla con una señal nueva, que se entere aquí.

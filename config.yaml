@@ -672,10 +672,55 @@ thresholds:
     # Se fue con `fc_reposo_disparada`, que está arriba en el bloque rojo y que
     # no llegó a disparar ni una vez en todo el histórico.
 
-    - name: sueno_corto
-      description: "Entre 5 h y 6,5 h de sueño"
-      requires: [sleep_min]
-      when: {sleep_min: {gte: 300, lt: 390}}
+    # AQUÍ ESTABA `sueno_corto`, Y SE HA IDO. Es la que más costó matar.
+    #
+    # Pedía `300 <= sleep_min < 390`: entre 5 h y 6,5 h de sueño. Era la regla
+    # más ruidosa del sistema con diferencia -58 disparos en 186 días, y el
+    # color lo pintaba ella sola 44 veces: 44 de mis 79 ámbares- así que antes
+    # de borrarla se agotaron las cuatro alternativas, una por una, replicando
+    # los 186 días mañana a mañana con el motor de verdad. Criterio: el cuerpo
+    # bajo esa misma mañana (`hrv_ratio < 0,90`), que de fondo pasa el 22,1 %
+    # de los días (40 de 181 medibles). 53 variantes, Benjamini-Hochberg
+    # aplicado UNA sola vez sobre todas juntas.
+    #
+    # 1. MÁS O MENOS MINUTOS. Barrido del corte de 300 a 420.
+    #    Nada. El mejor es el propio tramo ancho: 21/91 = 23 % contra 22,1 %
+    #    de fondo, q = 0,8279. Y el barrido sube MONÓTONAMENTE con más sueño,
+    #    o sea en la dirección contraria a la que la regla supone.
+    #
+    # 2. LA NOTA EN VEZ DE LOS MINUTOS. Esto SÍ distingue, y fuerte:
+    #
+    #        sleep_score < 65     7 disparos    6/7  (86 %)   q = 0,0079
+    #        sleep_score < 70    11 disparos    8/11 (73 %)   q = 0,0079
+    #        sleep_score < 75    30 disparos   15/30 (50 %)   q = 0,0079
+    #        sleep_score < 80    65 disparos   27/65 (42 %)   q = 0,0079
+    #
+    # 3. POCAS HORAS **Y** MALA NOTA. Nada pasa el corte. Cruzar los minutos
+    #    con la nota EMPEORA la nota sola: los minutos solo añaden ruido.
+    #
+    # 4. DOS NOCHES CORTAS SEGUIDAS. Nada. Solo encoge la muestra.
+    #
+    # Y LA PRUEBA QUE DECIDE, QUE ES LA DE ANTICIPACIÓN. Un ámbar sirve para
+    # avisar de algo que todavía no se sabe; si solo repite lo que otra regla
+    # ya dijo, no informa: recorta. Así que se repitieron las 53 variantes
+    # SOLO sobre los días en que `hrv_baja_1d` no avisa (fondo condicionado
+    # 27/140 = 19,3 %):
+    #
+    #     NINGUNA de las 53 gana al fondo. Todas q = 1,0000.
+    #     `sleep_score < 70`, la mejor de todas arriba, acierta 0 de 3.
+    #
+    # O sea: la variante que distingue solo repite lo que la HRV ya había
+    # dicho, y en los días en que la HRV dice lo contrario no acierta nunca.
+    # No es una señal adelantada, es un eco. Y un eco que costaba 44 sesiones
+    # recortadas en 186 días.
+    #
+    # `sueno_muy_corto` (< 5 h) SE QUEDA, y no por inconsistencia: es ROJA, no
+    # ámbar, disparó 1 vez en 186 días y esa vez pintó el día. Es una barrera
+    # para la noche catastrófica, no un termómetro diario.
+    #
+    # La señal sigue viva: `sleep_min` y `sleep_score` se leen, se guardan, se
+    # pintan en el panel y `trend` los usa como cualificador del aviso. Lo que
+    # se ha ido es su voto.
 
     - name: cansancio_alto
       description: "Cansancio >= 7"
