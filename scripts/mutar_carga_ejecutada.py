@@ -67,8 +67,19 @@ MUTACIONES = [
     (
         "E. se adopta hacia arriba aunque la sesión no se completara",
         "app/engine/adoption.py",
-        "if not limpio.get(key, False):",
-        "if False:",
+        # La aguja lleva la línea de encima porque `if not limpio...` aparece
+        # dos veces: aquí y en la rama del ejercicio sin peso que se leyera.
+        "_reset_por_debajo(state, clave)\n            if not limpio.get(key, False):",
+        "_reset_por_debajo(state, clave)\n            if False:",
+        ["tests/test_adoption.py"],
+    ),
+    (
+        "E2. un ejercicio sin un solo peso apuntado se congela en silencio",
+        "app/engine/adoption.py",
+        # Aquí la aguja lleva la línea de DEBAJO, que es lo que distingue esta
+        # rama de la de arriba: la otra sigue con un comentario.
+        "if not limpio.get(key, False):\n                salida.append(",
+        "if False:\n                salida.append(",
         ["tests/test_adoption.py"],
     ),
     (
@@ -128,8 +139,15 @@ MUTACIONES = [
     (
         "M. las adopciones rechazadas dejan de contarse: el tope actúa en silencio",
         "app/engine/message.py",
-        'rechazadas = [a for a in adopciones if not a.get("applied")]',
-        "rechazadas = []",
+        'if not a.get("applied") and a.get("executed_kg") is not None',
+        "if False",
+        ["tests/test_message.py"],
+    ),
+    (
+        "M2. las incidencias sin peso no llegan al mensaje y el ejercicio se queda quieto sin decirlo",
+        "app/engine/message.py",
+        'if not a.get("applied") and a.get("executed_kg") is None',
+        "if False",
         ["tests/test_message.py"],
     ),
     (

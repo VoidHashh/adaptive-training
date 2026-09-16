@@ -467,6 +467,30 @@ def test_sin_peso_registrado_no_se_toca_nada_ni_se_rompe_la_racha():
     assert tope_efectivo(e.current_sets[CLAVE]) == 60
 
 
+def test_un_ejercicio_sin_peso_y_sin_completar_se_cuenta_aunque_no_se_adopte():
+    """El suitcase carry. No hay nada que adoptar, pero callarlo era el otro
+    extremo: la carga se queda congelada para siempre y lo único visible es un
+    número que no cambia, que es justo lo que no se ve."""
+    e = estado_en(20)
+    (a,) = adoptar(
+        e, [ejercicio(20)], {"hip_thrust": None}, {"hip_thrust": False},
+        motivos={"hip_thrust": "está en el entrenamiento pero sin series"},
+    )
+
+    assert a.aplicada is False
+    assert a.hecho_kg is None, "no hay peso que enseñar, y un 0 se leería como 'sin carga'"
+    assert a.objetivo_antes_kg == 20
+    assert "sin series" in a.motivo
+    assert tope_efectivo(e.current_sets[CLAVE]) == 20, "no se mueve nada"
+    assert CLAVE not in e.below_plan_streak, "sin prueba no hay sesión por debajo"
+
+
+def test_un_ejercicio_sin_peso_pero_completado_no_dice_nada():
+    """Una plancha a los segundos pedidos no lleva kilos y no es una incidencia."""
+    e = estado_en(20)
+    assert adoptar(e, [ejercicio(20)], {"hip_thrust": None}, {"hip_thrust": True}) == []
+
+
 def test_un_ejercicio_sin_objetivo_guardado_se_ignora():
     """No debería pasar -la mañana guarda el objetivo de toda la rutina- pero
     adoptar sobre una lista que no existe crearía una carga vigente a partir de

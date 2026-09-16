@@ -826,6 +826,45 @@ def test_sin_adopciones_no_aparece_el_bloque(cfg):
     txt = render_plain(decision_completa(cfg), cfg)
     assert "Ajustado a lo que levantaste" not in txt
     assert "No adoptado" not in txt
+    assert "Sin nada que leer" not in txt
+
+
+def test_un_ejercicio_sin_peso_apuntado_se_cuenta_aparte(cfg):
+    """El suitcase carry: en la sesión, sin una sola serie efectiva apuntada.
+
+    Antes esto no salía en ninguna parte. Un ejercicio que cae aquí sesión tras
+    sesión tiene la carga congelada para siempre y lo único que se ve es un
+    número que no cambia, que es justo lo que no se ve.
+    """
+    txt = con_adopciones(
+        cfg,
+        adopcion(
+            applied=False, after_kg=None, executed_kg=None,
+            reason="está en el entrenamiento pero sin una sola serie efectiva apuntada",
+        ),
+    )
+    assert "Sin nada que leer" in txt
+    assert "sin una sola serie efectiva apuntada" in txt
+    assert "sigue en 60" in txt
+    assert "No adoptado" not in txt, (
+        "sin kilos que enseñar, la línea de las rechazadas diría 'se registraron "
+        "— kg' y se leería como un fallo de formato"
+    )
+
+
+def test_lo_que_no_se_pudo_leer_no_se_mezcla_con_lo_que_se_rechazo(cfg):
+    """Son dos avisos distintos: "he visto un número raro y no lo he tocado" y
+    "no he visto ningún número"."""
+    txt = con_adopciones(
+        cfg,
+        adopcion(applied=False, after_kg=None, executed_kg=600.0,
+                 reason="pasa del máximo"),
+        adopcion(key="extension_cuadriceps", applied=False, after_kg=None,
+                 executed_kg=None, reason="no aparece en el entrenamiento"),
+    )
+    assert txt.index("No adoptado") < txt.index("Sin nada que leer")
+    assert "600" in txt
+    assert "no aparece en el entrenamiento" in txt
 
 
 def test_una_adopcion_sin_motivo_lo_dice_en_vez_de_dejar_el_guion_colgando(cfg):

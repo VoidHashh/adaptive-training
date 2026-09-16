@@ -186,7 +186,17 @@ def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> l
 
     L: list[str] = []
     aplicadas = [a for a in adopciones if a.get("applied")]
-    rechazadas = [a for a in adopciones if not a.get("applied")]
+    # Las que ni siquiera llegaron a pesarse van a su propio bloque. Meterlas
+    # con las rechazadas obligaría a escribir "se registraron — kg", que es una
+    # línea que se lee como un fallo de formato y no como lo que es.
+    rechazadas = [
+        a
+        for a in adopciones
+        if not a.get("applied") and a.get("executed_kg") is not None
+    ]
+    sin_leer = [
+        a for a in adopciones if not a.get("applied") and a.get("executed_kg") is None
+    ]
 
     if aplicadas:
         L.append("")
@@ -213,6 +223,22 @@ def _lineas_adopcion(adopciones: list[dict[str, Any]], raw: dict[str, Any]) -> l
                 f"sigue en {fmt_num(a.get('before_kg'))} kg — "
                 f"{escapar_html(_motivo_adopcion(a))}"
             )
+
+    if sin_leer:
+        L.append("")
+        L.append("❔ <b>Sin nada que leer</b>")
+        for a in sin_leer:
+            nombre = escapar_html(
+                _nombre_ejercicio(raw, str(a.get("routine") or ""), str(a.get("key") or ""))
+            )
+            L.append(
+                f"• {nombre}: {escapar_html(_motivo_adopcion(a))} — sigue en "
+                f"{fmt_num(a.get('before_kg'))} kg"
+            )
+        L.append(
+            "Sin un peso apuntado no hay nada que adoptar, ni hacia arriba ni "
+            "hacia abajo: esa carga se queda donde está hasta que lo haya."
+        )
 
     return L
 

@@ -96,7 +96,9 @@ class Adopcion:
     # de tres meses -"¿por qué el hip thrust está en 62,5 y no en 70?"- no se
     # puede contestar con menos.
     prescrito_kg: float | None
-    hecho_kg: float
+    # `None` cuando no hay peso que leer: el ejercicio no se registró, o se
+    # registró sin kilos. Es distinto de `0.0`, que es "se hizo sin carga".
+    hecho_kg: float | None
     objetivo_antes_kg: float
     objetivo_despues_kg: float | None
     aplicada: bool
@@ -280,16 +282,30 @@ def adoptar_cargas(
             # vigente a partir de un ejercicio que nunca se planificó.
             continue
         objetivo = tope_efectivo(objetivo_series)
+        prescrito_series = _efectivas_del_plan(ex, set_cfg)
+        prescrito = tope_efectivo(prescrito_series)
 
         if hecho is None:
             # Ni se hizo, ni se apuntó el peso. NO cuenta como sesión por debajo:
             # no hay prueba de haber levantado menos, solo ausencia de prueba. Y
             # tampoco rompe la racha de sesiones por debajo, porque un día
             # suelto sin registrar no dice que el problema se haya resuelto.
+            #
+            # Pero callarlo del todo era el otro extremo. Un ejercicio que cae
+            # aquí sesión tras sesión tiene la carga congelada para siempre y no
+            # hay nada en el móvil que lo diga: el número no cambia y no cambiar
+            # no se ve. Si además NO salió limpio, se cuenta -sin adoptar nada-
+            # con el motivo que se sepa, que es lo único que se puede ofrecer
+            # cuando no hay ni un kilo que leer.
+            if not limpio.get(key, False):
+                salida.append(
+                    Adopcion(
+                        routine_key, key, str(ex.get("name", key)), ARRIBA,
+                        prescrito or None, None, objetivo, None, False,
+                        motivos.get(key) or "no consta qué pasó con este ejercicio",
+                    )
+                )
             continue
-
-        prescrito_series = _efectivas_del_plan(ex, set_cfg)
-        prescrito = tope_efectivo(prescrito_series)
 
         # --- hacia arriba: contra el OBJETIVO, y solo con la sesión limpia ----
         if hecho > objetivo:
