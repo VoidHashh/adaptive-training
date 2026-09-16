@@ -1150,7 +1150,7 @@ def _motivo_suelto(
         # presupuesto de intensas, pero no lo decidió el motor.
         previsto = plan.get("hiit_block")
         if previsto:
-            return f"HIIT por libre: ese día el plan pedía {previsto}"
+            return f"HIIT por libre: ese día el plan pedía {_titulo_de(cfg, previsto)}"
         return "HIIT por libre: el plan de ese día no llevaba HIIT"
     if not es_fuerza:
         # ESTA FRASE DECÍA «ese día no tocaba fuerza», Y ESE ERA EL FALLO ENTERO

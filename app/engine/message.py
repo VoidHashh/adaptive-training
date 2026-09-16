@@ -380,7 +380,12 @@ def _lineas_sesion(s: Any, raw: dict, set_cfg: dict[str, Any]) -> list[str]:
         nombre_ex = escapar_html(ex.get("name", ex.get("key")))
         out.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
     if s.hiit_block:
-        out.append(f"🔥 <b>HIIT:</b> {escapar_html(s.hiit_block)}")
+        # El título, no la clave. Salía `hiit_dia_2` en el mensaje de la mañana
+        # -el único sitio donde esto se lee- mientras el YAML tenía «Día 2 HIIT»
+        # dos líneas más abajo del `hevy_routine_id`. Los bloques HIIT viven en
+        # `routines` como cualquier otra rutina, así que el mismo buscador que
+        # traduce `dia_1` los traduce a ellos sin nada nuevo.
+        out.append(f"🔥 <b>HIIT:</b> {escapar_html(_titulo_rutina(raw, s.hiit_block))}")
     return out
 
 

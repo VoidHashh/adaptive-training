@@ -284,6 +284,34 @@ def test_una_regla_que_quita_el_hiit_no_dice_el_motivo_al_reves(cfg_hiit, estado
     assert "regla especial" in nota
 
 
+def test_el_hiit_se_nombra_por_su_titulo_y_no_por_su_clave(cfg_hiit, estado_hiit):
+    """Salía `hiit_dia_1` en el mensaje de la mañana, que es el único sitio
+    donde esto se lee, mientras el YAML tenía «Día 1 HIIT» a dos líneas del
+    `hevy_routine_id`. Los ejercicios y la rutina de fuerza ya se traducían;
+    el bloque HIIT era el único identificador crudo que quedaba en pantalla.
+    """
+    d = decision(cfg_hiit, estado=estado_hiit)
+    assert d.session.hiit_block == "hiit_dia_1", (
+        f"el escenario ya no programa HIIT: {d.session.notes}"
+    )
+    txt = render_plain(d, cfg_hiit)
+    assert "Día 1 HIIT" in txt
+    assert "hiit_dia_1" not in txt
+
+
+def test_un_bloque_de_hiit_sin_titulo_se_nombra_feo_pero_no_en_blanco(
+    cfg_hiit, estado_hiit
+):
+    """Misma regla que los ejercicios y que las rutinas: una entrada a la que
+    le falta el `title` se nombra con su clave, nunca con un hueco. La línea
+    del HIIT sin nada detrás se leería como que hoy no hay HIIT, que es
+    exactamente lo contrario de lo que pasa."""
+    cfg_hiit.raw["routines"]["hiit_dia_1"].pop("title", None)
+    d = decision(cfg_hiit, estado=estado_hiit)
+    assert d.session.hiit_block == "hiit_dia_1"
+    assert "HIIT:</b> hiit_dia_1" in render_telegram(d, cfg_hiit)
+
+
 def test_un_bloque_de_hiit_que_no_existe_se_dice_en_vez_de_desaparecer(
     cfg_hiit, estado_hiit
 ):

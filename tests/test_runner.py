@@ -1188,6 +1188,32 @@ def test_un_hiit_que_el_plan_no_pedia_queda_visible_con_su_motivo(db, cfg):
     assert "HIIT por libre" in fila.motivo_suelto, fila.motivo_suelto
 
 
+def test_el_hiit_que_pedia_el_plan_se_nombra_por_su_titulo(db, cfg_lunes):
+    """Este motivo lo lee el mensaje de la mañana tal cual sale de aquí, así
+    que un `hiit_dia_1` guardado en la fila es un `hiit_dia_1` en pantalla.
+
+    El escenario es el que hace visible la frase: el plan pedía el bloque del
+    Día 1 y se ejecutó el del Día 2. Hacer el bloque que tocaba no pasa por
+    aquí -se reconoce antes como previsto-, así que sin esta discordancia la
+    rama que nombra el bloque del plan no la comprueba nadie.
+    """
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    assert _plan_guardado(db)["hiit_block"] == "hiit_dia_1", (
+        "el escenario ya no lleva HIIT; el test hay que rehacerlo"
+    )
+
+    w = _entrenamiento_completo({"exercises": []}, wid="el_otro_hiit")
+    w["routine_id"] = _rid(cfg_lunes, "hiit_dia_2")
+    run_reconcile(db, cfg_lunes, LUNES, workouts=[w])
+
+    fila = db.scalars(
+        select(WorkoutLog).where(WorkoutLog.hevy_workout_id == "el_otro_hiit")
+    ).one()
+    assert fila.motivo_suelto == "HIIT por libre: ese día el plan pedía Día 1 HIIT", (
+        fila.motivo_suelto
+    )
+
+
 def test_un_entrenamiento_de_un_dia_que_no_planificaba_fuerza_se_registra_igual(db, cfg):
     """Antes esto devolvía sin escribir nada y el entrenamiento no había
     existido: ni volumen, ni series, ni presupuesto de intensas.
