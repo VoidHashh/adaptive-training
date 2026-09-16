@@ -817,10 +817,24 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 "thresholds.{}.resaca_finde ya no existe. Frenaba el lunes por "
                 "horas de bici del fin de semana, y sobre 180 días disparó dos "
                 "veces como única causa del ámbar con cero salidas intensas, la "
-                "HRV en 1,62 y la carga de tres días a un cuarto de tu p90. Lo "
-                "que mide eso de verdad es thresholds.amber.carga_acumulada, "
-                "contra tu propia distribución. Si hace falta apretar por ahí, "
-                "se baja el percentil en adaptive_thresholds.load_2d_p90."
+                "HRV en 1,62 y la carga de tres días a un cuarto de tu p90. "
+                "Contaba actividades en vez de mirar el cuerpo, que es lo que "
+                "decide de verdad; el cuerpo ya tiene sus cuatro reglas."
+                .format(light),
+            )
+            # Y la que la sustituía, por el mismo motivo de fondo. Se rechaza por
+            # nombre porque su gramática era impecable -umbral contra el propio
+            # percentil, que suena a lo correcto- y la validación entera la daría
+            # por buena. Lo que estaba mal no era cómo se medía sino qué se medía.
+            require(
+                name != "carga_acumulada",
+                "thresholds.{}.carga_acumulada ya no existe. Ponía el día en "
+                "ámbar cuando la carga de bici pasaba tu p90 habitual. Sobre 185 "
+                "días, la única ventana con significación (k=1, p = 0,0006) "
+                "aportaba por su cuenta 2 días, los dos con el cuerpo normal: "
+                "todo lo demás ya lo cogían hrv_baja_1d y hrv_hundida_2d. Lo que "
+                "añadía por su cuenta eran falsas alarmas, y un ámbar gastado es "
+                "una sesión recortada de verdad."
                 .format(light),
             )
             seen_names.add(name)
@@ -1212,11 +1226,11 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # `cycling.fetch` estuvo declarado sin que lo leyera nadie mientras el
     # código pedía 190 días a pelo desde dos sitios. Ya está conectado
     # (`activity_cache.ventana_de_salidas`), y conectarlo obliga a comprobar
-    # esto: el backfill es lo único que llena la caché sobre la que se calculan
-    # los percentiles, así que un backfill más corto que la ventana del
-    # percentil apaga `carga_acumulada` y `carga_semanal` PARA SIEMPRE y sin un
-    # solo error. La regla no dispara, no falla, y el mensaje de la mañana sale
-    # igual de bonito con una señal menos.
+    # esto: el backfill es lo único que llena la caché sobre la que se calcula
+    # todo lo que se calibra contra el propio histórico, así que un backfill más
+    # corto que esas ventanas las apaga PARA SIEMPRE y sin un solo error. Hoy la
+    # que cuelga de ahí es el punto de partida de la bici, y el mensaje de la
+    # mañana sale igual de bonito con una base peor.
     fetch = ((data.get("cycling") or {}).get("fetch") or {})
     declaradas_son_enteras = True
     for clave in ("lookback_days", "backfill_days"):
@@ -1336,9 +1350,12 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"(y sus variantes '_adaptive' y '_option')",
         )
 
+    adaptivos_leidos: set[str] = set()
+
     def check_op_target(op: Any, operand: Any, where: str) -> None:
         nombre = str(op)
         if nombre.endswith(ADAPTIVE_SUFFIX):
+            adaptivos_leidos.add(str(operand))
             require(
                 operand in adaptive,
                 f"{where}: referencia el umbral adaptativo '{operand}', que no "
@@ -1382,6 +1399,24 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 rule.get("when"),
                 f"la regla '{rule.get('name', '<sin nombre>')}'",
             )
+
+    # --- el guardia al revés: un umbral que no lee nadie ---------------------
+    #
+    # El de arriba mira que una regla no apunte a un umbral inexistente. Este
+    # mira lo contrario, que es lo que de verdad pasó: `load_7d_p90` estuvo
+    # declarado meses sin que ninguna regla lo nombrara, y cuando se borró
+    # `carga_acumulada` su `load_2d_p90` se quedó igual. Un umbral suelto no se
+    # calcula, no falla y no aparece en ningún sitio; simplemente da la impresión
+    # de que el sistema vigila una carga que no vigila. Y encima arrastra:
+    # `dias_adaptativos` dimensiona la caché de salidas con su `window_days`, o
+    # sea que un fósil de aquí se cobra peticiones a Garmin todas las mañanas.
+    for name in sorted(set(adaptive) - adaptivos_leidos):
+        require(
+            False,
+            f"adaptive_thresholds.{name}: no lo referencia ninguna regla. "
+            f"Un umbral que no lee nadie no vigila nada: o se conecta desde un "
+            f"'when' con {{señal: {{gt_adaptive: {name}}}}}, o se borra.",
+        )
 
     # --- HIIT ---------------------------------------------------------------
     hiit = data["hiit"]
@@ -1594,8 +1629,8 @@ def _validate(data: dict[str, Any]) -> list[str]:
             muerta not in conteo,
             f"intensity_count.{muerta} es una clave de cuando el recuento "
             f"recortaba la salida del fin de semana. Ya no recorta: informa. "
-            f"Para frenar por carga acumulada está thresholds.amber.carga_acumulada, "
-            f"que mira la carga de Garmin contra tu propio percentil 90.",
+            f"Y no hay dónde mudarla: la regla que frenaba por carga acumulada "
+            f"también se borró, porque contar bici no predecía el cuerpo.",
         )
 
     # Y la quinta, que es de otra familia: no creía frenar, creía elegir el

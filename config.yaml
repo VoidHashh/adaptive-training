@@ -372,31 +372,26 @@ wellness:
 # Elegido p90: dispara ~1 día de cada 10. Con p80 eran 1 de cada 5, demasiado al
 # sumarlo al resto de reglas ámbar.
 #
-# LOS NÚMEROS DE ARRIBA SON DE `load_3d`, Y `load_3d` YA NO EXISTE
-# ----------------------------------------------------------------
-# Se dejan porque siguen sirviendo para lo que ilustran -qué significa elegir un
-# percentil- pero NO son los de la métrica que hay hoy. La ventana pasó de 3 días
-# a 2 y, a la vez, la ventana dejó de incluir el propio día. Con las dos cosas,
-# `load_2d` es otra distribución: más baja y más corta.
-adaptive_thresholds:
-
-  load_2d_p90:
-    metric: load_2d
-    window_days: 60
-    percentile: 90
-    # Sin este mínimo de histórico la regla NO dispara: con pocos días, el
-    # percentil se calcula sobre ruido.
-    min_days_required: 30
-    # Contar también los días de descanso (carga 0). Si se excluyen, el umbral
-    # sube (p80 pasa de 238 a 263) y la regla se vuelve más permisiva.
-    include_zero_days: true
-
-  load_7d_p90:
-    metric: load_7d
-    window_days: 60
-    percentile: 90
-    min_days_required: 30
-    include_zero_days: true
+# ESTA SECCIÓN ESTÁ VACÍA A PROPÓSITO, Y NO SIEMPRE LO ESTUVO
+# ------------------------------------------------------------
+# Tenía `load_2d_p90` y `load_7d_p90`. El primero lo leía `carga_acumulada`, que
+# se ha borrado -el motivo largo está en su lápida, en `thresholds.amber`- y el
+# segundo no lo leía nadie desde hacía tiempo. Un umbral que no referencia
+# ninguna regla no se calcula, no falla y no se nota: se queda ahí pareciendo
+# que el sistema mira algo que no mira. El validador ahora rechaza arrancar con
+# uno suelto, así que esto no puede volver a pasar en silencio.
+#
+# La maquinaria sigue entera y con sus tests: declarar aquí un umbral y
+# referenciarlo desde una regla con `{señal: {gt_adaptive: nombre}}` funciona
+# igual que el primer día. Las claves que llevaba cada uno, por si vuelve:
+# `metric`, `window_days`, `percentile`, `min_days_required` (sin él el
+# percentil se calcula sobre ruido) e `include_zero_days` (contar los días de
+# descanso como carga 0; excluirlos sube el umbral y afloja la regla).
+#
+# Los números del aviso de arriba son de `load_3d`, una métrica que tampoco
+# existe ya. Se dejan porque ilustran lo que ilustran -qué significa elegir un
+# percentil- y no porque sean los de nada que se calcule hoy.
+adaptive_thresholds: {}
 
 
 # -----------------------------------------------------------------------------
@@ -616,42 +611,42 @@ thresholds:
       requires: [fatigue]
       when: {fatigue: {gte: 7}}
 
-    - name: carga_acumulada
-      description: "Carga de ayer y anteayer por encima de tu percentil 90 habitual"
-      requires: [load_2d, load_2d_p90]
-      # Umbral relativo, no constante: se compara con tu propia distribución.
-      # Ver la sección `adaptive_thresholds`.
-      when: {load_2d: {gt_adaptive: load_2d_p90}}
-
-      # LA VENTANA, MEDIDA SOBRE 185 DÍAS, Y UN AVISO SOBRE ESTOS NÚMEROS
-      # ------------------------------------------------------------------
-      # Replicando los 185 días mañana a mañana con el motor de verdad, con el
-      # sesgo YA FUERA -valor y distribución la misma magnitud- y preguntando
-      # cuántas de las veces que la regla disparaba el cuerpo estaba bajo esa
-      # misma mañana (hrv_ratio < 0,90; de fondo pasa el 22,2 % de los días):
-      #
-      #     k=1  ayer solo            16 disparos   10/16   p = 0,0006   pasa BH
-      #     k=2  ayer y anteayer      18 disparos    6/18   p = 0,19     no pasa
-      #     k=3  los tres de antes    22 disparos    6/22   p = 0,36     no pasa
-      #
-      # AQUÍ ESTÁ CONFIGURADO k=2, QUE NO ES EL QUE PASA EL CORTE. Está así
-      # porque es lo que se pidió; la línea de arriba no se ha maquillado para
-      # que cuadre. Antes ponía «2 días, p = 0,0006» y era falso: ese p era de
-      # una sonda que numeraba las ventanas por el argumento NOMINAL que se le
-      # pasaba a `rolling_load` -que incluía el propio día-, así que su «2 días»
-      # sumaba UNO. El mismo desfase de una unidad que causó el sesgo, esta vez
-      # en los nombres. Se deja escrito porque es el segundo que muerde.
-      #
-      # Y AUNQUE SE PUSIERA k=1, LA REGLA APENAS APORTA. De sus 16 disparos,
-      # solo 2 días serían VERDES sin ella, y los dos con hrv_ratio 1,067 y
-      # 0,905: cuerpo normal. Su significación sale de días que `hrv_baja_1d` y
-      # `hrv_hundida_2d` ya cogen. Con k=2 son 5 días propios, los cinco con el
-      # cuerpo bien. Sea cual sea la ventana, lo que esta regla añade POR SU
-      # CUENTA son falsas alarmas. Antes de tocar el número, la pregunta que
-      # toca es si la regla debe existir.
-      #
-      # Lo que sí es un arreglo sin discusión es el sesgo: el motivo largo está
-      # en `load_series`, en `app/engine/signals.py`.
+    # AQUÍ ESTABA `carga_acumulada`, Y SE HA IDO. Léelo antes de reescribirla.
+    #
+    # Ponía el día en ámbar cuando la carga de bici de ayer y anteayer pasaba tu
+    # percentil 90 habitual. La pregunta que se hizo antes de borrarla no fue
+    # "¿qué ventana?" sino "¿debe existir?", y la respuesta salió de replicar los
+    # 185 días mañana a mañana con el motor de verdad, con el sesgo de la ventana
+    # ya arreglado, preguntando cuántas de las veces que disparaba el cuerpo
+    # estaba de verdad bajo esa misma mañana (hrv_ratio < 0,90; de fondo pasa el
+    # 22,2 % de los días):
+    #
+    #     k=1  ayer solo            16 disparos   10/16   p = 0,0006   pasa BH
+    #     k=2  ayer y anteayer      18 disparos    6/18   p = 0,19     no pasa
+    #     k=3  los tres de antes    22 disparos    6/22   p = 0,36     no pasa
+    #
+    # El k=1 es el único que pasa el corte, y aun así no se salva: de sus 16
+    # disparos solo 2 días serían VERDES sin ella, y los dos con el cuerpo normal
+    # (hrv_ratio 1,067 y 0,905). Toda su significación sale de días que
+    # `hrv_baja_1d` y `hrv_hundida_2d` ya cogen por su cuenta. Con k=2 son 5 días
+    # propios, los cinco con el cuerpo bien. Sea cual sea la ventana, LO QUE ESTA
+    # REGLA AÑADE POR SU CUENTA SON FALSAS ALARMAS, y un ámbar gastado es una
+    # sesión recortada de verdad.
+    #
+    # Es el mismo caso que `resaca_finde`, que está aquí abajo: una regla que
+    # dispara contando actividades en vez de midiendo el cuerpo. Cuando el cuerpo
+    # y el calendario no coinciden, manda el cuerpo, y el cuerpo ya tiene cuatro
+    # reglas propias.
+    #
+    # Con ella se fueron `adaptive_thresholds.load_2d_p90` y `load_7d_p90`, que
+    # no los leía ningún sitio más. La maquinaria de percentiles sigue entera y
+    # con sus tests (`resolve_adaptive_threshold` en `app/engine/signals.py`, la
+    # sintaxis `{señal: {gt_adaptive: nombre}}`): declarar un umbral nuevo ahí y
+    # referenciarlo desde una regla vuelve a encenderla. Lo que no vuelve solo es
+    # el motivo para hacerlo.
+    #
+    # Las señales `load_2d` y `load_7d` NO se han ido: las siguen usando el
+    # consejero de bici y la recalibración.
 
     # AQUÍ ESTABA `resaca_finde`, Y SE HA IDO. Léelo antes de reescribirla.
     #
@@ -673,21 +668,21 @@ thresholds:
     #
     # Los dos por la rama de las horas, y los dos con el cuerpo diciendo lo
     # contrario: HRV alta, pulso de reposo por debajo de la media, carga muy por
-    # debajo de la propia distribución. `carga_acumulada` -la regla de aquí
-    # arriba- no disparó en ninguno de los dos, y acierta: no había de qué
-    # recuperarse. Horas de bici no son fatiga; son horas de bici.
+    # debajo de la propia distribución. Horas de bici no son fatiga; son horas de
+    # bici.
     #
-    # Lo que mide de verdad esto mismo es `carga_acumulada`, que compara la
-    # carga de tres días contra el percentil 90 de la propia distribución
-    # histórica y dispara 32 veces en la misma ventana. Ahí sí hay un fin de
-    # semana duro cuando de verdad lo ha sido, medido contra lo que uno hace
-    # normalmente y no contra un número escrito en un fichero.
+    # Cuando se borró, el argumento fue "lo que mide esto de verdad es
+    # `carga_acumulada`, que compara contra tu propia distribución". Ese relevo
+    # ya no existe: `carga_acumulada` se ha ido también, y por el mismo motivo de
+    # fondo. Medir la carga contra el propio histórico era mejor que medirla
+    # contra un número escrito a mano, pero las dos seguían contando actividades,
+    # y el cuerpo -HRV, pulso de reposo, sueño- ya tiene sus cuatro reglas y
+    # acierta más.
     #
-    # Si algún día vuelve la tentación de frenar el lunes: el sitio es
-    # `adaptive_thresholds.load_2d_p90`, bajando el percentil. Eso sigue siendo
-    # el cuerpo hablando. Un umbral de horas de fin de semana es un calendario
-    # hablando, y encima uno que hay que recalibrar a mano cada vez que cambia
-    # el volumen -lo decía su propio comentario, que empezaba por "RECALIBRAR".
+    # Si algún día vuelve la tentación de frenar el lunes, que no sea contando
+    # horas: eso es un calendario hablando, y encima uno que hay que recalibrar a
+    # mano cada vez que cambia el volumen -lo decía su propio comentario, que
+    # empezaba por "RECALIBRAR".
 
 
 # -----------------------------------------------------------------------------
@@ -998,14 +993,25 @@ progression:
     down_after_sessions: 3
 
     # Tope del salto que se adopta de una vez, para que un 600 en vez de un 60 al
-    # teclear en Hevy no se convierta en la rutina de mañana. Se usa el MAYOR de
-    # los dos: el porcentaje porque 10 kg en un curl de 12 es otra cosa que 10 kg
-    # en una prensa de 150, y el mínimo en kg para que un ejercicio ligero no
-    # quede con un margen por debajo del propio incremento de la progresión.
+    # teclear en Hevy no se convierta en la rutina de mañana. Los dos son Y: vale
+    # el MENOR de los dos, no el mayor.
+    #
+    # Estaba en el mayor, y así el tope se AFLOJABA justo donde la carga absoluta
+    # es mayor: con un objetivo de 150 kg el margen salía 30, de modo que un
+    # dedazo de 150 a 180 entraba sin que nadie lo mirara. Con una L4-L5 eso es
+    # el sentido contrario del que tiene que tener un tope. En Y, "nunca más de
+    # 5 kg de golpe" significa eso, y el porcentaje solo puede APRETAR más en los
+    # ejercicios ligeros.
+    #
+    # El suelo es el `increment_kg` del propio ejercicio, y no se configura aquí
+    # porque no es una política sino una contradicción que hay que evitar: sin
+    # ese suelo, un ejercicio de 10 kg con incremento 2,5 tendría un margen de 2
+    # y su propia subida normal saldría rechazada como si fuera una errata.
     #
     # Pasarse del tope NO adopta y NO calla: sale en el mensaje de la mañana
-    # siguiente con el motivo. Un tope que actúa sin decirlo es un tope que nadie
-    # puede corregir.
+    # siguiente con el motivo, y con el modo de fijarlo a mano si era real
+    # (`scripts/fijar_carga.py`, que escribe en `exercise_targets`, que es lo que
+    # manda; este fichero solo es el punto de partida).
     max_jump_kg: 5
     max_jump_pct: 0.20
 
@@ -1700,20 +1706,26 @@ routines:
         increment_kg: 5
         apply_to: top_set
         expendable_in_amber: true
-        # Releído de Hevy el 11-09-2026. OJO: la rampa NO es monótona, va
-        # 70 → 60 → 65. No lo he "arreglado" porque es lo que hay registrado y
-        # el config reproduce Hevy, no al revés; pero si el 70 de la primera
-        # efectiva es un dedazo, corrígelo en Hevy y vuelve a leer. Mientras
-        # tanto la progresión de carga funciona igual: `double` mira el máximo
-        # de las efectivas (70) y sube todas con un delta, así que el desorden
-        # se conserva en vez de aplanarse.
+        # Releído de Hevy el 11-09-2026 salía 70 → 60 → 65, y se dejó tal cual
+        # porque el config reproduce Hevy y no al revés. Confirmado el 16-09-2026
+        # que el 70 de la primera efectiva era un dedazo: la rampa es 60 → 65 →
+        # 70 y así queda. Se han REORDENADO las tres series enteras, sin tocar
+        # ninguna rep: los pares que había -(70,12), (60,12), (65,15)- son los
+        # mismos puestos de menos a más peso. Reordenar solo los kilos habría
+        # dejado las 15 repeticiones en la serie más pesada, que es un cambio de
+        # entrenamiento que nadie pidió.
+        #
+        # El cambio solo llega a la sesión si este ejercicio NO tiene todavía
+        # fila en `exercise_targets` (`con_carga_vigente`: el YAML es el punto de
+        # partida y nada más). Si ya la tiene, la rampa buena se fija con
+        # `scripts/fijar_carga.py dia_1 gemelo_sentado 60,65,70 --aplicar`.
         progression_type: double
         rep_range: [12, 15]
         sets:
           - {type: warmup, reps: 10, weight_kg: 40}
-          - {reps: 12, weight_kg: 70}
           - {reps: 12, weight_kg: 60}
           - {reps: 15, weight_kg: 65}
+          - {reps: 12, weight_kg: 70}
 
       - key: press_triceps_sentado
         template_id: "234BC743"

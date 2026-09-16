@@ -328,6 +328,17 @@ def test_umbral_adaptativo_referenciado_pero_no_definido(cfg):
     assert "'no_existe', que no está definido" in errores(data)
 
 
+def test_umbral_adaptativo_definido_pero_sin_lector(cfg):
+    data = copy.deepcopy(cfg.raw)
+    data["adaptive_thresholds"]["huerfano_p90"] = {
+        "signal": "load_2d",
+        "stat": "p90",
+        "window_days": 90,
+        "min_samples": 10,
+    }
+    assert "no lo referencia ninguna regla" in errores(data)
+
+
 def test_ejercicio_sin_template_id(cfg):
     data = copy.deepcopy(cfg.raw)
     rkey = next(iter(data["routines"]))
@@ -900,8 +911,11 @@ def test_el_config_real_declara_las_dos_ventanas(cfg):
     fetch = cfg.raw["cycling"]["fetch"]
     assert isinstance(fetch.get("lookback_days"), int)
     assert isinstance(fetch.get("backfill_days"), int)
-    ventanas = [s["window_days"] for s in cfg.raw["adaptive_thresholds"].values()]
-    assert fetch["backfill_days"] >= max(ventanas)
+    # La ventana se le pregunta a `dias_adaptativos` y no se recorre
+    # `adaptive_thresholds` a mano. Cuando la sección se quedó vacía -su único
+    # lector era `carga_acumulada`- el `max()` de aquí reventó con un
+    # ValueError, y un test que revienta en vez de fallar no dice qué pasó.
+    assert fetch["backfill_days"] >= dias_adaptativos(cfg.raw)
 
 
 # ---------------------------------------------------------------------------

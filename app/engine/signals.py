@@ -691,9 +691,14 @@ def resolve_adaptive_threshold(
     # DATO, y con `include_zero_days: true` un día de descanso es un día con
     # dato: tras un parón largo se pueden tener 60 días "válidos" cuyo percentil
     # 90 es 0. Un umbral de 0 no es un umbral — significa "dispara con
-    # cualquier cosa por encima de nada" — y convertiría `carga_acumulada` en
-    # un ámbar permanente justo al volver de una lesión o unas vacaciones, que
-    # es cuando menos falta hace. Sin umbral utilizable, la regla se salta.
+    # cualquier cosa por encima de nada" — y dejaría a la regla que lo lea
+    # disparando siempre justo al volver de una lesión o unas vacaciones, que es
+    # cuando menos falta hace. Sin umbral utilizable, la regla se salta.
+    #
+    # Hoy no hay ninguna regla que lea un umbral de estos: `carga_acumulada`,
+    # que era la única, se borró. La función sigue aquí con sus tests porque la
+    # sintaxis del YAML la sigue soportando; el día que se declare un umbral
+    # nuevo, esta guarda ya está puesta.
     if value is None or value <= 0:
         return None, (
             "el percentil sale 0: no hay carga suficiente en la ventana para "

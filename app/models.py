@@ -65,18 +65,18 @@ class DailyMetrics(Base):
       incluido ayer. No era una columna pendiente de llenar, era una columna
       imposible de llenar con este hardware.
     - `load_3d` y `load_7d` sí las escribía la pasada diaria, pero no las leía
-      NADIE. La carga acumulada que usan las reglas se recalcula cada mañana
-      sumando `activities.training_load` (`signals.history`), que es la única
-      forma de que incluya lo que de verdad se hizo. Estas dos columnas eran
-      una copia de ese cálculo que nunca se consultaba, y encima el backfill
-      no las rellenaba: seis meses a NULL con la pasada diaria escribiéndolas
-      desde hoy habría producido una serie con un escalón en medio que alguien
+      NADIE. La carga acumulada se recalcula cada mañana sumando
+      `activities.training_load` (`signals.history`), que es la única forma de
+      que incluya lo que de verdad se hizo. Estas dos columnas eran una copia
+      de ese cálculo que nunca se consultaba, y encima el backfill no las
+      rellenaba: seis meses a NULL con la pasada diaria escribiéndolas desde
+      hoy habría producido una serie con un escalón en medio que alguien
       acabaría leyendo como "antes no entrenaba".
 
-    Ojo a la distinción, que importa: se va la COLUMNA, no la señal.
-    `load_2d` sigue existiendo como señal y `carga_acumulada` sigue
-    disparando con ella. Lo que desaparece es el sitio donde se guardaba
-    dos veces.
+    Ojo a la distinción, que importa: se fue la COLUMNA, no la señal.
+    `load_2d` y `load_7d` siguen existiendo como señales -las leen el consejero
+    de bici y la recalibración- y se siguen recalculando cada mañana. Lo que
+    desapareció es el sitio donde se guardaban dos veces.
     """
 
     __tablename__ = "daily_metrics"

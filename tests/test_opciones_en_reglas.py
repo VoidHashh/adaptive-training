@@ -277,8 +277,8 @@ def test_la_regla_del_lunes_ya_no_esta_en_el_config_real(cfg):
 def test_reponer_la_regla_impide_arrancar(cfg_copia):
     """Y con un motivo que se pueda leer sin abrir el git log.
 
-    El mensaje lleva los números que la mataron y adónde ir si de verdad hace
-    falta frenar por carga. Un "clave desconocida" a secas invitaría a insistir.
+    El mensaje lleva los números que la mataron. Un "clave desconocida" a secas
+    invitaría a insistir.
     """
     cfg_copia.raw["thresholds"]["amber"].append(
         {
@@ -289,7 +289,35 @@ def test_reponer_la_regla_impide_arrancar(cfg_copia):
     )
     errores = "\n".join(_validate(cfg_copia.raw))
     assert "resaca_finde ya no existe" in errores
-    assert "carga_acumulada" in errores, "hay que decir por dónde se frena de verdad"
+    assert "1,62" in errores, "hay que decir con qué números se mató"
+    # El mensaje mandaba a `carga_acumulada` como el sitio donde se frena por
+    # carga de verdad. Esa regla también se borró, y por el mismo motivo de
+    # fondo: contar bici no predecía el cuerpo. Un consejo que apunta a algo
+    # que ya no existe es peor que no dar consejo.
+    assert "carga_acumulada" not in errores
+
+
+def test_reponer_la_que_la_sustituia_tampoco_pasa(cfg_copia):
+    """`carga_acumulada` medía contra el propio percentil, que suena a lo
+    correcto, y por eso la validación entera la daría por buena. Lo que estaba
+    mal no era cómo medía sino qué medía."""
+    cfg_copia.raw["adaptive_thresholds"]["load_2d_p90"] = {
+        "metric": "load_2d",
+        "window_days": 60,
+        "percentile": 90,
+        "min_days_required": 30,
+        "include_zero_days": True,
+    }
+    cfg_copia.raw["thresholds"]["amber"].append(
+        {
+            "name": "carga_acumulada",
+            "requires": ["load_2d", "load_2d_p90"],
+            "when": {"load_2d": {"gt_adaptive": "load_2d_p90"}},
+        }
+    )
+    errores = "\n".join(_validate(cfg_copia.raw))
+    assert "carga_acumulada ya no existe" in errores
+    assert "falsas alarmas" in errores, "hay que decir qué añadía por su cuenta"
 
 
 @pytest.mark.parametrize(

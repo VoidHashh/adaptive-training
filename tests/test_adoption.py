@@ -129,13 +129,39 @@ def test_el_desplazamiento_no_deja_pesos_negativos():
     assert [s["weight_kg"] for s in _desplazar(series(5, 20), -10)] == [0, 10]
 
 
-def test_el_margen_es_el_mayor_de_los_dos():
-    """Porcentaje porque 10 kg en un curl no es lo mismo que en una prensa, y
-    mínimo en kg para que un ejercicio ligero no quede por debajo del propio
-    incremento de la progresión."""
+def test_el_margen_es_el_menor_de_los_dos():
+    """Los dos topes son Y. «Nunca más de 5 kg de golpe» tiene que significar eso.
+
+    En `max` el tope se aflojaba justo donde la carga absoluta es mayor: 30 kg de
+    margen sobre una prensa de 150, que es el sentido contrario del que tiene que
+    tener un tope con una L4-L5.
+    """
     cfg = PROG["adopt_executed_load"]
-    assert _margen(12, cfg) == 5.0  # 20% de 12 = 2,4 → manda el mínimo
-    assert _margen(150, cfg) == 30.0  # 20% de 150 = 30 → manda el porcentaje
+    assert _margen(12, cfg) == pytest.approx(2.4)  # 20% de 12 → aprieta el %
+    assert _margen(150, cfg) == 5.0  # 20% de 150 = 30 → manda el mínimo en kg
+
+
+def test_el_margen_nunca_baja_del_incremento_del_ejercicio():
+    """Un tope que prohíbe el paso que el programa acaba de pedir no protege de
+    nada: 20% de 10 kg son 2, y el ejercicio sube de 2,5 en 2,5."""
+    cfg = PROG["adopt_executed_load"]
+    assert _margen(10, cfg) == 2.0
+    assert _margen(10, cfg, 2.5) == 2.5
+    # El suelo solo levanta: no puede aflojar el tope de los pesados.
+    assert _margen(150, cfg, 2.5) == 5.0
+
+
+def test_bajar_conserva_el_tope_ancho():
+    """El tope aprieta en la dirección insegura, que es una sola.
+
+    Apretando también al bajar, un desfase de 10 kg sobre 60 no se cerraría
+    nunca: la adopción lo rechazaría cada sesión y el objetivo se quedaría para
+    siempre por encima de lo que se levanta. El tope puesto para proteger la
+    espalda acabaría obligando a intentar un peso que no sale.
+    """
+    cfg = PROG["adopt_executed_load"]
+    assert _margen(60, cfg, 5, ABAJO) == 12.0
+    assert _margen(60, cfg, 5, ARRIBA) == 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -215,14 +241,17 @@ def test_un_salto_desmedido_no_se_adopta_pero_se_cuenta():
 
 
 def test_el_tope_deja_pasar_lo_que_esta_justo_dentro():
-    """60 + 20% = 72. El tope no puede ser tan estrecho que bloquee una
-    corrección legítima de disco, ni tan ancho que deje pasar la errata."""
+    """60 + 5 = 65: un disco de cada lado entra, el siguiente ya no.
+
+    Antes el límite estaba en 72 porque mandaba el 20%. Justo al revés de lo que
+    tiene que hacer un tope: cuanto más pesaba el ejercicio, más suelto.
+    """
     e = estado_en(60)
-    (a,) = adoptar(e, [ejercicio(60)], {"hip_thrust": 72})
+    (a,) = adoptar(e, [ejercicio(60)], {"hip_thrust": 65})
     assert a.aplicada is True
 
     e2 = estado_en(60)
-    (b,) = adoptar(e2, [ejercicio(60)], {"hip_thrust": 72.5})
+    (b,) = adoptar(e2, [ejercicio(60)], {"hip_thrust": 65.5})
     assert b.aplicada is False
 
 

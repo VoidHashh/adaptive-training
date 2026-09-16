@@ -88,7 +88,7 @@ MUTACIONES = [
     (
         "H. desaparece el tope de salto: un 600 por un 60 entra tal cual",
         "app/engine/adoption.py",
-        "if objetivo > 0 and abs(delta) > _margen(objetivo, cfg):",
+        "if objetivo > 0 and abs(delta) > margen:",
         "if False:",
         ["tests/test_adoption.py"],
     ),

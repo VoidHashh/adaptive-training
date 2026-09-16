@@ -316,8 +316,8 @@ def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str], 
     """
     if not usar:
         return [], ["histórico largo desactivado (--no-cache)"], [
-            "sin histórico largo, los umbrales adaptativos de carga no tienen "
-            "base y `carga_acumulada` no se podrá evaluar"
+            "sin histórico largo, el punto de partida de la bici se queda sin "
+            "base y las vistas del panel salen sobre lo que haya"
         ], None
 
     from app.integrations.activity_cache import RUTA_CACHE_SALIDAS, load_cached_rides
@@ -325,9 +325,9 @@ def cargar_cache_salidas(usar: bool) -> tuple[list[Ride], list[str], list[str], 
     cache = load_cached_rides(RUTA_CACHE_SALIDAS)
     if not cache.available:
         return [], [], [
-            f"sin histórico largo de salidas ({cache.describe()}); los umbrales "
-            f"adaptativos de carga se quedarán sin base y `carga_acumulada` no "
-            f"se podrá evaluar"
+            f"sin histórico largo de salidas ({cache.describe()}); el punto de "
+            f"partida de la bici se quedará sin base y las vistas del panel "
+            f"saldrán sobre lo que haya"
         ], cache
     detalle = [f"histórico de carga: {cache.describe()}"]
     if cache.file_mtime:

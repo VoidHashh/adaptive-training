@@ -179,10 +179,54 @@ def _desplazar(series: list[dict[str, Any]], delta: float) -> list[dict[str, Any
     return salida
 
 
-def _margen(objetivo: float, cfg: dict[str, Any]) -> float:
-    return max(
+def _margen(
+    objetivo: float,
+    cfg: dict[str, Any],
+    incremento: float = 0.0,
+    direccion: str = ARRIBA,
+) -> float:
+    """Cuánto puede moverse una carga de una sola vez.
+
+    SUBIR: LOS DOS TOPES SON Y, NO O
+    --------------------------------
+    Estaba en `max`, y eso hacía que el tope se AFLOJARA justo donde la carga
+    absoluta es mayor: con 150 kg de objetivo el margen salía 30 kg, así que un
+    dedazo en Hevy de 150 a 180 entraba sin que nadie lo mirara. Con una L4-L5
+    eso es el sentido contrario del que tiene que tener un tope. En `min`,
+    «nunca más de 5 kg de golpe» significa eso, y el porcentaje solo puede
+    apretar más en los ejercicios ligeros, nunca aflojar en los pesados.
+
+    El suelo es el incremento del propio ejercicio. Sin él, la cuenta se comía
+    su propia progresión: un ejercicio de 10 kg con incremento 2,5 tendría un
+    margen de 2 kg, y una subida normal y correcta saldría rechazada como si
+    fuera una errata. Un tope que prohíbe el paso que el programa acaba de
+    pedir no protege de nada.
+
+    BAJAR: SE QUEDA EN EL TOPE ANCHO, Y NO ES UNA EXCEPCIÓN CÓMODA
+    --------------------------------------------------------------
+    El tope existe para que una errata al teclear no SUBA la carga. Bajar no es
+    ese riesgo, y encima no llega por una lectura suelta: hacen falta
+    `down_after_sessions` sesiones seguidas por debajo y se adopta la MEJOR de
+    ellas, así que un 5 tecleado por un 50 lo tapan las otras dos.
+
+    Apretando también aquí, un desfase de 10 kg sobre un objetivo de 60 no se
+    podría cerrar nunca: la adopción lo rechazaría sesión tras sesión y el
+    objetivo se quedaría para siempre por encima de lo que se levanta. Es decir,
+    el tope puesto para proteger la espalda acabaría obligando a intentar un peso
+    que no sale. La dirección insegura es una sola, y el tope aprieta en esa.
+    """
+    ancho = max(
         float(cfg.get("max_jump_kg", 5)),
         float(cfg.get("max_jump_pct", 0.20)) * objetivo,
+    )
+    if direccion == ABAJO:
+        return ancho
+    return max(
+        float(incremento or 0.0),
+        min(
+            float(cfg.get("max_jump_kg", 5)),
+            float(cfg.get("max_jump_pct", 0.20)) * objetivo,
+        ),
     )
 
 
@@ -356,14 +400,16 @@ def _aplicar(
     # el peso real en Hevy". El tope no aplica ahí porque no hay nada contra lo
     # que medir el salto, y porque negarlo dejaría el ejercicio parado para
     # siempre a base de proteger un número que no existe.
-    if objetivo > 0 and abs(delta) > _margen(objetivo, cfg):
+    incremento = float(ex.get("increment_kg") or 0)
+    margen = _margen(objetivo, cfg, incremento, direccion)
+    if objetivo > 0 and abs(delta) > margen:
         return Adopcion(
             routine_key, key, nombre, direccion, prescrito or None, hecho,
             objetivo, None, False,
             f"salto de {_fmt_kg(abs(delta))} kg sobre {_fmt_kg(objetivo)}: pasa "
-            f"del máximo de {_fmt_kg(_margen(objetivo, cfg))} kg y no se adopta "
-            f"solo. Si es correcto, se sube a mano en config.yaml; si es una "
-            f"errata en Hevy, ya está corregida por no hacerle caso",
+            f"del máximo de {_fmt_kg(margen)} kg y no se adopta solo. Si es "
+            f"correcto, se fija con «scripts/fijar_carga.py»; si es una errata "
+            f"en Hevy, ya está corregida por no hacerle caso",
         )
 
     state.current_sets[clave] = _desplazar(objetivo_series, delta)

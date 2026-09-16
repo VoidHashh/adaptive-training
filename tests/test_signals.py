@@ -364,7 +364,18 @@ def test_la_serie_de_carga_cubre_la_ventana_que_pide_el_config():
 
     for ventana in (60, 120, 180):
         c = copy.deepcopy(cfg)
-        c.raw["adaptive_thresholds"]["load_2d_p90"]["window_days"] = ventana
+        # El umbral se declara aquí y no se coge del `config.yaml`: la sección
+        # está vacía desde que se borró `carga_acumulada`, que era su único
+        # lector. Lo que prueba este test es la maquinaria -pedir N días hace
+        # que la serie tenga N días-, y esa sigue viva y sigue siendo la que
+        # muerde el día que se declare un umbral nuevo.
+        c.raw["adaptive_thresholds"]["load_2d_p90"] = {
+            "metric": "load_2d",
+            "window_days": ventana,
+            "percentile": 90,
+            "min_days_required": 30,
+            "include_zero_days": True,
+        }
         sig = build_signals(
             c, LUNES, metrics=mets, rides=rides,
             sessions=[], checkin_history=[], checkin=None,
@@ -886,14 +897,29 @@ def test_el_snapshot_es_serializable(cfg):
 
 
 def test_el_historico_largo_de_salidas_da_umbrales_adaptativos(cfg):
-    """La razón de ser de la caché de 180 días.
+    """La razón de ser de la caché larga, vista desde el percentil.
 
     Con solo la última semana de salidas, la ventana de 60 días está casi toda
-    a cero y el percentil 90 sale 0: el guardia lo anula y `carga_acumulada`
-    no se evalúa. Con el histórico largo el umbral existe. Este test es el que
-    impide que alguien "simplifique" la ventana y deje esa regla muda para
-    siempre sin enterarse.
+    a cero y el percentil 90 sale 0: el guardia lo anula y la regla que lo lea
+    no se evalúa. Con el histórico largo el umbral existe.
+
+    Los dos umbrales se declaran aquí porque el `config.yaml` ya no trae
+    ninguno: `carga_acumulada` era su único lector y se borró. Lo que sigue
+    vivo -y lo que este test protege- es que declarar uno funcione, incluyendo
+    el orden en que `build_signals` construye las series y resuelve los
+    percentiles: si el bloque se resolviera antes de existir la serie, el
+    efecto sería una regla muda sin un solo error.
     """
+    cfg = copy.deepcopy(cfg)
+    for nombre, metrica in (("load_2d_p90", "load_2d"), ("load_7d_p90", "load_7d")):
+        cfg.raw["adaptive_thresholds"][nombre] = {
+            "metric": metrica,
+            "window_days": 60,
+            "percentile": 90,
+            "min_days_required": 30,
+            "include_zero_days": True,
+        }
+
     pocas = [ride(LUNES - timedelta(days=i), load=100) for i in (0, 3)]
     muchas = [ride(LUNES - timedelta(days=i), load=100) for i in range(90)]
 
@@ -903,6 +929,7 @@ def test_el_historico_largo_de_salidas_da_umbrales_adaptativos(cfg):
     assert s_pocas.adaptive.get("load_2d_p90") is None
     assert s_muchas.adaptive.get("load_2d_p90") is not None
     assert s_muchas.adaptive["load_2d_p90"] > 0
+    assert s_muchas.adaptive.get("load_7d_p90") is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1034,22 +1061,18 @@ def test_olvidarse_del_historico_es_un_error_y_no_una_serie_vacia(cfg):
         build_signals(cfg, LUNES, metrics=[], rides=[], sessions=[])
 
 
-def test_los_umbrales_de_carga_siguen_saliendo_despues_de_bajar_el_bloque(cfg):
-    """Mover el bloque de los umbrales al final no puede romper los que ya iban.
-
-    `load_2d_p90` y `load_7d_p90` son los dos únicos umbrales adaptativos que
-    hoy están en el config y los únicos que se han usado nunca. Si bajarlo los
-    hubiera dejado sin serie, el efecto sería `carga_acumulada` muda: un freno
-    que desaparece sin un solo error. Este test es lo que separa reordenar de
-    romper.
-    """
-    muchas = [ride(LUNES - timedelta(days=i), load=100) for i in range(90)]
-    s = build_signals(
-        cfg, LUNES, metrics=[], rides=muchas, sessions=[], checkin_history=[]
-    )
-    assert s.adaptive["load_2d_p90"] is not None
-    assert s.adaptive["load_7d_p90"] is not None
-    assert s.adaptive["load_2d_p90"] > 0
+# AQUÍ ESTABA `test_los_umbrales_de_carga_siguen_saliendo_despues_de_bajar_el_bloque`.
+#
+# Comprobaba que mover el bloque de `adaptive_thresholds` al final del YAML no
+# dejaba los dos umbrales sin serie. Leía los del `config.yaml` de verdad, y esa
+# sección se quedó vacía al borrar `carga_acumulada`, su único lector.
+#
+# No se ha reescrito porque su propiedad -que declarar un umbral produzca un
+# umbral, con el orden de construcción de `build_signals` de por medio- es
+# exactamente la que comprueba
+# `test_el_historico_largo_de_salidas_da_umbrales_adaptativos`, que ahora
+# declara los dos a mano. Dos tests inyectando el mismo umbral para afirmar lo
+# mismo no dan más cobertura: dan uno que nadie actualiza.
 
 
 # ---------------------------------------------------------------------------
