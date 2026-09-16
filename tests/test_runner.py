@@ -1938,11 +1938,19 @@ def test_la_subida_del_hiit_gasta_su_racha_esa_misma_noche(db, cfg_lunes):
         "la plancha ha subido hoy y conserva la racha: mañana sube otra vez "
         "sin haberla pagado"
     )
+    # La otra mitad -que se gaste SOLO la del que subió- necesita que haya
+    # otros con los que comparar. Si el bloque se quedara con un ejercicio,
+    # `otras` sale vacía, `all([])` es cierto y la mitad que distingue "gastar
+    # la racha del que subió" de "romper la racha entera" deja de existir.
     otras = [
         e["key"]
         for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]
         if e["key"] != "plancha_frontal"
     ]
+    assert otras, (
+        "el bloque HIIT solo tiene la plancha: no hay con qué contrastar que la "
+        "racha se gasta solo en el ejercicio que subió"
+    )
     assert all(estado.clean_sessions[("hiit_dia_1", k)] == 2 for k in otras), (
         "se ha roto la racha de todo el bloque, no solo la del que subió: "
         f"{ {k: estado.clean_sessions.get(('hiit_dia_1', k)) for k in otras} }"

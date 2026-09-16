@@ -851,7 +851,16 @@ def test_la_vista_con_la_base_vacia_explica_el_vacio_en_vez_de_devolver_ceros(db
     assert v["umbral"]["frontera"]["na"]
     assert v["grafica"]["na"]
     assert v["cobertura"]["bici"] is None
-    for c in v["recuperacion"]["curvas"]:
+    # Sin datos, las curvas siguen viniendo: en N/A, con sus días dentro y las
+    # medias a `None`. Que se encogieran a una lista vacía dejaría este bucle
+    # sin dar una vuelta -y el `all(...)` de dentro sin una sola media que
+    # mirar- aprobando el test justo cuando la pantalla se queda sin nada que
+    # pintar. Es el escenario de este fichero donde eso es más fácil que pase,
+    # porque es el único que corre con la base vacía.
+    curvas = v["recuperacion"]["curvas"]
+    assert curvas, "sin datos la vista se ha quedado sin curvas, no en N/A"
+    for c in curvas:
         assert c["na"]
         assert c["vuelve_el_dia"] is None
+        assert c["por_dia"], f"'{c['titulo']}': la curva no trae ni un día"
         assert all(d["media"] is None for d in c["por_dia"])

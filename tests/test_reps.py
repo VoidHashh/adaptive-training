@@ -154,9 +154,19 @@ def test_all_sets_topa_cada_serie_por_su_cuenta_sin_nivelar_hacia_abajo():
 )
 def test_ninguna_serie_baja_nunca(modo, esquema):
     """La invariante de la que salió todo este fichero, en los dos modos y en
-    todos los esquemas que aparecen en `config.yaml`."""
+    todos los esquemas que aparecen en `config.yaml`.
+
+    `zip` TRUNCA POR EL LADO CORTO, así que una salida más corta que la entrada
+    -o vacía- no compara las series que sobran y la invariante aprueba sobre
+    las que sí quedan. Perder una serie al progresar es una forma de "bajar"
+    peor que bajar repeticiones, y es la única que el `all(...)` no ve.
+    """
     salida = subir(esquema, modo=modo, tope=12)
-    assert all(d >= a for a, d in zip(esquema, salida)), (
+    assert len(salida) == len(esquema), (
+        f"con rep_apply_to={modo}, {esquema} ha salido {salida}: el número de "
+        f"series ha cambiado, y `zip` se comería las que faltan sin mirarlas"
+    )
+    assert all(d >= a for a, d in zip(esquema, salida, strict=True)), (
         f"con rep_apply_to={modo}, {esquema} ha salido {salida}: alguna serie "
         f"ha PERDIDO repeticiones al progresar."
     )

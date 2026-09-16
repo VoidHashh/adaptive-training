@@ -23,7 +23,20 @@ from app.integrations.garmin import GarminClient
 
 @pytest.fixture
 def claves(cfg) -> set[str]:
-    return set(cfg.slider_keys())
+    """Las claves de los deslizadores, y la comprobación de que hay alguna.
+
+    `slider_keys()` es `self._data.get("checkin_sliders", [])`: si esa sección
+    se renombra o desaparece del `config.yaml`, devuelve una lista vacía sin
+    quejarse. Y con la lista vacía, el test de la ayuda -cuya única aserción
+    vive dentro de `for k in cfg.slider_keys()`- no ejecuta ni una comprobación
+    y aprueba mientras `checkin_help` devuelve una ayuda sin un solo campo.
+    """
+    keys = set(cfg.slider_keys())
+    assert keys, (
+        "el config no declara ningún deslizador en `checkin_sliders`. Los tests "
+        "que recorren esta lista aprobarían sin comprobar nada."
+    )
+    return keys
 
 
 @pytest.fixture
@@ -170,11 +183,15 @@ def test_la_sintaxis_larga_tambien_cubre_los_siete(cfg, claves):
 # ---------------------------------------------------------------------------
 
 
-def test_la_ayuda_se_genera_del_yaml_no_de_una_lista_a_mano(cfg):
+def test_la_ayuda_se_genera_del_yaml_no_de_una_lista_a_mano(cfg, claves):
     """Una ayuda escrita a mano se queda obsoleta el día que se añade un
-    deslizador, y entonces enseña a escribir check-ins que el motor ignora."""
+    deslizador, y entonces enseña a escribir check-ins que el motor ignora.
+
+    Va por `claves` y no por `cfg.slider_keys()` para que la lista vacía la pare
+    el fixture: la única aserción de este test vive dentro del bucle.
+    """
     texto = checkin_help(cfg)
-    for k in cfg.slider_keys():
+    for k in claves:
         assert k in texto
 
 

@@ -744,6 +744,16 @@ def test_las_preguntas_viajan_a_la_pwa_como_lista_propia(cliente, cfg):
     cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
 
     claves = [p["key"] for p in cuerpo["preguntas"]]
+    # Las tres aserciones de abajo aprueban a la vez con cero preguntas: la
+    # primera porque `cfg.pregunta_keys()` lee `checkin_preguntas` con un
+    # `.get(..., [])` y sería `[] == []`; la segunda porque `all([])` es cierto;
+    # la tercera porque la intersección con el vacío es vacía. O sea que el día
+    # que esa sección se renombre en el `config.yaml`, el formulario sale sin
+    # preguntas y este test lo aplaude. Así que primero: que haya.
+    assert claves, (
+        "el formulario no trae ni una pregunta. Las tres comprobaciones de "
+        "abajo aprueban igual, ninguna habría mirado nada."
+    )
     assert claves == cfg.pregunta_keys()
     assert all(p.get("label") for p in cuerpo["preguntas"]), "sin etiqueta no se pintan"
     assert not {s["key"] for s in cuerpo["sliders"]} & set(claves)
@@ -871,15 +881,37 @@ def test_el_dia_que_lleva_mas_de_una_vuelta_parado_sale_marcado(cliente, db):
     assert por_clave["bici"]["pendiente"] is None
 
 
-def test_una_rotacion_normal_no_marca_ninguna_opcion(cliente, db):
+def test_una_rotacion_normal_no_marca_ninguna_opcion(cliente, db, cfg):
     """El control, y sin él lo de arriba no demuestra nada.
 
     Una marca que saliera siempre no distinguiría el caso que quiere señalar:
     sería decoración fija al lado de las cinco opciones.
+
+    Y éste es el único del bloque que puede aprobar en vacío. Sus hermanos leen
+    `por_clave["dia_1"]` y reventarían con un `KeyError` el día que el selector
+    devolviera cero opciones; éste afirma con un `all(...)`, y `all([])` es
+    cierto. O sea que un selector roto del todo -que es el fallo más gordo que
+    puede tener esta pantalla- dejaría el control en verde diciendo que no hay
+    nada mal marcado, porque no habría nada que mirar. Por eso se comprueba
+    primero que las opciones están, y contra el config, que es de donde salen.
     """
     _hizo(db, ["dia_3", "dia_2", "dia_1"])
 
     sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
+    # Contra el config NO SIRVE: las dos listas salen de la misma
+    # `cfg.opciones_selector()`, así que un config sin opciones las deja
+    # iguales -`[] == []`- y la comparación aprueba a la vez que el `all`. Lo
+    # que hay que exigir son los tres días que este test acaba de sembrar, que
+    # es lo único que no puede desaparecer sin que la afirmación cambie de
+    # significado.
+    claves = [o["key"] for o in sel["opciones"]]
+    assert claves == cfg.opciones_selector(), (
+        f"el selector no ofrece las opciones del config: {sel['opciones']}"
+    )
+    assert {"dia_1", "dia_2", "dia_3"} <= set(claves), (
+        f"el selector solo ofrece {claves}: los tres días sembrados no están, "
+        "y el `all(...)` de abajo aprueba sin mirar una sola marca"
+    )
     assert all(o["pendiente"] is None for o in sel["opciones"]), (
         f"algo sale marcado en una rotación limpia: {sel['opciones']}"
     )
@@ -2080,7 +2112,13 @@ def test_con_bici_todos_los_dias_el_umbral_dice_por_que_no_hay_curva(cliente, db
     d = cliente.get("/api/metrics/umbral?dias=90").json()
 
     assert d["salidas"]["aisladas"] == 0
-    for c in d["recuperacion"]["curvas"]:
+    # El motivo escrito solo existe si la curva sigue viniendo. Una respuesta
+    # sin curvas deja este bucle sin dar una vuelta y el test aprueba diciendo
+    # que el motivo está escrito en ninguna parte, que es precisamente la
+    # pantalla en blanco que este test existe para impedir.
+    curvas = d["recuperacion"]["curvas"]
+    assert curvas, "la respuesta no trae curvas: el bucle de abajo no comprueba nada"
+    for c in curvas:
         assert c["n_salidas"] == 0
         assert c["na"], c["titulo"]
         assert "aislada" in c["na"]

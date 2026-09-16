@@ -460,7 +460,18 @@ def test_si_todas_las_salidas_duran_lo_mismo_ninguna_es_larga_y_corta_a_la_vez(d
     assert "bici_larga" in claves
     assert "bici_corta" in claves  # la definición existe...
     # ...pero ningún día la cumple, así que no hay contradicción en pantalla.
-    assert all(v == 0.0 for v in sers["bici_corta"].values() if v is not None)
+    #
+    # El `any` de `bici_larga` se defiende solo -`any([])` es falso y el test
+    # cae-, pero el `all` de `bici_corta` no: aprueba con la serie vacía Y
+    # aprueba con la serie entera a `None`, que es justo lo que pasaría si la
+    # definición dejara de evaluarse. O sea que la mitad que de verdad afirma
+    # algo aquí es la que puede callarse. Se exige que haya días medidos.
+    corta = [v for v in sers["bici_corta"].values() if v is not None]
+    assert corta, (
+        "la serie de 'bici_corta' no tiene un solo día evaluado: el `all` de "
+        "abajo aprueba sin mirar ninguno"
+    )
+    assert all(v == 0.0 for v in corta)
     assert any(v == 1.0 for v in sers["bici_larga"].values())
 
 
@@ -791,8 +802,27 @@ def test_sin_ningun_dato_no_se_finge_una_respuesta_por_defecto(db):
     Devolver la primera de la lista aquí daría un desplegable que promete doce
     vistas y abre en una vacía sin explicar por qué, que es justo el fallo
     silencioso de interfaz que este rediseño viene a quitar.
+
+    SE COMPRUEBA ANTES QUE EL DESPLEGABLE SIGUE TENIENDO SUS OPCIONES, y no es
+    burocracia: éste es el único test del fichero que corre con la base vacía, o
+    sea el único que entra en el escenario donde `catalogo_de_respuestas` está
+    más cerca de devolver `[]`. Lo construye recorriendo la rejilla, y sin datos
+    la rejilla es justo lo que podría quedarse corto. Con `respuestas == []`,
+    `all(...)` es cierto y `respuesta_por_defecto` es `None` por el mismo motivo
+    equivocado: no es que no haya con qué abrir, es que no hay nada que abrir.
+    Las dos aserciones de abajo aprobarían a la vez que la pantalla se queda sin
+    desplegable, que es el fallo más gordo que puede tener esta vista.
     """
     v = vista_impacto(db, dias=N, hoy=HOY)
+
+    del_catalogo = [r["clave"] for r in v["respuestas"]]
+    assert set(del_catalogo) == {f["respuesta"]["clave"] for f in v["rejilla"]}, (
+        f"el catálogo no lista las respuestas de la rejilla: {del_catalogo}"
+    )
+    assert del_catalogo, (
+        "el desplegable se ha quedado sin opciones con la base vacía. Las dos "
+        "aserciones de este test aprueban igual, sin mirar ninguna."
+    )
 
     assert v["respuesta_por_defecto"] is None
     assert all(r["vacia"] for r in v["respuestas"])

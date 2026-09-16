@@ -761,6 +761,14 @@ def test_la_descarga_se_programa_cada_siete_semanas_y_siempre_en_lunes(cfg):
     assert inicio.weekday() == 0, f"program.start {inicio} no es lunes"
     assert (arranques[0] - inicio).days / 7 == 7.0
 
+    # `assert arranques` no basta para lo de abajo: con UNA sola descarga en el
+    # año, `zip(arranques, arranques[1:])` sale vacío, `all([])` es cierto y la
+    # cadencia -que es lo que este test existe para medir- no se comprueba. Y
+    # una sola descarga al año es exactamente la forma que tendría la avería.
+    assert len(arranques) >= 2, (
+        f"solo {len(arranques)} descarga(s) en un año: la cadencia de abajo no "
+        "tiene dos arranques que comparar y aprueba sin medir nada"
+    )
     separaciones = [
         (b - a).days / 7 for a, b in zip(arranques, arranques[1:])
     ]

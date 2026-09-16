@@ -567,6 +567,15 @@ def test_el_bloque_interno_no_hace_falta_ni_un_checkin(db):
     v = vista_concordancia(db, dias=90, hoy=HOY)
 
     assert v["cobertura"]["checkin"] is None
+    # Las siete parejas tienen que SEGUIR ESTANDO, en N/A. Que desaparezcan de
+    # la respuesta cuando no hay check-ins es otra pantalla -una que se encoge
+    # sin explicar por qué- y además dejaría el `all(...)` de abajo aprobando
+    # sobre una lista vacía, que es como se afirmaría «sin check-ins no hay
+    # percepción» sin haber mirado una sola pareja.
+    assert v["pares"], (
+        "la vista se ha quedado sin parejas de percepción: la comprobación de "
+        "abajo aprueba en vacío y la pantalla pierde siete filas sin decirlo"
+    )
     assert all(p["r"] is None for p in v["pares"]), "sin check-ins no hay percepción"
     assert interna_de(v, "hrv", "rhr")["r"] is not None
     assert interna_de(v, "hrv", "rhr")["n"] == 60

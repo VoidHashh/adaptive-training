@@ -896,8 +896,16 @@ class TestSalida:
         assert t.lineas() == ["Tendencia: sin novedad"]
 
     def test_cada_linea_lleva_el_prefijo(self, cfg):
+        """Y que haya líneas: se le ha sembrado una racha de seis días.
+
+        Sin el primer `assert`, una tendencia que dejara de decir nada aprueba
+        este test -`all([])` es cierto- mientras el mensaje de la mañana pierde
+        su bloque entero.
+        """
         t = evaluar_tendencia(cfg, LUNES, racha_de(LUNES, 6, "sueno_corto"))
-        assert all(l.startswith("Tendencia: ") for l in t.lineas())
+        lineas = t.lineas()
+        assert lineas, "seis días de racha y la tendencia no dice nada"
+        assert all(l.startswith("Tendencia: ") for l in lineas)
 
     def test_los_na_se_juntan_en_una_linea(self, cfg):
         """Tres N/A en tres líneas serían tres cuartas partes del mensaje."""
