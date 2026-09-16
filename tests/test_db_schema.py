@@ -637,6 +637,40 @@ def test_una_columna_vacia_en_una_tabla_CON_filas_si_se_borra(vieja):
         )
 
 
+def test_las_dos_fechas_muertas_del_objetivo_se_van_solas(vieja):
+    """`exercise_targets` tenía dos fechas declaradas que nadie escribió jamás.
+
+    `last_progressed_date` y `last_session_date` prometían contestar «¿cuándo se
+    entrenó / subió esto por última vez?» y contestaban NULL siempre, porque en
+    todo el código no había una sola línea que las rellenara. La respuesta buena
+    vive en las sesiones y las decisiones.
+
+    Aquí se comprueba lo único que hace falta para que quitarlas del modelo no
+    pida nada a mano en Umbrel: que la base que YA las tiene se las quite sola,
+    incluso teniendo filas, porque las filas tienen esas dos a NULL por
+    construcción.
+    """
+    _anadir_columna_muerta(vieja, "exercise_targets", "last_progressed_date", "DATE")
+    _anadir_columna_muerta(vieja, "exercise_targets", "last_session_date", "DATE")
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO exercise_targets "
+            "(routine_key, exercise_key, current_target_kg, clean_streak, "
+            " sessions_since_progress, below_plan_streak) "
+            "VALUES ('dia_1', 'extension_cuadriceps', 55.0, 1, 0, 0)"
+        ))
+
+    ensure_schema(vieja)
+
+    quedan = _columnas(vieja, "exercise_targets")
+    assert "last_progressed_date" not in quedan
+    assert "last_session_date" not in quedan
+    with vieja.begin() as c:
+        assert c.execute(
+            text("SELECT current_target_kg FROM exercise_targets")
+        ).scalar() == 55.0, "la carga vigente no se puede ir con las fechas muertas"
+
+
 def test_una_columna_que_sobra_se_lleva_su_indice_por_delante(vieja):
     """Sin esto el arranque fallaba: SQLite rechaza el DROP de una indexada.
 

@@ -435,8 +435,19 @@ class ExerciseTarget(Base):
     # Nullable a propósito: "no hay ninguna sesión por debajo" no es "la mejor
     # sesión por debajo fue de 0 kg". Un 0 aquí se adoptaría como objetivo.
     below_plan_best_kg: Mapped[float | None] = mapped_column(Float)
-    last_progressed_date: Mapped[date | None] = mapped_column(Date)
-    last_session_date: Mapped[date | None] = mapped_column(Date)
+    # Aquí vivían `last_progressed_date` y `last_session_date`. Se declararon y
+    # no se escribieron NUNCA: cero apariciones en el resto del código, así que
+    # su valor era NULL en todas las filas desde el primer día. Una columna que
+    # parece contestar «¿cuándo se entrenó esto por última vez?» y siempre
+    # contesta «no se sabe» es peor que no tenerla, porque el día que alguien la
+    # lea se creerá la respuesta.
+    #
+    # La pregunta sí tiene respuesta, y está en otro sitio: las sesiones y las
+    # decisiones guardan la fecha de verdad, y de ahí la saca ya
+    # `rotacion.pendientes` a través de `repo.sesiones_del_ciclo`.
+    #
+    # Quitarlas de aquí se migra solo: `ensure_schema` ve la columna sobrante,
+    # comprueba que no tiene un solo valor no nulo y la tira.
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     __table_args__ = (
