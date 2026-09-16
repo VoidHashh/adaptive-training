@@ -448,7 +448,14 @@ class ExerciseTarget(Base):
     #
     # Quitarlas de aquí se migra solo: `ensure_schema` ve la columna sobrante,
     # comprueba que no tiene un solo valor no nulo y la tira.
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # `onupdate` además del `server_default`: sin él esta columna se escribía
+    # al crear la fila y no se volvía a tocar nunca, o sea que se llamaba
+    # `updated_at` y significaba `created_at`. Una fila modificada seguía
+    # diciendo la fecha en que nació, que es la peor forma de mentir: la de
+    # parecer un dato. Es lado-Python, no DDL, así que no necesita migración.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
     __table_args__ = (
         UniqueConstraint("routine_key", "exercise_key", name="uq_target_routine_ex"),
@@ -474,7 +481,14 @@ class RoutineState(Base):
 
     last_light: Mapped[str | None] = mapped_column(String(8))
     last_trained_date: Mapped[date | None] = mapped_column(Date)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # `onupdate` además del `server_default`: sin él esta columna se escribía
+    # al crear la fila y no se volvía a tocar nunca, o sea que se llamaba
+    # `updated_at` y significaba `created_at`. Una fila modificada seguía
+    # diciendo la fecha en que nació, que es la peor forma de mentir: la de
+    # parecer un dato. Es lado-Python, no DDL, así que no necesita migración.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ProgramState(Base):
@@ -501,7 +515,14 @@ class ProgramState(Base):
     # reiniciar no se nota, porque lo que queda es exactamente lo que se veía
     # antes de que esto existiera -ninguna descarga y ningún aviso-.
     deload_aplazada_desde: Mapped[date | None] = mapped_column(Date)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # `onupdate` además del `server_default`: sin él esta columna se escribía
+    # al crear la fila y no se volvía a tocar nunca, o sea que se llamaba
+    # `updated_at` y significaba `created_at`. Una fila modificada seguía
+    # diciendo la fecha en que nació, que es la peor forma de mentir: la de
+    # parecer un dato. Es lado-Python, no DDL, así que no necesita migración.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class RuleState(Base):

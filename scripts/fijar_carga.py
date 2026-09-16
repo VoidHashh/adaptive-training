@@ -30,12 +30,32 @@ comparan con nada. No toca `clean_streak` ni `last_compliant`: el cumplimiento
 de la última sesión pasó como pasó, y ponerlo a cero cerraría la puerta de la
 progresión acusando de un fallo que nadie cometió.
 
+EN QUÉ BASE ESCRIBE, QUE ES LA PARTE QUE SALIÓ MAL
+--------------------------------------------------
+Esto se ejecuta desde el PC de pruebas, donde `./data/app.db` existe, está
+vacío y no lo lee nadie: la base que manda vive dentro del contenedor, en el
+volumen. Lanzado a pelo, el guion abría el fichero de al lado, decía «este
+ejercicio todavía no ha progresado nunca» -que era verdad EN ESE FICHERO- y se
+ofrecía a escribir ahí. Ni una palabra sobre cuál de las dos bases estaba
+mirando. Pasó dos veces.
+
+Por eso ahora:
+
+  * Lo PRIMERO que imprime es la base que va a tocar, con su ruta absoluta y
+    cuántas cargas tiene dentro. Antes de nada, se mire lo que se mire.
+  * Si le piden ESCRIBIR en una base sin una sola fila de cargas, se niega. Esa
+    es la firma del fichero fósil, y ningún ejercicio real se fija sobre una
+    base recién nacida. Se puede forzar con `--aunque-este-vacia` para el caso
+    legítimo -una instalación nueva de verdad-, que existe pero no es este.
+  * `--contenedor` hace el trabajo de apuntar bien: se copia dentro y se
+    reejecuta allí. El comando correcto tenía que EXISTIR, porque un aviso en
+    un README no paró esto las dos veces anteriores.
+
 Por defecto SIMULA. Escribe solo con `--aplicar`.
 
-    python scripts/fijar_carga.py
-    python scripts/fijar_carga.py dia_1 extension_cuadriceps
-    python scripts/fijar_carga.py dia_1 extension_cuadriceps 50,55,60
-    python scripts/fijar_carga.py dia_1 extension_cuadriceps 50,55,60 --aplicar
+    python scripts/fijar_carga.py --contenedor
+    python scripts/fijar_carga.py --contenedor dia_1 extension_cuadriceps
+    python scripts/fijar_carga.py --contenedor dia_1 extension_cuadriceps 40,60,60 --aplicar
 """
 
 from __future__ import annotations
@@ -58,8 +78,68 @@ from app.models import ExerciseTarget
 from app.settings import settings
 
 
+CONTENEDOR_POR_DEFECTO = "adaptive-training"
+
+
 class CargaInvalida(ValueError):
     """Lo que se ha pedido escribir no es una carga que se pueda entrenar."""
+
+
+class BaseEquivocada(RuntimeError):
+    """Se ha pedido escribir en una base que no parece la que manda."""
+
+
+def donde_escribe(url: str) -> str:
+    """La base, en una línea y con ruta absoluta. Para poder desmentirla de un vistazo.
+
+    Un `sqlite:///data/app.db` no dice nada: la gracia es ver el disco entero,
+    porque el error que esto previene es exactamente confundir dos ficheros que
+    se llaman igual.
+    """
+    if url.startswith("sqlite:///"):
+        ruta = Path(url[len("sqlite:///") :])
+        try:
+            absoluta = ruta.resolve()
+        except OSError:
+            absoluta = ruta
+        if not absoluta.exists():
+            return f"{absoluta}  (NO EXISTE todavía)"
+        return f"{absoluta}  ({absoluta.stat().st_size / 1024:.0f} KB)"
+    # Cualquier otro motor: se enseña la URL sin la contraseña.
+    if "@" in url:
+        esquema, _, resto = url.partition("://")
+        return f"{esquema}://…@{resto.rpartition('@')[2]}"
+    return url
+
+
+def reejecutar_dentro(contenedor: str, argv: list[str]) -> int:
+    """Copia este mismo guion al contenedor y lo lanza allí.
+
+    `scripts/` no viaja en la imagen -el `Dockerfile` copia `app/`, `static/` y
+    el YAML, y nada más- así que no basta con `docker exec`: hay que meterlo.
+    Va a `/tmp`, que no es el volumen: no deja rastro en los datos y desaparece
+    al reiniciar, que es lo que se quiere de una herramienta de paso.
+    """
+    import subprocess
+
+    yo = Path(__file__).resolve()
+    destino = "/tmp/fijar_carga.py"
+    cp = subprocess.run(
+        ["docker", "cp", str(yo), f"{contenedor}:{destino}"],
+        capture_output=True, text=True,
+    )
+    if cp.returncode != 0:
+        print(f"No he podido copiar el guion a «{contenedor}»:\n{cp.stderr.strip()}")
+        print("\n¿Está corriendo? Míralo con:  docker ps")
+        return 1
+    # `flush` porque lo siguiente es un proceso hijo que escribe en el mismo
+    # descriptor: sin esto, el aviso de dónde se está ejecutando salía DESPUÉS
+    # de la salida que anunciaba.
+    print(f"(ejecutando dentro de «{contenedor}», sobre la base del volumen)\n",
+          flush=True)
+    return subprocess.run(
+        ["docker", "exec", contenedor, "python", destino, *argv]
+    ).returncode
 
 
 def nuevas_series(
@@ -121,10 +201,48 @@ def main(argv: list[str] | None = None) -> int:
         "--aplicar", action="store_true",
         help="escribir de verdad (por defecto solo simula)",
     )
+    # Bandera SIN valor, y el nombre aparte. Con `nargs="?"` argparse se comía
+    # el primer posicional -`--contenedor dia_1 ...` intentaba copiar a un
+    # contenedor llamado `dia_1`- y fallaba con un mensaje sobre Docker que no
+    # tenía nada que ver con lo que estaba mal.
+    p.add_argument(
+        "--contenedor", action="store_true",
+        help="ejecutar dentro del contenedor, contra la base que de verdad manda",
+    )
+    p.add_argument(
+        "--nombre-contenedor", default=CONTENEDOR_POR_DEFECTO,
+        help=f"cuál, si no es «{CONTENEDOR_POR_DEFECTO}»",
+    )
+    p.add_argument(
+        "--aunque-este-vacia", action="store_true",
+        help="permitir escribir en una base sin ninguna carga (instalación nueva)",
+    )
     args = p.parse_args(argv)
+
+    if args.contenedor:
+        crudos = list(argv if argv is not None else sys.argv[1:])
+        resto = []
+        saltar = False
+        for a in crudos:
+            if saltar:
+                saltar = False
+                continue
+            if a == "--contenedor":
+                continue
+            if a == "--nombre-contenedor":
+                saltar = True
+                continue
+            if a.startswith("--nombre-contenedor="):
+                continue
+            resto.append(a)
+        return reejecutar_dentro(args.nombre_contenedor, resto)
 
     cfg = load_config(settings.config_path)
     init_db()
+
+    # LO PRIMERO, SIEMPRE. Ver el docstring: el fallo que esto previene no fue
+    # escribir mal, fue escribir bien en el fichero de al lado sin decirlo.
+    print(f"base de datos: {donde_escribe(settings.database_url)}\n")
 
     with session_scope() as s:
         filas = {
@@ -184,6 +302,21 @@ def main(argv: list[str] | None = None) -> int:
         if not args.aplicar:
             print("\n(simulación: no se ha escrito nada. Repite con --aplicar)")
             return 0
+
+        # Una base sin UNA SOLA carga no es la que manda: es el fósil de `./data`
+        # o una instalación recién nacida. Fijar a mano la carga de un ejercicio
+        # presupone un histórico que ahí no existe.
+        if not filas and not args.aunque_este_vacia:
+            print(
+                "\nME NIEGO: esta base no tiene ni una carga guardada.\n"
+                "  Eso es la firma del fichero vacío de `./data`, no de la base que\n"
+                "  decide. La que manda vive en el volumen del contenedor.\n\n"
+                f"  Prueba:  python scripts/fijar_carga.py --contenedor "
+                f"{args.rutina} {args.ejercicio} {args.pesos} --aplicar\n\n"
+                "  Si de verdad es una instalación nueva y vacía, "
+                "repite con --aunque-este-vacia."
+            )
+            return 1
 
         if fila is None:
             fila = ExerciseTarget(
