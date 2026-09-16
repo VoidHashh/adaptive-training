@@ -1072,6 +1072,45 @@ def last_ride_level(
     return max(known, key=order.index)
 
 
+def rutina_de_ayer(sessions: Sequence[StrengthSession], day: date) -> str | None:
+    """Qué rutina se entrenó AYER, cuando la respuesta es una sola y es segura.
+
+    Es la pareja de `yesterday_rpe`. El deslizador pregunta por el esfuerzo de
+    ayer, y el freno `rpe_alto` lleva `blocks: last_session_only` porque un RPE
+    de 9 en la sesión de empuje no dice nada sobre la de pierna: bloquear las
+    dos por un dato que solo habla de una es congelar medio programa con una
+    sola respuesta.
+
+    ESO NO ESTABA PASANDO. La señal no la producía nadie -`build_signals` nunca
+    la escribía- y `apply_progression` lee `signals.get("yesterday_routine") in
+    (None, routine_key)`: con `None` fijo, el `in` se cumplía SIEMPRE y
+    `last_session_only` bloqueaba exactamente igual que `all`. Un modo de freno
+    escrito en el YAML, documentado con su comentario al lado, y que llevaba
+    toda la vida comportándose como el otro.
+
+    `None` sigue significando «bloquea todo», y por eso esta función solo
+    contesta cuando está segura:
+
+    - Nadie entrenó ayer: no hay sesión a la que atribuir el RPE, así que
+      tampoco hay ninguna a la que acotar el freno.
+    - La sesión no se pudo identificar (`routine_key` a `None`): un
+      entrenamiento suelto en Hevy que no casa con ninguna rutina.
+    - Ayer hubo DOS rutinas distintas: pasa de verdad, porque el sistema une
+      los entrenamientos del mismo día y una sesión partida en dos ratos es
+      normal. Pero el formulario tiene UN deslizador y no dice de cuál de las
+      dos habla, así que acotar el freno a una sería elegir por el usuario, y
+      la mitad de las veces se elegiría la otra.
+
+    En los tres casos el freno vuelve a valer para todo, que es lo caro pero lo
+    reversible: no subir hoy se arregla mañana.
+    """
+    ayer = day - timedelta(days=1)
+    claves = {s.routine_key for s in sessions if s.date == ayer}
+    if len(claves) != 1:
+        return None
+    return claves.pop()
+
+
 # ---------------------------------------------------------------------------
 # Construcción del conjunto de señales
 # ---------------------------------------------------------------------------
@@ -1291,6 +1330,16 @@ def build_signals(
         ((cycling_cfg.get("recommendation", {}) or {}).get("lookback_days", 1))
     )
     sig.values["yesterday_ride_level"] = last_ride_level(classified, day, lookback)
+
+    # --- fuerza de ayer ----------------------------------------------------
+    #
+    # Va a `values` como cualquier otra señal, aunque ninguna regla la compare:
+    # `apply_progression` la lee de ahí para acotar los frenos
+    # `last_session_only`, y dejarla fuera obligaría a pasarla por un canal
+    # aparte que nadie más usa. Además así queda en el `snapshot` del día, que
+    # es donde se puede comprobar después por qué un freno bloqueó lo que
+    # bloqueó.
+    sig.values["yesterday_routine"] = rutina_de_ayer(sessions, day)
 
     # --- formulario --------------------------------------------------------
     #

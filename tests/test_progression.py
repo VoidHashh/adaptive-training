@@ -108,6 +108,42 @@ def test_on_missing_skip_no_desactiva_el_freno_cuando_si_hay_dato(cfg):
 
 
 # ---------------------------------------------------------------------------
+# `blocks: last_session_only`
+#
+# Un RPE de 9 en la sesión de empuje no dice nada sobre la de pierna, y por eso
+# el freno del RPE está escrito para acotarse a la rutina de la que habla. Solo
+# que no se acotaba: `yesterday_routine` no la producía nadie, valía `None`
+# siempre, y el `in (None, routine_key)` del motor se cumplía para cualquier
+# rutina. `last_session_only` bloqueaba exactamente igual que `all`.
+# ---------------------------------------------------------------------------
+
+
+def test_el_rpe_alto_de_ayer_no_bloquea_la_rutina_de_hoy_si_es_otra(cfg):
+    señales = sig(LUNES, lower_discomfort=1, yesterday_rpe=9, yesterday_routine="dia_2")
+    abierta, motivo = gate(cfg, señales, routine="dia_1")
+    assert abierta, motivo
+
+
+def test_el_rpe_alto_bloquea_la_rutina_de_la_que_habla(cfg):
+    señales = sig(LUNES, lower_discomfort=1, yesterday_rpe=9, yesterday_routine="dia_2")
+    abierta, motivo = gate(cfg, señales, routine="dia_2")
+    assert not abierta
+    assert "rpe_alto" in motivo
+
+
+def test_sin_saber_de_que_rutina_habla_el_rpe_alto_bloquea_todas(cfg):
+    """`None` es el lado caro y reversible: no subir hoy se arregla mañana.
+
+    Pasa de verdad -ayer sin entrenar, o dos rutinas distintas el mismo día- y
+    entonces el deslizador no dice de cuál de ellas habla.
+    """
+    señales = sig(LUNES, lower_discomfort=1, yesterday_rpe=9)
+    for rutina in ("dia_1", "dia_2", "dia_3"):
+        abierta, _ = gate(cfg, señales, routine=rutina)
+        assert not abierta, rutina
+
+
+# ---------------------------------------------------------------------------
 # Erratas en el operador
 # ---------------------------------------------------------------------------
 

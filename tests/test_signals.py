@@ -33,6 +33,7 @@ from app.engine.signals import (
     percentile,
     resolve_adaptive_threshold,
     rolling_load,
+    rutina_de_ayer,
     week_start,
     zone_percentages,
 )
@@ -848,8 +849,72 @@ def test_sin_salidas_ayer_no_hay_nivel():
 
 
 # ---------------------------------------------------------------------------
+# Qué rutina se entrenó ayer
+#
+# La pareja de `yesterday_rpe`. El freno `rpe_alto` lleva `blocks:
+# last_session_only`, y `apply_progression` lo acota con esta señal. Como
+# `build_signals` no la escribía, valía `None` siempre y el `in (None,
+# routine_key)` del freno se cumplía para cualquier rutina: `last_session_only`
+# bloqueaba tanto como `all`.
+#
+# `None` sigue queriendo decir «bloquea todo», así que estos tests son sobre
+# cuándo se puede afirmar algo y cuándo hay que callarse.
+# ---------------------------------------------------------------------------
+
+
+def _ayer(*rutinas: str | None) -> list[StrengthSession]:
+    ayer = LUNES - timedelta(days=1)
+    return [StrengthSession(date=ayer, routine_key=r) for r in rutinas]
+
+
+def test_la_rutina_de_ayer_es_la_que_se_entreno_ayer():
+    assert rutina_de_ayer(_ayer("dia_2"), LUNES) == "dia_2"
+
+
+def test_una_sesion_partida_en_dos_ratos_sigue_siendo_una_rutina():
+    """Lo normal: dos entrenamientos de Hevy el mismo día, la misma rutina."""
+    assert rutina_de_ayer(_ayer("dia_2", "dia_2"), LUNES) == "dia_2"
+
+
+def test_dos_rutinas_distintas_ayer_no_se_eligen_a_cara_o_cruz():
+    """El formulario tiene UN deslizador de RPE y no dice de cuál habla.
+
+    Acotar el freno a una de las dos sería elegir por el usuario, y la mitad de
+    las veces se elegiría la que no era.
+    """
+    assert rutina_de_ayer(_ayer("dia_1", "dia_2"), LUNES) is None
+
+
+def test_un_entrenamiento_que_no_casa_con_ninguna_rutina_no_acota_nada():
+    assert rutina_de_ayer(_ayer(None), LUNES) is None
+
+
+def test_sin_entrenar_ayer_no_hay_rutina_a_la_que_acotar():
+    assert rutina_de_ayer([], LUNES) is None
+
+
+def test_lo_de_anteayer_no_es_lo_de_ayer():
+    """El deslizador pregunta por AYER, no por la última vez que se entrenó."""
+    anteayer = [StrengthSession(date=LUNES - timedelta(days=2), routine_key="dia_1")]
+    assert rutina_de_ayer(anteayer, LUNES) is None
+
+
+# ---------------------------------------------------------------------------
 # build_signals contra el config real
 # ---------------------------------------------------------------------------
+
+
+def test_la_rutina_de_ayer_llega_a_las_senales(cfg):
+    """Sin esto la señal existe y el freno no la ve, que es donde estábamos."""
+    s = build_signals(
+        cfg,
+        LUNES,
+        metrics=[],
+        rides=[],
+        sessions=_ayer("dia_3"),
+        checkin_history=[],
+    )
+    assert s.values["yesterday_routine"] == "dia_3"
 
 
 def test_build_signals_no_inventa_lineas_base_sin_datos(cfg):
