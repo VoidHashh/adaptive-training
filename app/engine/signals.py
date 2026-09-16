@@ -1056,10 +1056,17 @@ def last_ride_level(
     day: date,
     lookback_days: int = 1,
 ) -> str | None:
-    """Nivel de la salida más reciente dentro de los `lookback_days` previos.
+    """La salida MÁS INTENSA de los `lookback_days` días anteriores a `day`.
 
-    Mira lo que REALMENTE se hizo, no lo que se recomendó. Si hubo varias
-    salidas ese día, manda la más intensa.
+    Mira lo que REALMENTE se hizo, no lo que se recomendó.
+
+    Decía «la salida más reciente» y no es lo que hace: de todo el tramo se
+    queda con el nivel más alto, no con el último. Con la ventana por defecto
+    -un día- las dos frases dicen lo mismo y por eso el desajuste no se veía;
+    con cualquier ventana mayor dejan de decirlo.
+
+    `day` NO entra. La salida de esta mañana no existe todavía cuando se decide,
+    y contarla haría que la recomendación de hoy dependiera de sí misma.
     """
     start = day - timedelta(days=lookback_days)
     picked = [r for r in rides if start <= r.date <= day - timedelta(days=1)]
@@ -1335,6 +1342,18 @@ def build_signals(
     #
     # Se calcula en vez de fijarse, y el `+ 1` es porque la ventana del percentil
     # termina AYER: para 60 días de ventana hacen falta 61 días de serie.
+    #
+    # EL 90 SIGUE AHÍ, Y AHORA MISMO ES EL QUE MANDA
+    # ----------------------------------------------
+    # Se queda como SUELO, no como techo, que es la diferencia con lo de antes:
+    # antes recortaba una ventana mayor, ahora solo impide que la serie salga
+    # más corta que eso. Y hoy es el que decide, porque `adaptive_thresholds`
+    # está vacío en el config -sus dos entradas se fueron con `carga_acumulada`-
+    # y `ventanas_pedidas` no aporta ningún número.
+    #
+    # No sobra por estar vacío: `load_2d` y `load_7d` no son solo para los
+    # percentiles, los leen el consejero de bici y la recalibración, y esos
+    # quieren serie aunque nadie declare un umbral adaptativo.
     ventanas_pedidas = [
         int(spec.get("window_days", 60))
         for spec in adaptive_cfg.values()

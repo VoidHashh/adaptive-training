@@ -38,9 +38,10 @@ LOS TRES DETECTORES
 -------------------
   racha   -> N días seguidos sin un verde. Es el que avisa pronto.
   motivo  -> la misma regla manda semana tras semana. Dice QUÉ está pasando.
-  ventana -> el último mes comparado con el trimestre. RETROSPECTIVO: confirma,
-             no anticipa, y el texto lo dice con todas las letras para que no se
-             lea como una alerta temprana.
+  ventana -> el último mes comparado con los sesenta días ANTERIORES a él, sin
+             un solo día compartido. RETROSPECTIVO: confirma, no anticipa, y el
+             texto lo dice con todas las letras para que no se lea como una
+             alerta temprana.
 
 EL CUALIFICADOR DE SUEÑO
 ------------------------

@@ -206,11 +206,16 @@ def run_daily(
     valores = repo.checkin_values(checkin_row)
     checkin = Checkin(date=day, values=valores) if valores else None
 
-    # `sessions` es lo que se entrenó DE VERDAD, leído de `workout_log`. Se
-    # pasa aquí porque sin ello `intensity_count` contaba solo las salidas de
-    # bici: un HIIT hecho el martes no sumaba y el número que sale en el mensaje
-    # del sábado quedaba corto. La ventana son 14 días porque el recuento es
-    # semanal y la semana puede haber empezado hace seis; sobra de propósito.
+    # `sessions` es lo que se entrenó DE VERDAD, leído de `workout_log`. Lo leen
+    # DOS señales, y aquí se nombraba solo una:
+    #
+    # - `intensity_count`, que sin esto contaba solo las salidas de bici: un
+    #   HIIT hecho el martes no sumaba y el número que sale en el mensaje del
+    #   sábado quedaba corto. La ventana son 14 días porque el recuento es
+    #   semanal y la semana puede haber empezado hace seis; sobra de propósito.
+    # - `yesterday_routine`, que es de qué rutina habla el RPE de ayer. Sin ella
+    #   `blocks: last_session_only` no tenía con qué acotar y congelaba las tres
+    #   rutinas. Le basta un día, así que los 14 le sobran de largo.
     #
     # `checkin_history` es el mismo arreglo para el otro parámetro que nadie
     # pasaba nunca: sin él, la serie de cada deslizador tenía un punto y los
@@ -218,6 +223,7 @@ def run_daily(
     # solo dato. 90 días y no 14 porque un percentil sobre dos semanas de
     # respuestas no es un percentil, y porque estos datos son diez filas: leer
     # tres meses no cuesta nada.
+
     # --- el wellness que se sabe, no solo el que se acaba de leer ------------
     #
     # `metrics` trae la ventana corta de Garmin: `baseline.window_days + 1`, que
