@@ -637,14 +637,44 @@ def save_decision(session: Session, decision: Any) -> DecisionRow:
         bike_recommendation_json=_json(decision.bike.to_dict())
         if decision.bike is not None and hasattr(decision.bike, "to_dict")
         else None,
-        progression_json=_json(decision.progression.to_dict())
-        if decision.progression is not None
-        and hasattr(decision.progression, "to_dict")
-        else None,
+        progression_json=_json(_las_dos_progresiones(decision)),
     )
     session.add(fila)
     session.flush()
     return fila
+
+
+def _las_dos_progresiones(decision: Any) -> dict[str, Any] | None:
+    """Las progresiones del día -fuerza y HIIT- en la única columna que hay.
+
+    La del bloque cuelga de `"hiit"`, anidada, en vez de tener columna propia.
+    No es por ahorrar una migración: es que las dos tienen que viajar juntas o
+    ninguna. Esta columna es de donde `progressed_keys` saca, de noche, qué
+    subió por la mañana para poner esas rachas a cero. Una progresión del HIIT
+    que se decide y no se guarda aquí deja a `plancha_frontal` con la racha
+    intacta después de haber subido, y entonces vuelve a subir la sesión
+    siguiente, y la siguiente: cinco segundos cada día hasta el techo, sin una
+    sola sesión limpia que lo pague y sin nada que falle.
+
+    La de fuerza sigue en la raíz y con la misma forma de siempre, así que todo
+    lo que ya leía esta columna -la auditoría, la vista de hitos- sigue leyendo
+    lo mismo. Lo nuevo es una clave más que quien no la busca no ve.
+    """
+    plan = getattr(decision, "progression", None)
+    hiit = getattr(decision, "progression_hiit", None)
+    datos: dict[str, Any] | None = (
+        plan.to_dict() if plan is not None and hasattr(plan, "to_dict") else None
+    )
+    if hiit is not None and hasattr(hiit, "to_dict"):
+        # `dict(datos or {})` y no `datos["hiit"] = ...`: hoy no puede haber
+        # HIIT sin plan de fuerza -el bloque solo entra en verde y en verde
+        # siempre hay rutina-, pero si un día lo hay, el bloque se guarda igual.
+        # Lo que sale entonces es un JSON sin `exercises` en la raíz, que es
+        # exactamente lo que `progressed_keys` interpreta como "la fuerza no
+        # subió nada": verdad, y no un hueco.
+        datos = dict(datos or {})
+        datos["hiit"] = hiit.to_dict()
+    return datos
 
 
 def current_decision(session: Session, day: date) -> DecisionRow | None:
@@ -768,11 +798,23 @@ def fecha_de_los_pesos(
     return fila.date if fila is not None else None
 
 
-def progressed_keys(fila: DecisionRow | None) -> list[str]:
-    """Ejercicios que subieron ese día. Su racha tiene que volver a cero."""
+def progressed_keys(fila: DecisionRow | None, *, hiit: bool = False) -> list[str]:
+    """Ejercicios que subieron ese día. Su racha tiene que volver a cero.
+
+    `hiit=True` devuelve los del BLOQUE, que tienen su propio plan colgado de
+    `"hiit"`. Es un parámetro y no un filtro en el sitio de la llamada porque
+    quien reconcilia el bloque no puede saber, mirando una lista de claves
+    sueltas, cuáles venían de la fuerza: antes se filtraba por pertenencia al
+    bloque, que acertaba solo mientras las dos rutinas no compartieran ninguna
+    clave. Ninguna regla obliga a eso, y el día que se repitiera un ejercicio en
+    las dos -una plancha en el Día 2 y en su HIIT- la subida de una habría
+    puesto a cero la racha de la otra.
+    """
     if fila is None or not fila.progression_json:
         return []
     datos = json.loads(fila.progression_json)
+    if hiit:
+        datos = datos.get("hiit") or {}
     return [
         e["key"]
         for e in (datos.get("exercises") or [])

@@ -665,7 +665,18 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # con la puerta cerrada-, el fallo no sale en `progression.py`, sale aquí, en
     # forma de "📈 Sube hoy" debajo de un "🌙 Hoy no entrenas". Este fichero
     # decide si prescribe o no; que lo decida entero.
-    cambios = decision.progression.changes if decision.progression else []
+    #
+    # LAS DOS PROGRESIONES. El bloque HIIT tiene la suya desde que viaja como
+    # sesión aparte, y `plancha_frontal` es el único ejercicio del programa que
+    # sube por volumen. Si esa subida no se nombra aquí, el usuario se encuentra
+    # la plancha a 35 s en Hevy sin que nadie le haya dicho que hoy subía: un
+    # cambio de carga silencioso, que es justo lo que este bloque existe para
+    # evitar. Van en la misma lista y no en dos secciones porque lo que el
+    # apartado contesta -"¿qué sube hoy?"- es una sola pregunta, y el nombre del
+    # ejercicio ya dice de qué entreno es.
+    prog_hiit = getattr(decision, "progression_hiit", None)
+    cambios = list(decision.progression.changes if decision.progression else [])
+    cambios += prog_hiit.changes if prog_hiit is not None else []
     if prescribe and cambios:
         L.append("")
         L.append("📈 <b>Sube hoy</b>")
@@ -692,7 +703,13 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # que no vas al gimnasio -mejor, incluso: es el día que hay tiempo de
     # arreglarlo-. La línea que separa lo que se calla de lo que no es
     # prescripción contra hecho, no "todo lo que venga de progression.py".
-    parados = decision.progression.stopped_lines() if decision.progression else []
+    # También las dos, y aquí importa más todavía: el techo de la plancha son
+    # 60 s y el YAML sale de 30, así que es el ejercicio del programa que antes
+    # va a tocar techo. "Toca cambiar el ejercicio" dicho el día que ocurre es
+    # accionable; no dicho, la plancha se queda clavada en 60 s para siempre y
+    # parece que el sistema la ha olvidado.
+    parados = list(decision.progression.stopped_lines() if decision.progression else [])
+    parados += prog_hiit.stopped_lines() if prog_hiit is not None else []
     if parados:
         L.append("")
         L.append("⏸️ <b>Sin progresar</b>")

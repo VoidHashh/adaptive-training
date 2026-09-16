@@ -574,6 +574,19 @@ def hiit_applies(
 # ---------------------------------------------------------------------------
 
 
+def clave_del_bloque_hiit(raw: dict[str, Any], routine_key: str) -> str:
+    """El bloque HIIT que le toca a `routine_key`, o `""` si no lleva.
+
+    Existe como función porque ahora hay DOS sitios que necesitan la respuesta:
+    aquí abajo, para construir el bloque, y `decision.decide`, para planificar
+    su progresión. Dos lecturas a mano de `hiit.blocks` son dos sitios que
+    pueden acabar apuntando a bloques distintos sin que nada los compare, y el
+    resultado sería una progresión calculada contra el estado de un bloque y
+    aplicada a otro: números plausibles y mal.
+    """
+    return str(((raw.get("hiit", {}) or {}).get("blocks") or {}).get(routine_key, ""))
+
+
 def build_session(
     config: Any,
     day: date,
@@ -581,6 +594,7 @@ def build_session(
     *,
     rotation_routine: str,
     progression: ProgressionPlan | None = None,
+    progression_hiit: ProgressionPlan | None = None,
     active_rules: list[dict[str, Any]] | None = None,
     deload_active: bool = False,
     program_start: date | None = None,
@@ -726,11 +740,19 @@ def build_session(
         # presentado como el motivo de que no. Justo al revés.
         out.notes.append("sin HIIT: una regla especial lo ha desactivado hoy")
     else:
-        block_key = str(((raw.get("hiit", {}) or {}).get("blocks") or {}).get(routine_key, ""))
+        block_key = clave_del_bloque_hiit(raw, routine_key)
         block = routines.get(block_key, {}) or {}
         if block:
             out.hiit_block = block_key
-            out.hiit = _sesion_hiit(block_key, block, day, current_sets, set_cfg)
+            out.hiit = _sesion_hiit(
+                block_key,
+                block,
+                day,
+                current_sets,
+                set_cfg,
+                progression=progression_hiit,
+                permitida=bool(action.get("allow_progression", False)),
+            )
             out.changes.append(f"añadido bloque HIIT ({block.get('title', block_key)}): {why}")
         else:
             # Este era el peor de los tres: todo decía que tocaba HIIT, el
@@ -751,6 +773,9 @@ def _sesion_hiit(
     day: date,
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None,
     set_cfg: dict[str, Any],
+    *,
+    progression: ProgressionPlan | None = None,
+    permitida: bool = False,
 ) -> BuiltSession:
     """El bloque HIIT de hoy como sesión propia, bajo SU clave de rutina.
 
@@ -763,6 +788,16 @@ def _sesion_hiit(
     de fábrica cada mañana. La progresión se adoptaba en la base y no llegaba
     nunca a la app.
 
+    Y HACE aplicar la progresión del bloque, que es un plan APARTE del de la
+    fuerza y llega en `progression`. Esto llevaba parado desde el primer día y
+    no por una decisión: `apply_progression` corre en el paso 2 de
+    `build_session` y el bloque se añade en el 6, así que pasaba de largo. El
+    único ejercicio del bloque que progresa -`plancha_frontal`, por volumen,
+    con techo de 60 s- nunca sumó un segundo. Ni siquiera era arreglable antes
+    de separar el HIIT de la fuerza: su racha se guardaba bajo la clave de la
+    rutina equivocada, así que el plan se habría construido sobre un estado que
+    no era el suyo.
+
     Y el par de la clave es `(hiit_dia_1, plancha_frontal)`, que es donde el
     `config.yaml` declara ese ejercicio. Bajo `dia_1` -que es donde iba- la fila
     no la lee nadie, porque `dia_1` no tiene esa clave.
@@ -774,10 +809,23 @@ def _sesion_hiit(
     de ámbar ni regla especial que quitar. El día que eso cambie, este
     comentario es lo que hay que releer: aplicarle a un bloque HIIT un -25 % de
     series no es lo mismo que aplicárselo a una rutina de fuerza.
+
+    `permitida` es el mismo `actions[light].allow_progression` que gobierna la
+    fuerza, y se pasa en vez de darlo por hecho por la misma razón: hoy el
+    bloque solo entra en verde y en verde la progresión está permitida, pero
+    atarlo a esa coincidencia significa que el día que el HIIT entre en ámbar
+    subiría volumen mientras la fuerza está recortada, y nadie se enteraría.
     """
     ejercicios = con_carga_vigente(
         block.get("exercises") or [], block_key, current_sets, set_cfg
     )
+    cambios: list[str] = []
+    notas: list[str] = []
+    if progression is not None and permitida:
+        cambios = apply_progression(ejercicios, progression, set_cfg)
+    elif progression is not None and progression.changes:
+        notas.append("progresión del HIIT no aplicada: el semáforo no la permite hoy")
+
     hiit = BuiltSession(
         day=day,
         # `full` y no un cuarto valor: los tres que hay describen cuánto se
@@ -792,6 +840,12 @@ def _sesion_hiit(
         hevy_routine_id=block.get("hevy_routine_id"),
         write_to_hevy=bool(block.get("write_to_hevy", True)),
     )
+    hiit.changes.extend(cambios)
+    hiit.notes.extend(notas)
+    # DESPUÉS de la progresión, igual que el paso 2b de `build_session`: el
+    # objetivo vigente es lo que se acaba de prescribir, no lo que había ayer.
+    # Al revés, la plancha subiría a 35 s en la app y la base seguiría diciendo
+    # 30 s, que es la forma de que mañana vuelva a subir "por primera vez".
     hiit.target_sets = {
         str(ex.get("key")): copy.deepcopy(series_efectivas_vigentes(ex, set_cfg))
         for ex in ejercicios

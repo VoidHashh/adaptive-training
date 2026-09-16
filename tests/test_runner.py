@@ -14,6 +14,7 @@ este sistema puede hacer daño sin dar un error:
 from __future__ import annotations
 
 import copy
+import json
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1744,6 +1745,287 @@ def test_la_carga_del_hiit_se_adopta_bajo_la_clave_del_bloque(db, cfg_lunes):
     assert float(series[0]["weight_kg"]) > antes
     assert ("dia_1", "wall_ball") not in estado.current_sets, (
         "la carga del HIIT sigue ensuciando la rutina de fuerza"
+    )
+
+
+# ---------------------------------------------------------------------------
+# La progresión del bloque HIIT, que nunca había corrido
+# ---------------------------------------------------------------------------
+#
+# `build_session` planificaba la progresión de la rutina de FUERZA en su paso 2 y
+# montaba el bloque HIIT en el paso 6, con el plan de la fuerza ya gastado. El
+# bloque se construía siempre con `con_carga_vigente` y nada más: la plancha
+# frontal salía a 30 s el primer día y a 30 s el día doscientos, con
+# `progression_type: volume` y `max_seconds: 60` declarados en el YAML desde el
+# principio y sin un solo error por ninguna parte.
+#
+# Lo que se vigila aquí son las cuatro costuras del arreglo, no que "suba":
+#
+#   - que suba de verdad, en el plan que se guarda y se escribe en Hevy;
+#   - que la subida se PERSISTA bajo su propia clave, porque una subida que la
+#     noche no ve es una racha que no se gasta y una plancha que sube cinco
+#     segundos CADA sesión hasta el techo sin que nada falle;
+#   - que el plan del bloque se anule cuando el bloque no llega a entrar, para
+#     que el registro no guarde una subida que nadie ejecutó;
+#   - que el techo se anuncie, que es el único aviso que convierte "parado" en
+#     accionable.
+
+
+def _estado_con_racha_de_hiit(cfg) -> EngineState:
+    """El bloque HIIT estrenado y con una sesión limpia en todos sus ejercicios.
+
+    Es el estado normal tras UNA noche de haber hecho el bloque entero, y es el
+    mínimo que abre la puerta: `default_clean_sessions_required` es 1. Se monta
+    a mano en vez de encadenar dos días reales porque la rotación movería el
+    puntero a `dia_2` y el bloque del segundo día no lleva plancha; el test
+    acabaría comprobando la ausencia del ejercicio en vez de su progresión.
+
+    `compliance` va con las claves puestas a propósito y no vacío: es lo que
+    hace que `estrenada("hiit_dia_1")` sea cierto, y sin ello la puerta se
+    cierra con el motivo del estreno -que no es un fallo, pero tampoco es este
+    escenario-.
+    """
+    claves = [e["key"] for e in cfg.raw["routines"]["hiit_dia_1"]["exercises"]]
+    return EngineState(
+        compliance={("hiit_dia_1", k): True for k in claves},
+        clean_sessions={("hiit_dia_1", k): 1 for k in claves},
+        program_start=cfg.program_start,
+    )
+
+
+def _monta_la_racha(db, cfg, estado: EngineState | None = None) -> None:
+    """El estado de ayer Y el check-in de hoy, que hacen falta los dos.
+
+    El check-in no es decorado: el freno `lumbar_bloquea_todo` mira
+    `lower_discomfort`, y sin ese dato la puerta de la progresión se cierra por
+    indeterminación -"sin ese dato no se sube carga"- antes de llegar a mirar
+    ninguna racha. Un test de progresión sin formulario no comprueba la
+    progresión: comprueba el freno.
+    """
+    save_state(db, estado or _estado_con_racha_de_hiit(cfg), day=LUNES - timedelta(days=2))
+    upsert_checkin(db, LUNES, dict(CHECKIN_TRANQUILO), config=cfg)
+    db.flush()
+
+
+def _plancha(bloque: dict) -> dict:
+    return next(e for e in bloque["exercises"] if e["key"] == "plancha_frontal")
+
+
+def _segundos(bloque: dict) -> list[int]:
+    return [int(s["duration_s"]) for s in _plancha(bloque)["sets"]]
+
+
+def test_la_plancha_del_hiit_sube_de_treinta_a_treinta_y_cinco(db, cfg_lunes):
+    """La progresión que llevaba parada desde el primer día.
+
+    El bloque se planifica con SU propio `plan_progression` -no con el de la
+    fuerza-, porque los dos tienen estado, semáforo de última sesión y cupos de
+    `volume_safety` distintos. Aplicar aquí el plan de `dia_1` sería calcular
+    contra el estado de una rutina y prescribir sobre otra: números plausibles y
+    mal.
+    """
+    _monta_la_racha(db, cfg_lunes)
+
+    res = corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.session.hiit_block == "hiit_dia_1", "el montaje no lleva HIIT"
+
+    bloque = _plan_guardado(db)["hiit"]
+    assert _segundos(bloque) == [35, 35, 35], (
+        f"la plancha sigue clavada donde la dejó el YAML: {_segundos(bloque)}"
+    )
+    assert res.decision.progression_hiit is not None, (
+        "el bloque entró y no se guardó plan de progresión propio"
+    )
+    assert [c.name for c in res.decision.progression_hiit.changes] == ["Plancha frontal"]
+    assert any("30→35 s" in c.text() for c in res.decision.progression_hiit.changes)
+
+
+def test_la_carga_vigente_del_bloque_se_fija_DESPUES_de_la_subida(db, cfg_lunes):
+    """El objetivo vigente es lo que se acaba de prescribir, no lo de ayer.
+
+    `target_sets` se calcula sobre los ejercicios YA progresados, igual que el
+    paso 2b de la fuerza, y de ahí sale la carga vigente que guarda el estado.
+    Calculado antes, la plancha subiría a 35 s en Hevy y la base seguiría
+    diciendo 30: mañana `con_carga_vigente` la sacaría otra vez a 30 y la subida
+    volvería a ser "la primera" cada día, con la app y la base contando cosas
+    distintas y ninguna de las dos quejándose.
+    """
+    _monta_la_racha(db, cfg_lunes)
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+
+    vigente = load_state(db, program_start=cfg_lunes.program_start).current_sets
+    series = vigente.get(("hiit_dia_1", "plancha_frontal"))
+    assert series and [int(s["duration_s"]) for s in series] == [35, 35, 35], series
+
+
+def test_la_subida_del_hiit_gasta_su_racha_esa_misma_noche(db, cfg_lunes):
+    """EL SEGURO CONTRA LA PLANCHA QUE SUBE CINCO SEGUNDOS CADA DÍA.
+
+    La subida se apunta en `progression_json`, y de ahí la saca la noche para
+    poner a cero la racha del ejercicio que ha subido: las sesiones limpias que
+    pagaron la subida ya se han gastado en ella. El plan del bloque vive bajo la
+    clave `"hiit"` de ese JSON, y `progressed_keys(fila, hiit=True)` es quien lo
+    lee.
+
+    Guardar solo el plan de la fuerza -que es lo que se hacía- no da ningún
+    error: la racha de la plancha se queda intacta, al día siguiente vuelve a
+    cumplir el requisito, y la plancha sube otros cinco segundos. De 30 a 60 en
+    seis sesiones, sin una sola sesión limpia que lo pague y sin nada que falle.
+
+    Se comprueban las DOS mitades. Que la de la plancha se ponga a cero, y que
+    la de sus compañeras avance a 2: "no se gasta" y "se ha roto la racha
+    entera" se ven igual mirando solo la plancha, y solo una de las dos es lo
+    que se quiere.
+    """
+    _monta_la_racha(db, cfg_lunes)
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+
+    plan = _plan_guardado(db)
+    assert _segundos(plan["hiit"]) == [35, 35, 35], "el montaje no ha subido nada"
+
+    fuerza = _ejecuta(plan, wid="fuerza", rid=_rid(cfg_lunes, "dia_1"))
+    hiit = _ejecuta(plan["hiit"], wid="hiit", rid=_rid(cfg_lunes, "hiit_dia_1"))
+    run_reconcile(db, cfg_lunes, LUNES, workouts=[fuerza, hiit])
+
+    estado = load_state(db, program_start=cfg_lunes.program_start)
+    assert estado.clean_sessions[("hiit_dia_1", "plancha_frontal")] == 0, (
+        "la plancha ha subido hoy y conserva la racha: mañana sube otra vez "
+        "sin haberla pagado"
+    )
+    otras = [
+        e["key"]
+        for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]
+        if e["key"] != "plancha_frontal"
+    ]
+    assert all(estado.clean_sessions[("hiit_dia_1", k)] == 2 for k in otras), (
+        "se ha roto la racha de todo el bloque, no solo la del que subió: "
+        f"{ {k: estado.clean_sessions.get(('hiit_dia_1', k)) for k in otras} }"
+    )
+
+
+def test_las_claves_progresadas_del_bloque_no_se_sacan_de_la_lista_de_la_fuerza(
+    db, cfg_lunes
+):
+    """Por qué `progressed_keys` necesita el `hiit=True` y no basta con filtrar.
+
+    Antes la noche cogía las claves progresadas de la FUERZA y se quedaba con
+    las que pertenecían al bloque. Eso acierta solo mientras las dos rutinas no
+    compartan ninguna clave: el día que `dia_1` y `hiit_dia_1` tengan un
+    ejercicio con el mismo nombre -una plancha, por ejemplo- una subida de la
+    fuerza gastaría la racha del bloque, o al revés.
+
+    Aquí las dos listas tienen que salir distintas y cada una de su plan. Si
+    alguien vuelve a filtrar una sola lista, la del bloque acabará siendo un
+    subconjunto de la de la fuerza y este test lo dice.
+    """
+    from app.repository import current_decision, progressed_keys
+
+    _monta_la_racha(db, cfg_lunes)
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+
+    fila = current_decision(db, LUNES)
+    del_bloque = progressed_keys(fila, hiit=True)
+    assert del_bloque == ["plancha_frontal"], del_bloque
+    assert "plancha_frontal" not in progressed_keys(fila), (
+        "la clave del bloque está saliendo por la lista de la fuerza"
+    )
+
+
+def test_si_el_bloque_no_entra_no_queda_plan_de_progresion_guardado(db, cfg):
+    """Un plan que nadie ejecutó no se guarda como si se hubiera prescrito.
+
+    El plan del bloque se calcula ANTES de saber si el bloque entra -hace falta
+    para construirlo-, y hay cuatro salidas por las que puede no entrar: la
+    semana no le toca, el día es rojo, no hay fuerza hoy o la rutina no declara
+    bloque. Si el plan sobreviviera a esas salidas, el registro diría que la
+    plancha subió a 35 s un día en que la plancha no se planificó, y esa subida
+    fantasma se leería como prescripción a la hora de auditar por qué el
+    ejercicio está donde está.
+
+    El escenario es el config real con su fecha de arranque: `hiit_applies` no
+    da el bloque, pero `hiit.blocks` sí declara cuál le tocaría a `dia_1`, así
+    que el plan SÍ se calcula y esta es la única guardia que lo borra.
+    """
+    _monta_la_racha(db, cfg)
+
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.session.hiit is None, "el montaje necesita un día SIN bloque"
+
+    assert res.decision.progression_hiit is None, (
+        "hay plan de progresión de un bloque que no se llegó a prescribir"
+    )
+    fila = db.scalars(select(Decision).where(Decision.date == LUNES)).one()
+    assert "hiit" not in json.loads(fila.progression_json or "{}"), (
+        f"la subida fantasma ha quedado guardada: {fila.progression_json}"
+    )
+
+
+def test_la_plancha_en_su_techo_se_anuncia_en_el_mensaje(db, cfg_lunes):
+    """60 s y se acabó: el primer ejercicio del programa que toca techo.
+
+    El YAML la saca a 30 s y el tope declarado son 60, así que la plancha va a
+    llegar antes que ningún otro. Un techo no dicho deja el ejercicio clavado
+    para siempre con toda la pinta de que el sistema lo ha olvidado; dicho el
+    día que ocurre, "toca cambiar el ejercicio" es accionable.
+
+    El aviso se comprueba en el TEXTO que se manda y no en `plan.ceilings`,
+    porque el fallo que esto cubre no es que el techo no se detecte -se detectó
+    siempre- sino que el mensaje solo leía el plan de la fuerza: el bloque podía
+    estar en su techo y `render_telegram` no tenía de dónde sacarlo.
+    """
+    estado = _estado_con_racha_de_hiit(cfg_lunes)
+    estado.current_sets[("hiit_dia_1", "plancha_frontal")] = [
+        {"duration_s": 60} for _ in range(3)
+    ]
+    _monta_la_racha(db, cfg_lunes, estado)
+
+    tg = TelegramFalso()
+    res = corre(db, cfg_lunes, hevy=HevyFalso(), tg=tg)
+    assert res.decision.session.hiit_block == "hiit_dia_1", "el montaje no lleva HIIT"
+
+    assert _segundos(_plan_guardado(db)["hiit"]) == [60, 60, 60], "se ha pasado del tope"
+    assert res.decision.progression_hiit.ceilings == ["Plancha frontal"], (
+        res.decision.progression_hiit.ceilings
+    )
+    assert "Plancha frontal: techo alcanzado" in tg.enviados[0], tg.enviados[0]
+
+
+def test_el_bloque_obedece_a_allow_progression_y_no_al_hecho_de_estar_puesto(
+    db, cfg_lunes
+):
+    """`permitida` se lee del config; no se da por hecho porque hoy coincida.
+
+    HOY ESTE CASO NO PUEDE OCURRIR, Y POR ESO ESTÁ ESCRITO ASÍ. El bloque solo
+    entra en verde (`hiit.only_on_green`) y en verde `allow_progression` está a
+    `true`, de modo que "el bloque está puesto" y "hoy se puede progresar" son
+    la misma cosa. Atar una a la otra en el código no rompería nada esta semana:
+    rompería el día que el ámbar deje entrar el HIIT recortado, y entonces el
+    volumen del bloque subiría mientras la fuerza está recortada, que es
+    exactamente al revés de lo que el ámbar significa.
+
+    Así que el escenario se fabrica moviendo el interruptor que gobierna la
+    fuerza -`actions.green.allow_progression`- y comprobando que el bloque se
+    entera. Si alguien sustituye `permitida` por un `True`, este test es lo
+    único que lo dice.
+
+    Y la nota importa tanto como la no-subida: sin ella, un día en que la
+    progresión está deshabilitada y un día en que el cable se ha vuelto a
+    desconectar se ven idénticos desde fuera -la plancha en 30 s las dos veces-,
+    que es precisamente cómo esto pasó inadvertido desde el primer día.
+    """
+    cfg_lunes.raw["actions"]["green"]["allow_progression"] = False
+    _monta_la_racha(db, cfg_lunes)
+
+    res = corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    assert res.decision.light == "green"
+    assert res.decision.session.hiit is not None, "el montaje necesita el bloque puesto"
+
+    bloque = _plan_guardado(db)["hiit"]
+    assert _segundos(bloque) == [30, 30, 30], (
+        f"la plancha ha subido en un día que no lo permitía: {_segundos(bloque)}"
+    )
+    assert any("el semáforo no la permite" in n for n in bloque["notes"]), (
+        f"no ha subido y no se dice por qué: {bloque['notes']}"
     )
 
 

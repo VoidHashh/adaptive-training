@@ -55,6 +55,7 @@ from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_lig
 from app.engine.session_builder import (
     BuiltSession,
     build_session,
+    clave_del_bloque_hiit,
     orden_de_rotacion,
     siguiente_en_rotacion,
 )
@@ -321,6 +322,16 @@ class DayDecision:
     sesion_elegida: str | None = None
     active_rules: list[ActiveRule] = field(default_factory=list)
     progression: ProgressionPlan | None = None
+    # La progresión del BLOQUE HIIT, que es un plan entero y aparte, no un
+    # apéndice del de arriba. Va separado por lo mismo que la sesión: los cupos
+    # de `volume_safety` -"como mucho dos subidas de volumen por sesión"- y las
+    # puertas de `plan_progression` cuentan POR SESIÓN, y meter los dos en un
+    # plan haría que una subida de la prensa se comiera el cupo de la plancha.
+    #
+    # `None` cuando hoy no hay bloque, y se pone a `None` a posta si el bloque
+    # acaba no entrando: un plan guardado para un bloque que no se hizo es una
+    # subida que el registro da por ocurrida y la app nunca escribió.
+    progression_hiit: ProgressionPlan | None = None
     bike: BikeRecommendation | None = None
     notes: list[str] = field(default_factory=list)
     config_hash: str | None = None
@@ -435,6 +446,7 @@ class DayDecision:
             "session": self.session.to_dict(),
             "bike": self.bike.to_dict() if self.bike else None,
             "progression": _progression_dict(self.progression),
+            "progression_hiit": _progression_dict(self.progression_hiit),
             "notes": self.notes,
             "last_strength": (
                 {
@@ -937,6 +949,48 @@ def decide(
         },
     )
 
+    # LA SEGUNDA PROGRESIÓN: LA DEL BLOQUE HIIT
+    # ----------------------------------------
+    # Llevaba parada desde el primer día, y no por una decisión: el bloque se
+    # añade en el paso 6 de `build_session` y `apply_progression` corre en el 2,
+    # así que nunca pasaba por delante. `plancha_frontal` está declarada
+    # `progression_type: volume` con `max_seconds: 60` y no sumó un segundo en
+    # seis meses. El config lo decía, el motor no lo hacía y nada fallaba.
+    #
+    # Se planifica SIEMPRE que el bloque exista, sin mirar si hoy toca: quien
+    # decide eso es `hiit_applies`, dentro de `build_session`, y duplicar aquí
+    # esa condición sería un segundo juez de lo mismo. Lo que se hace es tirar
+    # el plan después si el bloque no ha entrado -unas líneas más abajo-, que es
+    # la única forma de que el registro no guarde una subida que no ocurrió.
+    bloque_hiit = clave_del_bloque_hiit(raw, routine_key)
+    progression_hiit: ProgressionPlan | None = None
+    if bloque_hiit and bloque_hiit in (raw.get("routines") or {}):
+        ex_hiit = (raw["routines"][bloque_hiit] or {}).get("exercises") or []
+        compliance_h, clean_h = state.for_routine(
+            bloque_hiit, [e["key"] for e in ex_hiit]
+        )
+        progression_hiit = plan_progression(
+            config,
+            bloque_hiit,
+            signals,
+            light,
+            compliance=compliance_h,
+            clean_sessions=clean_h,
+            deload_active=deload.active,
+            last_routine_light=state.last_routine_light.get(bloque_hiit),
+            current_sets=state.current_sets,
+            rutina_estrenada=state.estrenada(bloque_hiit),
+            # Los mismos dos cierres que la fuerza, y por el mismo motivo: si
+            # hoy no vas, o vas a la bici, tampoco hay HIIT que subir.
+            va_a_entrenar=va_a_entrenar,
+            eleccion_sin_fuerza=eleccion_sin_fuerza,
+            sessions_since_progress={
+                k: v
+                for (rk, k), v in state.sessions_since_progress.items()
+                if rk == bloque_hiit
+            },
+        )
+
     # --- 4. sesión ----------------------------------------------------------
     session = build_session(
         config,
@@ -944,6 +998,7 @@ def decide(
         light,
         rotation_routine=rotation_routine,
         progression=progression,
+        progression_hiit=progression_hiit,
         # `session_builder` espera {name, action}, con la acción anidada. No se
         # aplana: `apply_rule_load_cuts` busca `rule["action"]["reduce_load"]`.
         active_rules=[{"name": r.name, "action": r.action} for r in active_rules],
@@ -951,6 +1006,18 @@ def decide(
         program_start=state.program_start,
         current_sets=state.current_sets,
     )
+
+    # EL BLOQUE NO HA ENTRADO: EL PLAN NO HA PASADO.
+    #
+    # `build_session` tiene cuatro salidas por las que el HIIT no se añade -no
+    # toca por semana, `allow_hiit` apagado por regla especial, el bloque no
+    # está en `routines`, día rojo con bloque de recuperación- y en todas ellas
+    # `session.hiit` queda en `None`. Guardar el plan de todos modos escribiría
+    # en `progression_json` una subida que la app no prescribió; esa noche la
+    # reconciliación pondría la racha a cero por una progresión que no hubo, y
+    # la plancha volvería a esperar otra sesión limpia para subir de verdad.
+    if session.hiit is None:
+        progression_hiit = None
 
     # --- 5. bici ------------------------------------------------------------
     bike = recommend_bike(config, signals, light)
@@ -968,6 +1035,7 @@ def decide(
         sesion_elegida=sesion_elegida,
         active_rules=active_rules,
         progression=progression,
+        progression_hiit=progression_hiit,
         bike=bike,
         notes=notes,
         config_hash=getattr(config, "hash", None),

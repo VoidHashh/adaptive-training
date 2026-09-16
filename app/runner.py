@@ -1311,21 +1311,20 @@ def run_reconcile(
     # del HIIT desaparecería sin que nada lo dijera.
     hubo_hiit = bool(ex_hiit and bloque_hiit)
     if hubo_hiit:
-        claves_del_bloque = {str(e.get("key")) for e in ex_hiit if e.get("key")}
         apply_execution(
             state,
             routine_key=str(bloque_hiit),
             exercises=ex_hiit,
             executed=executed_hiit,
             light=fila.light if fila is not None else None,
-            # El bloque no pasa por la progresión por regla: `_sesion_hiit` solo
-            # le aplica la carga vigente, así que hoy esta lista sale siempre
-            # vacía. El filtro no sobra: `progressed_keys` son las claves de la
-            # FUERZA, y sin él se pondrían a cero rachas de `(hiit_dia_N,
-            # prensa)` que no existen y que nadie habría ido a buscar.
-            progressed=[
-                k for k in repo.progressed_keys(fila) if k in claves_del_bloque
-            ],
+            # Las del BLOQUE, sacadas de SU plan. Aquí había un filtro de las
+            # claves de la fuerza por pertenencia al bloque, y estaba bien
+            # mientras el bloque no progresaba: la lista salía vacía siempre.
+            # Ahora que progresa, filtrar sería preguntarle a la progresión de
+            # la prensa qué subió en el HIIT, y contestaría que nada -las claves
+            # del bloque no están en el plan de la fuerza-, dejando la racha de
+            # la plancha intacta después de haber subido.
+            progressed=repo.progressed_keys(fila, hiit=True),
         )
         adopciones += adoptar_cargas(
             state,
