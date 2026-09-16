@@ -156,6 +156,12 @@ class EngineState:
     # Inicio de la última semana de descarga ya concedida. Sin esto el jitter
     # no tiene memoria y la descarga podría repetirse o saltarse.
     last_deload_start: date | None = None
+    # El lunes de la semana en la que tocaba descarga y se aplazó. Mientras
+    # tenga valor hay una descarga DEBIDA, y sigue debida aunque el calendario
+    # ya no la nombre. Sin esta memoria el aplazamiento no aplazaba: devolvía
+    # `shifted` sin apuntarlo en ningún sitio, así que al día siguiente la misma
+    # semana volvía a tocar y la descarga entraba igual, un martes.
+    deload_aplazada_desde: date | None = None
 
     def for_routine(
         self, routine_key: str, keys: list[str]
@@ -219,6 +225,10 @@ class DeloadStatus:
     start: date | None = None
     end: date | None = None
     shifted: bool = False
+    # El lunes de la semana en la que TOCABA y no pudo ser. Mientras tenga
+    # valor, la descarga sigue debida: es la deuda que impide que un aplazamiento
+    # se coma el turno entero. La escribe `advance_state` en el estado.
+    aplazada_desde: date | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -227,6 +237,9 @@ class DeloadStatus:
             "start": self.start.isoformat() if self.start else None,
             "end": self.end.isoformat() if self.end else None,
             "shifted": self.shifted,
+            "aplazada_desde": (
+                self.aplazada_desde.isoformat() if self.aplazada_desde else None
+            ),
         }
 
 
@@ -619,17 +632,47 @@ def _deload_status(
     """¿Hoy es semana de descarga?
 
     La descarga es de calendario, no de síntomas: toca cada `every_n_weeks`
-    contando desde `program_start`. `jitter_weeks` permite retrasarla una
-    semana si la semana que le tocaba arranca en ROJO.
+    contando desde `program_start`. `jitter_weeks` permite retrasarla si la
+    semana que le tocaba arranca en ROJO.
 
     El motivo del jitter: una descarga que empieza el mismo día que el cuerpo
     ya ha forzado una parada no descarga nada, porque esa semana iba a ser
-    suave de todos modos. Retrasarla un lunes hace que caiga sobre una semana
-    en la que de verdad haya algo que recortar.
+    suave de todos modos. Retrasarla hace que caiga sobre una semana en la que
+    de verdad haya algo que recortar.
 
     Solo se retrasa, nunca se adelanta: adelantar exigiría saber que la semana
     que viene será mala, y eso no se sabe. `jitter_weeks` es por tanto un
     margen hacia adelante, y así está documentado en el YAML.
+
+    EL APLAZAMIENTO NO APLAZABA, Y ADEMÁS SE COMÍA EL TURNO
+    ------------------------------------------------------
+    Devolvía `shifted=True` y no lo apuntaba en ninguna parte, así que el efecto
+    duraba un día. Comprobado sobre el config real con el programa empezando el
+    05/01/2026: lunes 23/02 en rojo, «se retrasa una semana»; martes 24/02, la
+    misma semana seguía tocando -el calendario no había cambiado- y la descarga
+    entraba con `start` el lunes 23. Un aplazamiento de veinticuatro horas
+    anunciado como de siete días.
+
+    Y si el martes también hubiera sido rojo, o si simplemente no se hubiera
+    ejecutado ese día, la semana se habría acabado sin descarga y la siguiente
+    ocasión era el 13/04: SIETE semanas más tarde. El aplazamiento no retrasaba
+    la descarga, la borraba, y el mensaje decía que la había retrasado.
+
+    LA DEUDA
+    --------
+    Ahora, aplazar ESCRIBE: `state.deload_aplazada_desde` guarda el lunes de la
+    semana en la que tocaba. Mientras tenga valor la descarga sigue debida, y
+    sigue debida aunque el calendario ya no la nombre. Eso arregla las dos
+    mitades a la vez: la semana aplazada no vuelve a concederse a mitad -ya
+    consta aplazada entera- y la deuda no caduca al pasar la semana.
+
+    `jitter_weeks` deja de ser un adorno y pasa a ser un PRESUPUESTO: cuántas
+    semanas puede empujarla el rojo en total. Con el config actual, una. Agotado
+    el presupuesto la descarga entra aunque la semana siga en rojo, y esa es la
+    parte deliberada: con una hernia L4-L5 la descarga es lo último que puede
+    saltarse, y una racha de semanas malas es exactamente cuando más falta hace.
+    Un presupuesto infinito habría convertido «se retrasa» en «no se hace nunca»
+    para quien peor está, que es el fallo de partida disfrazado de prudencia.
     """
     raw = config.raw if hasattr(config, "raw") else config
     rule = next(
@@ -678,22 +721,47 @@ def _deload_status(
                 f"última descarga el {state.last_deload_start}: aún no toca",
             )
 
-    if weeks == 0 or weeks % every != 0:
+    debida = state.deload_aplazada_desde
+
+    if debida is None and (weeks == 0 or weeks % every != 0):
         nxt = origin + timedelta(weeks=((weeks // every) + 1) * every)
         return DeloadStatus(
             False, f"no toca esta semana (la siguiente empieza el {nxt})"
         )
 
-    # Toca. ¿La aplazamos por el jitter?
-    if jitter > 0 and light == "red" and day.weekday() == 0:
+    # Una semana ya aplazada lo está ENTERA. Sin esto el aplazamiento del lunes
+    # se deshacía solo el martes: la semana seguía siendo múltiplo de `every`.
+    if debida is not None and this_week == debida:
         return DeloadStatus(
             False,
-            "tocaba descarga pero la semana arranca en ROJO: se retrasa una "
-            "semana, porque descargar sobre una semana ya frenada no descarga nada",
+            f"la descarga de la semana del {debida} quedó aplazada por el rojo: "
+            f"no entra a mitad de semana, se intenta el lunes que viene",
             shifted=True,
+            aplazada_desde=debida,
+        )
+
+    # Toca. ¿La aplazamos por el jitter?
+    empujada = 0 if debida is None else (this_week - debida).days // 7
+    if light == "red" and empujada < jitter:
+        desde = debida or this_week
+        return DeloadStatus(
+            False,
+            f"tocaba descarga pero la semana arranca en ROJO: se retrasa a la "
+            f"semana que viene, porque descargar sobre una semana ya frenada no "
+            f"descarga nada. Sigue debida desde el {desde}",
+            shifted=True,
+            aplazada_desde=desde,
         )
 
     start = this_week
+    if debida is not None:
+        return DeloadStatus(
+            True,
+            f"descarga debida desde el {debida}, aplazada {empujada} semana(s) "
+            f"por el rojo y ya sin margen: entra hoy",
+            start=start,
+            end=start + timedelta(days=dur - 1),
+        )
     return DeloadStatus(
         True,
         f"toca descarga: {weeks} semanas desde el inicio del programa (cada {every})",
@@ -944,6 +1012,11 @@ def advance_state(
         last_deload_start=(
             decision.deload.start if decision.deload.active else state.last_deload_start
         ),
+        # Se copia tal cual y no se arrastra: `_deload_status` devuelve la deuda
+        # en cada decisión, y devuelve `None` en cuanto la descarga entra. Si se
+        # conservara el valor viejo cuando hoy no hay deuda, una descarga ya
+        # concedida seguiría constando debida para siempre.
+        deload_aplazada_desde=decision.deload.aplazada_desde,
     )
 
     sess = decision.session

@@ -495,6 +495,12 @@ class ProgramState(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
     last_deload_start: Mapped[date | None] = mapped_column(Date)
+    # El lunes de la semana en la que tocaba descarga y el rojo la aplazó. Con
+    # valor, la descarga sigue DEBIDA. Tiene que sobrevivir a un reinicio por la
+    # misma razón que la de arriba y con más motivo: una deuda que se pierde al
+    # reiniciar no se nota, porque lo que queda es exactamente lo que se veía
+    # antes de que esto existiera -ninguna descarga y ningún aviso-.
+    deload_aplazada_desde: Mapped[date | None] = mapped_column(Date)
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

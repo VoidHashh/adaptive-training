@@ -1141,8 +1141,16 @@ special_rules:
       Semana de descarga automática: 60% de la carga y sin HIIT.
     trigger:
       every_n_weeks: 7        # dentro del rango 6-8 que pediste
-      jitter_weeks: 1         # puede adelantarse/retrasarse 1 semana si esa
-                              # semana ya viene marcada en rojo
+      # Cuántas semanas puede EMPUJARLA el rojo. Nunca se adelanta: adelantar
+      # exigiría saber que la semana que viene será mala. Decía
+      # "adelantarse/retrasarse" y solo lo segundo era cierto.
+      #
+      # Es un presupuesto y no un permiso indefinido. Agotado, la descarga entra
+      # aunque la semana siga en rojo: aplazarla mientras haya rojos la
+      # convertiría en algo que no se hace nunca justo en la racha en que más
+      # falta hace. Y mientras esté aplazada sigue DEBIDA -no se pierde hasta la
+      # siguiente vuelta de siete semanas-. Ver `_deload_status`.
+      jitter_weeks: 1
     action:
       load_factor: 0.60
       allow_hiit: false

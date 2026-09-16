@@ -626,6 +626,110 @@ def test_una_descarga_que_arranca_en_rojo_se_retrasa(cfg, estado_en_descarga):
     assert d.deload.shifted
 
 
+# ---------------------------------------------------------------------------
+# El aplazamiento de la descarga, que ni aplazaba ni se acordaba
+#
+# Devolvía `shifted=True` y no lo apuntaba en ningún sitio, así que el efecto
+# duraba un día: el martes la misma semana seguía siendo múltiplo de
+# `every_n_weeks` y la descarga entraba igual. Y si esa semana se acababa sin
+# concederla, la siguiente ocasión era SIETE semanas después.
+# ---------------------------------------------------------------------------
+
+
+def _aplaza(cfg, estado, dia):
+    """Un lunes de descarga que arranca en rojo, y el estado que deja."""
+    d = decide(cfg, dia, sig(dia, lower_discomfort=7), estado)
+    assert d.light == "red" and not d.deload.active and d.deload.shifted
+    return advance_state(estado, d, executed=None)
+
+
+def test_la_semana_aplazada_no_se_cuela_el_martes(cfg, estado_en_descarga):
+    """El aplazamiento duraba veinticuatro horas y el mensaje decía una semana.
+
+    El lunes se retrasaba; el martes el calendario no había cambiado -la semana
+    seguía siendo la séptima- y la descarga entraba con `start` el lunes. El
+    martes ni siquiera hacía falta que fuese verde: la comprobación del rojo
+    solo miraba los lunes.
+    """
+    st = _aplaza(cfg, estado_en_descarga, LUNES)
+    assert st.deload_aplazada_desde == LUNES
+
+    martes = LUNES + timedelta(days=1)
+    d = decide(cfg, martes, sig(martes), st)
+    assert not d.deload.active, "la descarga aplazada se ha colado un día después"
+    assert d.deload.shifted
+
+
+def test_la_descarga_aplazada_entra_a_la_semana_siguiente(cfg, estado_en_descarga):
+    """El retraso que anuncia el mensaje: una semana, de verdad."""
+    st = _aplaza(cfg, estado_en_descarga, LUNES)
+
+    siguiente = LUNES + timedelta(weeks=1)
+    d = decide(cfg, siguiente, sig(siguiente), st)
+    assert d.deload.active
+    assert d.deload.start == siguiente
+    assert not d.deload.shifted
+
+
+def test_una_descarga_aplazada_no_se_pierde_siete_semanas(cfg, estado_en_descarga):
+    """Lo que pasaba si la semana aplazada se acababa sin conceder la descarga.
+
+    La siguiente ocasión era el siguiente múltiplo de `every_n_weeks`, siete
+    semanas más tarde. Aplazar no retrasaba la descarga: la borraba.
+    """
+    st = _aplaza(cfg, estado_en_descarga, LUNES)
+
+    cuando = [
+        LUNES + timedelta(days=i)
+        for i in range(1, 15)
+        if decide(cfg, LUNES + timedelta(days=i), sig(LUNES + timedelta(days=i)), st)
+        .deload.active
+    ]
+    assert cuando, "la descarga aplazada no vuelve: se ha perdido el turno entero"
+    assert cuando[0] == LUNES + timedelta(weeks=1)
+
+
+def test_la_deuda_sobrevive_a_que_el_calendario_deje_de_nombrarla(cfg, estado_en_descarga):
+    """La semana siguiente ya NO es múltiplo de siete, y da igual.
+
+    Es la mitad que faltaba: sin deuda, la rama que mira el calendario contesta
+    «no toca esta semana» y no hay nada que la contradiga.
+    """
+    st = _aplaza(cfg, estado_en_descarga, LUNES)
+    siguiente = LUNES + timedelta(weeks=1)
+
+    sin_deuda = EngineState(program_start=estado_en_descarga.program_start)
+    assert not decide(cfg, siguiente, sig(siguiente), sin_deuda).deload.active
+    assert decide(cfg, siguiente, sig(siguiente), st).deload.active
+
+
+def test_agotado_el_margen_la_descarga_entra_aunque_siga_en_rojo(cfg, estado_en_descarga):
+    """`jitter_weeks` es un presupuesto, no una excusa indefinida.
+
+    Con una hernia L4-L5 la descarga es lo último que puede saltarse, y una
+    racha de semanas rojas es justo cuando más falta hace. Un margen infinito
+    convertiría «se retrasa» en «no se hace nunca» para quien peor está.
+    """
+    st = _aplaza(cfg, estado_en_descarga, LUNES)
+
+    siguiente = LUNES + timedelta(weeks=1)
+    d = decide(cfg, siguiente, sig(siguiente, lower_discomfort=7), st)
+    assert d.light == "red"
+    assert d.deload.active, "la descarga se ha quedado sin hacer por seguir en rojo"
+
+
+def test_conceder_la_descarga_cancela_la_deuda(cfg, estado_en_descarga):
+    """Si no, una descarga ya hecha seguiría constando debida para siempre y
+    se repetiría en cuanto pasara la semana."""
+    st = _aplaza(cfg, estado_en_descarga, LUNES)
+
+    siguiente = LUNES + timedelta(weeks=1)
+    d = decide(cfg, siguiente, sig(siguiente), st)
+    st = advance_state(st, d, executed=None)
+    assert st.deload_aplazada_desde is None
+    assert st.last_deload_start == siguiente
+
+
 def test_la_descarga_se_programa_cada_siete_semanas_y_siempre_en_lunes(cfg):
     """Un año simulado desde el `program_start` real del YAML.
 

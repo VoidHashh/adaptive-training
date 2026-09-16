@@ -121,6 +121,9 @@ def estado_lleno():
         last_strength=("dia_3", LUNES - timedelta(days=1)),
         program_start=LUNES - timedelta(weeks=4),
         last_deload_start=LUNES - timedelta(weeks=2),
+        # Distinto de `last_deload_start`: son dos fechas con el mismo tipo y
+        # guardarlas cruzadas daría la vuelta completa por buena.
+        deload_aplazada_desde=LUNES - timedelta(weeks=1),
     )
 
 
@@ -373,6 +376,11 @@ def test_el_estado_sobrevive_a_la_ida_y_la_vuelta(db, estado_lleno):
     assert vuelto.last_routine_light == estado_lleno.last_routine_light
     assert vuelto.program_start == estado_lleno.program_start
     assert vuelto.last_deload_start == estado_lleno.last_deload_start
+    assert vuelto.deload_aplazada_desde == estado_lleno.deload_aplazada_desde, (
+        "la descarga debida no ha sobrevivido al reinicio: se perdería sin ruido, "
+        "porque lo que queda es justo lo que se veía antes de que la deuda "
+        "existiera -ni descarga ni aviso-"
+    )
 
 
 def test_la_regla_especial_vuelve_entera_y_no_solo_su_nombre(db, estado_lleno):
@@ -760,6 +768,10 @@ def test_el_estado_legible_no_pierde_las_claves_compuestas(estado_lleno):
     assert d["clean_sessions"]["dia_1/hip_thrust_barra"] == 2
     assert d["last_strength"]["routine"] == "dia_3"
     assert d["last_deload_start"] == estado_lleno.last_deload_start.isoformat()
+    assert (
+        d["deload_aplazada_desde"]
+        == estado_lleno.deload_aplazada_desde.isoformat()
+    )
 
 
 # ---------------------------------------------------------------------------

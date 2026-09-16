@@ -66,6 +66,7 @@ CAMPOS_PERSISTIDOS = frozenset(
         "last_routine_light",
         "active_rules",
         "last_deload_start",
+        "deload_aplazada_desde",
         # `program_start` sale de config.yaml, no de la BD. Ver `load_state`.
         "program_start",
         # `last_strength` tampoco tiene tabla propia, y a propósito: sale de
@@ -199,6 +200,7 @@ def load_state(
     programa = session.get(ProgramState, 1)
     if programa is not None:
         state.last_deload_start = programa.last_deload_start
+        state.deload_aplazada_desde = programa.deload_aplazada_desde
 
     return state
 
@@ -378,6 +380,7 @@ def _guardar_programa(session: Session, state: EngineState) -> None:
         fila = ProgramState(id=1)
         session.add(fila)
     fila.last_deload_start = state.last_deload_start
+    fila.deload_aplazada_desde = state.deload_aplazada_desde
 
 
 # ---------------------------------------------------------------------------
@@ -1412,5 +1415,10 @@ def state_as_dict(state: EngineState) -> dict[str, Any]:
         ),
         "last_deload_start": (
             state.last_deload_start.isoformat() if state.last_deload_start else None
+        ),
+        "deload_aplazada_desde": (
+            state.deload_aplazada_desde.isoformat()
+            if state.deload_aplazada_desde
+            else None
         ),
     }
