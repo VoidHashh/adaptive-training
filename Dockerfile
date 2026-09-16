@@ -68,6 +68,27 @@ COPY app/ ./app/
 COPY static/ ./static/
 COPY config.yaml ./config.yaml
 
+# LA MARCA DE QUÉ CÓDIGO ES ESTE. Va DESPUÉS de copiar el código a propósito:
+# cambia en cada build y aquí no invalida ninguna capa cara.
+#
+# Sin esto, «¿el arreglo de ayer ya está corriendo?» no se puede contestar
+# mirando el sistema, y esa pregunta se hace después de CADA arreglo. La
+# etiqueta de la imagen no vale: lleva cuarenta commits en `0.1.0` y no se mueve.
+#
+# El defecto vacío no es descuido: `/api/health` distingue «no se sabe» de un
+# valor, y prefiere decirlo a inventarse uno. Construir sin pasar `GIT_SHA`
+# sigue funcionando y sigue siendo honesto.
+#
+# El argumento se llama igual que la variable que acaba leyendo `Settings`. Dos
+# nombres para el mismo valor es exactamente como se desincroniza una pareja.
+#
+#   docker build --build-arg BUILD_SHA="$(git rev-parse --short HEAD)" \
+#                --build-arg BUILD_DATE="$(date -Iseconds)" ...
+ARG BUILD_SHA=""
+ARG BUILD_DATE=""
+ENV BUILD_SHA=$BUILD_SHA \
+    BUILD_DATE=$BUILD_DATE
+
 # Sin privilegios. El UID 1000 no es capricho: es el que Umbrel le pone a la
 # carpeta de datos de la aplicación, y con otro el contenedor arranca y luego no
 # puede escribir su propia base de datos.

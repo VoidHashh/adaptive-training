@@ -1,6 +1,15 @@
 services:
   app:
-    build: .
+    # Los dos argumentos marcan la imagen con el commit del que salió. Sin
+    # ellos `/api/health` dice «no se sabe qué código es este», que es cierto
+    # pero inútil justo después de arreglar algo. El `:-` deja construir sin
+    # tenerlos declarados en el `.env`: la marca se pierde y se dice, no se
+    # inventa. `image:` no sirve para esto: `0.1.0` no se mueve nunca.
+    build:
+      context: .
+      args:
+        BUILD_SHA: "${BUILD_SHA:-}"
+        BUILD_DATE: "${BUILD_DATE:-}"
     image: adaptive-training:0.1.0
     container_name: adaptive-training
     restart: unless-stopped

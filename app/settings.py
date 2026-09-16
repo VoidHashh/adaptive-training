@@ -116,6 +116,22 @@ class Settings(BaseSettings):
     compose_file: str = ""
     compose_path_separator: str = ""
 
+    # QUÉ CÓDIGO ES ESTE. Lo escribe el `Dockerfile` al construir la imagen y
+    # nadie más: en local queda vacío y eso también es la respuesta correcta.
+    #
+    # Existe porque la pregunta «¿el arreglo de ayer ya está corriendo?» no se
+    # podía contestar. La etiqueta de la imagen lleva cuarenta commits parada en
+    # `0.1.0`, `/api/health` sabía decir si el `config.yaml` del disco era el
+    # cargado -y eso salvó un día entero- pero del CÓDIGO no decía nada, así que
+    # un contenedor de hace una semana y uno reconstruido hace un minuto se ven
+    # idénticos desde fuera: mismo tag, mismo health, mismo todo.
+    #
+    # No lleva validador y no puede llevarlo: aquí cabe un SHA, un `git
+    # describe` o lo que decida escribir quien construya. Lo único que se
+    # promete es que si tiene valor, lo puso el build.
+    build_sha: str = ""
+    build_date: str = ""
+
     # --- Aplicación ---------------------------------------------------------
     config_path: Path = REPO_ROOT / "config.yaml"
     database_url: str = f"sqlite:///{(REPO_ROOT / 'data' / 'app.db').as_posix()}"

@@ -150,6 +150,14 @@ async def lifespan(app: FastAPI):
     _configurar_logs()
 
     init_db()
+    # Lo primero del log, antes que nada: cuando algo va mal, la primera
+    # pregunta es siempre «¿y esto qué versión es?», y la respuesta tiene que
+    # estar arriba del todo y no haber que buscarla.
+    marca = _estado_del_build()
+    if marca["unknown"]:
+        log.info("código: sin marca de construcción (%s)", marca["note"])
+    else:
+        log.info("código: %s, construido %s", marca["sha"], marca["date"] or "sin fecha")
     _avisar_de_la_puerta()
     faltan = settings.missing_secrets()
     if faltan:
@@ -313,6 +321,10 @@ def health(
         "scheduler": _estado_planificador(request),
         "clock": _estado_del_reloj(cfg),
         "config_file": _estado_del_config(cfg),
+        # Y qué código. `config_file` dice si el YAML del disco es el que
+        # decide; esto dice si el ARREGLO de ayer es el que decide, que es la
+        # otra mitad de la misma pregunta y no la sabía contestar nadie.
+        "build": _estado_del_build(),
         # Qué hay delante de la puerta, según quien arrancó esto. Hasta ahora
         # sólo se decía en un WARNING del arranque, y un WARNING del arranque
         # se lee una vez y nunca más.
@@ -543,6 +555,38 @@ def _raiz_de_datos() -> Path:
     """La carpeta de datos, deducida de `database_url`."""
     url = str(settings.database_url)
     return Path(url.split("///")[-1]).parent if "///" in url else Path("data")
+
+
+def _estado_del_build() -> dict[str, Any]:
+    """Qué CÓDIGO está corriendo, no qué config.
+
+    `_estado_del_config` contesta la mitad de la pregunta y la contesta bien: si
+    lo que hay escrito en el disco es lo que está decidiendo. La otra mitad no
+    la contestaba nadie, y es la que hay que hacer después de arreglar algo:
+    ¿está corriendo el arreglo? La etiqueta de la imagen lleva cuarenta commits
+    parada en `0.1.0`, así que un contenedor de la semana pasada y uno
+    reconstruido hace un minuto se ven idénticos desde fuera.
+
+    `unknown: true` cuando el build no dejó marca. NO es un problema de salud y
+    no tiñe el `status`: en local nunca hay marca, y un desarrollo que se
+    autodiagnostica enfermo por no ser una imagen enseña a ignorar el
+    diagnóstico. Lo que hace es decir que no se sabe, que es distinto de
+    insinuar que sí.
+    """
+    sha = (settings.build_sha or "").strip()
+    fecha = (settings.build_date or "").strip()
+    return {
+        "sha": sha or None,
+        "date": fecha or None,
+        "unknown": not sha,
+        # El tag de la imagen no sirve para esto y decirlo aquí ahorra el viaje
+        # de ir a mirarlo: es fijo, no se mueve entre versiones.
+        "note": (
+            "sin marca de construcción: o esto no es una imagen, o se construyó "
+            "sin pasarle GIT_SHA. La etiqueta de la imagen no lo dice: es fija."
+            if not sha else None
+        ),
+    }
 
 
 def _estado_del_config(cfg) -> dict[str, Any]:

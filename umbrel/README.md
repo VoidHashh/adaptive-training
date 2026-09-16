@@ -23,9 +23,18 @@ ya construida en un registro.
 ```bash
 docker login ghcr.io
 docker buildx build --platform linux/amd64,linux/arm64 \
+  --build-arg BUILD_SHA="$(git rev-parse --short HEAD)" \
+  --build-arg BUILD_DATE="$(date -Iseconds)" \
   -t ghcr.io/<usuario>/adaptive-training:0.1.0 --push .
 docker buildx imagetools inspect ghcr.io/<usuario>/adaptive-training:0.1.0
 ```
+
+Los dos `--build-arg` no son opcionales en la práctica, aunque el `Dockerfile`
+los deje vacíos sin protestar. La etiqueta `0.1.0` **no se mueve entre
+versiones**: es el mismo texto desde hace decenas de cambios, así que sin esta
+marca «¿está corriendo el arreglo de ayer?» no se puede contestar mirando el
+sistema, y esa pregunta se hace después de cada arreglo. Con ella, `/api/health`
+devuelve el `build` y se contesta desde el móvil.
 
 Las dos arquitecturas están comprobadas: la imagen construye y arranca en
 `linux/arm64` (Raspberry, Umbrel Home) y en `linux/amd64`. `uvloop` y

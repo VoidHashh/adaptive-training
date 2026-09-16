@@ -488,6 +488,67 @@ def test_la_salud_declara_lo_que_falta(cliente):
     assert "dry_run" in cuerpo
 
 
+def test_la_salud_dice_que_codigo_esta_corriendo(cliente, monkeypatch):
+    """La otra mitad de `config_file`, que no la contestaba nadie.
+
+    `config_file` dice si el YAML del disco es el que decide. Esto dice si el
+    ARREGLO de ayer es el que decide, y esa pregunta se hace después de cada
+    arreglo. No se podía contestar mirando el sistema: la etiqueta de la imagen
+    lleva decenas de versiones en `0.1.0`, así que un contenedor de la semana
+    pasada y uno reconstruido hace un minuto se ven idénticos desde fuera.
+    """
+    from app.settings import settings as s
+
+    monkeypatch.setattr(s, "build_sha", "69de011")
+    monkeypatch.setattr(s, "build_date", "2026-09-16T12:00:00+02:00")
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["build"]["sha"] == "69de011"
+    assert cuerpo["build"]["date"] == "2026-09-16T12:00:00+02:00"
+    assert cuerpo["build"]["unknown"] is False
+
+
+def test_una_imagen_sin_marca_lo_dice_y_no_se_declara_enferma(cliente):
+    """Dos exigencias que tiran en sentidos contrarios, y las dos importan.
+
+    Sin marca hay que DECIRLO: callar dejaría creer que el `status: ok` de
+    arriba cubre también «y es el código de ayer», que es justo lo que no
+    cubre. Pero no puede contar como problema de salud: en local nunca hay
+    marca, y un desarrollo que se autodiagnostica enfermo por no ser una imagen
+    enseña a ignorar el diagnóstico, que es peor que no tenerlo.
+
+    El cliente de pruebas no lleva marca, así que este es el caso por defecto y
+    no hace falta montarlo.
+    """
+    cuerpo = cliente.get("/api/health").json()
+
+    assert cuerpo["build"]["unknown"] is True
+    assert cuerpo["build"]["sha"] is None
+    assert cuerpo["build"]["note"]
+    assert not any("construcción" in p for p in cuerpo["problemas"]), (
+        f"no saber la versión no es una avería: {cuerpo['problemas']}"
+    )
+
+
+def test_el_dockerfile_escribe_la_marca_que_los_ajustes_leen(cliente):
+    """Los dos extremos del cable, que viven en ficheros distintos y en
+    lenguajes distintos: el `ARG`/`ENV` del `Dockerfile` y el campo de
+    `Settings`. Si los nombres dejan de coincidir no falla nada, no avisa
+    nadie, y `/api/health` dice para siempre «no se sabe qué código es este»
+    con toda la cadena montada.
+    """
+    from pathlib import Path
+
+    from app.settings import Settings
+
+    texto = Path("Dockerfile").read_text(encoding="utf-8")
+    for campo in ("build_sha", "build_date"):
+        assert campo in Settings.model_fields
+        var = campo.upper()
+        assert f"ARG {var}=" in texto, f"el Dockerfile ya no declara ARG {var}"
+        assert f"{var}=${var}" in texto, f"el Dockerfile no pasa {var} al ENV"
+
+
 def test_el_config_desincronizado_no_puede_salir_como_sano(cliente, monkeypatch):
     """La avería concreta que trajo todo esto.
 
