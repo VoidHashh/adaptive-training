@@ -115,6 +115,30 @@ class BuiltSession:
     hevy_routine_id: str | None = None
     write_to_hevy: bool = True
     hiit_block: str | None = None
+    # EL BLOQUE HIIT DEL DÍA, COMO SESIÓN APARTE Y NO PEGADO A LA DE FUERZA.
+    #
+    # Aquí no había nada: los ejercicios del bloque se concatenaban a
+    # `exercises` y `hiit_block` guardaba solo la clave. Con eso, todo lo que
+    # mira la sesión de un día veía UNA rutina con la prensa y el wall ball
+    # dentro, y de ahí salían tres averías que no se parecen entre sí:
+    #
+    #   - las cargas del HIIT se sembraban bajo `dia_1`, que no declara esas
+    #     claves, así que quedaban filas huérfanas que nadie volvía a leer y
+    #     `plancha_frontal` -el único ejercicio del bloque que progresa- no
+    #     progresaba nunca;
+    #   - el cumplimiento era uno solo: un wall ball que no se hizo cerraba la
+    #     puerta de la progresión de la prensa horizontal, que no tiene nada
+    #     que ver;
+    #   - y en Hevy solo se escribía un destino, el de fuerza, mientras el
+    #     bloque vivía en su propia rutina (`hiit.blocks` las nombra) que se
+    #     quedaba con lo que hubiera de la última vez.
+    #
+    # Es un `BuiltSession` y no una lista de ejercicios porque eso es lo que
+    # es: tiene su clave de rutina (`hiit_dia_1`), su título, su
+    # `hevy_routine_id` y su carga vigente. Serlo de verdad hace que
+    # `build_routine_payload`, `apply_execution` y `adoptar_cargas` le sirvan
+    # sin una sola rama nueva.
+    hiit: "BuiltSession | None" = None
     # Todo lo que se le ha hecho a la rutina base, en orden, con su motivo.
     changes: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
@@ -141,6 +165,12 @@ class BuiltSession:
             "dropped": self.dropped,
             "notes": self.notes,
             "exercises": self.exercises,
+            # El plan del HIIT se guarda ANIDADO y con su propia clave de
+            # rutina. `run_reconcile` lo lee de aquí para medir el bloque
+            # contra lo que el bloque pedía, que es la mitad entera de la
+            # separación: sin esto, la noche solo tendría la lista de fuerza y
+            # volvería a no saber qué se había prescrito de HIIT.
+            "hiit": self.hiit.to_dict() if self.hiit is not None else None,
         }
 
     def total_effective_sets(self, set_cfg: dict[str, Any]) -> int:
@@ -700,7 +730,7 @@ def build_session(
         block = routines.get(block_key, {}) or {}
         if block:
             out.hiit_block = block_key
-            out.exercises = out.exercises + copy.deepcopy(block.get("exercises") or [])
+            out.hiit = _sesion_hiit(block_key, block, day, current_sets, set_cfg)
             out.changes.append(f"añadido bloque HIIT ({block.get('title', block_key)}): {why}")
         else:
             # Este era el peor de los tres: todo decía que tocaba HIIT, el
@@ -713,6 +743,61 @@ def build_session(
             )
 
     return out
+
+
+def _sesion_hiit(
+    block_key: str,
+    block: dict[str, Any],
+    day: date,
+    current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None,
+    set_cfg: dict[str, Any],
+) -> BuiltSession:
+    """El bloque HIIT de hoy como sesión propia, bajo SU clave de rutina.
+
+    Lo que hace y lo que NO hace, que aquí es lo interesante.
+
+    HACE pasar el bloque por `con_carga_vigente` y fijar su `target_sets`, igual
+    que la rutina de fuerza. Sin esto la carga del bloque salía del YAML cada
+    día, literal, y `plancha_frontal` -que es `progression_type: volume` con
+    `max_seconds: 60`, el único del bloque que progresa- volvía a sus segundos
+    de fábrica cada mañana. La progresión se adoptaba en la base y no llegaba
+    nunca a la app.
+
+    Y el par de la clave es `(hiit_dia_1, plancha_frontal)`, que es donde el
+    `config.yaml` declara ese ejercicio. Bajo `dia_1` -que es donde iba- la fila
+    no la lee nadie, porque `dia_1` no tiene esa clave.
+
+    NO HACE nada de lo que el semáforo le hace a la fuerza: ni recortes de
+    ámbar, ni descarga, ni retiradas por regla especial. No es una omisión, es
+    que no puede llegar aquí un día en que toque: el bloque solo se añade en
+    verde (`hiit.only_on_green`) y con `allow_hiit`, y en verde no hay recorte
+    de ámbar ni regla especial que quitar. El día que eso cambie, este
+    comentario es lo que hay que releer: aplicarle a un bloque HIIT un -25 % de
+    series no es lo mismo que aplicárselo a una rutina de fuerza.
+    """
+    ejercicios = con_carga_vigente(
+        block.get("exercises") or [], block_key, current_sets, set_cfg
+    )
+    hiit = BuiltSession(
+        day=day,
+        # `full` y no un cuarto valor: los tres que hay describen cuánto se
+        # recorta la sesión respecto de lo prescrito, y el bloque va entero o
+        # no va. Un `kind: "hiit"` aquí obligaría a todos los `if kind ==` del
+        # sistema a crecer una rama para decir lo mismo. Lo que este bloque ES
+        # se sabe por su `routine_key`, que `claves_hiit` reconoce.
+        kind=FULL,
+        routine_key=block_key,
+        title=str(block.get("title", block_key)),
+        exercises=ejercicios,
+        hevy_routine_id=block.get("hevy_routine_id"),
+        write_to_hevy=bool(block.get("write_to_hevy", True)),
+    )
+    hiit.target_sets = {
+        str(ex.get("key")): copy.deepcopy(series_efectivas_vigentes(ex, set_cfg))
+        for ex in ejercicios
+        if ex.get("key")
+    }
+    return hiit
 
 
 def _deload_load_factor(raw: dict[str, Any]) -> float:

@@ -386,7 +386,22 @@ def _lineas_sesion(s: Any, raw: dict, set_cfg: dict[str, Any]) -> list[str]:
         # dos líneas más abajo del `hevy_routine_id`. Los bloques HIIT viven en
         # `routines` como cualquier otra rutina, así que el mismo buscador que
         # traduce `dia_1` los traduce a ellos sin nada nuevo.
-        out.append(f"🔥 <b>HIIT:</b> {escapar_html(_titulo_rutina(raw, s.hiit_block))}")
+        out.append(
+            f"🔥 <b>HIIT (entreno aparte):</b> "
+            f"{escapar_html(_titulo_rutina(raw, s.hiit_block))}"
+        )
+        # Y SUS EJERCICIOS DEBAJO, que antes salían arriba y revueltos.
+        #
+        # El bloque se concatenaba a la lista de fuerza, así que el wall ball
+        # aparecía como una viñeta más entre la prensa y las planchas, y al
+        # final una línea suelta decía «HIIT: Día 1 HIIT» sin decir cuáles de
+        # las doce viñetas eran. Ahora son dos entrenamientos distintos en Hevy
+        # y hay que empezar los dos por separado, así que el mensaje -que es lo
+        # único que se lee antes de abrir la app- tiene que enseñar dónde
+        # acaba uno y empieza el otro.
+        for ex in (s.hiit.exercises if getattr(s, "hiit", None) is not None else []):
+            nombre_ex = escapar_html(ex.get("name", ex.get("key")))
+            out.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
     return out
 
 

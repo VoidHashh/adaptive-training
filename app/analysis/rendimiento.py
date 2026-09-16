@@ -120,6 +120,13 @@ BASE_MINIMA = 15
 
 FUERZA = "strength"
 BICI = "bike"
+# El HIIT es un tipo PROPIO y no fuerza con otro nombre. `_previas` reparte las
+# distribuciones por tipo, así que meter un bloque de wall balls y burpees en la
+# muestra de las sesiones de fuerza movería el percentil de la prensa por algo
+# que no se parece en nada: otro volumen, otros pesos, otra duración. El
+# percentil dejaría de decir "comparado con tus sesiones de fuerza" para decir
+# "comparado con una mezcla", que es un número sin pregunta detrás.
+HIIT = "hiit"
 
 PERCEPCION_PEOR = "perception_worse"
 PERCEPCION_MEJOR = "perception_better"
@@ -853,8 +860,10 @@ def evaluar_sesion(
     previas = _previas(session, kind, dia)
     base = len(previas)
 
-    if kind == FUERZA:
-        rend = _rendimiento_de_fuerza(session, cfg, dia, entreno or {}, previas)
+    if kind in (FUERZA, HIIT):
+        rend = _rendimiento_de_fuerza(
+            session, cfg, dia, entreno or {}, previas, hiit=(kind == HIIT)
+        )
     else:
         rend = _rendimiento_de_bici(actividad, previas)
 
@@ -913,10 +922,22 @@ def _rendimiento_de_fuerza(
     dia: date,
     entreno: dict[str, Any],
     previas: list[SessionPerformance],
+    *,
+    hiit: bool = False,
 ) -> dict[str, Any]:
-    """Reúne de la base lo que `rendimiento_fuerza` necesita, y lo llama."""
+    """Reúne de la base lo que `rendimiento_fuerza` necesita, y lo llama.
+
+    `hiit` elige CONTRA QUÉ PLAN se mide. La decisión del día guarda dos
+    sesiones: la de fuerza en la raíz y el bloque HIIT anidado bajo `hiit`. Sin
+    este interruptor, un entreno de wall balls se comparaba con la lista de la
+    prensa y el remo: ninguno de sus ejercicios aparecía, el índice salía por
+    los suelos y la fila decía que la sesión había sido malísima cuando se
+    había hecho entera.
+    """
     dec = _decision(session, dia)
     plan = json.loads(dec.planned_session_json) if dec and dec.planned_session_json else {}
+    if hiit:
+        plan = plan.get("hiit") or {}
     if not plan.get("exercises"):
         return {
             "indice": None,
@@ -1021,8 +1042,11 @@ def evaluar_pendientes(
     dejaría de ser el total de sesiones, que es precisamente lo que lo hace
     creíble.
     """
+    from app.integrations.hevy import claves_hiit
+
     escritas: list[SessionPerformance] = []
     desde = hasta - timedelta(days=dias - 1)
+    hiit = claves_hiit(cfg)
 
     for w in session.scalars(
         select(WorkoutLog)
@@ -1035,12 +1059,19 @@ def evaluar_pendientes(
             crudo = json.loads(w.raw_json or "{}")
         except ValueError:
             crudo = {}
+        # El tipo sale de la RUTINA DE ORIGEN, nunca del título. Todas las filas
+        # de `workout_log` entraban aquí como `strength`, así que el bloque HIIT
+        # -que en Hevy es un entrenamiento suelto- se juzgaba contra el plan de
+        # fuerza y encima ensuciaba la distribución con la que se sitúan las
+        # sesiones de fuerza de verdad. Un entreno sin rutina conocida sigue
+        # contando como fuerza: es lo que casi siempre es, y `_rendimiento_de_
+        # fuerza` ya dice que no hay plan contra el que medirlo.
         escritas.append(
             evaluar_sesion(
                 session,
                 cfg,
                 dia=w.date,
-                kind=FUERZA,
+                kind=HIIT if (w.routine_key or "") in hiit else FUERZA,
                 source_key=f"hevy:{w.hevy_workout_id}",
                 entreno=crudo,
             )
@@ -1300,7 +1331,7 @@ def vista_percepcion(
                 "juzgadas": sum(1 for f in juzgadas if f.kind == tipo),
                 "veces": sum(1 for f in peores if f.kind == tipo),
             }
-            for tipo in (FUERZA, BICI)
+            for tipo in (FUERZA, HIIT, BICI)
         },
         "componentes": _medias_componentes(juzgadas),
         "ultima": _resumen(peores[-1]) if peores else None,
@@ -1462,7 +1493,11 @@ def mensaje_disociacion(
     """
     from app.engine.message import fmt_date, fmt_num
 
-    que = "La sesión de fuerza" if fila.kind == FUERZA else "La salida en bici"
+    que = {
+        FUERZA: "La sesión de fuerza",
+        HIIT: "El bloque de HIIT",
+        BICI: "La salida en bici",
+    }.get(fila.kind, "La sesión")
     lineas = [
         f"{fmt_date(fila.date).capitalize()}: esa mañana te puntuaste "
         f"{fmt_num(fila.perception_index)} de 100 — percentil "
@@ -1478,7 +1513,7 @@ def mensaje_disociacion(
     rend = comp.get("rendimiento") or {}
     trozos = (
         _frase_fuerza(rend.get("componentes") or {})
-        if fila.kind == FUERZA
+        if fila.kind in (FUERZA, HIIT)
         else _frase_bici(rend)
     )
     if trozos:

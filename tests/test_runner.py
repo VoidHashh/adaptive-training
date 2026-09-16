@@ -13,6 +13,7 @@ este sistema puede hacer daño sin dar un error:
 
 from __future__ import annotations
 
+import copy
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1129,12 +1130,24 @@ def _rid(cfg, rkey: str) -> str:
     return cfg.raw["routines"][rkey]["hevy_routine_id"]
 
 
-def _parte(plan: dict, claves: set[str], *, dentro: bool, wid: str, rid: str) -> dict:
-    """Media sesión: solo los ejercicios de `claves`, o solo los demás."""
-    w = _entrenamiento_completo(
-        {"exercises": [e for e in plan["exercises"] if (e["key"] in claves) is dentro]},
-        wid=wid,
+def _ejecuta(media: dict, *, wid: str, rid: str) -> dict:
+    """Un entrenamiento que ejecuta ENTERO el plan que se le pase.
+
+    ANTES ESTO PARTÍA UNA LISTA, Y POR AHÍ SE QUEDÓ CIEGO. Cuando el HIIT
+    viajaba dentro de `plan["exercises"]`, la forma de fabricar los dos
+    entrenamientos era filtrar esa lista por las claves del bloque. Al sacar el
+    HIIT a `plan["hiit"]` el filtro siguió compilando y siguió pasando: la mitad
+    "dentro" salía vacía, y un entrenamiento sin ejercicios cumple cualquier
+    cosa que se le pida. Los tests del HIIT pasaban sin medir nada.
+
+    Con las dos mitades ya separadas en el plan no hay nada que filtrar, así que
+    la función ya no puede quedarse callada: si le dan un plan vacío, revienta.
+    """
+    assert media.get("exercises"), (
+        f"plan vacío para {wid}: un entrenamiento sin ejercicios cumple "
+        "cualquier cosa y el test no comprobaría nada"
     )
+    w = _entrenamiento_completo({"exercises": media["exercises"]}, wid=wid)
     w["routine_id"] = rid
     return w
 
@@ -1152,9 +1165,8 @@ def test_el_hiit_previsto_para_hoy_no_sale_como_fuera_del_plan(db, cfg_lunes):
         f"el escenario ya no lleva HIIT; el test hay que rehacerlo: {plan.get('hiit_block')}"
     )
 
-    bloque = {e["key"] for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]}
-    fuerza = _parte(plan, bloque, dentro=False, wid="fuerza", rid=_rid(cfg_lunes, "dia_1"))
-    hiit = _parte(plan, bloque, dentro=True, wid="hiit", rid=_rid(cfg_lunes, "hiit_dia_1"))
+    fuerza = _ejecuta(plan, wid="fuerza", rid=_rid(cfg_lunes, "dia_1"))
+    hiit = _ejecuta(plan["hiit"], wid="hiit", rid=_rid(cfg_lunes, "hiit_dia_1"))
 
     res = run_reconcile(db, cfg_lunes, LUNES, workouts=[fuerza, hiit])
 
@@ -1163,8 +1175,8 @@ def test_el_hiit_previsto_para_hoy_no_sale_como_fuera_del_plan(db, cfg_lunes):
     assert set(filas) == {"fuerza", "hiit"}
     assert filas["hiit"].routine_key == "hiit_dia_1"
     assert filas["hiit"].unplanned is False
-    assert filas["hiit"].all_sets_at_target is None, (
-        "el veredicto del día es el de la fuerza; el HIIT no se juzga y no lo hereda"
+    assert filas["hiit"].all_sets_at_target is True, (
+        "el HIIT se hizo entero; ahora tiene veredicto PROPIO, no el de la fuerza"
     )
     assert filas["fuerza"].all_sets_at_target is True
 
@@ -1562,22 +1574,23 @@ def test_el_hiit_del_plan_no_puede_cerrar_la_puerta_de_la_fuerza(db, cfg_lunes):
     """LA comprobación que justifica encender el HIIT, y la única cuyo fallo se
     paga en una espalda con hernia.
 
-    El bloque HIIT se AÑADE a los ejercicios de la rutina, así que `executed`
-    pasa a llevar claves de HIIT y el veredicto del día se vuelve False en cuanto
-    falte una de ellas. Si esas claves contaran para la progresión de fuerza,
-    saltarse el HIIT congelaría la carga de la sesión de fuerza para siempre, o
-    -peor, si el signo estuviera al revés- haría subir con una sesión a medias.
-    Aquí se hace la fuerza ENTERA y nada del HIIT, y la racha de fuerza tiene que
-    avanzar exactamente igual.
+    Es la frase del usuario, literal: "un wall ball que no hice no debe frenar
+    la progresión de la prensa". Cuando el bloque HIIT se AÑADÍA a los
+    ejercicios de la rutina, `executed` llevaba claves de HIIT y el veredicto
+    del día se volvía False en cuanto faltara una de ellas; esas claves contaban
+    para la progresión de fuerza, así que saltarse el HIIT congelaba la carga de
+    la sesión de fuerza para siempre.
+
+    Aquí se hace la fuerza ENTERA y nada del HIIT. La racha de fuerza tiene que
+    avanzar exactamente igual, y la del HIIT tiene que romperse: las dos cosas,
+    porque "no se contamina" y "no se mide" se parecen mucho vistas desde el
+    lado de la fuerza y solo una de las dos es la que se quiere.
     """
     corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
     plan = _plan_guardado(db)
     assert plan["hiit_block"] == "hiit_dia_1", "el escenario ya no lleva HIIT"
 
-    bloque = {e["key"] for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]}
-    solo_fuerza = _parte(
-        plan, bloque, dentro=False, wid="fuerza", rid=_rid(cfg_lunes, "dia_1")
-    )
+    solo_fuerza = _ejecuta(plan, wid="fuerza", rid=_rid(cfg_lunes, "dia_1"))
 
     res = run_reconcile(db, cfg_lunes, LUNES, workouts=[solo_fuerza])
     assert res.avanzado
@@ -1587,6 +1600,150 @@ def test_el_hiit_del_plan_no_puede_cerrar_la_puerta_de_la_fuerza(db, cfg_lunes):
     assert all(estado.clean_sessions.get(("dia_1", k), 0) == 1 for k in base), (
         "saltarse el HIIT ha roto la racha de la fuerza: "
         f"{[(k, estado.clean_sessions.get(('dia_1', k), 0)) for k in base]}"
+    )
+    bloque = [e["key"] for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]]
+    assert all(estado.clean_sessions.get(("hiit_dia_1", k), 0) == 0 for k in bloque), (
+        "el HIIT no se hizo y su racha ha avanzado igual: no se está midiendo, "
+        f"{[(k, estado.clean_sessions.get(('hiit_dia_1', k), 0)) for k in bloque]}"
+    )
+    assert all(estado.compliance.get(("hiit_dia_1", k)) is False for k in bloque), (
+        "el cumplimiento del HIIT no se ha apuntado bajo su propia clave: "
+        f"{ {k: estado.compliance.get(('hiit_dia_1', k)) for k in bloque} }"
+    )
+
+
+def _titulos(payload: dict) -> list[str]:
+    return [e["title"] for e in payload["routine"]["exercises"]]
+
+
+def test_el_hiit_se_escribe_en_su_rutina_de_hevy_y_no_dentro_de_la_fuerza(
+    db, cfg_lunes
+):
+    """Dos entrenamientos distintos son dos rutinas distintas en Hevy.
+
+    Mientras el bloque viajaba dentro de `session.exercises`, el PUT de la
+    mañana metía los wall balls al final de `Día 1` y la rutina `Día 1 HIIT` de
+    la cuenta no se tocaba nunca. Eso obligaba a registrarlo todo de una sentada
+    para que el sistema lo leyera, y era justo lo que hacía que un wall ball sin
+    hacer contaminara la racha de la prensa.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = corre(db, cfg_lunes, hevy=hevy, tg=tg)
+    assert res.decision.session.hiit_block == "hiit_dia_1", (
+        "el escenario ya no lleva HIIT; el test hay que rehacerlo"
+    )
+
+    assert res.hevy_status == "ok", f"{res.hevy_status} ({res.hevy_reason})"
+    assert res.hevy_hiit_status == "ok", (
+        f"{res.hevy_hiit_status} ({res.hevy_hiit_reason})"
+    )
+
+    escrito = dict(hevy.llamadas)
+    assert set(escrito) == {_rid(cfg_lunes, "dia_1"), _rid(cfg_lunes, "hiit_dia_1")}, (
+        f"no se han tocado las dos rutinas: {list(escrito)}"
+    )
+
+    del_bloque = {
+        e["name"] for e in cfg_lunes.raw["routines"]["hiit_dia_1"]["exercises"]
+    }
+    en_fuerza = set(_titulos(escrito[_rid(cfg_lunes, "dia_1")]))
+    en_hiit = set(_titulos(escrito[_rid(cfg_lunes, "hiit_dia_1")]))
+    assert del_bloque <= en_hiit, f"falta bloque en su rutina: {del_bloque - en_hiit}"
+    assert not (del_bloque & en_fuerza), (
+        f"el HIIT sigue metido en la rutina de fuerza: {del_bloque & en_fuerza}"
+    )
+
+
+def test_el_estado_de_las_dos_escrituras_va_separado(db, cfg_lunes):
+    """Dos filas en `hevy_writes`, cada una con SU rutina y SU estado.
+
+    Con un solo `hevy_status` en el resultado, la escritura del bloque quedaba
+    tapada por la de la fuerza: si el PUT del HIIT fallaba y el de la fuerza
+    salía bien, el día se leía como «ok» y en la cuenta quedaba un bloque viejo
+    sin que nada lo dijera.
+    """
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+
+    filas = db.scalars(select(HevyWrite).order_by(HevyWrite.id)).all()
+    por_rutina = {f.routine_key: f for f in filas}
+    assert set(por_rutina) == {"dia_1", "hiit_dia_1"}, [f.routine_key for f in filas]
+    assert por_rutina["hiit_dia_1"].status == "ok"
+    assert por_rutina["hiit_dia_1"].hevy_routine_id == _rid(cfg_lunes, "hiit_dia_1")
+    assert por_rutina["hiit_dia_1"].reason, "una escritura sin motivo es media auditoría"
+
+
+def test_un_checkin_rojo_tardio_tambien_deshace_el_hiit(db, cfg_lunes):
+    """La reversión tiene que cubrir las DOS rutinas que se escribieron.
+
+    Es el mismo agujero que ya estaba cerrado para la fuerza, reabierto por la
+    separación: a las 09:00 sin formulario sale verde y se escriben `Día 1` y
+    `Día 1 HIIT`; a las 10:30 llega un check-in rojo y la sesión pasa a ser
+    recuperación. Deshacer solo la fuerza dejaría en la app un bloque de HIIT
+    que la decisión vigente no pide, en un día rojo y con una hernia L4-L5.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg_lunes, hevy, tg)
+    assert _plan_guardado(db)["hiit_block"] == "hiit_dia_1", "el montaje no lleva HIIT"
+
+    res = checkin_tardio(db, cfg_lunes, hevy, tg, CHECKIN_ROJO)
+
+    assert res.decision.light == "red"
+    assert res.hevy_status == "reverted"
+    assert res.hevy_hiit_status == "reverted", (
+        f"el bloque se ha quedado escrito: {res.hevy_hiit_status} "
+        f"({res.hevy_hiit_reason})"
+    )
+    assert sorted(r for r, _ in hevy.reversiones) == sorted(
+        [_rid(cfg_lunes, "dia_1"), _rid(cfg_lunes, "hiit_dia_1")]
+    ), f"no se han deshecho las dos: {hevy.reversiones}"
+
+    vueltas = [
+        f for f in db.scalars(select(HevyWrite)).all() if f.status == "reverted"
+    ]
+    assert sorted(f.routine_key for f in vueltas) == ["dia_1", "hiit_dia_1"]
+
+
+def test_la_carga_del_hiit_se_adopta_bajo_la_clave_del_bloque(db, cfg_lunes):
+    """El wall ball sube en `hiit_dia_1`, que es donde el config lo declara.
+
+    Antes la adopción de la carga ejecutada del bloque se guardaba bajo `dia_1`,
+    la rutina de fuerza de ese día. Nadie lee esa fila -`dia_1` no tiene esa
+    clave- y además el bloque rota, así que la misma plancha acababa repartida
+    entre `dia_1` y `dia_2`. Resultado: ninguna carga del HIIT llegó nunca a
+    moverse, y no había ningún error por ninguna parte.
+    """
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    bloque = plan["hiit"]
+    ex = next(e for e in bloque["exercises"] if e["key"] == "wall_ball")
+    antes = float(ex["sets"][0]["weight_kg"])
+
+    hecho = copy.deepcopy(bloque)
+    for e in hecho["exercises"]:
+        if e["key"] == "wall_ball":
+            for s in e["sets"]:
+                s["weight_kg"] = antes + 1.0
+    w = _ejecuta(hecho, wid="hiit", rid=_rid(cfg_lunes, "hiit_dia_1"))
+
+    res = run_reconcile(db, cfg_lunes, LUNES, workouts=[w])
+
+    adoptada = [
+        a for a in res.adopciones if a["key"] == "wall_ball" and a["applied"]
+    ]
+    assert adoptada, f"el peso del wall ball no se ha adoptado: {res.adopciones}"
+    assert adoptada[0]["routine"] == "hiit_dia_1", (
+        f"adoptado bajo {adoptada[0]['routine']!r}, que no es donde vive"
+    )
+
+    estado = load_state(db, program_start=cfg_lunes.program_start)
+    series = estado.current_sets.get(("hiit_dia_1", "wall_ball"))
+    assert series, (
+        "la carga no ha quedado bajo la clave del bloque: "
+        f"{[k for k in estado.current_sets if k[1] == 'wall_ball']}"
+    )
+    assert float(series[0]["weight_kg"]) > antes
+    assert ("dia_1", "wall_ball") not in estado.current_sets, (
+        "la carga del HIIT sigue ensuciando la rutina de fuerza"
     )
 
 

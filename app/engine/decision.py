@@ -1030,6 +1030,19 @@ def advance_state(
         for clave, series in (sess.target_sets or {}).items():
             new.current_sets[(rkey, clave)] = copy.deepcopy(series)
 
+    # Y el bloque HIIT bajo SU clave, que es `hiit_dia_1` y no `dia_1`.
+    #
+    # Antes sus ejercicios venían pegados a los de la fuerza, así que este mismo
+    # bucle los guardaba como `(dia_1, wall_ball)`. Esa fila no la lee nadie:
+    # `dia_1` no declara `wall_ball`, así que `con_carga_vigente` nunca la
+    # busca. La carga del bloque salía del YAML cada mañana y `plancha_frontal`
+    # -que progresa por volumen- volvía a sus segundos de fábrica todos los días
+    # mientras la base guardaba una progresión que no se aplicaba a nada.
+    hiit = getattr(sess, "hiit", None)
+    if hiit is not None and hiit.routine_key:
+        for clave, series in (hiit.target_sets or {}).items():
+            new.current_sets[(hiit.routine_key, clave)] = copy.deepcopy(series)
+
     # Aquí vivía toda la contabilidad del aplazamiento: un rojo guardaba la
     # sesión, planificar otra rutina la borraba -y borrarla por haber
     # planificado, no por haber ejecutado, costó una sesión entera en silencio-,

@@ -48,6 +48,13 @@ from app.engine.rotacion import pendientes as rutinas_pendientes
 from app.engine.session_builder import orden_de_rotacion
 from app.engine.signals import DIAS_DE_HISTORIA, Checkin, build_signals
 from app.engine.tendencia import DecisionDia, evaluar_tendencia
+from app.integrations.hevy import (
+    SIN_RASTRO,
+    claves_hiit,
+    motivos_incumplimiento,
+    pesos_ejecutados,
+    workout_compliance,
+)
 from app.integrations.telegram import escapar_html
 from app.models import HevyWrite, Notification, WorkoutLog
 
@@ -74,6 +81,17 @@ class DailyResult:
     # El código HTTP que contestó Hevy, si contestó. Ver `WriteResult.http_status`:
     # la columna existía y nadie la llenaba nunca.
     hevy_http: int | None = None
+    # LO MISMO PARA EL SEGUNDO DESTINO, y con campos propios en vez de
+    # machacar los de arriba. Desde que el bloque HIIT va a su propia rutina de
+    # Hevy, una mañana con HIIT toca DOS rutinas, y las dos pueden ir distinto:
+    # que la de fuerza se escriba y la del HIIT devuelva un 400 es un día en el
+    # que abro la app, veo el Día 1 al día y el bloque de la semana pasada.
+    # Reutilizar `hevy_status` dejaría el resultado del día siendo el de la
+    # última que se escribiera, que es una moneda al aire.
+    #
+    # `skipped` de salida significa la mayoría de los días: hoy no tocaba HIIT.
+    hevy_hiit_status: str = "skipped"
+    hevy_hiit_reason: str = ""
     telegram_status: str = "skipped"  # sent | error | skipped | dry_run
     telegram_reason: str = ""
     # Fallos que NO han impedido terminar. Van aquí en vez de a un log que nadie
@@ -442,6 +460,17 @@ def _escribir_hevy(
 ) -> None:
     from app.integrations.hevy import build_routine_payload
 
+    # EL SEGUNDO DESTINO SE ESCRIBE SIEMPRE, y por eso va antes de la salida
+    # temprana de abajo y en un `try` que no puede tumbar nada.
+    #
+    # Va ANTES porque el día que la sesión de fuerza no toca Hevy -recuperación,
+    # o una decisión anulada- hay que deshacer igualmente el bloque HIIT que se
+    # escribió esta mañana. Si esto fuera después del `return`, ese día el
+    # bloque se quedaría puesto: Telegram diría «Recuperación» y en la app
+    # habría un HIIT esperando, que con una hernia L4-L5 es el error en la
+    # única dirección que no se puede permitir.
+    _escribir_hiit(session, cfg, decision, fila, res, client, dry_run)
+
     s = decision.session
     if not (s.write_to_hevy and s.routine_key and s.hevy_routine_id):
         _deshacer_lo_de_hoy(session, cfg, decision, fila, res, client, dry_run)
@@ -525,7 +554,176 @@ def _escribir_hevy(
     _anotar_hevy(session, decision, fila, res, payload)
 
 
-def _escritura_viva_de_hoy(session: Session, day: date) -> Any | None:
+def _escribir_hiit(
+    session: Session,
+    cfg: Any,
+    decision: Any,
+    fila: Any,
+    res: DailyResult,
+    client: Any,
+    dry_run: bool,
+) -> None:
+    """El segundo destino: la rutina de Hevy donde vive el bloque HIIT.
+
+    POR QUÉ HAY DOS Y NO UNA
+    ------------------------
+    El motor pegaba los ejercicios del bloque a la rutina de fuerza y escribía
+    una sola rutina. Pero en Hevy los bloques HIIT existen como rutinas propias
+    -el `config.yaml` les da su `hevy_routine_id` desde siempre- y así es como
+    están ejecutados en la cuenta: el 8 y el 9 de septiembre constan como
+    entrenamientos separados. O sea que la rutina HIIT de la app nunca la
+    escribía nadie: se entrenaba lo que hubiera quedado ahí de la última vez,
+    con la carga de fábrica del YAML, mientras la progresión del único
+    ejercicio que progresa (`plancha_frontal`) se guardaba en la base y no
+    llegaba jamás a la pantalla del gimnasio.
+
+    Y LA OTRA MITAD: DESHACERLO
+    ---------------------------
+    Si hoy no toca HIIT pero esta mañana se escribió uno -el respaldo de las
+    09:00 decidió en verde, el check-in llegó a las 10:30 y salió ámbar- la
+    rutina HIIT se queda puesta. Es el mismo fallo que `_deshacer_lo_de_hoy`
+    arregla para la fuerza, y aquí es peor: el HIIT solo se prescribe en verde,
+    así que un HIIT que sobrevive a un cambio de decisión está SIEMPRE en un
+    día que el sistema ha declarado no verde.
+
+    NO TUMBA LA MAÑANA. Cualquier fallo aquí se anota en `problemas` y sigue: la
+    decisión ya está tomada y el mensaje tiene que salir igual.
+    """
+    from app.integrations.hevy import build_routine_payload
+
+    h = getattr(decision.session, "hiit", None)
+
+    if h is None or not (h.write_to_hevy and h.routine_key and h.hevy_routine_id):
+        _deshacer_el_hiit_de_hoy(session, cfg, decision, fila, res, client, dry_run)
+        return
+
+    try:
+        payload = build_routine_payload(h, cfg)
+    except Exception as exc:  # noqa: BLE001
+        res.hevy_hiit_status = "error"
+        res.hevy_hiit_reason = f"no se pudo construir el bloque HIIT: {exc}"
+        res.problemas.append(f"Hevy (HIIT): {res.hevy_hiit_reason}")
+        log.exception("fallo construyendo el payload del bloque HIIT")
+        return
+
+    if client is None:
+        res.hevy_hiit_status = "error"
+        res.hevy_hiit_reason = (
+            "no hay cliente de Hevy: la rutina del HIIT sigue siendo la anterior"
+        )
+        res.problemas.append(f"Hevy (HIIT): {res.hevy_hiit_reason}")
+        _anotar_hevy(session, decision, fila, res, payload,
+                     routine_key=h.routine_key, hevy_routine_id=h.hevy_routine_id,
+                     estado=res.hevy_hiit_status, motivo=res.hevy_hiit_reason)
+        return
+
+    try:
+        r = client.write_routine(h.hevy_routine_id, payload, dry_run=dry_run)
+        res.hevy_hiit_reason = r.reason
+        if r.written:
+            res.hevy_hiit_status = "ok"
+        elif dry_run:
+            res.hevy_hiit_status = "dry_run"
+        elif r.error:
+            res.hevy_hiit_status = "error"
+            res.hevy_hiit_reason = r.error
+            res.problemas.append(f"Hevy (HIIT): {r.error}")
+        else:
+            res.hevy_hiit_status = "read_only"
+            res.problemas.append(f"Hevy (HIIT): {r.reason}")
+    except Exception as exc:  # noqa: BLE001
+        res.hevy_hiit_status = "error"
+        res.hevy_hiit_reason = str(exc)
+        res.problemas.append(f"Hevy (HIIT): {exc}")
+        log.exception("fallo escribiendo la rutina HIIT en Hevy")
+
+    _anotar_hevy(session, decision, fila, res, payload,
+                 routine_key=h.routine_key, hevy_routine_id=h.hevy_routine_id,
+                 estado=res.hevy_hiit_status, motivo=res.hevy_hiit_reason)
+
+
+def _deshacer_el_hiit_de_hoy(
+    session: Session,
+    cfg: Any,
+    decision: Any,
+    fila: Any,
+    res: DailyResult,
+    client: Any,
+    dry_run: bool,
+) -> None:
+    """Hoy no toca HIIT. Si esta mañana se escribió uno, se deshace.
+
+    Hermano de `_deshacer_lo_de_hoy` y con el mismo motivo, pero con una
+    diferencia que vale la pena escribir: el HIIT solo se prescribe en VERDE
+    (`hiit.only_on_green`), así que llegar aquí con una escritura viva significa
+    que la decisión de hoy ha dejado de ser verde. El bloque que se quedaría
+    puesto es intensidad máxima en un día que el sistema acaba de declarar no
+    apto para intensidad.
+    """
+    previa = _escritura_viva_de_hoy(
+        session, decision.day, claves=claves_hiit(cfg), dentro=True
+    )
+    if previa is None or not previa.hevy_routine_id:
+        res.hevy_hiit_status = "skipped"
+        res.hevy_hiit_reason = "hoy no toca HIIT y no se ha escrito ninguno"
+        return
+
+    puesto = _titulo_de(cfg, previa.routine_key)
+    rid = previa.hevy_routine_id
+    situacion = (
+        f"esta mañana se escribió «{puesto}» en Hevy con una decisión que ya no "
+        f"vale, y hoy el plan no lleva HIIT"
+    )
+
+    if dry_run:
+        res.hevy_hiit_status = "dry_run"
+        res.hevy_hiit_reason = f"ensayo: {situacion}. Se habría deshecho"
+        _anotar_hevy(session, decision, fila, res, None,
+                     routine_key=previa.routine_key, hevy_routine_id=rid,
+                     estado=res.hevy_hiit_status, motivo=res.hevy_hiit_reason)
+        return
+
+    if client is None or not hasattr(client, "revert_to_day_start"):
+        res.hevy_hiit_status = "stale"
+        res.hevy_hiit_reason = (
+            f"{situacion}. No se ha podido deshacer porque no hay cliente de "
+            f"Hevy. Abre Hevy y NO hagas «{puesto}»"
+        )
+        res.problemas.append(f"Hevy (HIIT): {res.hevy_hiit_reason}")
+        _anotar_hevy(session, decision, fila, res, None,
+                     routine_key=previa.routine_key, hevy_routine_id=rid,
+                     estado=res.hevy_hiit_status, motivo=res.hevy_hiit_reason)
+        return
+
+    try:
+        r = client.revert_to_day_start(rid, decision.day)
+    except Exception as exc:  # noqa: BLE001
+        res.hevy_hiit_status = "stale"
+        res.hevy_hiit_reason = (
+            f"{situacion}. No se ha podido deshacer ({exc}). Abre Hevy y NO "
+            f"hagas «{puesto}»"
+        )
+        res.problemas.append(f"Hevy (HIIT): {res.hevy_hiit_reason}")
+        log.exception("fallo deshaciendo el HIIT de %s", decision.day)
+        _anotar_hevy(session, decision, fila, res, None,
+                     routine_key=previa.routine_key, hevy_routine_id=rid,
+                     estado=res.hevy_hiit_status, motivo=res.hevy_hiit_reason)
+        return
+
+    res.hevy_hiit_status = "reverted"
+    res.hevy_hiit_reason = (
+        f"{situacion}, así que esa rutina se ha devuelto a como estaba antes "
+        f"({r.reason})"
+    )
+    _anotar_hevy(session, decision, fila, res,
+                 (r.backup.payload if r.backup else None),
+                 routine_key=previa.routine_key, hevy_routine_id=rid,
+                 estado=res.hevy_hiit_status, motivo=res.hevy_hiit_reason)
+
+
+def _escritura_viva_de_hoy(
+    session: Session, day: date, *, claves: set[str] | None = None, dentro: bool = True
+) -> Any | None:
     """La última escritura del día que SÍ llegó a Hevy, si la hay.
 
     SOLO CUENTA `ok`, y la lista de lo que no cuenta importa tanto como la de lo
@@ -539,13 +737,27 @@ def _escritura_viva_de_hoy(session: Session, day: date) -> Any | None:
 
     Se mira la más reciente porque es la que describe lo que hay ahora en Hevy.
     Cuál fue la primera es otra pregunta, y la contesta la copia de seguridad.
+
+    `claves` Y `dentro` EXISTEN PORQUE AHORA HAY DOS RUTINAS POR DÍA.
+    ---------------------------------------------------------------
+    Desde que el bloque HIIT se escribe en su propia rutina, «la última
+    escritura del día» dejó de identificar una sola cosa: una mañana con HIIT
+    deja dos filas `ok`, y la última es la del HIIT. Sin filtro, el camino que
+    deshace la sesión de fuerza cuando la decisión cambia habría cogido la fila
+    del HIIT y habría revertido la rutina equivocada, dejando la de fuerza
+    puesta -que es justo lo que ese camino existe para impedir-.
+
+    Se pasa el conjunto de claves HIIT y de qué lado se quiere, en vez de un
+    booleano `es_hiit`: el conjunto sale de `hiit.blocks` del config y así no
+    hay una segunda lista de bloques que mantener.
     """
-    return session.scalars(
-        select(HevyWrite)
-        .where(HevyWrite.date == day, HevyWrite.status == "ok")
-        .order_by(HevyWrite.id.desc())
-        .limit(1)
-    ).first()
+    q = select(HevyWrite).where(HevyWrite.date == day, HevyWrite.status == "ok")
+    for fila in session.scalars(q.order_by(HevyWrite.id.desc())):
+        if claves is None:
+            return fila
+        if (str(fila.routine_key or "") in claves) is dentro:
+            return fila
+    return None
 
 
 def _titulo_de(cfg: Any, routine_key: str | None) -> str:
@@ -594,7 +806,11 @@ def _deshacer_lo_de_hoy(
     cualquier otro, y si no dejara fila el histórico diría que hoy se puso
     `Día 1` y ahí se acabó la historia.
     """
-    previa = _escritura_viva_de_hoy(session, decision.day)
+    # La de FUERZA: la fila del HIIT de esta mañana no cuenta aquí. La deshace
+    # `_escribir_hiit`, que es quien sabe con qué comparar.
+    previa = _escritura_viva_de_hoy(
+        session, decision.day, claves=claves_hiit(cfg), dentro=False
+    )
     if previa is None or not previa.hevy_routine_id:
         # El salto de verdad: hoy no se ha escrito nada, así que no hay nada que
         # deshacer. Este es el único que se calla, y ahora se calla por haber
@@ -671,6 +887,8 @@ def _anotar_hevy(
     *,
     routine_key: str | None = None,
     hevy_routine_id: str | None = None,
+    estado: str | None = None,
+    motivo: str | None = None,
 ) -> None:
     """Una fila por toque a Hevy, incluido el toque que deshace otro.
 
@@ -679,7 +897,21 @@ def _anotar_hevy(
     que es otra. Sacarlos de `decision.session` como hace el camino normal
     dejaría la fila diciendo que se revirtió «Recuperación» -que no se tocó
     nunca- en vez de `Día 1`.
+
+    `estado` Y `motivo` SE FUERZAN POR EL MISMO MOTIVO, UN ESCALÓN MÁS ARRIBA.
+    Una mañana con HIIT toca dos rutinas y las dos pueden ir distinto. El
+    resultado del bloque vive en `res.hevy_hiit_status`, no en `res.hevy_status`
+    -que es el de la fuerza-, así que sin estos dos la fila del HIIT se
+    guardaría con el estado de la OTRA escritura: un 400 en el bloque quedaría
+    registrado como `ok` porque la fuerza sí se escribió, y el histórico diría
+    que aquel día todo fue bien.
+
+    `http_status` no se fuerza y se deja fuera a propósito: hoy solo lo rellena
+    el camino de la fuerza. Ponerle el del otro PUT sería peor que dejarlo a
+    nulo, que al menos significa «no se anotó».
     """
+    st = estado if estado is not None else res.hevy_status
+    why = motivo if motivo is not None else res.hevy_reason
     session.add(
         HevyWrite(
             decision_id=getattr(fila, "id", None),
@@ -688,16 +920,16 @@ def _anotar_hevy(
                          else decision.session.routine_key),
             hevy_routine_id=(hevy_routine_id if hevy_routine_id is not None
                              else decision.session.hevy_routine_id),
-            status=res.hevy_status,
-            error=res.hevy_reason if res.hevy_status in ("error", "stale") else None,
+            status=st,
+            error=why if st in ("error", "stale") else None,
             # Estaba declarada, documentada en el modelo, y se guardaba NULL
             # siempre porque nadie la pasaba. Sin ella la fila no distingue «Hevy
             # contestó 400» de «no se pudo ni preguntar», que es justo la
             # diferencia que decide si hay que mirar la rutina o no.
-            http_status=res.hevy_http,
+            http_status=res.hevy_http if estado is None else None,
             # El motivo va SIEMPRE, no solo cuando algo falla. Es lo que hace
             # que la secuencia del día se pueda leer entera meses después.
-            reason=res.hevy_reason or None,
+            reason=why or None,
             payload_json=repo._json(payload) if payload is not None else None,
         )
     )
@@ -839,13 +1071,8 @@ def run_reconcile(
     """
     from app.engine.adoption import adoptar_cargas
     from app.integrations.hevy import (
-        SIN_RASTRO,
         _fecha_workout,
-        claves_hiit,
-        motivos_incumplimiento,
-        pesos_ejecutados,
         routine_key_de,
-        workout_compliance,
         workout_totals,
     )
 
@@ -896,55 +1123,67 @@ def run_reconcile(
     rkey = plan.get("routine")
     es_fuerza = bool(rkey) and plan.get("kind") in {"full", "reduced"}
 
+    # El bloque HIIT del día también estaba previsto, aunque se registre aparte.
+    # En Hevy las rutinas HIIT existen sueltas y se ejecutan como un
+    # entrenamiento propio: así es como están los del 8 y el 9 de septiembre en
+    # la cuenta. Sin `bloque_hiit`, hacer exactamente lo que el plan pedía salía
+    # cada noche en el mensaje como «visto fuera del plan», que es la clase de
+    # aviso que enseña a no leer los avisos.
+    hiit = claves_hiit(cfg)
+    plan_hiit = plan.get("hiit") or {}
+    # `hiit_block` es la clave a secas y `hiit["routine"]` la misma clave dentro
+    # de la sesión anidada. Se prefiere la segunda porque es la que trae los
+    # ejercicios consigo: si un día hubiera bloque declarado sin sesión, lo que
+    # no se puede reconciliar es justo lo que no tiene ejercicios.
+    bloque_hiit = plan_hiit.get("routine") or plan.get("hiit_block")
+
+    # LOS DOS PLANES SE MIDEN POR SEPARADO, Y ESE ES EL PUNTO.
+    #
+    # Antes el HIIT viajaba dentro de `plan["exercises"]`, así que un wall ball
+    # que no hice contaba como un ejercicio incumplido DE LA SESIÓN DE FUERZA:
+    # rompía la racha de la prensa y frenaba su progresión. Son dos cosas
+    # distintas y su cumplimiento se evalúa aparte.
+    #
+    # El reparto de entrenamientos es por rutina de origen, nunca por el título.
+    # A la fuerza van también los sueltos -`routine_key` a None-, que es lo que
+    # permite que un rato registrado sin rutina siga contando como media sesión;
+    # al HIIT solo lo que sale de una rutina HIIT.
+    nuevos_hiit = [w for w in nuevos if rutinas.get(str(w.get("id"))) in hiit]
+    nuevos_fuerza = [w for w in nuevos if rutinas.get(str(w.get("id"))) not in hiit]
+
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
     motivos: dict[str, str] = {}
     if es_fuerza:
-        # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos del
-        # día lo completó: partir la sesión en dos ratos es normal y no debería
-        # romper la racha.
-        plan_obj = _PlanLeido(plan)
-        for w in nuevos:
-            for key, ok in workout_compliance(w, plan_obj, cfg).items():
-                executed[key] = executed.get(key, False) or ok
-            # El motivo se une con el mismo criterio, y por eso «no aparece» cede
-            # ante cualquier otro: en una sesión partida en dos, el ejercicio no
-            # está en uno de los dos ratos por definición, y quedarse con esa
-            # frase taparía lo que sí se vio en el rato donde estaba.
-            for key, porque in motivos_incumplimiento(w, plan_obj, cfg).items():
-                if motivos.get(key, SIN_RASTRO) == SIN_RASTRO:
-                    motivos[key] = porque
-            # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
-            # une con un OR: partir la sesión en dos ratos es normal, y la serie
-            # más pesada del día es la más pesada de los dos ratos.
-            for key, kg in pesos_ejecutados(w, plan_obj, cfg).items():
-                if kg is None:
-                    continue
-                previo = pesos.get(key)
-                pesos[key] = kg if previo is None else max(previo, kg)
-        # Lo que acabó completo no tiene nada que explicar, aunque en uno de los
-        # ratos se quedara corto.
-        motivos = {k: v for k, v in motivos.items() if not executed.get(k)}
+        executed, pesos, motivos = _cumplimiento_contra(nuevos_fuerza, plan, cfg)
     res.executed = executed
     res.pesos = pesos
+
+    # Solo cuenta el HIIT que salió de la rutina QUE HOY TOCABA. Hacer el Día 2
+    # del HIIT un día de Día 1 es un entrenamiento fuera del plan, y medirlo
+    # contra el plan de hoy diría que se incumplió un bloque que nadie llegó a
+    # abrir.
+    del_bloque = [
+        w for w in nuevos_hiit if rutinas.get(str(w.get("id"))) == bloque_hiit
+    ]
+    ex_hiit = plan_hiit.get("exercises") or []
+    executed_hiit: dict[str, bool] = {}
+    pesos_hiit: dict[str, float | None] = {}
+    motivos_hiit: dict[str, str] = {}
+    if ex_hiit:
+        executed_hiit, pesos_hiit, motivos_hiit = _cumplimiento_contra(
+            del_bloque, plan_hiit, cfg
+        )
 
     # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
     # que solo se le pone a las filas que salen de esa rutina. Antes se le
     # estampaba a todas las del día, y eso convertía el HIIT de después en una
     # sesión de fuerza «con todas las series al objetivo» que nadie había
-    # evaluado. Para lo demás -HIIT, entreno suelto, día sin plan- queda a
-    # NULL, que es lo que esa columna ya significaba: no hay dato.
+    # evaluado. El HIIT tiene ahora el suyo, calculado contra su propio plan;
+    # para lo demás -entreno suelto, día sin plan- queda a NULL, que es lo que
+    # esa columna ya significaba: no hay dato.
     veredicto = all(executed.values()) if (es_fuerza and executed) else None
-
-    # El bloque HIIT del día también estaba previsto, aunque se registre aparte.
-    # El motor lo añade a la rutina de fuerza, pero en Hevy las rutinas HIIT
-    # existen sueltas y se ejecutan como un entrenamiento propio: así es como
-    # están los del 8 y el 9 de septiembre en la cuenta. Sin esta línea, hacer
-    # exactamente lo que el plan pedía salía cada noche en el mensaje como
-    # «visto fuera del plan», que es la clase de aviso que enseña a no leer los
-    # avisos.
-    bloque_hiit = plan.get("hiit_block")
-    hiit = claves_hiit(cfg)
+    veredicto_hiit = all(executed_hiit.values()) if executed_hiit else None
 
     # LOS DOS DATOS QUE HACEN INFORMATIVO EL AVISO DE «HE ENTRENADO OTRA COSA».
     #
@@ -986,7 +1225,8 @@ def run_reconcile(
         wid = str(w.get("id"))
         rk = rutinas.get(wid)
         es_la_de_fuerza = bool(rk) and es_fuerza and rk == rkey
-        previsto = es_la_de_fuerza or (bool(rk) and rk == bloque_hiit)
+        es_la_del_hiit = bool(rk) and rk == bloque_hiit
+        previsto = es_la_de_fuerza or es_la_del_hiit
         motivo = (
             None
             if previsto
@@ -1010,7 +1250,11 @@ def run_reconcile(
             date=day,
             routine_key=rk,
             title=w.get("title"),
-            all_sets_at_target=veredicto if es_la_de_fuerza else None,
+            all_sets_at_target=(
+                veredicto
+                if es_la_de_fuerza
+                else (veredicto_hiit if es_la_del_hiit else None)
+            ),
             unplanned=not previsto,
             motivo_suelto=motivo,
             duration_s=totales.duration_s,
@@ -1041,12 +1285,70 @@ def run_reconcile(
     session.flush()
     res.sueltos = sueltos
 
+    # LO QUE SE APRENDE DE CADA PLAN VA A SU PROPIA CLAVE DE RUTINA.
+    #
+    # Las dos mitades se aplican al MISMO `state` y se guardan de una vez: son
+    # dos rutinas dentro de un estado, no dos estados.
+    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+    state = repo.load_state(
+        session, program_start=cfg.program_start, rotation_order=cfg.rotation_order()
+    )
+    adopciones: list[Any] = []
+
+    # EL BLOQUE HIIT, BAJO `hiit_dia_N` Y NO BAJO EL `dia_N` DE LA FUERZA.
+    #
+    # Antes de separarlos sus ejercicios entraban en `state.compliance` y en
+    # `state.current_sets` con la clave de la rutina de FUERZA de ese día. Como
+    # el bloque rota por su cuenta, la plancha frontal tenía una racha distinta
+    # cada semana según qué día le hubiera tocado, y su carga ejecutada se
+    # adoptaba bajo una clave que al día siguiente ya no se consultaba: nunca
+    # llegó a progresar.
+    #
+    # Va ANTES del `return` de «hoy no tocaba fuerza» aunque hoy no se pueda
+    # llegar ahí con bloque -el motor solo lo añade en verde, y un verde
+    # siempre trae sesión de fuerza-. Ponerlo después sería apoyarse en esa
+    # coincidencia: el día que un rojo lleve bloque de movilidad, la progresión
+    # del HIIT desaparecería sin que nada lo dijera.
+    hubo_hiit = bool(ex_hiit and bloque_hiit)
+    if hubo_hiit:
+        claves_del_bloque = {str(e.get("key")) for e in ex_hiit if e.get("key")}
+        apply_execution(
+            state,
+            routine_key=str(bloque_hiit),
+            exercises=ex_hiit,
+            executed=executed_hiit,
+            light=fila.light if fila is not None else None,
+            # El bloque no pasa por la progresión por regla: `_sesion_hiit` solo
+            # le aplica la carga vigente, así que hoy esta lista sale siempre
+            # vacía. El filtro no sobra: `progressed_keys` son las claves de la
+            # FUERZA, y sin él se pondrían a cero rachas de `(hiit_dia_N,
+            # prensa)` que no existen y que nadie habría ido a buscar.
+            progressed=[
+                k for k in repo.progressed_keys(fila) if k in claves_del_bloque
+            ],
+        )
+        adopciones += adoptar_cargas(
+            state,
+            routine_key=str(bloque_hiit),
+            exercises=ex_hiit,
+            pesos_hechos=pesos_hiit,
+            limpio=executed_hiit,
+            motivos=motivos_hiit,
+            set_cfg=(raw.get("set_types") or {}),
+            prog_cfg=(raw.get("progression") or {}),
+        )
+
     if not es_fuerza:
         # Con el calendario fijo aquí caían casi todos los días de la semana, y
         # la frase decía "el {day} no tocaba fuerza". Ahora todos los días
         # tienen su rutina del ciclo, así que solo se llega hasta aquí por dos
         # caminos: un día rojo, en el que lo planificado fue un bloque de
         # recuperación, o un día del que no quedó decisión guardada.
+        if hubo_hiit:
+            repo.save_state(session, state, day=day)
+            repo.guardar_adopciones(session, day, adopciones)
+            res.adopciones = [a.to_dict() for a in adopciones]
+            res.avanzado = True
         motivo_no_fuerza = (
             f"lo planificado fue {plan.get('kind')}"
             if fila is not None
@@ -1056,9 +1358,10 @@ def run_reconcile(
             f"{len(nuevos)} entrenamiento(s) registrados; el {day} "
             f"{motivo_no_fuerza}: nada que reconciliar contra el plan"
         )
+        if hubo_hiit:
+            res.motivo += "; sí se ha reconciliado el bloque HIIT"
         return res
 
-    state = repo.load_state(session, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
     apply_execution(
         state,
         routine_key=str(rkey),
@@ -1079,8 +1382,7 @@ def run_reconcile(
     # vigente, contra lo que se mide haberse quedado corto; si no, una semana de
     # descarga bien hecha contaría como tres sesiones flojas y acabaría bajando
     # la carga de verdad.
-    raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
-    adopciones = adoptar_cargas(
+    adopciones += adoptar_cargas(
         state,
         routine_key=str(rkey),
         exercises=plan.get("exercises") or [],
@@ -1098,6 +1400,9 @@ def run_reconcile(
     res.avanzado = True
     limpios = sum(1 for v in executed.values() if v)
     res.motivo = f"{limpios}/{len(executed)} ejercicios completos"
+    if hubo_hiit:
+        limpios_hiit = sum(1 for v in executed_hiit.values() if v)
+        res.motivo += f"; HIIT {limpios_hiit}/{len(executed_hiit)}"
     if sueltos:
         res.motivo += f"; {len(sueltos)} entrenamiento(s) fuera del plan"
     return res
@@ -1249,6 +1554,50 @@ class _PlanLeido:
 
     def __init__(self, plan: dict[str, Any]):
         self.exercises = plan.get("exercises") or []
+
+
+def _cumplimiento_contra(
+    workouts: list[dict[str, Any]], plan: dict[str, Any], cfg: Any
+) -> tuple[dict[str, bool], dict[str, float | None], dict[str, str]]:
+    """Qué de `plan` se hizo, uniendo todos los `workouts` que lo ejecutaban.
+
+    Existe como función aparte porque ahora hay DOS planes que reconciliar cada
+    noche -la fuerza y el bloque HIIT- y hasta ahora esto era un bucle suelto
+    dentro de `run_reconcile` que solo sabía del primero. Copiarlo para el
+    segundo habría dejado dos criterios de unión que podían separarse sin que
+    nada fallara.
+
+    Devuelve `(executed, pesos, motivos)`.
+    """
+    executed: dict[str, bool] = {}
+    pesos: dict[str, float | None] = {}
+    motivos: dict[str, str] = {}
+    plan_obj = _PlanLeido(plan)
+    for w in workouts:
+        # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos
+        # lo completó: partir la sesión en dos ratos es normal y no debería
+        # romper la racha.
+        for key, ok in workout_compliance(w, plan_obj, cfg).items():
+            executed[key] = executed.get(key, False) or ok
+        # El motivo se une con el mismo criterio, y por eso «no aparece» cede
+        # ante cualquier otro: en una sesión partida en dos, el ejercicio no
+        # está en uno de los dos ratos por definición, y quedarse con esa
+        # frase taparía lo que sí se vio en el rato donde estaba.
+        for key, porque in motivos_incumplimiento(w, plan_obj, cfg).items():
+            if motivos.get(key, SIN_RASTRO) == SIN_RASTRO:
+                motivos[key] = porque
+        # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
+        # une con un OR: partir la sesión en dos ratos es normal, y la serie
+        # más pesada del día es la más pesada de los dos ratos.
+        for key, kg in pesos_ejecutados(w, plan_obj, cfg).items():
+            if kg is None:
+                continue
+            previo = pesos.get(key)
+            pesos[key] = kg if previo is None else max(previo, kg)
+    # Lo que acabó completo no tiene nada que explicar, aunque en uno de los
+    # ratos se quedara corto.
+    motivos = {k: v for k, v in motivos.items() if not executed.get(k)}
+    return executed, pesos, motivos
 
 
 # ---------------------------------------------------------------------------

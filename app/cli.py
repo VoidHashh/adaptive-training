@@ -440,15 +440,29 @@ def imprimir_hevy(decision, cfg, mostrar_remoto: bool) -> None:
         print("       cada mañana coincida con lo que habrías hecho tú.")
     print()
 
-    if not (s.write_to_hevy and s.routine_key):
+    # LAS DOS RUTINAS, PORQUE AHORA SON DOS PUT.
+    #
+    # El bloque HIIT viaja aparte, a su propia rutina de Hevy. Este informe
+    # existe para que antes de encender la escritura se pueda mirar EXACTAMENTE
+    # lo que se va a mandar; enseñar solo la de fuerza dejaría fuera la mitad
+    # que no se ha mirado nunca, que es justo la que hay que mirar.
+    sesiones = [s] + ([s.hiit] if getattr(s, "hiit", None) is not None else [])
+    escribibles = [x for x in sesiones if x.write_to_hevy and x.routine_key]
+    if not escribibles:
         print("  Hoy no hay nada que escribir: la sesión no toca Hevy.")
         print()
         return
 
+    for x in escribibles:
+        _imprimir_un_put(x, cfg, mostrar_remoto, payload_diff, build_routine_payload)
+
+
+def _imprimir_un_put(s, cfg, mostrar_remoto, payload_diff, build_routine_payload) -> None:
+    """Un PUT: a dónde va, qué lleva, y en qué se diferencia de lo que hay."""
     rid = s.hevy_routine_id
     payload = build_routine_payload(s, cfg)
     rutina = payload["routine"]
-    print(f"  PUT /v1/routines/{rid}")
+    print(f"  PUT /v1/routines/{rid}   [{s.routine_key}]")
     print(f"  título: {rutina['title']}   ({len(rutina['exercises'])} ejercicios)")
     print("  (PUT es REEMPLAZO TOTAL: esto no se suma a la rutina, la sustituye)")
     print()

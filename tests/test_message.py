@@ -309,7 +309,7 @@ def test_un_bloque_de_hiit_sin_titulo_se_nombra_feo_pero_no_en_blanco(
     cfg_hiit.raw["routines"]["hiit_dia_1"].pop("title", None)
     d = decision_completa(cfg_hiit, estado=estado_hiit)
     assert d.session.hiit_block == "hiit_dia_1"
-    assert "HIIT:</b> hiit_dia_1" in render_telegram(d, cfg_hiit)
+    assert "(entreno aparte):</b> hiit_dia_1" in render_telegram(d, cfg_hiit)
 
 
 def test_un_bloque_de_hiit_que_no_existe_se_dice_en_vez_de_desaparecer(

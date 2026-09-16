@@ -39,6 +39,7 @@ from app.analysis.rendimiento import (
     BICI,
     ESPERA_MAXIMA,
     FUERZA,
+    HIIT,
     PERCEPCION,
     PERCEPCION_MEJOR,
     PERCEPCION_PEOR,
@@ -852,7 +853,17 @@ def checkin(db, dia, *, rpe=None, **sliders):
     db.commit()
 
 
-def decision(db, dia, sesion, *, rutina="dia1"):
+def decision(db, dia, sesion, *, rutina="dia1", hiit=None):
+    """`hiit` es la sesión ANIDADA del bloque, tal como la guarda el motor.
+
+    Va dentro de `planned_session_json` y no en una columna aparte porque así
+    es como está en producción: la decisión de un día guarda dos sesiones, la
+    de fuerza en la raíz y el bloque colgando de `hiit`.
+    """
+    plan_json = {"routine": rutina, "exercises": sesion}
+    if hiit is not None:
+        plan_json["hiit"] = hiit
+        plan_json["hiit_block"] = hiit["routine"]
     db.add(
         Decision(
             date=dia,
@@ -863,7 +874,7 @@ def decision(db, dia, sesion, *, rutina="dia1"):
             config_hash="h",
             source="checkin",
             is_current=True,
-            planned_session_json=json.dumps({"routine": rutina, "exercises": sesion}),
+            planned_session_json=json.dumps(plan_json),
         )
     )
     db.commit()
@@ -1095,6 +1106,68 @@ def test_evaluar_pendientes_escribe_fuerza_y_bici_y_es_idempotente(db):
         SessionPerformance.source_key == "hevy:W1"
     )) is not None
     assert len(list(db.scalars(select(SessionPerformance)))) == 2
+
+
+def test_el_hiit_es_un_tipo_propio_y_se_juzga_contra_su_propio_plan(db):
+    """Un bloque de wall balls no es una sesión de fuerza corta.
+
+    Todas las filas de `workout_log` entraban al barrido como `strength`, así
+    que el entrenamiento del bloque HIIT -que en Hevy es un entrenamiento
+    suelto- se comparaba con la lista de la prensa y el remo. Ninguno de sus
+    ejercicios aparecía ahí, el cumplimiento salía a cero y la fila decía que
+    la sesión había sido malísima cuando se había hecho entera.
+
+    Y encima entraba en la distribución con la que se sitúan las sesiones de
+    fuerza de verdad: otro volumen, otros pesos, otra duración. El percentil
+    dejaba de significar "comparado con tus sesiones de fuerza".
+    """
+    cfg = Cfg()
+    cfg.raw["hiit"] = {"blocks": {"dia1": "hiit_dia1"}}
+
+    dia = HOY - timedelta(days=2)
+    checkin(db, dia)
+    checkin(db, dia + timedelta(days=1), rpe=7.0)
+    decision(
+        db,
+        dia,
+        [ejercicio("press", [serie(), serie()])],
+        hiit={
+            "routine": "hiit_dia1",
+            "exercises": [ejercicio("wall_ball", [serie(20, 5.0)])],
+        },
+    )
+    # Tres sesiones de fuerza detrás. Son las que el HIIT NO puede usar de
+    # muestra: es la forma de ver que las dos distribuciones están separadas sin
+    # tener que leer los percentiles.
+    for i in (7, 14, 21):
+        fila_previa(db, dia - timedelta(days=i))
+
+    db.add(WorkoutLog(hevy_workout_id="W1", date=dia, routine_key="dia1",
+                      raw_json=json.dumps(entreno(hecho("press", [serie(), serie()])))))
+    db.add(WorkoutLog(hevy_workout_id="W2", date=dia, routine_key="hiit_dia1",
+                      raw_json=json.dumps(entreno(hecho("wall_ball", [serie(20, 5.0)])))))
+    db.commit()
+
+    filas = {f.source_key: f for f in evaluar_pendientes(db, cfg, hasta=HOY, dias=30)}
+    db.commit()
+
+    assert filas["hevy:W1"].kind == FUERZA
+    assert filas["hevy:W2"].kind == HIIT, (
+        f"el bloque sigue entrando como fuerza: {filas['hevy:W2'].kind}"
+    )
+    assert filas["hevy:W2"].routine_key == "hiit_dia1", (
+        "se ha juzgado contra el plan de fuerza: la rutina que ha quedado "
+        f"apuntada es {filas['hevy:W2'].routine_key!r}"
+    )
+    assert filas["hevy:W2"].n_sessions_base == 0, (
+        "el HIIT se está situando dentro de la muestra de las sesiones de "
+        f"fuerza: {filas['hevy:W2'].n_sessions_base} previas"
+    )
+    assert filas["hevy:W1"].n_sessions_base == 3
+
+    # Y lo que se hizo, se hizo: el bloque salió entero.
+    comp = json.loads(filas["hevy:W2"].components_json or "{}")
+    assert comp["rendimiento"]["componentes"]["cumplimiento"]["valor"] == 100.0, comp
 
 
 def test_la_sesion_de_hoy_se_queda_fuera_del_barrido(db):
