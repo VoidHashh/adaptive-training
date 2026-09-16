@@ -1070,7 +1070,10 @@ set_types:
   # desactiva la heurística ahí y trata las cuatro series como efectivas.
   # Vacío a propósito: con las series ya marcadas en Hevy no hace falta ninguna
   # excepción. (El caso que lo motivaba, `gemelo_sentado`, se corrigió en la
-  # propia rutina: ahora es 12x20 de calentamiento y 30/40/50 de trabajo.)
+  # propia rutina, que hoy es 10x40 de calentamiento y 60/65/70 de trabajo. Este
+  # comentario llegó a decir «30/40/50» bastante después de que dejara de ser
+  # verdad; los números concretos de un ejercicio se miran en su `sets`, unas
+  # setecientas líneas más abajo, y no aquí.)
   # Un override NO ignora un marcado explícito de Hevy: solo desactiva la
   # heurística para ese ejercicio.
   overrides: {}
@@ -1725,8 +1728,18 @@ routines:
         #
         # El cambio solo llega a la sesión si este ejercicio NO tiene todavía
         # fila en `exercise_targets` (`con_carga_vigente`: el YAML es el punto de
-        # partida y nada más). Si ya la tiene, la rampa buena se fija con
-        # `scripts/fijar_carga.py dia_1 gemelo_sentado 60,65,70 --aplicar`.
+        # partida y nada más). Tenía fila, así que esto de aquí no cambió nada
+        # durante cinco días: el fichero decía una rampa y se entrenaba otra.
+        # Corregido en la base el 16-09-2026.
+        #
+        # Y el comando que había escrito aquí -«60,65,70»- era el equivocado.
+        # `fijar_carga.py` con pesos sueltos NO mueve las repeticiones, así que
+        # habría dejado 12×60, 12×65, 15×70: las 15 reps en la serie más pesada,
+        # que es justo lo que el párrafo de arriba dice que no se quería. La
+        # forma que reordena el par entero es
+        # `scripts/fijar_carga.py --contenedor dia_1 gemelo_sentado 60x12,65x15,70x12 --aplicar`.
+        # Que la base y este fichero no se separen otra vez lo vigila
+        # `scripts/auditar_cargas.py`, que solo lee.
         progression_type: double
         rep_range: [12, 15]
         sets:

@@ -56,6 +56,13 @@ Por defecto SIMULA. Escribe solo con `--aplicar`.
     python scripts/fijar_carga.py --contenedor
     python scripts/fijar_carga.py --contenedor dia_1 extension_cuadriceps
     python scripts/fijar_carga.py --contenedor dia_1 extension_cuadriceps 40,60,60 --aplicar
+
+Con `peso x reps` se cambia el par entero, que es lo que hace falta para
+REORDENAR una rampa sin arrastrar las repeticiones detrás de los kilos:
+
+    python scripts/fijar_carga.py --contenedor dia_1 gemelo_sentado 60x12,65x15,70x12 --aplicar
+
+Lo que hay que corregir lo encuentra `scripts/auditar_cargas.py`, que solo lee.
 """
 
 from __future__ import annotations
@@ -142,12 +149,62 @@ def reejecutar_dentro(contenedor: str, argv: list[str]) -> int:
     ).returncode
 
 
-def nuevas_series(
-    vigentes: list[dict[str, Any]], pesos: list[float]
-) -> list[dict[str, Any]]:
-    """Las series de siempre con los pesos nuevos. Las reps NO se tocan.
+def parsea_series(texto: str) -> list[tuple[float, int | None]]:
+    """`60,65,70` o `60x12,65x15,70x12`. Devuelve (peso, reps o None).
 
-    Se exige que vengan tantos pesos como series efectivas hay. Aceptar menos y
+    Las dos formas existen porque hacen cosas distintas y la diferencia importa:
+
+      * Solo pesos: cambia la CARGA y deja cada serie con sus repeticiones donde
+        estaban. Es el caso normal -subir de 55 a 60- y el que no hay que
+        pensar.
+      * Peso y reps: cambia el par entero. Hace falta para REORDENAR una rampa,
+        que es el caso que motivó esto. `gemelo_sentado` tenía (70,12), (60,12),
+        (65,15) por un dedazo en Hevy. Ordenarla solo por kilos -60, 65, 70-
+        habría dejado las 15 repeticiones pegadas a la serie más pesada, porque
+        las reps no se mueven: 12×60, 15×65, 12×70 se habría convertido en
+        12×60, 12×65, 15×70. Un ejercicio más duro que nadie pidió, colado por
+        la puerta de atrás de una corrección de orden.
+
+    NO se admite mezclar las dos formas en la misma lista. `60,65x15,70` se
+    leería «la de en medio lleva 15 y las otras las que tuvieran», y las otras
+    dependen de un orden que es justo lo que se está cambiando. Es ambiguo
+    exactamente cuando más da igual equivocarse, así que se rechaza.
+    """
+    trozos = [t.strip() for t in texto.split(",") if t.strip()]
+    if not trozos:
+        raise CargaInvalida("no se ha dado ningún peso.")
+    # La `×` de teclado español y la `x` de siempre valen igual: quien copie la
+    # rampa de un comentario del YAML traerá la primera.
+    normalizados = [t.replace("×", "x").replace("X", "x") for t in trozos]
+    con_reps = [t for t in normalizados if "x" in t]
+    if con_reps and len(con_reps) != len(normalizados):
+        raise CargaInvalida(
+            "o todas las series llevan repeticiones o ninguna. Mezclar "
+            f"«{', '.join(trozos)}» dejaría las reps de unas dependiendo del "
+            "orden viejo, que es lo que se está cambiando."
+        )
+    salida: list[tuple[float, int | None]] = []
+    for crudo, t in zip(trozos, normalizados, strict=True):
+        if "x" in t:
+            izq, _, der = t.partition("x")
+            try:
+                salida.append((float(izq.replace(",", ".")), int(der)))
+            except ValueError:
+                raise CargaInvalida(f"«{crudo}» no es «peso x reps».") from None
+        else:
+            try:
+                salida.append((float(t.replace(",", ".")), None))
+            except ValueError:
+                raise CargaInvalida(f"«{crudo}» no es un peso.") from None
+    return salida
+
+
+def nuevas_series(
+    vigentes: list[dict[str, Any]], pedidas: list[tuple[float, int | None]]
+) -> list[dict[str, Any]]:
+    """Las series de siempre con la carga nueva. Las reps solo cambian si se piden.
+
+    Se exige que vengan tantas series como efectivas hay. Aceptar menos y
     rellenar, o aceptar más y recortar, sería cambiar el ESQUEMA del ejercicio
     -de tres series a dos- con la excusa de cambiarle el peso, y un cambio así
     tiene que pedirse a la cara y no colarse por el número de comas.
@@ -156,17 +213,21 @@ def nuevas_series(
         raise CargaInvalida(
             "ese ejercicio no tiene series efectivas de las que partir."
         )
-    if len(pesos) != len(vigentes):
+    if len(pedidas) != len(vigentes):
         raise CargaInvalida(
-            f"tiene {len(vigentes)} series efectivas y se han dado {len(pesos)} "
-            f"pesos. Esto cambia el peso, no el número de series."
+            f"tiene {len(vigentes)} series efectivas y se han dado {len(pedidas)}. "
+            f"Esto cambia la carga, no el número de series."
         )
-    if any(p < 0 for p in pesos):
+    if any(p < 0 for p, _ in pedidas):
         raise CargaInvalida("un peso negativo no es una carga.")
+    if any(r is not None and r <= 0 for _, r in pedidas):
+        raise CargaInvalida("una serie de cero repeticiones no es una serie.")
     salida = []
-    for s, p in zip(vigentes, pesos, strict=True):
+    for s, (p, reps) in zip(vigentes, pedidas, strict=True):
         nueva = dict(s)
         nueva["weight_kg"] = round(float(p), 3)
+        if reps is not None:
+            nueva["reps"] = reps
         salida.append(nueva)
     return salida
 
@@ -195,7 +256,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("ejercicio", nargs="?", help="clave del ejercicio")
     p.add_argument(
         "pesos", nargs="?",
-        help="pesos de las series efectivas separados por comas, p. ej. 50,55,60",
+        help="carga de las series efectivas, separada por comas: «50,55,60» "
+             "cambia solo el peso; «60x12,65x15,70x12» cambia también las reps, "
+             "que es lo que hace falta para reordenar una rampa",
     )
     p.add_argument(
         "--aplicar", action="store_true",
@@ -291,8 +354,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         try:
-            pesos = [float(t.replace(",", ".")) for t in args.pesos.split(",")]
-            propuestas = nuevas_series(vigentes, pesos)
+            propuestas = nuevas_series(vigentes, parsea_series(args.pesos))
         except (ValueError, CargaInvalida) as exc:
             print(f"\nNo se puede: {exc}")
             return 1
