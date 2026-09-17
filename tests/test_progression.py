@@ -24,7 +24,13 @@ import copy
 
 import pytest
 
-from app.engine.progression import evaluate_gate, plan_progression
+from datetime import timedelta
+
+from app.engine.progression import (
+    evaluate_gate,
+    evaluate_volume_gates,
+    plan_progression,
+)
 from app.engine.rules import RuleError
 
 from tests.conftest import LUNES, sig
@@ -246,3 +252,112 @@ def test_en_semana_de_descarga_la_progresion_esta_congelada(cfg):
     )
     assert not abierta
     assert "descarga" in motivo
+
+
+# ---------------------------------------------------------------------------
+# Las puertas de VOLUMEN
+#
+# Son otra cosa que la puerta general de arriba y hasta hoy no tenían un solo
+# test que las llamara: se comprobaban de refilón, a través de `plan_progression`
+# y siempre con la puerta general ya cerrada, que es justo el caso en el que su
+# motivo no se llega a leer (`decision.py` escribe `gate_reason` en su lugar).
+#
+# La media lumbar que miran NO es el freno `lumbar_bloquea_todo`. Aquel lee el
+# valor de HOY y cierra si falta; esta lee la media de los 7 días ANTERIORES a
+# hoy. Se puede tener lo primero y no lo segundo -check-in de hoy relleno, la
+# semana pasada en blanco- y entonces esta ventana se queda vacía.
+# ---------------------------------------------------------------------------
+
+
+def lumbar(day, valores: dict[int, float]):
+    """Señales con un histórico de molestia lumbar: `{días atrás: valor}`."""
+    return sig(day, history={
+        "lower_discomfort": {day - timedelta(days=i): v for i, v in valores.items()}
+    })
+
+
+def volumen(cfg, señales, *, luz="green", day=LUNES):
+    return evaluate_volume_gates(cfg.raw["progression"], señales, day, luz)
+
+
+def test_sin_partes_de_lumbar_la_puerta_de_volumen_pasa_pero_lo_dice(cfg):
+    """El fallo: se abría por falta de datos con el motivo de haber mirado.
+
+    Con la ventana vacía devolvía "sin señales que desaconsejen", que es
+    literalmente la misma frase que cuando sí hay partes y salen bajos. Esa
+    frase se guarda en la decisión y se lee en Telegram y en la auditoría, así
+    que el registro afirmaba haber comprobado la lumbar de alguien con una
+    hernia L4-L5 en una semana en la que no había nada que comprobar.
+
+    Que siga PASANDO es deliberado -bloquear sin datos revive la inanición que
+    documenta `volume_safety`-. Lo que se arregla es la coartada.
+    """
+    for abierta, motivo in volumen(cfg, sig(LUNES)):
+        assert abierta, motivo
+        assert "SIN comprobar la lumbar" in motivo
+        assert "sin señales que desaconsejen" not in motivo, (
+            "esa frase es la de haber mirado y salir bien; aquí no se ha mirado"
+        )
+
+
+def test_el_parte_de_hoy_no_llena_la_ventana_de_la_semana(cfg):
+    """La distinción entre los dos controles lumbares, escrita.
+
+    Un check-in de hoy hace que `lumbar_bloquea_todo` sí pueda evaluarse, y es
+    fácil dar por hecho que entonces la puerta de volumen también mira algo. No:
+    su ventana son los días 1..7 ANTERIORES, y sigue vacía.
+    """
+    for _, motivo in volumen(cfg, lumbar(LUNES, {0: 1})):
+        assert "SIN comprobar la lumbar" in motivo
+
+
+def test_con_la_semana_rellena_y_sana_el_motivo_es_el_de_siempre(cfg):
+    """CONTRAGUARDA: si no, los dos tests de arriba estarían siempre verdes.
+
+    Bastaría con que el motivo nuevo se devolviera SIEMPRE -por ejemplo si
+    alguien lo sacara fuera del `if`- para que ambos pasaran sin que la puerta
+    comprobara nada. Aquí hay siete partes buenos y la frase tiene que ser la
+    otra.
+    """
+    señales = lumbar(LUNES, {i: 1 for i in range(1, 8)})
+    (serie_ok, serie_por_que), (reps_ok, reps_por_que) = volumen(cfg, señales)
+    assert serie_ok and reps_ok
+    assert serie_por_que == "sin señales que desaconsejen añadir una serie"
+    assert reps_por_que == "sin señales que desaconsejen subir repeticiones"
+
+
+def test_la_lumbar_sostenida_para_antes_la_serie_que_las_reps(cfg):
+    """Los dos umbrales son distintos a propósito y salen del config.
+
+    Una media de 4 no es lo mismo para una serie efectiva nueva que para dos
+    repeticiones. Si alguien igualara los dos límites, este test lo dice.
+    """
+    (serie_ok, serie_por_que), (reps_ok, _) = volumen(
+        cfg, lumbar(LUNES, {i: 4 for i in range(1, 8)})
+    )
+    assert not serie_ok
+    assert "media 4.0" in serie_por_que
+    assert reps_ok, "el límite de las reps es 5, no 4"
+
+    (serie_ok, _), (reps_ok, reps_por_que) = volumen(
+        cfg, lumbar(LUNES, {i: 5 for i in range(1, 8)})
+    )
+    assert not serie_ok
+    assert not reps_ok
+    assert "media 5.0" in reps_por_que
+
+
+def test_un_solo_parte_malo_en_la_semana_no_es_la_media(cfg):
+    """Se promedia lo que hay, no se rellena lo que falta.
+
+    Un único día de 6 con el resto en blanco da media 6 y bloquea; el mismo 6
+    entre seis días buenos da 1,7 y no. Es la diferencia entre "la semana viene
+    cargada" y "hubo un mal día", y la ventana la mantiene sola.
+    """
+    (serie_ok, _), _ = volumen(cfg, lumbar(LUNES, {3: 6}))
+    assert not serie_ok
+
+    (serie_ok, _), _ = volumen(
+        cfg, lumbar(LUNES, {**{i: 1 for i in range(1, 8)}, 3: 6})
+    )
+    assert serie_ok

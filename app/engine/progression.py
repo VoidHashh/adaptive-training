@@ -507,13 +507,33 @@ def _volume_gate(
         days = [day - timedelta(days=i) for i in range(1, lookback + 1)]
         series = signals.series("lower_discomfort")
         vals = [v for d in days if (v := series.get(d)) is not None]
-        if vals:
-            mean = sum(vals) / len(vals)
-            if mean >= float(limit):
-                return False, (
-                    f"molestia lumbar media {mean:.1f} en los últimos "
-                    f"{lookback} días (límite {limit} para {label})"
-                )
+        if not vals:
+            # SIN PARTES NO SE COMPRUEBA NADA, Y HAY QUE DECIRLO ASÍ.
+            #
+            # La molestia lumbar sale del check-in, que es voluntario: una
+            # semana sin rellenarlo deja esta ventana vacía. El
+            # comportamiento -dejar pasar- se mantiene a propósito, porque
+            # bloquear sin datos revive la inanición que el comentario de
+            # `volume_safety` documenta: el freno acabó castigando justo a los
+            # ejercicios que la hernia L4-L5 obliga a favorecer.
+            #
+            # Lo que NO se mantiene es el motivo que se escribía. Se devolvía
+            # "sin señales que desaconsejen", que es la misma frase que cuando
+            # sí hay partes y salen bajos. O sea que el registro afirmaba
+            # haber mirado. `gate_reason` y compañía se guardan en la decisión
+            # y se leen en Telegram y en la auditoría; una puerta que se abre
+            # por falta de datos diciendo que las señales están bien es una
+            # regla de seguridad decorativa, y encima con coartada.
+            return True, (
+                f"sin partes de molestia lumbar en {lookback} días: "
+                f"{label} pasa SIN comprobar la lumbar"
+            )
+        mean = sum(vals) / len(vals)
+        if mean >= float(limit):
+            return False, (
+                f"molestia lumbar media {mean:.1f} en los últimos "
+                f"{lookback} días (límite {limit} para {label})"
+            )
 
     return True, f"sin señales que desaconsejen {label}"
 
