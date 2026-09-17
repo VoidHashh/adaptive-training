@@ -234,6 +234,18 @@ HUELLAS_DEL_ARMAZON = {
     # rota, no sale vacía, no sale a medias; sencillamente no está, y desde el
     # teléfono eso es indistinguible de que no se haya hecho todavía.
     "v10": "993517bf1516739d131152012f9d48ccbf2a92a23435a2232fea021fd16bd7de",
+    # v11: el estado nuevo de la auditoría de reglas. El ámbar por precaución lo
+    # pone el motor y no el `config.yaml`, así que no estaba en el catálogo y la
+    # vista resolvía esa diferencia como «retirada»: borde rojo y un texto que
+    # decía que ya no existe. Se le da estado propio -`no_hizo_falta`- y toca
+    # `metricas.js` por el orden de las fichas y `styles.css` por el borde.
+    #
+    # El móvil viejo falla de la forma callada, como en la v8: la API ya manda
+    # `estado: "no_hizo_falta"` y `del_motor`, y el JavaScript de antes no
+    # conoce ninguna de las dos cosas. La ficha sale sin borde y la última de la
+    # lista, o sea que la pantalla se ve entera y bien; lo único mal ordenado es
+    # justo la regla por la que se hizo el cambio.
+    "v11": "7b0422fe51d0f5afa8dffd9ca7bd14e864645a1170445b60fa014959d4f1b16f",
 }
 
 

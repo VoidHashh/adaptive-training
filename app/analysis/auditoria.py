@@ -58,6 +58,7 @@ from app.analysis.texto import cuantos, plural
 # los importan desde este módulo desde antes de que aquel existiera, y porque la
 # vista de auditoría es la que los manda a la PWA.
 from app.engine.luces import LUCES, NOMBRE_LUZ
+from app.engine.rules import REGLA_SIN_DATOS
 from app.engine.sets import warmup_flags
 from app.models import Decision, RuleState
 
@@ -206,10 +207,14 @@ class Regla:
     luz: str | None
     descripcion: str | None
     declarada: bool
+    # La pone el motor y no el YAML. Va aparte de `declarada` en vez de
+    # colarse dentro porque las dos cosas son verdad a la vez y dicen distinto:
+    # no está en el config.yaml, Y existe hoy.
+    del_motor: bool = False
 
 
 def _catalogo(cfg: Any) -> dict[str, Regla]:
-    """Las reglas que el `config.yaml` declara HOY."""
+    """Todo lo que el motor puede disparar hoy: el YAML y lo suyo propio."""
     salida: dict[str, Regla] = {}
     for r in cfg.all_rules():
         nombre = r.get("name")
@@ -221,6 +226,33 @@ def _catalogo(cfg: Any) -> dict[str, Regla]:
             descripcion=r.get("description"),
             declarada=True,
         )
+
+    # EL ÁMBAR POR PRECAUCIÓN NO ESTÁ EN EL YAML, Y AQUÍ ESO NO ES ESTAR MUERTO
+    # ---------------------------------------------------------------------
+    # `ambar_sin_datos` se escribe en `trigger_rule` y en `fired_rules_json`
+    # como cualquier otra regla -de eso iba: que el mensaje y el registro no
+    # necesitasen un caso especial-, pero en el config.yaml no está ni puede
+    # estar: el validador RESERVA ese nombre y rechaza el YAML que lo use.
+    #
+    # Sin esta entrada el catálogo no lo tenía, el histórico sí, y esta vista
+    # resolvía la diferencia por el único camino que conocía: «retirada», o sea
+    # «disparó N veces pero YA NO está declarada en el config.yaml: el contador
+    # habla de una regla que ya no existe». Falso de las tres cosas que dice, y
+    # dicho sobre la única regla que NO se puede quitar editando el YAML, en la
+    # vista que existe precisamente para decidir qué se quita.
+    salida.setdefault(
+        REGLA_SIN_DATOS,
+        Regla(
+            nombre=REGLA_SIN_DATOS,
+            luz="amber",
+            descripcion=(
+                "ámbar por precaución: el semáforo se ha decidido sin poder "
+                "mirar el bienestar"
+            ),
+            declarada=False,
+            del_motor=True,
+        ),
+    )
     return salida
 
 
@@ -291,7 +323,7 @@ def auditoria_reglas(
                 "no hay ni un día con decisión guardada en esta ventana: el motor "
                 "no ha llegado a evaluar esta regla ninguna vez"
             )
-        elif not r.declarada:
+        elif not r.declarada and not r.del_motor:
             estado = "retirada"
             lectura = (
                 f"disparó {cuantos(n_disparos, 'vez', 'veces')} en esta ventana, pero YA NO está "
@@ -310,6 +342,20 @@ def auditoria_reglas(
                 lectura = (
                     f"disparó {cuantos(n_disparos, 'día', 'días')} y mandó en {mandas}"
                 )
+        elif r.del_motor:
+            # No disparar aquí es la buena noticia, y por eso no puede caer en
+            # "nunca_disparo": esa frase termina en "o está mal calibrada o
+            # sobra", y de esta no se puede decir ninguna de las dos. No tiene
+            # umbral que calibrar -dispara cuando falta un dato, no cuando un
+            # número cruza una raya- y no se puede quitar del config.yaml
+            # porque no está ahí. Sería mandar a arreglar lo único que funcionó.
+            estado = "no_hizo_falta"
+            lectura = (
+                f"se miró {cuantos(n_evaluada, 'día', 'días')} y no hizo falta "
+                f"ni uno: el reloj llegó a tiempo todas las mañanas. La pone el "
+                f"motor y no el config.yaml, así que tampoco es de las que se "
+                f"puedan quitar"
+            )
         elif n_evaluada == 0:
             estado = "nunca_evaluada"
             que_falta = ", ".join(
@@ -348,6 +394,7 @@ def auditoria_reglas(
                 "nombre_luz": NOMBRE_LUZ.get(r.luz or "", None),
                 "descripcion": r.descripcion,
                 "declarada": r.declarada,
+                "del_motor": r.del_motor,
                 "veces_disparada": n_disparos,
                 "veces_determinante": determinantes.get(nombre, 0),
                 "dias_evaluada": n_evaluada,

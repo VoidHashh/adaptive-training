@@ -806,6 +806,9 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
 .tarjeta.estado-nunca_evaluada { border-left: 3px solid var(--ambar); }
 .tarjeta.estado-retirada       { border-left: 3px solid var(--rojo); }
 .tarjeta.estado-sin_historico  { border-left: 3px solid var(--borde); }
+/* Neutro por la misma razón que `dispara`: el ámbar por precaución sin
+ * disparos es el reloj llegando a tiempo, no algo que haya que ir a mirar. */
+.tarjeta.estado-no_hizo_falta  { border-left: 3px solid var(--borde); }
 
 .retirada {
   font-size: 0.7rem;

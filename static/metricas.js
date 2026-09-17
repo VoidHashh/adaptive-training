@@ -1064,7 +1064,14 @@ async function pintarAuditoria(dias) {
   // Las reglas. Las que nunca dispararon van primero y no al final: son las que
   // hay que mirar, y la distinción entre "se evaluó y no saltó" y "no se pudo
   // evaluar ni una vez" es la que salva esta vista entera.
-  const orden = { nunca_evaluada: 0, nunca_disparo: 1, retirada: 2, dispara: 3, sin_historico: 4 };
+  // `no_hizo_falta` va con `dispara` y no con las de arriba: es el ámbar por
+  // precaución en una ventana en la que el reloj siempre llegó a tiempo, o sea
+  // nada que mirar. Puesto entre las que "o están mal calibradas o sobran"
+  // mandaría a arreglar lo único que no falló.
+  const orden = {
+    nunca_evaluada: 0, nunca_disparo: 1, retirada: 2,
+    dispara: 3, no_hizo_falta: 4, sin_historico: 5,
+  };
   const reglas = [...d.reglas].sort(
     (a, b) => (orden[a.estado] ?? 9) - (orden[b.estado] ?? 9),
   );

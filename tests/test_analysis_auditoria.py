@@ -34,6 +34,7 @@ from app.analysis.auditoria import (
     reglas_especiales,
     vista_auditoria,
 )
+from app.engine.rules import REGLA_SIN_DATOS
 from app.models import Base, Decision, RuleState
 from tests.dobles import doble_de
 from app.config_loader import Config
@@ -376,11 +377,108 @@ def test_sin_ni_un_dia_de_historico_no_se_acusa_a_ninguna_regla(db):
     filas, nunca = auditoria_reglas(Cfg(), dias_de_luz(db, dia(0), dia(9)))
 
     assert nunca == []
-    assert len(filas) == 3
+    # Las tres del config de mentira más el ámbar por precaución, que sale
+    # siempre porque lo pone el motor y no el YAML.
+    assert len(filas) == 4
+    assert REGLA_SIN_DATOS in {f["nombre"] for f in filas}
     for f in filas:
         assert f["estado"] == "sin_historico"
         assert "no ha llegado a evaluar" in f["lectura"]
         assert "sobra" not in f["lectura"]
+
+
+def test_el_ambar_por_precaucion_no_es_una_regla_retirada(db):
+    """Disparó ayer y esta vista lo daba por muerto.
+
+    `ambar_sin_datos` se escribe en `trigger_rule` y en `fired_rules_json` como
+    cualquier otra regla, y en el `config.yaml` no está: no puede estarlo, el
+    validador reserva ese nombre y rechaza el YAML que lo use. El catálogo salía
+    del YAML, así que el nombre aparecía en el histórico y no en el catálogo, y
+    esta vista resolvía la diferencia por el único camino que conocía: retirada.
+
+    La frase era "disparó N veces, pero YA NO está declarada en el config.yaml:
+    el contador habla de una regla que ya no existe". Las tres cosas falsas, y
+    dichas de la única regla que NO se puede quitar editando el YAML, en la
+    pantalla cuyo objeto declarado es decidir qué se quita. Con la tarjeta
+    bordeada en rojo, que es la marca de "ve a mirar esto".
+    """
+    for i in range(10):
+        decision(
+            db,
+            i,
+            luz="amber" if i < 4 else "green",
+            determinante=REGLA_SIN_DATOS if i < 4 else None,
+            disparadas=[REGLA_SIN_DATOS] if i < 4 else [],
+        )
+    db.commit()
+
+    filas, nunca = auditoria_reglas(Cfg(), dias_de_luz(db, dia(0), dia(9)))
+    aviso = regla_de(filas, REGLA_SIN_DATOS)
+
+    assert aviso["estado"] == "dispara"
+    assert aviso["veces_disparada"] == 4
+    assert aviso["veces_determinante"] == 4
+    assert "ya no existe" not in aviso["lectura"]
+    assert "YA NO está declarada" not in aviso["lectura"]
+    assert aviso["del_motor"] is True
+    # `declarada` sigue siendo False y eso es exacto: en el config.yaml no está.
+    # Lo que se arregla no es esa casilla, es la conclusión que se sacaba de ella.
+    assert aviso["declarada"] is False
+    assert aviso["luz"] == "amber", "sin luz la pastilla sale vacía en la pantalla"
+    assert REGLA_SIN_DATOS not in {f["nombre"] for f in nunca}
+
+
+def test_el_ambar_por_precaucion_que_no_hizo_falta_no_es_una_regla_que_sobre(db):
+    """Y el otro lado: diez días sin disparar, que aquí es la buena noticia.
+
+    Cayendo en "nunca_disparo" la frase habría sido "se evaluó 10 días y no
+    disparó ninguno: o está mal calibrada o sobra". No hay umbral que calibrar
+    -dispara cuando falta un dato, no cuando un número cruza una raya- y no hay
+    de dónde quitarla. Sería mandar a arreglar lo único que funcionó: el reloj
+    llegando a tiempo todas las mañanas.
+    """
+    for i in range(10):
+        decision(db, i, luz="green")
+    db.commit()
+
+    filas, nunca = auditoria_reglas(Cfg(), dias_de_luz(db, dia(0), dia(9)))
+    aviso = regla_de(filas, REGLA_SIN_DATOS)
+
+    assert aviso["estado"] == "no_hizo_falta"
+    assert aviso["veces_disparada"] == 0
+    assert aviso["dias_evaluada"] == 10
+    assert "sobra" not in aviso["lectura"]
+    assert "mal calibrada" not in aviso["lectura"]
+    assert "llegó a tiempo" in aviso["lectura"]
+    assert REGLA_SIN_DATOS not in {f["nombre"] for f in nunca}
+
+    # CONTRAGUARDA: el estado nuevo es SUYO y no un indulto general. Una regla
+    # del YAML que no dispara en diez días sigue saliendo señalada, que es para
+    # lo que existe esta vista.
+    cansancio = regla_de(filas, "cansancio_alto")
+    assert cansancio["estado"] == "nunca_disparo"
+    assert "o está mal calibrada o sobra" in cansancio["lectura"]
+    assert cansancio["del_motor"] is False
+
+
+def test_una_regla_del_yaml_que_desaparece_sigue_saliendo_retirada(db):
+    """CONTRAGUARDA del arreglo entero: "retirada" no se ha desactivado.
+
+    El fallo era que `ambar_sin_datos` caía ahí; el arreglo tenía que sacarlo a
+    él sin abrirle la puerta a nadie más. Una regla que disparó de verdad y que
+    alguien borró del YAML es exactamente lo que esta vista existe para enseñar.
+    """
+    for i in range(10):
+        decision(db, i, luz="amber", determinante="regla_vieja",
+                 disparadas=["regla_vieja"])
+    db.commit()
+
+    filas, _ = auditoria_reglas(Cfg(), dias_de_luz(db, dia(0), dia(9)))
+    vieja = regla_de(filas, "regla_vieja")
+
+    assert vieja["estado"] == "retirada"
+    assert vieja["del_motor"] is False
+    assert "ya no existe" in vieja["lectura"]
 
 
 def test_solo_cuenta_la_decision_vigente(db):
@@ -789,12 +887,20 @@ def test_la_vista_entera_sale_con_el_config_de_verdad(db):
     assert v["ventana"]["dias"] == N
     assert len(v["dias"]) == N
     assert v["distribucion"]["global"]["n"] == N
-    assert {r["nombre"] for r in v["reglas"]} == en_el_yaml
-    assert len(v["reglas"]) == len(en_el_yaml), "alguna sale dos veces"
+    # El YAML entero MÁS el ámbar por precaución. Que no estuviera contradecía
+    # lo que dice ahí arriba esta misma prueba: se evalúa cada mañana, así que
+    # tiene que poder revisarse. Su nombre está reservado en el config.yaml
+    # justamente para que no pueda declararse ahí, o sea que `en_el_yaml` nunca
+    # lo va a contener por mucho que se edite.
+    assert {r["nombre"] for r in v["reglas"]} == en_el_yaml | {REGLA_SIN_DATOS}
+    assert len(v["reglas"]) == len(en_el_yaml) + 1, "alguna sale dos veces"
     # Ninguna disparó, pero TODAS se evaluaron: es el caso "o mal calibradas o
-    # sobran" en estado puro, y tiene que salir dicho así.
+    # sobran" en estado puro, y tiene que salir dicho así. El ámbar por
+    # precaución NO entra: no tiene umbral que calibrar ni sitio del que
+    # quitarlo, y ponerlo bajo ese rótulo mandaría a arreglar lo que funcionó.
     assert len(v["nunca_dispararon"]) == len(en_el_yaml)
     assert all(f["estado"] == "nunca_disparo" for f in v["nunca_dispararon"])
+    assert REGLA_SIN_DATOS not in {f["nombre"] for f in v["nunca_dispararon"]}
     assert {r["nombre"] for r in v["reglas_especiales"]} == {
         "retirada_peso_muerto",
         "descarga_press_hombro",
