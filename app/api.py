@@ -1253,11 +1253,23 @@ def probar_garmin_endpoint(cfg=Depends(get_config)) -> dict[str, Any]:
 @app.post("/api/reconcile")
 def post_reconcile(
     day: date | None = None,
-    dias: int = Query(3, ge=0, le=30),
+    dias: int = Query(3, ge=0, le=365),
     s: Session = Depends(get_session),
     cfg=Depends(get_config),
 ) -> dict[str, Any]:
-    """Relanza la reconciliación a mano. Es idempotente, así que no hace daño."""
+    """Relanza la reconciliación a mano. Es idempotente, así que no hace daño.
+
+    EL TOPE ERA 30 Y ESE ERA EL PROBLEMA, NO LA PROTECCIÓN. Esta es la vía para
+    rellenar un histórico que nadie apuntó -el trabajo nocturno solo alcanza su
+    ventana-, y el histórico de esta cuenta empezaba 34 días atrás: el único uso
+    serio del endpoint caía justo fuera de su propio límite.
+
+    Un tope de un año no deja esto sin guarda, solo mueve la guarda al sitio
+    donde el límite es de verdad: `get_workouts` pagina de diez en diez y LANZA
+    si sus páginas no cubren la ventana pedida, diciendo que suba `max_pages`.
+    Eso es un error en voz alta con instrucciones, que es exactamente lo que se
+    quiere de un relleno lanzado a mano y mirando.
+    """
     from app.runner import run_reconcile
 
     day = day or date.today()

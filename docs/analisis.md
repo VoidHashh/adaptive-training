@@ -456,17 +456,43 @@ explica el docstring—. El detalle serie a serie queda en `raw_json`, así que 
 desglose efectivo se recalcula sin volver a pedir nada. No hay que construir la
 medida: está hecha.
 
-**Lo que NO está es el histórico, y el motivo tiene arreglo.** Ese día
-`workout_log` tenía **una sola fila** (2026-09-15, `dia_1`, 44 series,
-13 815 kg). No porque falte el dato en origen, sino porque el trabajo nocturno
-(`scheduler.job_reconcile`) reconcilia con `dias_atras=3`: lo anterior a que la
-reconciliación empezara a correr nunca se escribió. La cuenta de Hevy sí lo tiene —14 entrenamientos y
-`page_count: 2` medidos el 2026-09-13, anotados en el docstring de
-`get_workouts`— y `get_workouts` pagina hacia atrás hasta el final. Es decir:
-**el histórico de tonelaje es recuperable de una pasada**, con la misma forma
-que el relleno de Body Battery, y esa parte no depende de esperar semanas. Lo
-que sí depende de esperar es tener suficientes sesiones BAJO el sistema como
-para que un coeficiente signifique algo.
+**Lo que NO está es el histórico, y el motivo tiene arreglo.** Cuando se escribió
+esto `workout_log` tenía **una sola fila** (2026-09-15, `dia_1`, 44 series,
+13 815 kg). No porque falte el dato en origen. Son **dos causas distintas**, y
+confundirlas llevó meses a atribuirlo todo a la primera:
+
+1. **La ventana nocturna era fija.** `scheduler.job_reconcile` reconciliaba tres
+   días y solo tres, y esto corre en un PC que se apaga: un hueco más largo que
+   la ventana no dejaba el historial incompleto, lo dejaba **vacío en ese tramo,
+   para siempre y sin marca**. La noche del 2026-09-16 la cita de las 22:30 no
+   llegó a existir y esa sesión se salvó de milagro, porque tres días daban
+   justo para alcanzarla. Ya no es fija: `ventana_de_reconciliacion` la calcula
+   de `job_runs.reconcile.last_finished_at` —la marca que `auditar_arranque` ya
+   mantenía y que no usaba nadie para decidir nada—, con `dias_atras=3` como
+   SUELO (la sesión de las diez de la noche se sincroniza al día siguiente) y
+   `tope_dias=45` como techo, que no es prudencia genérica sino el límite real
+   de `get_workouts`.
+2. **El histórico es anterior al sistema.** Ninguna ventana rodante podía
+   alcanzarlo, por larga que fuera. Para eso está el relleno a mano,
+   `POST /api/reconcile`, cuyo tope era de 30 días **contra un historial que
+   empezaba 34 días atrás**: el único uso serio del endpoint caía justo fuera de
+   su propio límite. Subido a un año, con la guarda de verdad donde siempre
+   estuvo —`get_workouts` LANZA cuando sus páginas no cubren lo pedido, en vez
+   de devolver media lista haciéndola pasar por entera—.
+
+La cuenta de Hevy sí tiene el dato: **16 entrenamientos** entre el 2026-08-14 y
+el 2026-09-16, medidos el 2026-09-17 (eran 14 y `page_count: 2` el 2026-09-13,
+que es lo anotado en el docstring de `get_workouts`), y `get_workouts` pagina
+hacia atrás hasta el final. Es decir: **el histórico de tonelaje es recuperable
+de una pasada**, con la misma forma que el relleno de Body Battery, y esa parte
+no depende de esperar semanas. Lo que sí depende de esperar es tener suficientes
+sesiones BAJO el sistema como para que un coeficiente signifique algo.
+
+Reconciliar días viejos **no mueve nada del motor**, y por eso se puede hacer sin
+pensárselo: `run_reconcile` escribe la fila de `workout_log` lo primero y sin
+condiciones, pero solo avanza rachas y adopta cargas si ese día tiene una
+decisión guardada. Los días anteriores a que el sistema existiera no la tienen,
+así que entran como dato y no como historia reescrita.
 
 **El candidato.** ACWR sobre el tonelaje —carga aguda de 7 días contra crónica
 de 28— es lo que se ha hablado. Dos avisos antes de escribir una línea de

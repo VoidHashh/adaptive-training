@@ -237,19 +237,83 @@ def job_decision(
         )
 
 
+def ventana_de_reconciliacion(
+    day: date,
+    *,
+    minimo: int = 3,
+    tope: int = 45,
+    ultimo_cierre: datetime | None = None,
+) -> int:
+    """Cuántos días atrás hay que mirar esta noche: los que lleve sin cerrarse.
+
+    ANTES ERA UN 3 FIJO, Y ESO NO ERA UNA VENTANA: ERA LA MEMORIA ENTERA.
+
+    `workout_log` solo se escribe aquí. Con un número fijo, lo que el sistema
+    recuerda de lo que entrenas no es «tu historial», es «los últimos tres días
+    en los que el contenedor estuvo encendido a las 22:30». Cualquier hueco más
+    largo que eso no queda incompleto: queda vacío, para siempre y sin marca.
+
+    Y el hueco no es hipotético. Este sistema corre en un PC que se apaga: la
+    noche del 2026-09-16 la cita de las 22:30 no llegó a existir -la máquina
+    estaba apagada- y la sesión de ese día seguía sin registrar al día
+    siguiente. Se salvó de milagro, porque tres días daban para alcanzarla.
+    Cuatro no habrían dado.
+
+    `auditar_arranque` YA detecta esas citas perdidas y ya avisa por Telegram.
+    Lo que no hacía nadie era recuperarlas: el aviso decía «no se apuntó lo que
+    entrenaste» y el trabajo siguiente miraba otra vez sus tres días fijos, sin
+    usar el dato que el propio sistema acababa de escribir.
+
+    Así que la ventana se calcula de `job_runs.reconcile.last_finished_at`, que
+    es la marca que ya existe y que ya se mantiene sola. En un sistema al día
+    esto vale `minimo` y no cambia nada; tras una semana apagado vale una
+    semana. El `minimo` se queda porque cubre otra cosa distinta: la sesión de
+    las diez de la noche que se sincroniza al día siguiente y llegaría tarde a
+    su propia reconciliación aunque el trabajo se haya ejecutado puntual.
+
+    EL TOPE NO ES PRUDENCIA GENÉRICA. `get_workouts` pagina de diez en diez con
+    un `max_pages` de 5, y LANZA si las páginas no alcanzan a cubrir la ventana
+    -antes que devolver media lista haciéndola pasar por entera-. Una ventana
+    sin tope convierte «llevo cuatro meses sin encender esto» en un trabajo
+    nocturno que revienta cada noche. Con tope se recupera lo que cabe, se
+    recupera de verdad, y lo que quede más atrás es trabajo de un relleno a
+    mano (`POST /api/reconcile`), que es donde ese problema se puede mirar.
+
+    `run_reconcile` es idempotente -`workout_log.hevy_workout_id` es único-, así
+    que repasar días ya cerrados no cuenta nada dos veces.
+    """
+    if ultimo_cierre is None:
+        from app.models import JobRun
+
+        with session_scope() as s:
+            fila = s.get(JobRun, "reconcile")
+            ultimo_cierre = fila.last_finished_at if fila is not None else None
+
+    if ultimo_cierre is None:
+        # Nunca se ha cerrado una reconciliación. No se sabe qué falta, y
+        # suponer que no falta nada es justo lo que dejó `workout_log` con una
+        # fila. Se mira el tope entero: es la única vez que cuesta.
+        return tope
+
+    # La marca es UTC naive y `day` es una fecha local. El desfase es de horas y
+    # la ventana se mide en días, así que se redondea HACIA ARRIBA restando la
+    # fecha: de sobrar un día a faltar uno, que sobre.
+    dias = (day - ultimo_cierre.date()).days
+    return max(minimo, min(tope, dias))
+
+
 def job_reconcile(
     cfg: Any,
     *,
     day: date | None = None,
     hevy_client: Any = None,
     dias_atras: int = 3,
+    tope_dias: int = 45,
 ) -> list[Any]:
     """Lee de Hevy lo que se entrenó y avanza las rachas.
 
-    Mira `dias_atras` días y no solo hoy. Una sesión de las diez de la noche que
-    se sincroniza al día siguiente llegaría tarde a su propia reconciliación, y
-    la racha se rompería por un problema de reloj y no por una sesión mal hecha.
-    Como `run_reconcile` es idempotente, repasar días ya cerrados no cuesta nada.
+    La ventana la decide `ventana_de_reconciliacion`: `dias_atras` es el SUELO,
+    no el número de días que se miran. El porqué, allí.
     """
     day = day or date.today()
     if hevy_client is None:
@@ -273,12 +337,21 @@ def job_reconcile(
             "el .env."
         )
 
-    desde = day - timedelta(days=dias_atras)
+    ventana = ventana_de_reconciliacion(day, minimo=dias_atras, tope=tope_dias)
+    if ventana > dias_atras:
+        log.warning(
+            "reconciliación: se miran %d días y no %d, porque la última que "
+            "terminó bien no es de anoche. Se recupera lo que quedó sin "
+            "apuntar mientras el sistema no estaba",
+            ventana, dias_atras,
+        )
+
+    desde = day - timedelta(days=ventana)
     workouts = hevy_client.get_workouts(since=desde)
 
     salida = []
     with session_scope() as s:
-        for i in range(dias_atras + 1):
+        for i in range(ventana + 1):
             d = desde + timedelta(days=i)
             salida.append(run_reconcile(s, cfg, d, workouts=workouts))
     return salida

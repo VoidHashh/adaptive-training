@@ -22,7 +22,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app import repository as repo
-from app.models import Base, Decision as DecisionRow
+from app.models import Base, Decision as DecisionRow, JobRun
 from app.engine.rules import REGLA_SIN_DATOS
 from app.scheduler import (
     MARGEN_S,
@@ -32,6 +32,7 @@ from app.scheduler import (
     job_decision,
     job_fetch_garmin,
     job_reconcile,
+    ventana_de_reconciliacion,
 )
 from tests.conftest import LUNES, dias
 from tests.test_runner import HevyFalso, TelegramFalso
@@ -524,13 +525,85 @@ def test_si_el_aviso_no_se_envia_queda_dicho_en_el_log(monkeypatch, caplog):
     assert "chat not found" in caplog.text, "y con el motivo, no solo el hecho"
 
 
+# ---------------------------------------------------------------------------
+# La ventana de la reconciliación
+#
+# `workout_log` SOLO se escribe aquí. Así que la ventana de este trabajo no es
+# un detalle de eficiencia: es cuánto pasado es capaz de recordar el sistema
+# sobre lo que el usuario entrenó. Con los tres días fijos de antes, un apagón
+# de cuatro noches no dejaba el historial incompleto, lo dejaba vacío en ese
+# tramo, para siempre y sin ninguna marca de que faltaba algo.
+# ---------------------------------------------------------------------------
+
+
+def cerro_el(sesion, cuando: datetime) -> None:
+    """Deja escrito que la reconciliación terminó bien en `cuando` (UTC naive).
+
+    Es la marca que el escuchador del scheduler pone solo al TERMINAR un
+    trabajo, o sea la única prueba positiva de que esa noche corrió.
+    """
+    sesion.add(JobRun(
+        job_id="reconcile",
+        first_seen_at=cuando - timedelta(days=30),
+        last_finished_at=cuando,
+    ))
+    sesion.commit()
+
+
+def test_al_dia_la_ventana_se_queda_en_el_suelo(en_memoria):
+    """CONTRAGUARDA de todo este bloque: al día, la ventana NO se dispara.
+
+    Si esto no estuviera, una ventana que devolviera siempre el tope pasaría
+    todos los demás tests de aquí y nadie notaría que cada noche se repasan
+    cuarenta y cinco días para nada.
+    """
+    cerro_el(en_memoria, datetime(2026, 9, 6, 20, 30))
+    assert ventana_de_reconciliacion(LUNES, minimo=3, tope=45) == 3
+
+
+def test_la_ventana_cubre_las_noches_que_no_se_cerraron(en_memoria):
+    """EL FALLO. La marca de la última noche buena existía y no la leía nadie.
+
+    `auditar_arranque` ya detectaba la cita perdida y ya avisaba por Telegram
+    -«no se apuntó lo que entrenaste»-, y el trabajo siguiente volvía a mirar
+    sus tres días fijos. El sistema sabía lo que le faltaba y no iba a por ello.
+    """
+    cerro_el(en_memoria, datetime(2026, 8, 30, 20, 30))
+    assert ventana_de_reconciliacion(LUNES, minimo=3, tope=45) == 8
+
+
+def test_la_ventana_no_pasa_del_tope(en_memoria):
+    """El tope no es prudencia genérica: es el límite de `get_workouts`.
+
+    Pagina de diez en diez y LANZA cuando sus páginas no cubren lo pedido,
+    antes que devolver media lista haciéndola pasar por entera. Sin tope, «he
+    tenido esto apagado cuatro meses» se convierte en un trabajo nocturno que
+    revienta todas las noches sin recuperar nunca nada.
+    """
+    cerro_el(en_memoria, datetime(2025, 5, 1, 20, 30))
+    assert ventana_de_reconciliacion(LUNES, minimo=3, tope=45) == 45
+
+
+def test_sin_marca_de_cierre_se_mira_el_tope_entero(en_memoria):
+    """Nunca se cerró una: no se sabe qué falta, y suponer que nada es el error.
+
+    Esta es exactamente la situación que dejó `workout_log` con UNA fila -un
+    historial entero anterior al sistema, y una ventana que nunca llegaba a
+    él-. Mirar atrás del todo cuesta una vez; no mirar cuesta el historial.
+    """
+    assert en_memoria.get(JobRun, "reconcile") is None, "la tabla está vacía"
+    assert ventana_de_reconciliacion(LUNES, minimo=3, tope=45) == 45
+
+
 def test_reconciliar_mira_hacia_atras_y_no_solo_hoy(en_memoria, cfg):
     """Una sesión de las diez de la noche se sincroniza al día siguiente.
 
     Si la reconciliación mirara solo el día en curso, esa sesión llegaría tarde
     a la suya y la racha se rompería por un problema de reloj y no por una
-    sesión mal hecha.
+    sesión mal hecha. Por eso `dias_atras` sigue siendo un SUELO y no desaparece
+    cuando el sistema está al día.
     """
+    cerro_el(en_memoria, datetime(2026, 9, 6, 20, 30))
     pedido = {}
 
     @doble_de(HevyClient)
@@ -548,8 +621,44 @@ def test_reconciliar_mira_hacia_atras_y_no_solo_hoy(en_memoria, cfg):
     ]
 
 
+def test_reconciliar_recupera_la_noche_que_el_pc_estuvo_apagado(
+    en_memoria, cfg, caplog
+):
+    """EL CASO REAL. Este sistema corre en un PC que se apaga por la noche.
+
+    La cita del 2026-09-16 a las 22:30 no llegó a existir, y la sesión de ese
+    día seguía sin registrar al día siguiente. Se salvó de milagro: tres días
+    daban justo para alcanzarla. Cuatro no habrían dado, y la sesión se habría
+    perdido en silencio -sin fila, sin hueco visible, sin nada que mirar-.
+    """
+    cerro_el(en_memoria, datetime(2026, 8, 31, 20, 30))
+    pedido = {}
+
+    @doble_de(HevyClient)
+    class Hevy:
+        def get_workouts(self, since, *, max_pages=5):
+            pedido["since"] = since
+            return []
+
+    with caplog.at_level("WARNING"):
+        salida = job_reconcile(cfg, day=LUNES, hevy_client=Hevy(), dias_atras=3)
+
+    assert pedido["since"] == LUNES - timedelta(days=7), "se pide desde el hueco"
+    assert len(salida) == 8, "los 7 días sin cerrar Y el de hoy"
+    assert [r.day for r in salida] == [
+        LUNES - timedelta(days=i) for i in range(7, -1, -1)
+    ]
+    # Y que se sepa: una noche de recuperación no puede parecerse a una normal.
+    assert "se miran 7 días y no 3" in caplog.text, caplog.text
+
+
 def test_reconciliar_pide_los_entrenamientos_una_sola_vez(en_memoria, cfg):
-    """Cuatro días no son cuatro peticiones: Hevy limita por IP."""
+    """Cuatro días no son cuatro peticiones: Hevy limita por IP.
+
+    Y con la ventana variable esto importa más que antes, no menos: la noche
+    de después de un apagón largo es justo cuando el bucle es más largo.
+    """
+    cerro_el(en_memoria, datetime(2026, 8, 31, 20, 30))
     llamadas = []
 
     @doble_de(HevyClient)

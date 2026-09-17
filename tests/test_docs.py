@@ -174,22 +174,28 @@ def test_la_linea_de_la_carga_de_fuerza_nombra_cosas_que_existen():
 
 
 def test_la_ventana_de_reconciliacion_que_cita_es_la_de_verdad():
-    """El `dias_atras=3` es el argumento entero de la línea.
+    """Los dos números de la ventana, contados como lo que son hoy.
 
-    De ahí sale que el histórico de tonelaje no exista -lo anterior a que la
-    reconciliación empezara a correr no se escribió nunca- y de ahí sale que
-    haga falta una pasada de relleno. Con otro valor el diagnóstico cambia, y
-    con una ventana lo bastante larga la línea dejaría de tener objeto.
+    La línea ya no dice que la reconciliación mire tres días: dice que tres es
+    el SUELO y cuarenta y cinco el techo, y sobre esa distinción se apoya su
+    diagnóstico de por qué faltaba el histórico. Si alguno de los dos cambia en
+    `job_reconcile` sin tocar el documento, lo que queda escrito no envejece
+    hacia incompleto sino hacia falso: un lector sacaría la conclusión contraria
+    -que un hueco largo se recupera solo, o que no se recupera nunca- con la
+    misma confianza.
     """
     from app.scheduler import job_reconcile
 
-    real = inspect.signature(job_reconcile).parameters["dias_atras"].default
-    citado = re.search(r"`dias_atras=(\d+)`", _linea_de_trabajo())
-    assert citado is not None, (
-        "la línea de trabajo ya no cita la ventana de reconciliación, que es de "
-        "donde sale todo su diagnóstico"
-    )
-    assert int(citado.group(1)) == real, (
-        f"la línea dice que se reconcilia con dias_atras={citado.group(1)} y el "
-        f"trabajo nocturno usa {real}"
-    )
+    seccion = _linea_de_trabajo()
+    firma = inspect.signature(job_reconcile).parameters
+
+    for nombre in ("dias_atras", "tope_dias"):
+        citado = re.search(rf"`{nombre}=(\d+)`", seccion)
+        assert citado is not None, (
+            f"la línea de trabajo ya no cita `{nombre}`, que es parte de donde "
+            f"sale su diagnóstico sobre el histórico que faltaba"
+        )
+        assert int(citado.group(1)) == firma[nombre].default, (
+            f"la línea dice {nombre}={citado.group(1)} y el trabajo nocturno "
+            f"usa {firma[nombre].default}"
+        )
