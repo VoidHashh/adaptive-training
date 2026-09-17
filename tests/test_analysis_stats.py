@@ -473,6 +473,39 @@ def test_el_percentil_se_sujeta_al_rango():
     assert percentil([1, 2, 3], -10) == 1.0
 
 
+def test_los_dos_percentiles_de_la_casa_dan_el_mismo_numero():
+    """Hay DOS: `analysis.stats.percentil` y `engine.signals.percentile`.
+
+    No es un descuido que se pueda deshacer borrando uno. Viven en capas
+    distintas -el panel no puede arrastrarse el motor entero para sacar un
+    cuartil- y tienen contratos distintos en los bordes: el del motor filtra los
+    None, el del panel sujeta la `q` al rango. Pero los dos dicen en su docstring
+    que son "el método de numpy por defecto", y sobre eso descansa que el número
+    que enseña la pantalla sea el mismo con el que se calibró el YAML.
+
+    Si uno de los dos se "mejorase" -al rango más cercano, sin interpolar, que es
+    la otra convención habitual- no fallaría nada. La pantalla y el motor dirían
+    cifras distintas del mismo dato, cada uno convencido de tener razón, y el
+    desacuerdo solo se notaría al comparar dos vistas a ojo.
+
+    Se comparan en el dominio que comparten: listas sin None y `q` dentro de
+    0-100. Fuera de ahí divergen a propósito, y los dos fallan a gritos.
+    """
+    import random
+
+    from app.engine.signals import percentile
+
+    azar = random.Random(7)
+    for _ in range(500):
+        muestra = [
+            round(azar.uniform(-50, 200), 3) for _ in range(azar.randint(1, 12))
+        ]
+        q = azar.choice([0, 1, 5, 25, 33.3, 50, 66.6, 75, 90, 99, 100])
+        assert percentil(muestra, q) == pytest.approx(
+            percentile(muestra, q)
+        ), f"muestra={muestra} q={q}"
+
+
 def test_una_p_positiva_no_viaja_nunca_como_cero_exacto():
     """`round(3e-12, 5)` da `0.0`, y `p = 0` se lee como "imposible por azar".
 
