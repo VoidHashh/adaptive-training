@@ -1,0 +1,1849 @@
+{
+ "vista": "umbral",
+ "metodo": "spearman",
+ "ventana": {
+  "desde": "2026-03-20",
+  "hasta": "2026-09-15",
+  "dias": 180
+ },
+ "cobertura": {
+  "checkin": null,
+  "garmin": {
+   "desde": "2026-03-15",
+   "hasta": "2026-09-14"
+  },
+  "bici": {
+   "desde": "2026-03-07",
+   "hasta": "2026-09-12"
+  },
+  "fuerza": null
+ },
+ "salidas": {
+  "medidas": 53,
+  "aisladas": 11,
+  "fuera": {
+   "sin_carga": 0,
+   "sin_hrv_antes": 0,
+   "sin_hrv_despues": 0
+  },
+  "sin_cobertura": {
+   "antes": 0,
+   "despues": 3
+  },
+  "resumen": "53 salidas medidas · los 3 últimos días de la ventana no tienen bici apuntada todavía"
+ },
+ "umbral": {
+  "retardo": 1,
+  "tramos": [
+   {
+    "desde_carga": 5.3,
+    "hasta_carga": 43.0,
+    "ultimo": false,
+    "etiqueta": "de 5 a 43 de carga",
+    "parte_la_frontera": false,
+    "n": 13,
+    "media": -0.15,
+    "p25": -3.0,
+    "p75": 3.0,
+    "frase": "baja 0,2 ms",
+    "aviso": "muestra insuficiente: 13 salidas, hacen falta 20 para tomárselo en serio",
+    "na": null
+   },
+   {
+    "desde_carga": 43.0,
+    "hasta_carga": 98.4,
+    "ultimo": false,
+    "etiqueta": "de 43 a 98 de carga",
+    "parte_la_frontera": false,
+    "n": 13,
+    "media": -1.69,
+    "p25": -7.0,
+    "p75": 0.0,
+    "frase": "baja 1,7 ms",
+    "aviso": "muestra insuficiente: 13 salidas, hacen falta 20 para tomárselo en serio",
+    "na": null
+   },
+   {
+    "desde_carga": 98.4,
+    "hasta_carga": 175.7,
+    "ultimo": false,
+    "etiqueta": "de 98 a 176 de carga",
+    "parte_la_frontera": true,
+    "n": 13,
+    "media": 1.54,
+    "p25": -5.0,
+    "p75": 9.0,
+    "frase": "sube 1,5 ms",
+    "aviso": "muestra insuficiente: 13 salidas, hacen falta 20 para tomárselo en serio",
+    "na": null
+   },
+   {
+    "desde_carga": 175.7,
+    "hasta_carga": 364.6,
+    "ultimo": true,
+    "etiqueta": "de 176 de carga para arriba",
+    "parte_la_frontera": false,
+    "n": 14,
+    "media": -7.0,
+    "p25": -9.0,
+    "p75": -3.75,
+    "frase": "baja 7,0 ms",
+    "aviso": "muestra insuficiente: 14 salidas, hacen falta 20 para tomárselo en serio",
+    "na": null
+   }
+  ],
+  "na": null,
+  "frontera": {
+   "carga": 150.8,
+   "corte": {
+    "carga": 150.8,
+    "n_encima": 16,
+    "n_debajo": 37,
+    "encima": {
+     "n": 16,
+     "media": -7.31,
+     "p25": -9.0,
+     "p75": -5.25,
+     "frase": "baja 7,3 ms",
+     "aviso": "muestra insuficiente: 16 salidas, hacen falta 20 para tomárselo en serio",
+     "na": null
+    },
+    "debajo": {
+     "n": 37,
+     "media": 0.41,
+     "p25": -5.0,
+     "p75": 5.0,
+     "frase": "sube 0,4 ms",
+     "aviso": null,
+     "na": null
+    },
+    "n": 53,
+    "metodo": "spearman",
+    "r": -0.4809,
+    "p": 0.00027,
+    "na": null,
+    "aviso": null,
+    "suficiente": true,
+    "descartados": 0,
+    "desde": "2026-03-22",
+    "hasta": "2026-09-12",
+    "p_corregida": 0.0027,
+    "significativa": true,
+    "diferencia": -7.72
+   },
+   "candidatos": [
+    {
+     "carga": 21.0,
+     "n_encima": 47,
+     "n_debajo": 6,
+     "encima": {
+      "n": 47,
+      "media": -1.64,
+      "p25": -7.0,
+      "p75": 1.5,
+      "frase": "baja 1,6 ms",
+      "aviso": null,
+      "na": null
+     },
+     "debajo": {
+      "n": 6,
+      "media": -4.17,
+      "p25": -7.5,
+      "p75": -1.25,
+      "frase": "baja 4,2 ms",
+      "aviso": "muestra insuficiente: 6 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": 0.0839,
+     "p": 0.55023,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.55023,
+     "significativa": false,
+     "diferencia": 2.53
+    },
+    {
+     "carga": 34.8,
+     "n_encima": 42,
+     "n_debajo": 11,
+     "encima": {
+      "n": 42,
+      "media": -2.14,
+      "p25": -7.0,
+      "p75": 0.75,
+      "frase": "baja 2,1 ms",
+      "aviso": null,
+      "na": null
+     },
+     "debajo": {
+      "n": 11,
+      "media": -1.09,
+      "p25": -2.5,
+      "p75": 1.5,
+      "frase": "baja 1,1 ms",
+      "aviso": "muestra insuficiente: 11 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.1296,
+     "p": 0.35502,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.39447,
+     "significativa": false,
+     "diferencia": -1.05
+    },
+    {
+     "carga": 46.3,
+     "n_encima": 37,
+     "n_debajo": 16,
+     "encima": {
+      "n": 37,
+      "media": -3.03,
+      "p25": -9.0,
+      "p75": 0.0,
+      "frase": "baja 3,0 ms",
+      "aviso": null,
+      "na": null
+     },
+     "debajo": {
+      "n": 16,
+      "media": 0.62,
+      "p25": -3.5,
+      "p75": 3.5,
+      "frase": "sube 0,6 ms",
+      "aviso": "muestra insuficiente: 16 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.2371,
+     "p": 0.08743,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.17486,
+     "significativa": false,
+     "diferencia": -3.65
+    },
+    {
+     "carga": 66.1,
+     "n_encima": 32,
+     "n_debajo": 21,
+     "encima": {
+      "n": 32,
+      "media": -2.78,
+      "p25": -9.0,
+      "p75": 1.0,
+      "frase": "baja 2,8 ms",
+      "aviso": null,
+      "na": null
+     },
+     "debajo": {
+      "n": 21,
+      "media": -0.62,
+      "p25": -5.0,
+      "p75": 0.0,
+      "frase": "baja 0,6 ms",
+      "aviso": null,
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.1606,
+     "p": 0.25078,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.35097,
+     "significativa": false,
+     "diferencia": -2.16
+    },
+    {
+     "carga": 98.4,
+     "n_encima": 27,
+     "n_debajo": 26,
+     "encima": {
+      "n": 27,
+      "media": -2.89,
+      "p25": -9.0,
+      "p75": 0.5,
+      "frase": "baja 2,9 ms",
+      "aviso": null,
+      "na": null
+     },
+     "debajo": {
+      "n": 26,
+      "media": -0.92,
+      "p25": -5.75,
+      "p75": 0.75,
+      "frase": "baja 0,9 ms",
+      "aviso": null,
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.1509,
+     "p": 0.28078,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.35097,
+     "significativa": false,
+     "diferencia": -1.97
+    },
+    {
+     "carga": 119.5,
+     "n_encima": 21,
+     "n_debajo": 32,
+     "encima": {
+      "n": 21,
+      "media": -5.29,
+      "p25": -9.0,
+      "p75": -2.0,
+      "frase": "baja 5,3 ms",
+      "aviso": null,
+      "na": null
+     },
+     "debajo": {
+      "n": 32,
+      "media": 0.28,
+      "p25": -5.0,
+      "p75": 3.5,
+      "frase": "sube 0,3 ms",
+      "aviso": null,
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.3805,
+     "p": 0.00494,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.0247,
+     "significativa": true,
+     "diferencia": -5.57
+    },
+    {
+     "carga": 150.8,
+     "n_encima": 16,
+     "n_debajo": 37,
+     "encima": {
+      "n": 16,
+      "media": -7.31,
+      "p25": -9.0,
+      "p75": -5.25,
+      "frase": "baja 7,3 ms",
+      "aviso": "muestra insuficiente: 16 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null
+     },
+     "debajo": {
+      "n": 37,
+      "media": 0.41,
+      "p25": -5.0,
+      "p75": 5.0,
+      "frase": "sube 0,4 ms",
+      "aviso": null,
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.4809,
+     "p": 0.00027,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.0027,
+     "significativa": true,
+     "diferencia": -7.72
+    },
+    {
+     "carga": 193.1,
+     "n_encima": 11,
+     "n_debajo": 42,
+     "encima": {
+      "n": 11,
+      "media": -6.91,
+      "p25": -9.0,
+      "p75": -2.5,
+      "frase": "baja 6,9 ms",
+      "aviso": "muestra insuficiente: 11 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null
+     },
+     "debajo": {
+      "n": 42,
+      "media": -0.62,
+      "p25": -6.0,
+      "p75": 2.75,
+      "frase": "baja 0,6 ms",
+      "aviso": null,
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.3232,
+     "p": 0.01823,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.06077,
+     "significativa": false,
+     "diferencia": -6.29
+    },
+    {
+     "carga": 211.8,
+     "n_encima": 6,
+     "n_debajo": 47,
+     "encima": {
+      "n": 6,
+      "media": -6.67,
+      "p25": -8.25,
+      "p75": -3.0,
+      "frase": "baja 6,7 ms",
+      "aviso": "muestra insuficiente: 6 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null
+     },
+     "debajo": {
+      "n": 47,
+      "media": -1.32,
+      "p25": -7.0,
+      "p75": 1.5,
+      "frase": "baja 1,3 ms",
+      "aviso": null,
+      "na": null
+     },
+     "n": 53,
+     "metodo": "spearman",
+     "r": -0.1913,
+     "p": 0.17012,
+     "na": null,
+     "aviso": null,
+     "suficiente": true,
+     "descartados": 0,
+     "desde": "2026-03-22",
+     "hasta": "2026-09-12",
+     "p_corregida": 0.28353,
+     "significativa": false,
+     "diferencia": -5.35
+    }
+   ],
+   "continua": {
+    "n": 53,
+    "metodo": "spearman",
+    "r": -0.3037,
+    "p": 0.02708,
+    "na": null,
+    "aviso": null,
+    "suficiente": true,
+    "descartados": 0,
+    "desde": "2026-03-22",
+    "hasta": "2026-09-12",
+    "p_corregida": 0.0677,
+    "significativa": false
+   },
+   "vecinos": {
+    "debajo": 119.5,
+    "encima": 193.1
+   },
+   "miradas": 10,
+   "lectura": "Por debajo de 151 de carga la HRV de la mañana siguiente sube 0,4 ms (37 salidas). De 151 para arriba baja 7,3 ms (16 salidas). El corte se ha buscado entre 9 candidatos sacados de tus propias salidas, y los de al lado de éste son 120 y 193: el escalón está por ahí, no exactamente en 151.",
+   "escalon": "Esto es un escalón, no una cuesta. El corte aguanta la corrección y la relación suave entre carga y HRV no la aguanta: por debajo del corte el cuerpo no distingue una salida de otra, y lo que cuenta es pasarlo, no cuánto lo pases.",
+   "na": null
+  }
+ },
+ "recuperacion": {
+  "curvas": [
+   {
+    "titulo": "Las salidas de 151 de carga para arriba",
+    "desde_carga": 150.8,
+    "n_salidas": 4,
+    "por_dia": [
+     {
+      "dia": 1,
+      "n": 4,
+      "media": -6.0,
+      "p25": -7.5,
+      "p75": -5.0,
+      "frase": "baja 6,0 ms",
+      "aviso": "muestra insuficiente: 4 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     },
+     {
+      "dia": 2,
+      "n": 4,
+      "media": 1.25,
+      "p25": -0.25,
+      "p75": 2.5,
+      "frase": "sube 1,2 ms",
+      "aviso": "muestra insuficiente: 4 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     },
+     {
+      "dia": 3,
+      "n": 4,
+      "media": 2.0,
+      "p25": 1.25,
+      "p75": 5.25,
+      "frase": "sube 2,0 ms",
+      "aviso": "muestra insuficiente: 4 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     },
+     {
+      "dia": 4,
+      "n": 4,
+      "media": 2.25,
+      "p25": 1.25,
+      "p75": 5.0,
+      "frase": "sube 2,2 ms",
+      "aviso": "muestra insuficiente: 4 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     }
+    ],
+    "escala": 7.5,
+    "vuelve_el_dia": 2,
+    "aviso": "toda esta curva sale de 4 salidas de 151 de carga para arriba. Es la forma que tienen esas, no una media de muchas",
+    "lectura": "La noche de después de una salida así, la HRV baja 6,0 ms (4 salidas). El día +2 ya está de vuelta, así que lo que cuesta es 1 día, no más.",
+    "na": null
+   },
+   {
+    "titulo": "Todas las salidas, duras y suaves",
+    "desde_carga": null,
+    "n_salidas": 11,
+    "por_dia": [
+     {
+      "dia": 1,
+      "n": 11,
+      "media": -2.0,
+      "p25": -6.5,
+      "p75": 0.0,
+      "frase": "baja 2,0 ms",
+      "aviso": "muestra insuficiente: 11 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     },
+     {
+      "dia": 2,
+      "n": 11,
+      "media": 1.55,
+      "p25": -0.5,
+      "p75": 3.0,
+      "frase": "sube 1,5 ms",
+      "aviso": "muestra insuficiente: 11 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     },
+     {
+      "dia": 3,
+      "n": 11,
+      "media": 0.82,
+      "p25": -3.5,
+      "p75": 5.5,
+      "frase": "sube 0,8 ms",
+      "aviso": "muestra insuficiente: 11 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     },
+     {
+      "dia": 4,
+      "n": 11,
+      "media": -0.36,
+      "p25": -3.5,
+      "p75": 3.0,
+      "frase": "baja 0,4 ms",
+      "aviso": "muestra insuficiente: 11 salidas, hacen falta 20 para tomárselo en serio",
+      "na": null,
+      "significativa": null
+     }
+    ],
+    "escala": 6.5,
+    "vuelve_el_dia": 2,
+    "aviso": "toda esta curva sale de 11 salidas. Es la forma que tienen esas, no una media de muchas",
+    "lectura": "La noche de después de una salida así, la HRV baja 2,0 ms (11 salidas). El día +2 ya está de vuelta, así que lo que cuesta es 1 día, no más.",
+    "na": null
+   }
+  ],
+  "aislamiento": 2,
+  "nota": "Solo cuentan las salidas sin ninguna otra en los 2 días de antes ni en los 2 de después. Con otra salida en medio, el día +2 ya no mide lo que duró la primera."
+ },
+ "grafica": {
+  "puntos": [
+   {
+    "fecha": "2026-03-20",
+    "valor": 45.0,
+    "suave": 48.75
+   },
+   {
+    "fecha": "2026-03-21",
+    "valor": 54.0,
+    "suave": 50.0
+   },
+   {
+    "fecha": "2026-03-22",
+    "valor": 51.0,
+    "suave": 49.17
+   },
+   {
+    "fecha": "2026-03-23",
+    "valor": 45.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-03-24",
+    "valor": 55.0,
+    "suave": 51.29
+   },
+   {
+    "fecha": "2026-03-25",
+    "valor": 45.0,
+    "suave": 50.29
+   },
+   {
+    "fecha": "2026-03-26",
+    "valor": 51.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-03-27",
+    "valor": 58.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-03-28",
+    "valor": 47.0,
+    "suave": 47.0
+   },
+   {
+    "fecha": "2026-03-29",
+    "valor": 46.0,
+    "suave": 47.0
+   },
+   {
+    "fecha": "2026-03-30",
+    "valor": 42.0,
+    "suave": 44.29
+   },
+   {
+    "fecha": "2026-03-31",
+    "valor": 40.0,
+    "suave": 39.71
+   },
+   {
+    "fecha": "2026-04-01",
+    "valor": 45.0,
+    "suave": 38.0
+   },
+   {
+    "fecha": "2026-04-02",
+    "valor": 32.0,
+    "suave": 38.14
+   },
+   {
+    "fecha": "2026-04-03",
+    "valor": 26.0,
+    "suave": 41.14
+   },
+   {
+    "fecha": "2026-04-04",
+    "valor": 35.0,
+    "suave": 46.29
+   },
+   {
+    "fecha": "2026-04-05",
+    "valor": 47.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-04-06",
+    "valor": 63.0,
+    "suave": 52.43
+   },
+   {
+    "fecha": "2026-04-07",
+    "valor": 76.0,
+    "suave": 55.43
+   },
+   {
+    "fecha": "2026-04-08",
+    "valor": 66.0,
+    "suave": 57.0
+   },
+   {
+    "fecha": "2026-04-09",
+    "valor": 54.0,
+    "suave": 56.14
+   },
+   {
+    "fecha": "2026-04-10",
+    "valor": 47.0,
+    "suave": 54.14
+   },
+   {
+    "fecha": "2026-04-11",
+    "valor": 46.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-04-12",
+    "valor": 41.0,
+    "suave": 46.14
+   },
+   {
+    "fecha": "2026-04-13",
+    "valor": 49.0,
+    "suave": 44.43
+   },
+   {
+    "fecha": "2026-04-14",
+    "valor": 43.0,
+    "suave": 43.14
+   },
+   {
+    "fecha": "2026-04-15",
+    "valor": 43.0,
+    "suave": 41.71
+   },
+   {
+    "fecha": "2026-04-16",
+    "valor": 42.0,
+    "suave": 39.71
+   },
+   {
+    "fecha": "2026-04-17",
+    "valor": 38.0,
+    "suave": 38.0
+   },
+   {
+    "fecha": "2026-04-18",
+    "valor": 36.0,
+    "suave": 38.86
+   },
+   {
+    "fecha": "2026-04-19",
+    "valor": 27.0,
+    "suave": 40.86
+   },
+   {
+    "fecha": "2026-04-20",
+    "valor": 37.0,
+    "suave": 42.0
+   },
+   {
+    "fecha": "2026-04-21",
+    "valor": 49.0,
+    "suave": 44.0
+   },
+   {
+    "fecha": "2026-04-22",
+    "valor": 57.0,
+    "suave": 45.14
+   },
+   {
+    "fecha": "2026-04-23",
+    "valor": 50.0,
+    "suave": 46.57
+   },
+   {
+    "fecha": "2026-04-24",
+    "valor": 52.0,
+    "suave": 48.43
+   },
+   {
+    "fecha": "2026-04-25",
+    "valor": 44.0,
+    "suave": 48.0
+   },
+   {
+    "fecha": "2026-04-26",
+    "valor": 37.0,
+    "suave": 46.14
+   },
+   {
+    "fecha": "2026-04-27",
+    "valor": 50.0,
+    "suave": 45.0
+   },
+   {
+    "fecha": "2026-04-28",
+    "valor": 46.0,
+    "suave": 43.71
+   },
+   {
+    "fecha": "2026-04-29",
+    "valor": 44.0,
+    "suave": 43.57
+   },
+   {
+    "fecha": "2026-04-30",
+    "valor": 42.0,
+    "suave": 46.71
+   },
+   {
+    "fecha": "2026-05-01",
+    "valor": 43.0,
+    "suave": 47.43
+   },
+   {
+    "fecha": "2026-05-02",
+    "valor": 43.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-05-03",
+    "valor": 59.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-05-04",
+    "valor": 55.0,
+    "suave": 51.0
+   },
+   {
+    "fecha": "2026-05-05",
+    "valor": 51.0,
+    "suave": 53.0
+   },
+   {
+    "fecha": "2026-05-06",
+    "valor": 54.0,
+    "suave": 55.0
+   },
+   {
+    "fecha": "2026-05-07",
+    "valor": 52.0,
+    "suave": 53.86
+   },
+   {
+    "fecha": "2026-05-08",
+    "valor": 57.0,
+    "suave": 54.14
+   },
+   {
+    "fecha": "2026-05-09",
+    "valor": 57.0,
+    "suave": 53.29
+   },
+   {
+    "fecha": "2026-05-10",
+    "valor": 51.0,
+    "suave": 51.43
+   },
+   {
+    "fecha": "2026-05-11",
+    "valor": 57.0,
+    "suave": 51.43
+   },
+   {
+    "fecha": "2026-05-12",
+    "valor": 45.0,
+    "suave": 49.86
+   },
+   {
+    "fecha": "2026-05-13",
+    "valor": 41.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-05-14",
+    "valor": 52.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-05-15",
+    "valor": 46.0,
+    "suave": 47.43
+   },
+   {
+    "fecha": "2026-05-16",
+    "valor": 53.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-05-17",
+    "valor": 40.0,
+    "suave": 51.14
+   },
+   {
+    "fecha": "2026-05-18",
+    "valor": 55.0,
+    "suave": 50.43
+   },
+   {
+    "fecha": "2026-05-19",
+    "valor": 58.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-05-20",
+    "valor": 54.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-05-21",
+    "valor": 47.0,
+    "suave": 48.43
+   },
+   {
+    "fecha": "2026-05-22",
+    "valor": 38.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-05-23",
+    "valor": 52.0,
+    "suave": 46.86
+   },
+   {
+    "fecha": "2026-05-24",
+    "valor": 35.0,
+    "suave": 46.43
+   },
+   {
+    "fecha": "2026-05-25",
+    "valor": 53.0,
+    "suave": 46.71
+   },
+   {
+    "fecha": "2026-05-26",
+    "valor": 49.0,
+    "suave": 48.57
+   },
+   {
+    "fecha": "2026-05-27",
+    "valor": 51.0,
+    "suave": 46.57
+   },
+   {
+    "fecha": "2026-05-28",
+    "valor": 49.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-05-29",
+    "valor": 51.0,
+    "suave": 47.43
+   },
+   {
+    "fecha": "2026-05-30",
+    "valor": 38.0,
+    "suave": 48.0
+   },
+   {
+    "fecha": "2026-05-31",
+    "valor": 46.0,
+    "suave": 47.0
+   },
+   {
+    "fecha": "2026-06-01",
+    "valor": 48.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-06-02",
+    "valor": 53.0,
+    "suave": 48.29
+   },
+   {
+    "fecha": "2026-06-03",
+    "valor": 44.0,
+    "suave": 48.57
+   },
+   {
+    "fecha": "2026-06-04",
+    "valor": 54.0,
+    "suave": 48.43
+   },
+   {
+    "fecha": "2026-06-05",
+    "valor": 55.0,
+    "suave": 48.71
+   },
+   {
+    "fecha": "2026-06-06",
+    "valor": 40.0,
+    "suave": 49.86
+   },
+   {
+    "fecha": "2026-06-07",
+    "valor": 45.0,
+    "suave": 50.86
+   },
+   {
+    "fecha": "2026-06-08",
+    "valor": 50.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-06-09",
+    "valor": 61.0,
+    "suave": 48.0
+   },
+   {
+    "fecha": "2026-06-10",
+    "valor": 51.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-06-11",
+    "valor": 43.0,
+    "suave": 49.71
+   },
+   {
+    "fecha": "2026-06-12",
+    "valor": 46.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-06-13",
+    "valor": 50.0,
+    "suave": 49.0
+   },
+   {
+    "fecha": "2026-06-14",
+    "valor": 47.0,
+    "suave": 48.57
+   },
+   {
+    "fecha": "2026-06-15",
+    "valor": 49.0,
+    "suave": 50.0
+   },
+   {
+    "fecha": "2026-06-16",
+    "valor": 57.0,
+    "suave": 50.43
+   },
+   {
+    "fecha": "2026-06-17",
+    "valor": 48.0,
+    "suave": 50.71
+   },
+   {
+    "fecha": "2026-06-18",
+    "valor": 53.0,
+    "suave": 50.14
+   },
+   {
+    "fecha": "2026-06-19",
+    "valor": 49.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-06-20",
+    "valor": 52.0,
+    "suave": 47.0
+   },
+   {
+    "fecha": "2026-06-21",
+    "valor": 43.0,
+    "suave": 47.43
+   },
+   {
+    "fecha": "2026-06-22",
+    "valor": 42.0,
+    "suave": 47.14
+   },
+   {
+    "fecha": "2026-06-23",
+    "valor": 42.0,
+    "suave": 47.29
+   },
+   {
+    "fecha": "2026-06-24",
+    "valor": 51.0,
+    "suave": 46.86
+   },
+   {
+    "fecha": "2026-06-25",
+    "valor": 51.0,
+    "suave": 47.86
+   },
+   {
+    "fecha": "2026-06-26",
+    "valor": 50.0,
+    "suave": 48.86
+   },
+   {
+    "fecha": "2026-06-27",
+    "valor": 49.0,
+    "suave": 50.57
+   },
+   {
+    "fecha": "2026-06-28",
+    "valor": 50.0,
+    "suave": 50.57
+   },
+   {
+    "fecha": "2026-06-29",
+    "valor": 49.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-06-30",
+    "valor": 54.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-07-01",
+    "valor": 51.0,
+    "suave": 48.86
+   },
+   {
+    "fecha": "2026-07-02",
+    "valor": 42.0,
+    "suave": 48.57
+   },
+   {
+    "fecha": "2026-07-03",
+    "valor": 52.0,
+    "suave": 48.43
+   },
+   {
+    "fecha": "2026-07-04",
+    "valor": 44.0,
+    "suave": 48.0
+   },
+   {
+    "fecha": "2026-07-05",
+    "valor": 48.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-07-06",
+    "valor": 48.0,
+    "suave": 48.57
+   },
+   {
+    "fecha": "2026-07-07",
+    "valor": 51.0,
+    "suave": 47.14
+   },
+   {
+    "fecha": "2026-07-08",
+    "valor": 49.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-07-09",
+    "valor": 48.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-07-10",
+    "valor": 42.0,
+    "suave": 48.57
+   },
+   {
+    "fecha": "2026-07-11",
+    "valor": 48.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-07-12",
+    "valor": 51.0,
+    "suave": 47.57
+   },
+   {
+    "fecha": "2026-07-13",
+    "valor": 51.0,
+    "suave": 46.86
+   },
+   {
+    "fecha": "2026-07-14",
+    "valor": 45.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-07-15",
+    "valor": 48.0,
+    "suave": 47.57
+   },
+   {
+    "fecha": "2026-07-16",
+    "valor": 43.0,
+    "suave": 47.57
+   },
+   {
+    "fecha": "2026-07-17",
+    "valor": 51.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-07-18",
+    "valor": 44.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-07-19",
+    "valor": 51.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-07-20",
+    "valor": 52.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-07-21",
+    "valor": 55.0,
+    "suave": 48.86
+   },
+   {
+    "fecha": "2026-07-22",
+    "valor": 50.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-07-23",
+    "valor": 42.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-07-24",
+    "valor": 48.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-07-25",
+    "valor": 49.0,
+    "suave": 48.86
+   },
+   {
+    "fecha": "2026-07-26",
+    "valor": 50.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-07-27",
+    "valor": 50.0,
+    "suave": 50.57
+   },
+   {
+    "fecha": "2026-07-28",
+    "valor": 53.0,
+    "suave": 51.57
+   },
+   {
+    "fecha": "2026-07-29",
+    "valor": 52.0,
+    "suave": 51.86
+   },
+   {
+    "fecha": "2026-07-30",
+    "valor": 52.0,
+    "suave": 51.71
+   },
+   {
+    "fecha": "2026-07-31",
+    "valor": 55.0,
+    "suave": 51.14
+   },
+   {
+    "fecha": "2026-08-01",
+    "valor": 51.0,
+    "suave": 50.29
+   },
+   {
+    "fecha": "2026-08-02",
+    "valor": 49.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-08-03",
+    "valor": 46.0,
+    "suave": 49.0
+   },
+   {
+    "fecha": "2026-08-04",
+    "valor": 47.0,
+    "suave": 48.71
+   },
+   {
+    "fecha": "2026-08-05",
+    "valor": 47.0,
+    "suave": 47.57
+   },
+   {
+    "fecha": "2026-08-06",
+    "valor": 48.0,
+    "suave": 48.43
+   },
+   {
+    "fecha": "2026-08-07",
+    "valor": 53.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-08-08",
+    "valor": 43.0,
+    "suave": 49.71
+   },
+   {
+    "fecha": "2026-08-09",
+    "valor": 55.0,
+    "suave": 49.0
+   },
+   {
+    "fecha": "2026-08-10",
+    "valor": 53.0,
+    "suave": 49.14
+   },
+   {
+    "fecha": "2026-08-11",
+    "valor": 49.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-08-12",
+    "valor": 42.0,
+    "suave": 50.71
+   },
+   {
+    "fecha": "2026-08-13",
+    "valor": 49.0,
+    "suave": 49.71
+   },
+   {
+    "fecha": "2026-08-14",
+    "valor": 55.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-08-15",
+    "valor": 52.0,
+    "suave": 47.86
+   },
+   {
+    "fecha": "2026-08-16",
+    "valor": 48.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-08-17",
+    "valor": 42.0,
+    "suave": 50.0
+   },
+   {
+    "fecha": "2026-08-18",
+    "valor": 47.0,
+    "suave": 48.14
+   },
+   {
+    "fecha": "2026-08-19",
+    "valor": 53.0,
+    "suave": 48.29
+   },
+   {
+    "fecha": "2026-08-20",
+    "valor": 53.0,
+    "suave": 47.71
+   },
+   {
+    "fecha": "2026-08-21",
+    "valor": 42.0,
+    "suave": 49.57
+   },
+   {
+    "fecha": "2026-08-22",
+    "valor": 53.0,
+    "suave": 49.43
+   },
+   {
+    "fecha": "2026-08-23",
+    "valor": 44.0,
+    "suave": 48.86
+   },
+   {
+    "fecha": "2026-08-24",
+    "valor": 55.0,
+    "suave": 48.71
+   },
+   {
+    "fecha": "2026-08-25",
+    "valor": 46.0,
+    "suave": 50.29
+   },
+   {
+    "fecha": "2026-08-26",
+    "valor": 49.0,
+    "suave": 49.71
+   },
+   {
+    "fecha": "2026-08-27",
+    "valor": 52.0,
+    "suave": 50.43
+   },
+   {
+    "fecha": "2026-08-28",
+    "valor": 53.0,
+    "suave": 49.29
+   },
+   {
+    "fecha": "2026-08-29",
+    "valor": 49.0,
+    "suave": 50.29
+   },
+   {
+    "fecha": "2026-08-30",
+    "valor": 49.0,
+    "suave": 50.86
+   },
+   {
+    "fecha": "2026-08-31",
+    "valor": 47.0,
+    "suave": 51.14
+   },
+   {
+    "fecha": "2026-09-01",
+    "valor": 53.0,
+    "suave": 50.57
+   },
+   {
+    "fecha": "2026-09-02",
+    "valor": 53.0,
+    "suave": 50.29
+   },
+   {
+    "fecha": "2026-09-03",
+    "valor": 54.0,
+    "suave": 49.86
+   },
+   {
+    "fecha": "2026-09-04",
+    "valor": 49.0,
+    "suave": 50.71
+   },
+   {
+    "fecha": "2026-09-05",
+    "valor": 47.0,
+    "suave": 50.0
+   },
+   {
+    "fecha": "2026-09-06",
+    "valor": 46.0,
+    "suave": 49.0
+   },
+   {
+    "fecha": "2026-09-07",
+    "valor": 53.0,
+    "suave": 47.29
+   },
+   {
+    "fecha": "2026-09-08",
+    "valor": 48.0,
+    "suave": 46.43
+   },
+   {
+    "fecha": "2026-09-09",
+    "valor": 46.0,
+    "suave": 46.29
+   },
+   {
+    "fecha": "2026-09-10",
+    "valor": 42.0,
+    "suave": 45.86
+   },
+   {
+    "fecha": "2026-09-11",
+    "valor": 43.0,
+    "suave": 45.57
+   },
+   {
+    "fecha": "2026-09-12",
+    "valor": 46.0,
+    "suave": 45.17
+   },
+   {
+    "fecha": "2026-09-13",
+    "valor": 43.0,
+    "suave": 45.0
+   },
+   {
+    "fecha": "2026-09-14",
+    "valor": 51.0,
+    "suave": 45.75
+   },
+   {
+    "fecha": "2026-09-15",
+    "valor": null,
+    "suave": null
+   }
+  ],
+  "salidas": [
+   {
+    "fecha": "2026-03-22",
+    "carga": 248.7,
+    "dura": true,
+    "altura": 0.6821
+   },
+   {
+    "fecha": "2026-03-24",
+    "carga": 145.3,
+    "dura": false,
+    "altura": 0.3985
+   },
+   {
+    "fecha": "2026-04-01",
+    "carga": 168.5,
+    "dura": true,
+    "altura": 0.4622
+   },
+   {
+    "fecha": "2026-04-02",
+    "carga": 175.7,
+    "dura": true,
+    "altura": 0.4819
+   },
+   {
+    "fecha": "2026-04-03",
+    "carga": 126.4,
+    "dura": false,
+    "altura": 0.3467
+   },
+   {
+    "fecha": "2026-04-04",
+    "carga": 84.5,
+    "dura": false,
+    "altura": 0.2318
+   },
+   {
+    "fecha": "2026-04-05",
+    "carga": 103.8,
+    "dura": false,
+    "altura": 0.2847
+   },
+   {
+    "fecha": "2026-04-09",
+    "carga": 49.2,
+    "dura": false,
+    "altura": 0.1349
+   },
+   {
+    "fecha": "2026-04-11",
+    "carga": 99.3,
+    "dura": false,
+    "altura": 0.2724
+   },
+   {
+    "fecha": "2026-04-17",
+    "carga": 218.2,
+    "dura": true,
+    "altura": 0.5985
+   },
+   {
+    "fecha": "2026-04-18",
+    "carga": 198.1,
+    "dura": true,
+    "altura": 0.5433
+   },
+   {
+    "fecha": "2026-04-19",
+    "carga": 128.4,
+    "dura": false,
+    "altura": 0.3522
+   },
+   {
+    "fecha": "2026-04-28",
+    "carga": 21.5,
+    "dura": false,
+    "altura": 0.059
+   },
+   {
+    "fecha": "2026-04-30",
+    "carga": 98.4,
+    "dura": false,
+    "altura": 0.2699
+   },
+   {
+    "fecha": "2026-05-01",
+    "carga": 49.4,
+    "dura": false,
+    "altura": 0.1355
+   },
+   {
+    "fecha": "2026-05-14",
+    "carga": 159.1,
+    "dura": true,
+    "altura": 0.4364
+   },
+   {
+    "fecha": "2026-05-16",
+    "carga": 209.4,
+    "dura": true,
+    "altura": 0.5743
+   },
+   {
+    "fecha": "2026-05-17",
+    "carga": 40.5,
+    "dura": false,
+    "altura": 0.1111
+   },
+   {
+    "fecha": "2026-05-20",
+    "carga": 61.8,
+    "dura": false,
+    "altura": 0.1695
+   },
+   {
+    "fecha": "2026-05-21",
+    "carga": 201.3,
+    "dura": true,
+    "altura": 0.5521
+   },
+   {
+    "fecha": "2026-05-23",
+    "carga": 364.6,
+    "dura": true,
+    "altura": 1.0
+   },
+   {
+    "fecha": "2026-05-24",
+    "carga": 43.0,
+    "dura": false,
+    "altura": 0.1179
+   },
+   {
+    "fecha": "2026-05-27",
+    "carga": 74.1,
+    "dura": false,
+    "altura": 0.2032
+   },
+   {
+    "fecha": "2026-05-29",
+    "carga": 85.4,
+    "dura": false,
+    "altura": 0.2342
+   },
+   {
+    "fecha": "2026-05-31",
+    "carga": 107.1,
+    "dura": false,
+    "altura": 0.2937
+   },
+   {
+    "fecha": "2026-06-02",
+    "carga": 212.4,
+    "dura": true,
+    "altura": 0.5826
+   },
+   {
+    "fecha": "2026-06-07",
+    "carga": 31.8,
+    "dura": false,
+    "altura": 0.0872
+   },
+   {
+    "fecha": "2026-06-09",
+    "carga": 5.3,
+    "dura": false,
+    "altura": 0.0145
+   },
+   {
+    "fecha": "2026-06-13",
+    "carga": 144.3,
+    "dura": false,
+    "altura": 0.3958
+   },
+   {
+    "fecha": "2026-06-18",
+    "carga": 51.6,
+    "dura": false,
+    "altura": 0.1415
+   },
+   {
+    "fecha": "2026-06-20",
+    "carga": 67.1,
+    "dura": false,
+    "altura": 0.184
+   },
+   {
+    "fecha": "2026-06-22",
+    "carga": 322.7,
+    "dura": true,
+    "altura": 0.8851
+   },
+   {
+    "fecha": "2026-06-24",
+    "carga": 43.3,
+    "dura": false,
+    "altura": 0.1188
+   },
+   {
+    "fecha": "2026-07-01",
+    "carga": 20.7,
+    "dura": false,
+    "altura": 0.0568
+   },
+   {
+    "fecha": "2026-07-05",
+    "carga": 9.8,
+    "dura": false,
+    "altura": 0.0269
+   },
+   {
+    "fecha": "2026-07-06",
+    "carga": 34.1,
+    "dura": false,
+    "altura": 0.0935
+   },
+   {
+    "fecha": "2026-07-08",
+    "carga": 20.9,
+    "dura": false,
+    "altura": 0.0573
+   },
+   {
+    "fecha": "2026-07-09",
+    "carga": 45.7,
+    "dura": false,
+    "altura": 0.1253
+   },
+   {
+    "fecha": "2026-07-12",
+    "carga": 33.2,
+    "dura": false,
+    "altura": 0.0911
+   },
+   {
+    "fecha": "2026-07-15",
+    "carga": 35.9,
+    "dura": false,
+    "altura": 0.0985
+   },
+   {
+    "fecha": "2026-07-18",
+    "carga": 103.7,
+    "dura": false,
+    "altura": 0.2844
+   },
+   {
+    "fecha": "2026-07-19",
+    "carga": 76.4,
+    "dura": false,
+    "altura": 0.2095
+   },
+   {
+    "fecha": "2026-07-21",
+    "carga": 46.6,
+    "dura": false,
+    "altura": 0.1278
+   },
+   {
+    "fecha": "2026-07-26",
+    "carga": 122.3,
+    "dura": false,
+    "altura": 0.3354
+   },
+   {
+    "fecha": "2026-08-01",
+    "carga": 12.7,
+    "dura": false,
+    "altura": 0.0348
+   },
+   {
+    "fecha": "2026-08-02",
+    "carga": 15.7,
+    "dura": false,
+    "altura": 0.0431
+   },
+   {
+    "fecha": "2026-08-08",
+    "carga": 118.8,
+    "dura": false,
+    "altura": 0.3258
+   },
+   {
+    "fecha": "2026-08-11",
+    "carga": 180.2,
+    "dura": true,
+    "altura": 0.4942
+   },
+   {
+    "fecha": "2026-08-16",
+    "carga": 304.8,
+    "dura": true,
+    "altura": 0.836
+   },
+   {
+    "fecha": "2026-08-22",
+    "carga": 188.4,
+    "dura": true,
+    "altura": 0.5167
+   },
+   {
+    "fecha": "2026-08-30",
+    "carga": 208.5,
+    "dura": true,
+    "altura": 0.5719
+   },
+   {
+    "fecha": "2026-09-06",
+    "carga": 22.9,
+    "dura": false,
+    "altura": 0.0628
+   },
+   {
+    "fecha": "2026-09-12",
+    "carga": 196.2,
+    "dura": true,
+    "altura": 0.5381
+   }
+  ],
+  "suavizado": 7,
+  "carga_maxima": 364.6,
+  "corte": 150.8,
+  "altura_corte": 0.4136,
+  "banda": {
+   "desde": 45.0,
+   "hasta": 52.0
+  },
+  "rango": [
+   26.0,
+   76.0
+  ],
+  "n": 179,
+  "na": null
+ },
+ "convenio": "Todo se mide contra la noche ANTERIOR a cada salida, no contra tu media: así la comparación no arrastra la forma que tuvieras ese mes.",
+ "sin_p": "Las barras de la curva no llevan p: cada una es una media contra cero, y aquí no hay ningún contraste de una sola muestra con el que calcularla. Llevan en su lugar cuántas salidas hay detrás y el recorrido de la mitad central, que es lo que dice cuánto varían de una salida a otra.",
+ "encabezado": {
+  "pregunta": "¿A partir de cuánta bici te pasa factura al día siguiente, y cuántos días dura la factura?",
+  "estado": "con_datos",
+  "resumen": "53 salidas medidas de 53.",
+  "n": 53,
+  "de": 53
+ }
+}
