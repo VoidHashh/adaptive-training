@@ -272,7 +272,7 @@ def test_el_hiit_apagado_en_el_config_no_se_repite_cada_dia(cfg_copia):
     assert "sin HIIT" not in render_plain(d, cfg_copia)
 
 
-def test_una_regla_que_quita_el_hiit_no_dice_el_motivo_al_reves(cfg_hiit, estado_hiit):
+def test_quitar_el_hiit_no_dice_el_motivo_al_reves(cfg_hiit, estado_hiit):
     """La rama `ok and permitido` metía en el `else` común el caso "tocaba
     HIIT pero algo lo ha quitado", y ahí `why` vale "semana 1, verde y dia_1
     lo admite": el motivo de que SÍ tocara, presentado como el de que no."""
@@ -281,7 +281,42 @@ def test_una_regla_que_quita_el_hiit_no_dice_el_motivo_al_reves(cfg_hiit, estado
     nota = next((n for n in d.session.notes if n.startswith("sin HIIT")), None)
     assert nota is not None
     assert "lo admite" not in nota, f"el motivo está del revés: {nota!r}"
-    assert "regla especial" in nota
+    assert "semáforo" in nota, (
+        f"quien lo ha quitado es `actions.green.allow_hiit`, y la nota tiene "
+        f"que decir eso. Aquí ponía «una regla especial lo ha desactivado hoy» "
+        f"pasara lo que pasara, que es culpar a la parte del config que en este "
+        f"escenario no ha tocado nada: {nota!r}"
+    )
+
+
+def test_una_regla_especial_puede_quitar_el_hiit_y_lo_dice_con_su_nombre(cfg_hiit):
+    """`allow_hiit` dentro de una regla especial no la leía NADIE.
+
+    `config_loader` la aceptaba -está en las claves válidas de
+    `special_rules.*.action`- y `build_session` sacaba el permiso solo de
+    `actions[light]`. Es decir: se podía apagar el HIIT en una regla, el config
+    daba el cambio por bueno, y el bloque entraba igual. El caso real era
+    `semana_de_descarga`, que lo declaraba `false` y se describía a sí misma
+    como «sin HIIT» mientras metía las quince series enteras.
+
+    Y la nota lleva el nombre de la regla porque «una regla especial» a secas no
+    se puede comprobar: con varias activas no dice cuál, y el día que sobre una
+    no hay forma de saber desde el mensaje que es esa.
+    """
+    regla = next(
+        r for r in cfg_hiit.raw["special_rules"] if r["name"] == "semana_de_descarga"
+    )
+    regla["action"]["allow_hiit"] = False
+
+    en_descarga = EngineState(program_start=LUNES - timedelta(weeks=7))
+    d = decision_completa(cfg_hiit, estado=en_descarga)
+    assert d.deload.active, f"el escenario ya no cae en descarga: {d.deload}"
+    assert d.session.hiit is None, "la regla dice que no y el bloque ha entrado igual"
+
+    nota = next((n for n in d.session.notes if n.startswith("sin HIIT")), None)
+    assert nota is not None
+    assert "semana_de_descarga" in nota, nota
+    assert "lo admite" not in nota, f"el motivo está del revés: {nota!r}"
 
 
 def test_el_hiit_se_nombra_por_su_titulo_y_no_por_su_clave(cfg_hiit, estado_hiit):

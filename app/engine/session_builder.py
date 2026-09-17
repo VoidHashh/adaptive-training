@@ -569,6 +569,50 @@ def hiit_applies(
     return True, f"semana {weeks}, verde y {routine_key} lo admite", True
 
 
+def _hiit_permitido(
+    action: dict[str, Any],
+    light: str,
+    active_rules: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    """¿Alguien prohíbe el HIIT hoy? (permitido, quién lo prohíbe).
+
+    Prohibir gana. El bloque entra solo si lo permiten el semáforo Y todas las
+    reglas especiales activas; basta un `allow_hiit: false` para quitarlo.
+
+    ESTO ANTES NO MIRABA LAS REGLAS, Y LA COMPROBACIÓN DE AL LADO DECÍA QUE SÍ.
+
+    Aquí había un `bool(action.get("allow_hiit", False))` a secas, y `action` es
+    `actions[light]` y nada más. Las acciones de las reglas especiales no se
+    consultaban en ningún sitio, así que `allow_hiit` dentro de una regla era
+    una clave decorativa: `config_loader` la aceptaba como válida -está en la
+    lista de claves permitidas de `special_rules.*.action`- y no la leía nadie.
+
+    El caso real era `semana_de_descarga`, que declaraba `allow_hiit: false` y
+    se describía a sí misma como «60% de la carga y sin HIIT». El bloque entraba
+    igual, entero, y el `description` del YAML daba por escrito lo contrario de
+    lo que pasaba. Es la peor forma del fallo: el usuario apaga algo, el config
+    le dice que sí, y el sistema sigue haciéndolo.
+
+    Y la rama que decía «una regla especial lo ha desactivado hoy» NO PODÍA
+    DISPARARSE, ni siquiera por el semáforo. `hiit.only_on_green` es `true`, así
+    que en ámbar y en rojo `hiit_applies` devuelve `False` y esta comprobación no
+    llega a correr; en verde, `actions.green.allow_hiit` es `true`. Las dos
+    únicas fuentes que existían no podían decir que no. La nota estaba escrita,
+    probada por lectura y muerta.
+
+    El semáforo se deja por delante y con su propio texto porque hoy es
+    inalcanzable pero NO es redundante: el día que `only_on_green` se apague, la
+    prohibición de ámbar y rojo tiene que seguir en pie, y tiene que decir que
+    viene del color y no de una regla.
+    """
+    if not bool(action.get("allow_hiit", False)):
+        return False, f"el semáforo en {light} no lo permite"
+    for regla in active_rules:
+        if (regla.get("action") or {}).get("allow_hiit") is False:
+            return False, f"la regla '{regla.get('name')}' lo ha desactivado hoy"
+    return True, ""
+
+
 # ---------------------------------------------------------------------------
 # Constructor
 # ---------------------------------------------------------------------------
@@ -704,8 +748,13 @@ def build_session(
     }
 
     # 3. descarga
+    #
+    # El factor se lee UNA vez y se reparte, porque desde que el bloque HIIT
+    # también se recorta hay dos sitios que lo necesitan. Dos lecturas de
+    # `special_rules.semana_de_descarga` son dos sitios que pueden acabar
+    # descargando a porcentajes distintos el mismo día sin que nada los compare.
+    dl_factor = _deload_load_factor(raw) if deload_active else 1.0
     if deload_active:
-        dl_factor = _deload_load_factor(raw)
         out.changes.extend(apply_load_factor(exercises, dl_factor))
         exercises = [apply_deload_volume(ex, prog_cfg, set_cfg) for ex in exercises]
         out.changes.append(
@@ -725,7 +774,7 @@ def build_session(
 
     # 6. HIIT
     ok, why, es_de_hoy = hiit_applies(config, routine_key, light, day, program_start)
-    permitido = bool(action.get("allow_hiit", False))
+    permitido, quien_lo_prohibe = _hiit_permitido(action, light, active_rules or [])
 
     if not ok:
         # Solo se apunta si el motivo es del día. Los permanentes -HIIT
@@ -734,11 +783,11 @@ def build_session(
         if es_de_hoy:
             out.notes.append(f"sin HIIT: {why}")
     elif not permitido:
-        # Tocaba HIIT y una regla especial lo ha quitado. Antes esta rama caía
-        # en el `else` de abajo y apuntaba `why`, que en este caso dice
-        # "semana 5, verde y dia_1 lo admite": el motivo de que SÍ tocara,
-        # presentado como el motivo de que no. Justo al revés.
-        out.notes.append("sin HIIT: una regla especial lo ha desactivado hoy")
+        # Tocaba HIIT y algo lo ha quitado. Antes esta rama caía en el `else` de
+        # abajo y apuntaba `why`, que en este caso dice "semana 5, verde y dia_1
+        # lo admite": el motivo de que SÍ tocara, presentado como el motivo de
+        # que no. Justo al revés.
+        out.notes.append(f"sin HIIT: {quien_lo_prohibe}")
     else:
         block_key = clave_del_bloque_hiit(raw, routine_key)
         block = routines.get(block_key, {}) or {}
@@ -752,6 +801,9 @@ def build_session(
                 set_cfg,
                 progression=progression_hiit,
                 permitida=bool(action.get("allow_progression", False)),
+                prog_cfg=prog_cfg,
+                deload_active=deload_active,
+                deload_factor=dl_factor,
             )
             out.changes.append(f"añadido bloque HIIT ({block.get('title', block_key)}): {why}")
         else:
@@ -776,6 +828,9 @@ def _sesion_hiit(
     *,
     progression: ProgressionPlan | None = None,
     permitida: bool = False,
+    prog_cfg: dict[str, Any] | None = None,
+    deload_active: bool = False,
+    deload_factor: float = 1.0,
 ) -> BuiltSession:
     """El bloque HIIT de hoy como sesión propia, bajo SU clave de rutina.
 
@@ -802,13 +857,35 @@ def _sesion_hiit(
     `config.yaml` declara ese ejercicio. Bajo `dia_1` -que es donde iba- la fila
     no la lee nadie, porque `dia_1` no tiene esa clave.
 
-    NO HACE nada de lo que el semáforo le hace a la fuerza: ni recortes de
-    ámbar, ni descarga, ni retiradas por regla especial. No es una omisión, es
-    que no puede llegar aquí un día en que toque: el bloque solo se añade en
-    verde (`hiit.only_on_green`) y con `allow_hiit`, y en verde no hay recorte
-    de ámbar ni regla especial que quitar. El día que eso cambie, este
-    comentario es lo que hay que releer: aplicarle a un bloque HIIT un -25 % de
-    series no es lo mismo que aplicárselo a una rutina de fuerza.
+    HACE, DESDE HOY, el recorte de la semana de descarga: la misma carga al 60 %
+    y el mismo recorte de volumen que la fuerza, con los mismos factores del
+    `progression.deload` del config.
+
+    Esto ANTES no se hacía, y el motivo por el que no se hacía estaba escrito
+    aquí y era falso. Decía que ningún recorte puede llegar a este punto porque
+    el bloque solo entra en verde, y en verde no hay ámbar ni regla especial que
+    quitar. Para el ámbar y para las reglas es cierto. Para la descarga NO: la
+    descarga es de calendario, no de semáforo, y un verde en semana de descarga
+    es un día perfectamente normal. En ese día la fuerza bajaba a 60 % de carga y
+    70 % de series mientras el bloque HIIT entraba entero -quince series de 30 s
+    más el wall ball a peso completo-, que es la sesión más dura de la semana
+    cayendo justo en la semana que existe para descargar. Una descarga a la que
+    se le deja fuera la parte más glucolítica no es una descarga: es una semana
+    normal con menos peso en las barras.
+
+    De ámbar y de reglas especiales sigue sin saber nada, y ahora sí por el
+    motivo que decía el párrafo viejo: esos dos sí van atados al color y el
+    bloque solo entra en verde. Si algún día `hiit.only_on_green` se apaga, hay
+    que volver aquí; el recorte de series de un bloque HIIT no es el mismo
+    problema que el de una rutina de fuerza y no se hereda gratis.
+
+    EL RECORTE VA DESPUÉS DE FIJAR `target_sets`, igual que en el paso 2b y 3 de
+    `build_session` y por el mismo motivo, que es el que hace que esto sea
+    delicado y no una línea más. El objetivo vigente es lo prescrito, no lo
+    recortado. Si se fijara después del recorte, la plancha bajaría de 30 s a
+    24 s, esos 24 s se adoptarían como carga vigente y la semana siguiente
+    partiría de ahí: la descarga se habría convertido en un retroceso
+    permanente, y encima progresando desde el número bajo parecería que sube.
 
     `permitida` es el mismo `actions[light].allow_progression` que gobierna la
     fuerza, y se pasa en vez de darlo por hecho por la misma razón: hoy el
@@ -826,6 +903,24 @@ def _sesion_hiit(
     elif progression is not None and progression.changes:
         notas.append("progresión del HIIT no aplicada: el semáforo no la permite hoy")
 
+    # El objetivo vigente, ANTES de recortar. Ver el docstring: fijarlo después
+    # convierte la descarga en un retroceso permanente.
+    objetivos = {
+        str(ex.get("key")): copy.deepcopy(series_efectivas_vigentes(ex, set_cfg))
+        for ex in ejercicios
+        if ex.get("key")
+    }
+
+    if deload_active:
+        cambios.extend(apply_load_factor(ejercicios, deload_factor))
+        ejercicios = [
+            apply_deload_volume(ex, prog_cfg or {}, set_cfg) for ex in ejercicios
+        ]
+        cambios.append(
+            f"semana de descarga: el HIIT también se recorta, carga al "
+            f"{int(deload_factor * 100)}% y volumen recortado"
+        )
+
     hiit = BuiltSession(
         day=day,
         # `full` y no un cuarto valor: los tres que hay describen cuánto se
@@ -842,15 +937,13 @@ def _sesion_hiit(
     )
     hiit.changes.extend(cambios)
     hiit.notes.extend(notas)
-    # DESPUÉS de la progresión, igual que el paso 2b de `build_session`: el
-    # objetivo vigente es lo que se acaba de prescribir, no lo que había ayer.
-    # Al revés, la plancha subiría a 35 s en la app y la base seguiría diciendo
-    # 30 s, que es la forma de que mañana vuelva a subir "por primera vez".
-    hiit.target_sets = {
-        str(ex.get("key")): copy.deepcopy(series_efectivas_vigentes(ex, set_cfg))
-        for ex in ejercicios
-        if ex.get("key")
-    }
+    # Calculado DESPUÉS de la progresión y ANTES del recorte de descarga: el
+    # objetivo vigente es lo que se acaba de prescribir, no lo que había ayer ni
+    # lo que hoy se ha recortado. Al revés por el primer lado, la plancha subiría
+    # a 35 s en la app y la base seguiría diciendo 30 s, que es la forma de que
+    # mañana vuelva a subir "por primera vez"; al revés por el segundo, la
+    # descarga se quedaría como carga vigente.
+    hiit.target_sets = objetivos
     return hiit
 
 

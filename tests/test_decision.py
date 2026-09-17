@@ -627,6 +627,202 @@ def test_una_descarga_que_arranca_en_rojo_se_retrasa(cfg, estado_en_descarga):
 
 
 # ---------------------------------------------------------------------------
+# La descarga que solo descargaba la mitad
+# ---------------------------------------------------------------------------
+#
+# La fuerza bajaba al 60% de carga y al 70% de series, y el bloque HIIT entraba
+# ENTERO: quince series de 30 s más el wall ball a peso completo, la sesión más
+# dura de la semana, justo en la semana que existe para descargar. Una descarga
+# a la que se le deja fuera la parte más glucolítica no es una descarga: es una
+# semana normal con menos peso en las barras.
+#
+# Y la batería pasaba entera, en las dos direcciones: ningún test miraba el
+# bloque HIIT en semana de descarga ni para comprobar que se recortaba ni para
+# comprobar que no. Por eso estos tests están aquí y no en el módulo del
+# constructor: lo que hay que vigilar es el DÍA -la fuerza y el HIIT juntos-,
+# que es donde la asimetría existe y donde se puede volver a abrir.
+#
+# El calendario manda sobre el color y no al revés. La descarga es de
+# calendario: un verde en semana de descarga es un día perfectamente normal, y
+# es exactamente el día en que esto pasaba, porque el bloque solo entra en
+# verde. El ámbar y las reglas especiales sí van atadas al color y por eso no
+# llegan nunca al bloque.
+
+
+def _dia_de_descarga(cfg, estado_en_descarga):
+    """El lunes de descarga con el día completo y verde, que es cuando pasa.
+
+    `sig` a secas es ámbar -deja trece reglas sin evaluar- y en ámbar el bloque
+    HIIT no entra: el escenario en el que esto se rompía no se puede montar sin
+    `sig_completa`.
+    """
+    d = decide(cfg, LUNES, sig_completa(LUNES), estado_en_descarga)
+    assert d.deload.active and d.light == "green", (
+        f"el escenario ya no es 'verde en semana de descarga' "
+        f"({d.light}, descarga={d.deload.active}); el test hay que rehacerlo"
+    )
+    assert d.session.hiit is not None, (
+        f"el escenario ya no lleva bloque HIIT: {d.session.notes}"
+    )
+    return d
+
+
+def _efectivas(sesion, clave: str) -> list[dict]:
+    ex = next(e for e in sesion.exercises if e["key"] == clave)
+    return [s for s in ex["sets"] if s.get("type") != "warmup"]
+
+
+def test_en_semana_de_descarga_el_hiit_tambien_se_recorta(cfg, estado_en_descarga):
+    """Lo de arriba, medido: series, segundos y kilos del bloque.
+
+    Los números no se copian del config a mano. Se leen de `progression.deload`
+    y de `special_rules`, se aplican a lo que el YAML prescribe y se comparan
+    con lo que sale, porque un test que repita el 0,7 escrito a mano deja de
+    vigilar el día que alguien cambie el factor: seguiría verde midiendo contra
+    su propia copia.
+    """
+    dl = cfg.raw["progression"]["deload"]
+    factor_carga = next(
+        r for r in cfg.raw["special_rules"] if r["name"] == "semana_de_descarga"
+    )["action"]["load_factor"]
+
+    d = _dia_de_descarga(cfg, estado_en_descarga)
+    hiit = d.session.hiit
+    prescrito = {
+        e["key"]: e["sets"] for e in cfg.raw["routines"][hiit.routine_key]["exercises"]
+    }
+
+    for ex in hiit.exercises:
+        base = prescrito[ex["key"]]
+        salieron = _efectivas(hiit, ex["key"])
+
+        assert len(salieron) == max(2, int(len(base) * dl["sets_factor"])), (
+            f"{ex['key']}: {len(base)} series prescritas y {len(salieron)} "
+            f"en la sesión; con sets_factor={dl['sets_factor']} no cuadra"
+        )
+        for s, b in zip(salieron, base):
+            if "duration_s" in b:
+                assert s["duration_s"] == max(5, int(b["duration_s"] * dl["seconds_factor"]))
+            if "reps" in b:
+                assert s["reps"] == max(1, int(b["reps"] * dl["reps_factor"]))
+            if b.get("weight_kg"):
+                assert s["weight_kg"] == pytest.approx(b["weight_kg"] * factor_carga)
+
+
+def test_la_descarga_recorta_el_hiit_con_el_mismo_criterio_que_la_fuerza(
+    cfg, estado_en_descarga
+):
+    """"Si la fuerza baja y el HIIT no, la descarga no es una descarga."
+
+    El test anterior mide el bloque contra el config; este mide el bloque contra
+    LA FUERZA DEL MISMO DÍA, que es la comparación que define la avería. Los dos
+    hacen falta: con solo el primero, cambiar el criterio de la fuerza y
+    olvidarse del HIIT volvería a abrir la asimetría sin que nada la viera.
+
+    Se compara la proporción y no los valores: son ejercicios distintos, con
+    duraciones y pesos distintos. Lo que tiene que coincidir es cuánto se
+    recorta, no cuánto queda.
+    """
+    d = _dia_de_descarga(cfg, estado_en_descarga)
+    routines = cfg.raw["routines"]
+
+    def proporcion_de_series(sesion) -> float:
+        prescrito = {
+            e["key"]: e["sets"] for e in routines[sesion.routine_key]["exercises"]
+        }
+        base = sum(
+            len([s for s in v if s.get("type") != "warmup"]) for v in prescrito.values()
+        )
+        return sum(len(_efectivas(sesion, e["key"])) for e in sesion.exercises) / base
+
+    fuerza = proporcion_de_series(d.session)
+    hiit = proporcion_de_series(d.session.hiit)
+    assert hiit < 1.0, "el bloque HIIT ha entrado entero en semana de descarga"
+    assert hiit == pytest.approx(fuerza, abs=0.12), (
+        f"la fuerza se queda en el {fuerza:.0%} de sus series y el HIIT en el "
+        f"{hiit:.0%}. El mismo día no puede descargarse a dos ritmos"
+    )
+
+
+def test_el_recorte_del_hiit_queda_escrito_y_no_solo_hecho(cfg, estado_en_descarga):
+    """La sesión de fuerza anota su recorte y la del HIIT no anotaba nada.
+
+    Sin la línea, la única forma de saber que el bloque se ha recortado es
+    contar las series en la app y acordarse de cuántas había. "Déjalo escrito"
+    es esto: el porqué viaja con el plan del día, no en la cabeza.
+    """
+    d = _dia_de_descarga(cfg, estado_en_descarga)
+    linea = next(
+        (c for c in d.session.hiit.changes if "descarga" in c.lower()), None
+    )
+    assert linea is not None, (
+        f"el bloque se recorta sin decirlo: {d.session.hiit.changes}"
+    )
+    assert "HIIT" in linea, linea
+    assert any("descarga" in c.lower() for c in d.session.changes), (
+        "y la fuerza tiene que seguir anotando el suyo"
+    )
+
+
+def test_el_recorte_de_la_descarga_no_se_adopta_como_carga_vigente(
+    cfg, estado_en_descarga
+):
+    """El recorte es de un día; el objetivo vigente es lo prescrito.
+
+    `target_sets` se fija DESPUÉS de la progresión y ANTES del recorte. Al revés
+    la plancha bajaría de 30 s a 24 s, esos 24 s se guardarían como carga
+    vigente y la semana siguiente partiría de ahí: la descarga se habría
+    convertido en un retroceso permanente, y encima progresando desde el número
+    bajo parecería que sube. Es el mismo error que ya estaba resuelto en la
+    fuerza -pasos 2b y 3 de `build_session`- y que el bloque HIIT no heredaba.
+
+    Se comprueba en la base, no en el objeto: lo que sobrevive al día es
+    `EngineState.current_sets`, y es lo que leerá `con_carga_vigente` mañana.
+    """
+    d = _dia_de_descarga(cfg, estado_en_descarga)
+    hiit = d.session.hiit
+    prescrito = {
+        e["key"]: e["sets"] for e in cfg.raw["routines"][hiit.routine_key]["exercises"]
+    }
+
+    recortada = _efectivas(hiit, "plancha_frontal")
+    assert recortada[0]["duration_s"] < prescrito["plancha_frontal"][0]["duration_s"], (
+        "sin recorte este test no prueba nada"
+    )
+
+    st = advance_state(estado_en_descarga, d, executed=None)
+    for clave, base in prescrito.items():
+        guardado = st.current_sets[(hiit.routine_key, clave)]
+        assert guardado == [s for s in base if s.get("type") != "warmup"], (
+            f"{clave}: la descarga se ha quedado como objetivo vigente. "
+            f"Prescrito {base}, guardado {guardado}"
+        )
+
+
+def test_fuera_de_la_semana_de_descarga_el_bloque_hiit_entra_entero(cfg):
+    """La contraguarda: el recorte tiene que ser de la descarga y de nada más.
+
+    Sin este test, un `deload_active` que se quedara pegado a `True` -o un
+    recorte aplicado siempre- pasaría por bueno: los tests de arriba solo miran
+    la semana en la que SÍ toca, y verían exactamente lo mismo.
+    """
+    normal = EngineState(program_start=LUNES - timedelta(weeks=1))
+    d = decide(cfg, LUNES, sig_completa(LUNES), normal)
+    assert not d.deload.active and d.light == "green"
+    assert d.session.hiit is not None, f"el escenario no lleva HIIT: {d.session.notes}"
+
+    prescrito = {
+        e["key"]: e["sets"]
+        for e in cfg.raw["routines"][d.session.hiit.routine_key]["exercises"]
+    }
+    for ex in d.session.hiit.exercises:
+        assert ex["sets"] == prescrito[ex["key"]], (
+            f"{ex['key']} sale recortado en una semana que no es de descarga"
+        )
+    assert not any("descarga" in c.lower() for c in d.session.hiit.changes)
+
+
+# ---------------------------------------------------------------------------
 # El aplazamiento de la descarga, que ni aplazaba ni se acordaba
 #
 # Devolvía `shifted=True` y no lo apuntaba en ningún sitio, así que el efecto

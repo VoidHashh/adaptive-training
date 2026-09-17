@@ -1257,7 +1257,8 @@ special_rules:
 
   - name: semana_de_descarga
     description: >
-      Semana de descarga automática: 60% de la carga y sin HIIT.
+      Semana de descarga automática: 60% de la carga, volumen recortado, y el
+      bloque HIIT recortado con los mismos factores que la fuerza.
     trigger:
       every_n_weeks: 7        # dentro del rango 6-8 que pediste
       # Cuántas semanas puede EMPUJARLA el rojo. Nunca se adelanta: adelantar
@@ -1272,7 +1273,23 @@ special_rules:
       jitter_weeks: 1
     action:
       load_factor: 0.60
-      allow_hiit: false
+      # Aquí ponía `false`, y era mentira dos veces.
+      #
+      # Mentira la primera porque nadie leía esta clave: `build_session` sacaba
+      # `allow_hiit` solo de `actions[light]`, las acciones de las reglas
+      # especiales no se consultaban en ningún sitio, y el bloque HIIT entraba
+      # ENTERO en semana de descarga -quince series de 30 s más el wall ball a
+      # peso completo, la sesión más dura de la semana- mientras la fuerza
+      # bajaba al 60%. El `description` de arriba decía "sin HIIT" y firmaba lo
+      # contrario de lo que pasaba. Ya se lee: ver `_hiit_permitido`.
+      #
+      # Mentira la segunda porque, ahora que se lee, `false` tampoco es lo que
+      # se quiere. Quitar el bloque no es descargarlo: es borrar de la semana el
+      # único trabajo metabólico y dejar la descarga sin comparación con las
+      # otras seis. Lo que se quiere es lo mismo que en la fuerza -60% de carga
+      # y el recorte de volumen de `progression.deload`-, y eso lo hace
+      # `_sesion_hiit`, no esta clave.
+      allow_hiit: true
       duration_days: 7
     notify: true
 

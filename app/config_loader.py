@@ -2332,6 +2332,18 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"{where}.action: falta 'duration_days'. Sin él la regla dura 1 "
             f"día, que casi nunca es lo que se quiere y no se nota",
         )
+        # El mismo cerrojo que en `actions.*`: `allow_hiit: "false"` -con
+        # comillas- es una cadena no vacía y en Python es verdadera, así que
+        # dejaría entrar el bloque justo donde la regla lo quiere quitar. Aquí
+        # la clave es opcional -no ponerla es no opinar-, pero puesta tiene que
+        # ser un booleano de verdad.
+        if "allow_hiit" in action:
+            require(
+                isinstance(action["allow_hiit"], bool),
+                f"{where}.action.allow_hiit vale {action['allow_hiit']!r}, que "
+                f"no es true ni false. Una cadena como 'false' es VERDADERA en "
+                f"Python y abriría lo que aquí se quiere cerrar.",
+            )
         rl = action.get("reduce_load")
         if rl is not None:
             check_keys(rl, {"exercises", "factor"}, f"{where}.action.reduce_load")
