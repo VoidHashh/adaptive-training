@@ -14,12 +14,16 @@ Los dos puntos que importan:
 
 from __future__ import annotations
 
-from datetime import date
+import copy
+import json
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from app.integrations import garmin
 from app.integrations.garmin import (
+    HORA_TOPE_MANANA,
     MAX_RETRIES,
     GarminError,
     GarminRateLimited,
@@ -566,9 +570,40 @@ class ApiQueFalla:
         raise RuntimeError("timeout")
 
 
+BB_FIXTURE = Path(__file__).parent / "fixtures" / "garmin_body_battery.json"
+
+#: Tres respuestas REALES de `get_body_battery`, tal cual las devolvió Garmin,
+#: guardadas junto al valor que el código viejo sacaba de cada una. Están aquí
+#: por lo que costó descubrir: el doble que había antes en `ApiSana` devolvía
+#: `[{"bodyBatteryValuesArray": [[0, 70]]}]`, un solo punto y sin los sellos de
+#: tiempo que trae la respuesta de verdad. Contra ese doble, leer el primer
+#: punto de la serie y leer el pico de la mañana dan lo mismo -70-, así que el
+#: fallo que tenía la columna seis meses era INVISIBLE para esta suite. Un doble
+#: más simple que el original no es un doble: es otro sistema.
+BB_DIAS: dict = json.loads(BB_FIXTURE.read_text(encoding="utf-8"))
+
+#: El día normal: te acuestas con 47, recargas hasta 91 a las 5:24 y bajas.
+BB_DIA_NORMAL = "2026-09-15"
+#: El día de la siesta: el máximo del día (49) cae a las 18:07, la mañana es 33.
+BB_DIA_SIESTA = "2026-05-22"
+#: Uno de los 48 días en que el reloj no midió: seis puntos, los seis a `null`.
+BB_DIA_SIN_MEDIR = "2026-03-15"
+
+
+def bb_respuesta(iso: str) -> list:
+    """La respuesta real de ese día, copiada para que nadie la mute."""
+    return copy.deepcopy(BB_DIAS[iso]["respuesta"])
+
+
 @doble_de(Garmin)
 class ApiSana:
-    """El mismo API cuando todo va bien. Es la base de casi todos los tests."""
+    """El mismo API cuando todo va bien. Es la base de casi todos los tests.
+
+    El body battery que devuelve es la respuesta REAL del 2026-09-15, con sus
+    seis puntos y sus dos sellos de tiempo, no una maqueta. Por eso el valor
+    limpio de este API es 91 -el pico de la recarga nocturna- y no un número
+    redondo elegido a mano.
+    """
 
     def get_hrv_data(self, *_):
         return {"hrvSummary": {"lastNightAvg": 60}}
@@ -581,7 +616,7 @@ class ApiSana:
                                   "sleepScores": {"overall": {"value": 80}}}}
 
     def get_body_battery(self, *_):
-        return [{"bodyBatteryValuesArray": [[0, 70]]}]
+        return bb_respuesta(BB_DIA_NORMAL)
 
 
 def cliente(api) -> "garmin.GarminClient":
@@ -626,7 +661,7 @@ def test_los_apuntes_se_acumulan_entre_dias():
 def test_un_dia_limpio_no_deja_apuntes():
     c = cliente(ApiSana())
     m = c.day_metrics(date(2026, 9, 7))
-    assert m.hrv == 60.0 and m.sleep_min == 420 and m.body_battery == 70
+    assert m.hrv == 60.0 and m.sleep_min == 420 and m.body_battery == 91
     assert c.fetch_errors == []
 
 
@@ -791,7 +826,7 @@ def test_no_hay_quinta_llamada():
     m = cliente(api).day_metrics(date(2026, 9, 7))
 
     assert (m.hrv, m.rhr, m.sleep_min, m.sleep_score, m.body_battery) == (
-        60.0, 52.0, 420, 80, 70
+        60.0, 52.0, 420, 80, 91
     )
     assert set(m.raw) == {"hrv", "stats", "sleep", "body_battery"}
     assert not hasattr(m, "readiness"), "la columna se fue: el campo también"
@@ -1036,3 +1071,242 @@ def test_el_no_se_sabe_es_falsy_para_que_lo_de_siempre_degrade_al_lado_seguro():
     c = garmin.GarminClient(email="a@b.c", password="x", token_dir="/tmp")
     c.session_resumed = None
     assert not c.session_resumed
+
+
+# ---------------------------------------------------------------------------
+# Body battery: qué punto de la serie es "el de la mañana"
+# ---------------------------------------------------------------------------
+#
+# La columna `body_battery` llevaba seis meses guardando el PRIMER punto de la
+# serie con un comentario encima que decía que se guardaba el de la mañana. El
+# primer punto es la medianoche: con cuánta batería te acuestas, no con cuánta
+# te levantas. Media guardada 35,0 sobre una media real de 82,7 en los 138 días
+# medidos, y los 138 coincidiendo con el primer punto y NINGUNO con el pico.
+#
+# Lo que hizo el fallo invisible durante seis meses no fue la falta de tests:
+# era que el doble de `get_body_battery` devolvía UN punto sin sellos de tiempo,
+# y con un solo punto el primero y el máximo son el mismo número. Estos tests
+# van contra respuestas reales guardadas en `tests/fixtures/`, y cada uno se ha
+# comprobado volviendo a poner `niveles[0][1]` para ver que falla.
+
+
+def _leer(respuesta) -> tuple[int | None, list[str]]:
+    """El valor que acaba en la fila, por el camino de producción entero."""
+    c = sin_clave(ApiSana, "get_body_battery", respuesta)
+    return c.day_metrics(date(2026, 9, 7)).body_battery, c.fetch_errors
+
+
+def _con_huso(respuesta: list, horas: int) -> list:
+    """La misma respuesta declarando otro huso, sin tocar la serie.
+
+    Solo se mueve `startTimestampLocal`, que es lo único que el código mira
+    para saber qué hora local es cada instante.
+    """
+    bloque = respuesta[0]
+    gmt = datetime.strptime(bloque["startTimestampGMT"][:19], "%Y-%m-%dT%H:%M:%S")
+    bloque["startTimestampLocal"] = (gmt + timedelta(hours=horas)).strftime(
+        "%Y-%m-%dT%H:%M:%S.0"
+    )
+    return respuesta
+
+
+def test_el_fixture_es_la_respuesta_real_y_trae_lo_que_el_codigo_lee():
+    """Sin esto, media docena de tests de aquí abajo pasarían en vacío.
+
+    Todos recorren `BB_DIAS`. Si el fichero se quedara sin días, o si una
+    respuesta perdiera la serie, los bucles darían cero vueltas y el fichero
+    entero seguiría en verde diciendo que la columna está bien.
+    """
+    assert set(BB_DIAS) == {BB_DIA_NORMAL, BB_DIA_SIESTA, BB_DIA_SIN_MEDIR}
+    for iso, dia in BB_DIAS.items():
+        bloque = dia["respuesta"][0]
+        assert bloque["bodyBatteryValuesArray"], f"{iso} sin serie"
+        assert bloque["startTimestampGMT"] and bloque["startTimestampLocal"], (
+            f"{iso} sin los dos sellos de tiempo: son de donde sale el huso"
+        )
+        assert "guardado_por_el_codigo_viejo" in dia, (
+            f"{iso} sin el valor que guardaba el código viejo, que es la mitad "
+            "de lo que este fixture demuestra"
+        )
+
+
+def test_la_serie_real_viene_en_seis_puntos_y_no_por_minutos():
+    """Es el porqué de leer el máximo en vez de "la muestra tras despertar".
+
+    Si Garmin devolviera la serie por minutos, lo natural sería coger el valor
+    del instante en que acaba el sueño. Devuelve SEIS puntos en veinticuatro
+    horas, así que "la muestra siguiente al despertar" cae de media dos horas
+    después, con la batería ya gastada: sale una media de 72,6 en vez de 82,7,
+    y el error es siempre hacia abajo. El día que esto cambie -que la serie
+    venga fina- este test se pondrá rojo y habrá que rehacer la decisión.
+    """
+    for iso, dia in BB_DIAS.items():
+        serie = dia["respuesta"][0]["bodyBatteryValuesArray"]
+        assert len(serie) == 6, f"{iso}: {len(serie)} puntos, ya no son seis"
+    serie = BB_DIAS[BB_DIA_NORMAL]["respuesta"][0]["bodyBatteryValuesArray"]
+    horas = (serie[-1][0] - serie[0][0]) / 3_600_000
+    assert horas > 8, (
+        f"seis puntos repartidos en {horas:.1f} h: entre dos muestras cabe "
+        "media mañana, que es justo por lo que no se lee 'la de después'"
+    )
+
+
+def test_se_lee_el_pico_de_la_noche_y_no_el_valor_de_la_medianoche():
+    """El test que no existía. Es el fallo entero en dos números.
+
+    47 es con lo que se acostó y 91 con lo que se levantó. La respuesta es la
+    misma; lo que cambia es qué punto se lee. Contra el doble viejo -un punto
+    suelto, sin sellos- las dos lecturas daban 70 y este test no era posible.
+    """
+    valor, errores = _leer(bb_respuesta(BB_DIA_NORMAL))
+    assert valor == 91, "el pico de la recarga nocturna, a las 05:24 locales"
+    assert BB_DIAS[BB_DIA_NORMAL]["guardado_por_el_codigo_viejo"] == 47, (
+        "lo que la columna guardó ese día: el primer punto, la medianoche"
+    )
+    assert errores == [], "un día normal y completo no tiene nada que avisar"
+
+
+def test_una_siesta_por_la_tarde_no_es_el_valor_de_la_mañana():
+    """Por esto el corte está al mediodía y no se coge el máximo del día.
+
+    El 2026-05-22 la noche fue mala -se sube de 5 a 33- y por la tarde hay una
+    recarga que llega a 49 a las 18:06. El máximo del día diría 49, que es más
+    alto que la mañana y no describe ninguna mañana. Es un día de 138, pero es
+    la diferencia entre una definición y una casualidad.
+    """
+    respuesta = bb_respuesta(BB_DIA_SIESTA)
+    valores = [p[1] for p in respuesta[0]["bodyBatteryValuesArray"] if p[1] is not None]
+    assert max(valores) == 49, "el máximo del día entero, que es de la tarde"
+
+    valor, errores = _leer(respuesta)
+    assert valor == 33, "el máximo hasta el mediodía"
+    assert errores == []
+
+
+def test_el_corte_de_la_mañana_no_es_un_numero_suelto_en_el_codigo():
+    """`HORA_TOPE_MANANA` tiene que ser lo que de verdad recorta.
+
+    Si alguien lo cambia a 24 "para simplificar", el día de la siesta empieza a
+    valer 49 y nadie se entera. El nombre existe para que se pueda mover a
+    propósito, no para decorar.
+    """
+    assert HORA_TOPE_MANANA == 12
+    subidos = garmin.HORA_TOPE_MANANA
+    try:
+        garmin.HORA_TOPE_MANANA = 24
+        assert _leer(bb_respuesta(BB_DIA_SIESTA))[0] == 49, (
+            "con el tope en 24 tiene que entrar la siesta: si no, el corte no "
+            "lo hace esta constante y este test no vigila nada"
+        )
+    finally:
+        garmin.HORA_TOPE_MANANA = subidos
+    assert _leer(bb_respuesta(BB_DIA_SIESTA))[0] == 33
+
+
+def test_un_dia_que_el_reloj_no_midio_sigue_siendo_none_y_no_un_cero():
+    """48 días del histórico traen los seis puntos con los seis valores a null.
+
+    Es una noche sin reloj, y tiene que seguir siendo "no se sabe". Un 0 sería
+    una batería vacía, que es un dato clínico y falso; y no hay nada que avisar,
+    porque dormir sin reloj no es un fallo de lectura.
+    """
+    respuesta = bb_respuesta(BB_DIA_SIN_MEDIR)
+    assert all(p[1] is None for p in respuesta[0]["bodyBatteryValuesArray"])
+
+    valor, errores = _leer(respuesta)
+    assert valor is None
+    assert errores == []
+
+
+def test_el_huso_sale_de_la_respuesta_y_no_de_una_constante():
+    """Y se nota, porque el día de la siesta cambia de valor si se falla.
+
+    En UTC, la muestra de las 13:54 locales cae a las 11:54 y se cuela en la
+    mañana: 42 en vez de 33. Ese es el test: no que el huso se lea, sino que
+    leerlo mal dé otro número. En el histórico hay 14 días a +1 y 171 a +2, así
+    que un `+2` escrito a mano estaría mal dos semanas al año.
+    """
+    assert _leer(_con_huso(bb_respuesta(BB_DIA_SIESTA), 0))[0] == 42, (
+        "si esto ya daba 33, el huso no se estaría aplicando a nada"
+    )
+    assert _leer(bb_respuesta(BB_DIA_SIESTA))[0] == 33
+
+
+def test_en_horario_de_invierno_el_pico_se_sigue_leyendo_bien():
+    """Día INVENTADO, y hay que decirlo: no hay ninguno real que sirva.
+
+    Los 14 días a +1 del histórico son exactamente los 14 primeros de la racha
+    de 48 sin medir, así que ningún día de invierno tiene pico que leer. En vez
+    de fingir que este fixture es real, se coge el día normal y se le declara
+    huso de invierno: el pico se mueve de las 05:24 a las 04:24 y tiene que
+    seguir siendo 91.
+    """
+    invierno = BB_DIAS[BB_DIA_SIN_MEDIR]["respuesta"][0]
+    assert all(
+        p[1] is None for p in invierno["bodyBatteryValuesArray"]
+    ), "el día real a +1 del fixture tiene datos: entonces úsalo y quita este apaño"
+
+    valor, errores = _leer(_con_huso(bb_respuesta(BB_DIA_NORMAL), 1))
+    assert valor == 91
+    assert errores == []
+
+
+def test_sin_los_sellos_de_tiempo_no_se_adivina_la_hora_y_se_anota():
+    """Sin huso no se sabe cuál de los seis puntos es de la mañana.
+
+    Coger uno a ojo sería volver a lo de antes con otra cara. Se devuelve None
+    -que ya significa "no se sabe"- y se deja apunte, porque si estos dos
+    campos desaparecen es que la respuesta ha cambiado de forma y eso se arregla
+    una vez, no se sufre seis meses.
+    """
+    for quitar in ("startTimestampLocal", "startTimestampGMT"):
+        respuesta = bb_respuesta(BB_DIA_NORMAL)
+        respuesta[0].pop(quitar)
+        valor, errores = _leer(respuesta)
+        assert valor is None, f"sin {quitar} no hay forma honrada de dar un número"
+        assert len(errores) == 1 and "hora local" in errores[0], (
+            f"sin {quitar} el aviso tiene que decir qué falta: {errores}"
+        )
+
+
+def test_un_sello_de_tiempo_ilegible_tampoco_se_interpreta():
+    """Si el formato cambia, `strptime` revienta, y eso no puede tumbar el día.
+
+    El resto de la fila -HRV, pulsaciones, sueño- es buena. Se pierde una
+    columna y se anota; no se pierde el día.
+    """
+    respuesta = bb_respuesta(BB_DIA_NORMAL)
+    respuesta[0]["startTimestampLocal"] = "15/09/2026 00:00"
+    c = sin_clave(ApiSana, "get_body_battery", respuesta)
+    m = c.day_metrics(date(2026, 9, 7))
+
+    assert m.body_battery is None
+    assert m.hrv == 60.0 and m.rhr == 52.0, "el resto de la fila se salva"
+    assert len(c.fetch_errors) == 1
+
+
+def test_un_dia_que_solo_tiene_muestras_de_tarde_no_inventa_una_mañana():
+    """Un reloj que se pone a mediodía. No hay mañana que leer: es None.
+
+    Y NO es un aviso: la respuesta vino bien y con la forma de siempre, solo que
+    no cubre la franja que nos interesa. Avisar aquí sería ruido diario por un
+    caso normal, que es la misma línea que se sigue con `sleepScores`.
+    """
+    respuesta = bb_respuesta(BB_DIA_SIESTA)
+    serie = respuesta[0]["bodyBatteryValuesArray"]
+    respuesta[0]["bodyBatteryValuesArray"] = serie[3:]
+    assert respuesta[0]["bodyBatteryValuesArray"], "si se queda vacía esto no prueba nada"
+
+    valor, errores = _leer(respuesta)
+    assert valor is None
+    assert errores == []
+
+
+def test_un_punto_suelto_sin_instante_no_arrastra_al_resto_del_dia():
+    """Garmin manda algún `[null, 60]` suelto. Se salta ese punto, no el día."""
+    respuesta = bb_respuesta(BB_DIA_NORMAL)
+    respuesta[0]["bodyBatteryValuesArray"].insert(0, [None, 12])
+
+    valor, errores = _leer(respuesta)
+    assert valor == 91
+    assert errores == []

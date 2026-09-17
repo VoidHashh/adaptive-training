@@ -28,7 +28,7 @@ import contextlib
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from app.engine.signals import DayMetrics, Ride
@@ -142,6 +142,105 @@ def rides_from_activities(raw: Sequence[dict[str, Any]]) -> list[Ride]:
         if ride is not None:
             out.append(ride)
     return out
+
+
+#: Hasta qué hora LOCAL se considera "la mañana" al buscar el pico de la noche.
+#: No es un ajuste fino: el pico real cae entre las 4:0 y las 8:0 en 135 de los
+#: 138 días medidos, y las 12:00 están ahí para dejar fuera la siesta, no para
+#: recortar el amanecer.
+HORA_TOPE_MANANA = 12
+
+
+def _huso_de(bloque: dict[str, Any]) -> timedelta | None:
+    """El desfase horario del día, sacado de los dos sellos que trae la respuesta.
+
+    `startTimestampGMT` y `startTimestampLocal` son el MISMO instante escrito
+    dos veces, así que su diferencia es el huso de ese día concreto. Se saca así
+    y no de una constante porque en el histórico hay 14 días a +1 y 171 a +2: un
+    `+2` escrito a mano estaría mal dos semanas al año, y estaría mal justo en
+    los días de alrededor del cambio de hora, que son los que más raro se leen
+    cuando alguien va a mirar por qué un número no cuadra.
+    """
+    g, l = bloque.get("startTimestampGMT"), bloque.get("startTimestampLocal")
+    if not g or not l:
+        return None
+    try:
+        return datetime.strptime(str(l)[:19], "%Y-%m-%dT%H:%M:%S") - datetime.strptime(
+            str(g)[:19], "%Y-%m-%dT%H:%M:%S"
+        )
+    except ValueError:
+        return None
+
+
+def _hora_local(ts_ms: Any, huso: timedelta) -> int:
+    """La hora local de un instante de la serie, en 0-23."""
+    return (
+        datetime.fromtimestamp(ts_ms / 1000, timezone.utc).replace(tzinfo=None) + huso
+    ).hour
+
+
+def _battery_de_la_manana(
+    iso: str,
+    bloque: dict[str, Any],
+    niveles: Sequence[Sequence[Any]],
+    errores: list[str],
+) -> int | None:
+    """El pico de la recarga nocturna: con cuánta batería te levantas.
+
+    QUÉ ESTABA MAL. Esto era `niveles[0][1]`, el PRIMER punto de la serie, con
+    un comentario encima que decía que el valor útil era el de la mañana. El
+    primer punto no es la mañana: la serie arranca en `startTimestampLocal`, que
+    es la MEDIANOCHE, o sea el valor con el que te acostaste, justo antes de que
+    el cuerpo empiece a recargar. Medido sobre los 138 días con serie del
+    histórico, los 138 coincidían con el primer punto y NINGUNO con el pico. La
+    media guardada era 35,0 sobre una media real de 82,7, con una separación
+    media de 47,8 puntos en una escala de 0 a 100. La columna no estaba vacía ni
+    era ruidosa: decía otra cosa, y decía siempre la misma otra cosa.
+
+    POR QUÉ EL MÁXIMO Y NO EL VALOR AL DESPERTAR. Sería más directo leer la
+    muestra justo posterior al fin del sueño, y se probó: Garmin no devuelve la
+    serie por minutos sino SEIS puntos al día, así que "la muestra siguiente"
+    cae de media dos horas después de levantarte, con la batería ya gastada.
+    Sale una media de 72,6 en vez de 82,7, y el error no es ruido: es siempre
+    hacia abajo. El pico, en cambio, cae a menos de una hora del final del sueño
+    en 133 de los 138 días, con una mediana de 3,6 minutos. El máximo de la
+    mañana ES el valor al despertar, medido mejor.
+
+    POR QUÉ HASTA EL MEDIODÍA Y NO EL MÁXIMO DEL DÍA. Por un solo día de 138
+    -el 2026-05-22- en el que el pico cae a las 18:06 y vale 49 mientras la
+    mañana valía 33. Una siesta no es una noche. El corte deja ese día en su
+    sitio y no mueve ningún otro.
+
+    POR QUÉ NO SE USA EL EVENTO DE SUEÑO PARA ACOTAR. Se probó también: el fin
+    del evento `SLEEP` cae ANTES del pico en 21 de 138 días, y acotar por ahí
+    daba valores como 38 donde el pico era 85. El evento y la serie no están
+    sincronizados, así que atarlos añade una dependencia que además falla.
+    """
+    huso = _huso_de(bloque)
+    if huso is None:
+        # Sin el huso no se sabe cuál de los seis puntos es de la mañana, y
+        # elegir uno a ojo es volver a lo de antes con otra cara. Se anota,
+        # porque significa que la respuesta ha cambiado de forma.
+        errores.append(
+            f"{iso}: la respuesta de body battery no trae "
+            f"'startTimestampGMT'/'startTimestampLocal', así que no se puede "
+            f"saber qué hora local es cada punto de la serie"
+        )
+        return None
+
+    manana = [
+        nivel[1]
+        for nivel in niveles
+        if len(nivel) > 1
+        and nivel[1] is not None
+        and nivel[0] is not None
+        and _hora_local(nivel[0], huso) < HORA_TOPE_MANANA
+    ]
+    if not manana:
+        # Un día del que solo hay muestras de tarde. No es un error: es que no
+        # hay mañana que leer, y `None` lo dice mejor que un número de la tarde.
+        return None
+    return int(max(manana))
 
 
 def _is_rate_limit(exc: Exception) -> bool:
@@ -571,11 +670,11 @@ class GarminClient:
                     iso, "body battery", bb[0], "bodyBatteryValuesArray",
                     "la respuesta de body battery",
                 ) or []
-                # El valor útil es el de la mañana, no el máximo del día: el
-                # sistema decide al levantarse.
                 if niveles:
                     if len(niveles[0]) > 1:
-                        battery = niveles[0][1]
+                        battery = _battery_de_la_manana(
+                            iso, bb[0], niveles, self.fetch_errors
+                        )
                     else:
                         # Cada nivel es un par [timestamp, valor]. Si deja de
                         # serlo, `niveles[0][1]` no existe y antes eso era un
