@@ -261,6 +261,21 @@ HUELLAS_DEL_ARMAZON = {
     # excepción por criterio propio es exactamente lo que dejó la versión
     # clavada en "v5" durante dos cambios.
     "v12": "55e614f192e4f1e8b4a2aff3dc19a6ff7a944efa4edb2f8fee303260c1b245cb",
+    # v13: el ranking de ejercicios escribe la corrección por comparaciones
+    # múltiples. El servidor la calculaba sobre la tanda entera y la mandaba
+    # dentro de cada casilla; la sección se pintaba con `ficha()`, que no lleva
+    # ni `p_corregida` ni `significativa`, así que los ciento catorce veredictos
+    # se tiraban a la basura justo en la única pantalla que ordena
+    # correlaciones en un podio numerado.
+    #
+    # Aquí el móvil viejo falla de la forma GRAVE, y conviene decirlo tan claro
+    # como en v12 se dijo que era leve: el cambio es entero del navegador, el
+    # servidor ya mandaba los dos campos desde hace commits. Un teléfono que se
+    # quede con el JavaScript de antes sigue enseñando el podio de siempre -con
+    # el «r = −0,38» en negrita en el primer puesto- y ni una palabra de que,
+    # medido contra la HRV el 2026-09-17, de 66 relaciones calculadas no aguanta
+    # ninguna. No se ve roto: se ve seguro de sí mismo, que es peor.
+    "v13": "eeb477ab59917edd0785b2fb3fb472641f8472235fe4c9ccc2c28808a50bff65",
 }
 
 
@@ -797,6 +812,39 @@ def _sembrar(ses) -> None:
                     total_sets=18 + (i % 4),
                     total_volume_kg=4000.0 + (i % 11) * 150,
                     all_sets_at_target=(i % 3 != 0),
+                    # EL CRUDO, QUE ES DE DONDE SALE EL RANKING ENTERO.
+                    #
+                    # `ejercicios_por_dia` desglosa `raw_json` y NO mira los
+                    # `targets`, a propósito: los targets dicen lo que el motor
+                    # planea y el ranking pregunta por lo que el cuerpo aguantó.
+                    # Sembrar el `WorkoutLog` sin crudo dejaba el desglose vacío,
+                    # y con él vacío `seccionRanking` se iba SIEMPRE por la rama
+                    # de «no hay ni un ejercicio con días suficientes». O sea que
+                    # el arnés llevaba desde que existe dando por pintada una
+                    # sección de la que no había visto ni una fila.
+                    #
+                    # Los tres ejercicios no son intercambiables. `press_banca`
+                    # va todos los días de fuerza -es el que NO tiene días sin
+                    # él, el que sale el último con el motivo escrito- y los
+                    # otros dos se reparten los dos días de la semana, que es lo
+                    # que les da variación y permite que salga una `r`. Sin al
+                    # menos uno de cada, el ranking se pinta con una sola rama.
+                    raw_json=json.dumps(
+                        {
+                            "exercises": [
+                                {
+                                    "exercise_template_id": "press_banca",
+                                    "title": "Press de banca",
+                                },
+                                {
+                                    "exercise_template_id": (
+                                        "remo" if i % 7 == 1 else "sentadilla"
+                                    ),
+                                    "title": "Remo" if i % 7 == 1 else "Sentadilla",
+                                },
+                            ]
+                        }
+                    ),
                 )
             )
 
@@ -934,6 +982,29 @@ def _payloads(cliente) -> dict[str, object]:
     )
     assert r.status_code == 200, f"ranking → {r.status_code} {r.text[:400]}"
     salida["ranking"] = r.json()
+
+    # EL RANKING, CON ALGÚN VEREDICTO DE LA CORRECCIÓN DENTRO.
+    #
+    # `correccionNoPintada` en `render_pwa.mjs` compara `p_corregida` y
+    # `significativa` contra la pantalla, y recorre las casillas del payload: si
+    # el sembrado no trae ni una calculada, el bucle no da ni una vuelta y la
+    # comprobación sale verde sin haber mirado nada. Una guarda que no puede
+    # dispararse es peor que ninguna, porque además ocupa el sitio de la que sí.
+    #
+    # Se mira aquí y no allí por el motivo de siempre: si esto se queda a cero,
+    # lo que hay que arreglar es el sembrado, y el mensaje tiene que decir eso.
+    con_veredicto = [
+        c
+        for e in salida["ranking"]["ranking"]
+        for c in e["por_dia"]
+        if c["r"] is not None and c["significativa"] is not None
+    ]
+    assert con_veredicto, (
+        "el ranking sembrado no trae ni una casilla con `r` y `significativa`: "
+        "o no hay ejercicio con días suficientes, o `corregir_tanda` ha dejado "
+        "de marcar la tanda. Sin ninguna, el arnés no comprueba que el podio "
+        "escriba la corrección y aprueba una pantalla que la tire a la basura."
+    )
 
     # LA LÍNEA DE LA DISCORDANCIA, POR LA RAMA BUENA.
     #

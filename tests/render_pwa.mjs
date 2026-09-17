@@ -246,6 +246,58 @@ function tablaMalPintada(clave, html) {
   return null;
 }
 
+/* LA CORRECCIÓN, EN EL PODIO, PUESTO POR PUESTO.
+ *
+ * `corregir_tanda` corrige la tanda entera en el servidor y manda `p_corregida`
+ * y `significativa` en cada casilla del ranking. El navegador las tiraba: la
+ * sección se pintaba con `ficha()`, el resumen compartido de `comun.js`, que no
+ * lleva ninguna de las dos. Ciento catorce veredictos calculados, servidos y no
+ * leídos, en la ÚNICA pantalla que ordena correlaciones en un podio numerado.
+ * Medido contra la HRV el 2026-09-17: de 66 calculadas no aguantaba ninguna, y
+ * el primer puesto enseñaba «r = −0,38» en negrita sin una palabra al lado.
+ *
+ * Es la contraria de la que caza el `Proxy`: una clave que el backend SÍ manda y
+ * el renderizador no mira. No deja `undefined`, no deja una rama al revés, no
+ * deja un hueco. Deja una pantalla entera que afirma de más.
+ *
+ * Se compara contra el PAYLOAD, con el mismo `num` del renderizador, y no contra
+ * un número escrito aquí: así cambiar el redondeo o la ventana no obliga a tocar
+ * este archivo, y en cambio dejar de pintar el veredicto sí se ve.
+ */
+function correccionNoPintada(html) {
+  const rank = payloads.ranking;
+  if (!rank || !(rank.ranking || []).length) return null;
+  const num = vm.runInContext("num", contexto);
+  const k = rank.retardos[0];
+  for (const e of rank.ranking) {
+    const c = (e.por_dia || []).find((x) => x.dias_despues === k);
+    if (!c || c.r === null || c.r === undefined) continue;
+    if (c.p_corregida !== null && c.p_corregida !== undefined) {
+      if (!html.includes(num(c.p_corregida, 3))) {
+        return (
+          `el servidor mandó \`p_corregida\` = ${num(c.p_corregida, 3)} para ` +
+          `"${e.etiqueta || e.clave}" y no está en la pantalla`
+        );
+      }
+    }
+    if (typeof c.significativa === "boolean") {
+      // Con el separador delante a propósito: "aguanta la corrección" es un
+      // trozo de "no aguanta la corrección", así que buscarlo pelado daría por
+      // bueno justo el veredicto del revés, que es el peor fallo posible aquí.
+      const frase = c.significativa
+        ? "· aguanta la corrección"
+        : "· no aguanta la corrección";
+      if (!html.includes(frase)) {
+        return (
+          `el servidor dijo \`significativa\` = ${c.significativa} para ` +
+          `"${e.etiqueta || e.clave}" y la pantalla no escribe "${frase}"`
+        );
+      }
+    }
+  }
+  return null;
+}
+
 let fallos = 0;
 for (const v of VISTAS) {
   vistaEnCurso = v;
@@ -282,6 +334,14 @@ for (const v of VISTAS) {
   const malPintada = tablaMalPintada(v, html);
   if (malPintada) {
     console.log(`FALLO ${v}: ${malPintada}`);
+    fallos++;
+    continue;
+  }
+  // El ranking se pinta DENTRO de la vista de impacto -va detrás del mismo
+  // desplegable-, así que se mira aquí y no en una vista propia.
+  const sinCorreccion = v === "impacto" ? correccionNoPintada(html) : null;
+  if (sinCorreccion) {
+    console.log(`FALLO ${v}: ${sinCorreccion}`);
     fallos++;
     continue;
   }

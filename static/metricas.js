@@ -965,10 +965,95 @@ function tarjetaImpacto(f) {
   );
 }
 
+/* El título de la sección, con `en_frase` y no con la etiqueta en minúsculas.
+ *
+ * `etiqueta.toLowerCase()` escribía «ordenados por variabilidad (hrv)»: el
+ * acrónimo desmontado por el propio navegador. Es un daño pequeño y es de la
+ * familia de siempre -lo que se lee no es lo que se guardó, y la diferencia la
+ * mete la presentación-, así que se usa el campo que el servidor manda para
+ * exactamente esto. */
+function tituloRanking(rank) {
+  const r = rank.respuesta || {};
+  return (
+    `<h2 class="grupo">Ejercicios ordenados por ` +
+    `${escapar(r.en_frase || r.etiqueta || r.clave)}</h2>`
+  );
+}
+
+/* LA CORRECCIÓN, QUE ES JUSTO LO QUE ESTA SECCIÓN NO PODÍA CALLARSE.
+ *
+ * El servidor corrige la tanda ENTERA -`corregir_tanda` en `impacto.py`, sobre
+ * los 38 ejercicios por los 3 retardos- y manda `p_corregida` y `significativa`
+ * dentro de cada casilla. Esta sección las tiraba a la basura: pintaba con
+ * `ficha()`, el resumen compartido de `comun.js`, que no lleva ninguna de las
+ * dos. Las tarjetas de impacto de tres centímetros más arriba se montan su
+ * propia ficha y sí las escriben, palabra por palabra.
+ *
+ * O sea que la ÚNICA pantalla del panel que ordena correlaciones en un podio
+ * numerado era la única que no decía cuáles aguantan. Y es donde más falta
+ * hace, no donde menos: una lista ordenada por r pone en el puesto 1, por
+ * construcción, la más extrema de ciento catorce pruebas. Eso no es un hallazgo,
+ * es la definición del problema que la corrección existe para arreglar. Medido
+ * el 2026-09-17 contra la HRV: de 66 calculadas, NINGUNA aguanta. El podio se
+ * veía exactamente igual, con un «r = −0,38» en negrita en el primer puesto.
+ *
+ * La barra hueca ya lo insinuaba -`barraR` la dibuja sin relleno cuando
+ * `significativa === false`- y no basta por tres motivos: es un convenio que
+ * esta pantalla no explica en ningún sitio, no llega a un lector de pantalla
+ * -su `aria-label` solo dice el número- y compite con una cifra en negrita al
+ * lado de un número de puesto.
+ */
+function resumenCorreccion(rank) {
+  const casillas = rank.ranking.flatMap((e) => e.por_dia || []);
+  const calculadas = casillas.filter((c) => c.r !== null && c.r !== undefined);
+  const aguantan = calculadas.filter((c) => c.significativa === true);
+  if (!calculadas.length) return "";
+  return (
+    `<p class="explica">De las <b>${entero(calculadas.length)}</b> relaciones ` +
+    `que se han podido calcular -${cuenta(rank.ranking.length, "ejercicio", "ejercicios")} ` +
+    `por ${cuenta(rank.retardos.length, "retardo", "retardos")}-, ` +
+    `<b>${entero(aguantan.length)}</b> ${plural(aguantan.length, "aguanta", "aguantan")} ` +
+    `la corrección por comparaciones múltiples. ` +
+    (aguantan.length
+      ? `Las demás están porque esconderlas dejaría una lista que parece decir ` +
+        `más de lo que sabe.`
+      : `El orden es real -esos son los números que salieron- pero ` +
+        `ningún puesto se distingue del azar todavía: una lista ordenada por r ` +
+        `pone arriba la más extrema de las que se probaron, y eso pasa también ` +
+        `cuando no hay nada debajo. Sirve para elegir por dónde mirar, no para ` +
+        `concluir.`) +
+    `</p>`
+  );
+}
+
+/* El veredicto de UNA casilla, para la ficha de cada puesto del ranking.
+ *
+ * Aquí se escribe también el «no», y en `tarjetaImpacto` no. No es un descuido
+ * copiando: es que el texto que hace falta depende de con qué compita. En una
+ * tarjeta de impacto el número va solo, sin puesto y sin vecinos, y el silencio
+ * se lee como lo que es. En un podio numerado el número compite con un «1» al
+ * lado, y el «1» ya está afirmando algo por su cuenta; callarse ahí deja que lo
+ * afirme sin contestación. La frase corta que lo contesta cabe en la misma
+ * línea.
+ *
+ * Se devuelve `""` cuando no hay casilla o no hay `r`: sin correlación no hay
+ * nada que corregir, y el motivo ya lo ha escrito `bloqueNa` dos líneas arriba.
+ * Y si el servidor manda `r` sin veredicto -hoy no pasa: `corregir_tanda` marca
+ * las 114 casillas- se escribe la p sola y no se inventa un fallo. */
+function veredicto(c) {
+  if (!c || c.r === null || c.r === undefined) return "";
+  const p = c.p_corregida !== null && c.p_corregida !== undefined
+    ? ` · p corregida ${num(c.p_corregida, 3)}`
+    : "";
+  if (c.significativa === true) return `${p} · aguanta la corrección`;
+  if (c.significativa === false) return `${p} · no aguanta la corrección`;
+  return p;
+}
+
 function seccionRanking(rank) {
   if (!rank.ranking.length) {
     return (
-      `<h2 class="grupo">Ejercicios ordenados por ${escapar(rank.respuesta.etiqueta.toLowerCase())}</h2>` +
+      tituloRanking(rank) +
       bloqueNa(
         `no hay ni un ejercicio con días suficientes en esta ventana ` +
         `(${entero(rank.n_ejercicios)} encontrados). El ranking existe y está ` +
@@ -1005,17 +1090,19 @@ function seccionRanking(rank) {
             ? `<p class="cifra">r = <b>${num(c.r)}</b> a ${escapar(rank.ordenado_por)}</p>`
             : bloqueNa(c.na)) +
           ficha(c)) +
-      `<p class="ficha">hecho ${cuenta(e.veces_hecho, "día", "días")} en esta ventana</p>` +
+      `<p class="ficha">hecho ${cuenta(e.veces_hecho, "día", "días")} en esta ventana` +
+      veredicto(c) + `</p>` +
       `</article>`
     );
   }).join("");
 
   return (
-    `<h2 class="grupo">Ejercicios ordenados por ${escapar(rank.respuesta.etiqueta.toLowerCase())}</h2>` +
+    tituloRanking(rank) +
     `<p class="explica">Ordenados por ${escapar(rank.ordenado_por)}. Los que no ` +
     `tienen con qué compararse salen igual, los últimos y con el motivo escrito: ` +
     `un ejercicio que se hace TODOS los días no tiene días sin él, y esconderlo ` +
     `por eso sería esconder justo el que más se hace.</p>` +
+    resumenCorreccion(rank) +
     filas
   );
 }
