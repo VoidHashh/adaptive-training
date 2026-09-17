@@ -829,6 +829,18 @@ svg.g-barra, svg.g-curva, svg.g-regla, svg.g-serie {
   max-width: 100%;
 }
 
+/* La barra de percentil de la portada va MÁS ESTRECHA que el resto y con menos
+ * aire alrededor, y no es por ahorrar píxeles: en esa pantalla hay diez seguidas
+ * y el valor está en verlas apiladas de una vez. Con el margen de los otros
+ * gráficos, las cinco que tienen percentil no caben juntas en la pantalla de un
+ * móvil, y lo que se pretendía comparar hay que compararlo haciendo scroll, que
+ * es volver a recordar números de memoria. */
+svg.g-percentil {
+  display: block;
+  margin: 0.3rem 0 0.1rem;
+  max-width: 22rem;
+}
+
 /* El calendario de ciento ochenta días y las veintiséis semanas no caben en el
  * ancho de un móvil, y encogerlos hasta que quepan haría los cuadros
  * indistinguibles. Se deslizan en horizontal: todos los días siguen ahí. */

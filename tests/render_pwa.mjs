@@ -298,6 +298,54 @@ function correccionNoPintada(html) {
   return null;
 }
 
+/* EL PERCENTIL DE LA PORTADA, DIBUJADO Y NO SOLO CONTADO.
+ *
+ * La portada es la puerta del panel y era la única vista que no pintaba ni un
+ * SVG: mil palabras y cero dibujos, mientras desfase pintaba cincuenta curvas.
+ * Ahora cada señal con percentil lleva su barra. Esta guarda está para que no
+ * vuelva a quedarse sin ellas por el camino, que es lo fácil: el percentil
+ * SEGUIRÍA estando escrito en la ficha de debajo, la pantalla seguiría siendo
+ * correcta palabra por palabra, y nadie vería que falta nada.
+ *
+ * Se comprueban dos cosas distintas y las dos hacen falta:
+ *
+ *   1. Que la barra ESTÉ, una por línea con percentil. Que se pinte.
+ *   2. Que su `aria-label` lleve la frase entera y no el número suelto. Eso no
+ *      es cosmética de accesibilidad: es la pega exacta que se le puso a
+ *      `barraR` al arreglar el podio del ranking -«correlación −0,38» y se
+ *      calla el veredicto-, y una barra nueva que la repita a los dos días
+ *      convierte la corrección de entonces en una anécdota.
+ *
+ * Contra el PAYLOAD y no contra números escritos aquí, igual que las otras dos:
+ * cambiar la ventana o el sembrado no obliga a tocar este archivo, y en cambio
+ * dejar de dibujar sí se ve.
+ */
+function percentilSinDibujar(html) {
+  const b = payloads.portada?.como_voy;
+  if (!b || !(b.lineas || []).length) return null;
+  const entero = vm.runInContext("entero", contexto);
+  // Escapado con el `escapar` del propio renderizador y no a mano: el rótulo va
+  // dentro de un atributo, y una etiqueta con comillas o con un `&` saldría
+  // distinta de como se busca aquí. Eso daría un rojo por un fallo que no es.
+  const escapar = vm.runInContext("escapar", contexto);
+  for (const l of b.lineas) {
+    if (l.na) continue;
+    if (l.percentil === null || l.percentil === undefined) continue;
+    // La barra de ESTA línea, no "alguna barra en la pantalla": buscar la clase
+    // suelta daría por bueno pintar una sola y perder las otras cuatro.
+    const rotulo = escapar(
+      `${l.etiqueta}: por encima del ${entero(l.percentil)} % de tus días`,
+    );
+    if (!html.includes(rotulo)) {
+      return (
+        `"${l.etiqueta}" llega con percentil ${l.percentil} y la portada no ` +
+        `dibuja su barra con la frase entera dentro (se buscaba "${rotulo}")`
+      );
+    }
+  }
+  return null;
+}
+
 let fallos = 0;
 for (const v of VISTAS) {
   vistaEnCurso = v;
@@ -342,6 +390,12 @@ for (const v of VISTAS) {
   const sinCorreccion = v === "impacto" ? correccionNoPintada(html) : null;
   if (sinCorreccion) {
     console.log(`FALLO ${v}: ${sinCorreccion}`);
+    fallos++;
+    continue;
+  }
+  const sinDibujo = v === "portada" ? percentilSinDibujar(html) : null;
+  if (sinDibujo) {
+    console.log(`FALLO ${v}: ${sinDibujo}`);
     fallos++;
     continue;
   }

@@ -443,6 +443,12 @@ function bloqueComoVoy(b) {
       `<div class="linea-portada">` +
       `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
       `<div class="lectura-portada ${clase}">${escapar(l.lectura)}</div>` +
+      // La barra va ENTRE la lectura y la ficha, y las dos cosas importan. Entre
+      // la lectura porque el dibujo apoya al veredicto y no al revés; y encima
+      // de la ficha porque la ficha ES su lectura -«por encima del 10 % de tus
+      // días»- y la regla de `graficos.js` es que ningún dibujo se pinta solo.
+      // Pegadas, se leen como una; separadas serían un adorno y un número.
+      barraPercentil(l) +
       (detalle.length
         ? `<div class="ficha-portada">${escapar(detalle.join(" · "))}</div>`
         : "") +

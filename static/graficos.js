@@ -413,6 +413,100 @@ function reglaPercentiles(percepcionPct, rendimientoPct, ancho = 300, alto = 62)
 }
 
 // ---------------------------------------------------------------------------
+// El percentil de una señal, en la portada
+// ---------------------------------------------------------------------------
+
+/* Dónde cae la última semana dentro del histórico propio, de 0 a 100.
+ *
+ * POR QUÉ EXISTE. La portada era la única vista del panel que no dibujaba nada:
+ * medido el 2026-09-17 sobre los datos de verdad, cero SVG contra mil cincuenta
+ * palabras, mientras desfase pintaba cincuenta curvas e impacto ochenta y seis
+ * barras. Y es la segunda pantalla de la barra de abajo, la puerta, la que se
+ * abre a diario. Quien entra por ahí y ve prosa concluye que el panel de
+ * gráficas no existe, y no se equivoca del todo: el sitio donde primero haría
+ * falta era justo el que no lo tenía.
+ *
+ * El material ya llegaba. Cada señal trae su `percentil`, y se escribía en la
+ * ficha pequeña de debajo, en castellano, una frase por línea. La frase es
+ * buena y se queda. Lo que no se puede hacer con diez frases seguidas es
+ * COMPARARLAS: «por encima del 10 %», «del 92 %», «del 66 %», «del 41 %», «del
+ * 4 %» obliga a ir recordando cinco números para darse cuenta de que tres de
+ * ellos apuntan al mismo sitio. Puestas una debajo de otra como barras, tres
+ * marcas pegadas al borde izquierdo y una al derecho se ven de un vistazo, sin
+ * leer. Eso es lo único que añade este dibujo, y por eso no sustituye a nada.
+ *
+ * AQUÍ EL COLOR SÍ VA POR «BUENO O MALO», contra lo que dice la cabecera de este
+ * archivo. Se escribe en vez de colarlo. Aquella regla existe porque en una
+ * correlación el mismo color significaría cosas contrarias según la fila -una r
+ * positiva con la HRV es buena y con la lumbar es mala- y la pantalla no tiene
+ * forma de saber cuál es cuál. En la portada sí la tiene: el servidor manda
+ * `valencia` YA DECIDIDA por señal, y la manda precisamente porque un percentil
+ * 92 de HRV y un percentil 92 de frecuencia en reposo son lo contrario. El color
+ * no está traduciendo el número aquí; repite lo que el servidor decidió, que es
+ * lo mismo que la prosa de al lado lleva haciendo desde siempre con
+ * `CLASE_VALENCIA`. La regla de la cabecera sigue en pie donde se escribió.
+ *
+ * LOS EXTREMOS SE ROTULAN «más bajo» y «más alto», NO «peor» y «mejor». Es el
+ * cuidado que `reglaPercentiles` tiene aquí arriba, y aquí hace más falta que
+ * allí, porque allí las dos marcas miden lo mismo y aquí la mitad de las líneas
+ * van al revés: rotular el 100 de «mejor» pondría la palabra debajo de la marca
+ * de una frecuencia en reposo disparada.
+ *
+ * El 50 va DIBUJADO, por lo mismo que `barraR` dibuja el cero. Sin esa línea un
+ * percentil 41 y un percentil 66 son dos marcas a media altura que se parecen, y
+ * el punto de «normal» deja de tener sitio en el dibujo.
+ *
+ * Y el `aria-label` lleva LA FRASE ENTERA y no el número suelto. Es literalmente
+ * la pega que se le puso a `barraR` al arreglar el ranking -un `aria-label` que
+ * dice «correlación -0,38» y se calla el veredicto-; repetirla aquí a los dos
+ * días sería no haber entendido la propia corrección.
+ *
+ * Sin percentil no se pinta. No es un hueco mudo de los que persigue `bloqueNa`:
+ * las líneas que no tienen percentil porque falta el dato ya traen su `na`
+ * escrito y ni llegan aquí, y las que no lo tienen porque no va -«1 salida esta
+ * semana»- no tienen un percentil que callar. Una barra vacía en esas dos diría
+ * que falta algo que no falta.
+ */
+const COLOR_VALENCIA = { mejor: AZUL, peor: NARANJA };
+
+function barraPercentil(l, ancho = 260, alto = 26) {
+  if (!l || l.percentil === null || l.percentil === undefined) return "";
+
+  const izq = 6, der = 6;
+  const w = ancho - izq - der;
+  const p = Math.max(0, Math.min(100, Number(l.percentil)));
+  // Redondeado a dos decimales porque si no un 41 sale «107.67999999999999» en
+  // el atributo. Es un píxel, no un número que se lea: la frontera del cálculo
+  // que describe la cabecera de este archivo pasa justo por aquí.
+  const x = Math.round((izq + (p / 100) * w) * 100) / 100;
+  const yB = 11;
+  const color = COLOR_VALENCIA[l.valencia] || TENUE;
+
+  // El texto del lector de pantalla se compone con lo que mandó el servidor
+  // -etiqueta, lectura y percentil-, sin reescribirlo: la frase que oye alguien
+  // que no ve la barra tiene que ser la misma que lee quien sí la ve.
+  const lectura = l.lectura ? `, ${l.lectura}` : "";
+  const rotulo =
+    `${l.etiqueta || "señal"}: por encima del ${entero(l.percentil)} % ` +
+    `de tus días${lectura}`;
+
+  return (
+    `<svg class="g-percentil" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `height="${alto}" role="img" aria-label="${escapar(rotulo)}">` +
+    `<rect x="${izq}" y="${yB - 3}" width="${w}" height="6" rx="3" ` +
+    `fill="${REJILLA}"/>` +
+    `<line x1="${izq + w / 2}" y1="${yB - 7}" x2="${izq + w / 2}" ` +
+    `y2="${yB + 7}" stroke="${TENUE}" stroke-width="1"/>` +
+    `<circle cx="${x}" cy="${yB}" r="5" fill="${color}"/>` +
+    `<text x="${izq}" y="${alto - 2}" fill="${TENUE}" font-size="9">` +
+    `más bajo</text>` +
+    `<text x="${ancho - der}" y="${alto - 2}" fill="${TENUE}" font-size="9" ` +
+    `text-anchor="end">más alto</text>` +
+    `</svg>`
+  );
+}
+
+// ---------------------------------------------------------------------------
 // La HRV en el tiempo, con las salidas debajo
 // ---------------------------------------------------------------------------
 

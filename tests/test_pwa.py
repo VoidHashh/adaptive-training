@@ -276,6 +276,21 @@ HUELLAS_DEL_ARMAZON = {
     # medido contra la HRV el 2026-09-17, de 66 relaciones calculadas no aguanta
     # ninguna. No se ve roto: se ve seguro de sí mismo, que es peor.
     "v13": "eeb477ab59917edd0785b2fb3fb472641f8472235fe4c9ccc2c28808a50bff65",
+    # v14: la portada dibuja. Era la única de las siete vistas que no pintaba un
+    # solo SVG -medido el 2026-09-17 sobre los datos de verdad: cero gráficos y
+    # mil cincuenta y cuatro palabras, mientras desfase pintaba cincuenta curvas
+    # e impacto ochenta y seis barras-, y es la puerta, la segunda de la barra
+    # de abajo, la que se abre por la mañana. Ahora cada señal con percentil
+    # lleva su barra de 0 a 100 con el 50 marcado.
+    #
+    # El móvil viejo falla aquí de la forma LEVE, y se dice con la misma
+    # claridad con la que en v13 se dijo que era grave, porque esa diferencia es
+    # el motivo de que esta lista se escriba a mano. Un teléfono que se quede
+    # con el JavaScript de antes sigue leyendo «por encima del 10 % de tus días»
+    # en la ficha de cada línea: no le falta un dato ni le sobra una afirmación,
+    # solo tiene que ir recordando cinco números de memoria en vez de verlos
+    # alineados. Se pierde la comparación de un vistazo, no la verdad.
+    "v14": "0fa9d3dfeb8912aa9b0566a989dc142689251cf893404db8185269349a601fa5",
 }
 
 
@@ -1004,6 +1019,28 @@ def _payloads(cliente) -> dict[str, object]:
         "o no hay ejercicio con días suficientes, o `corregir_tanda` ha dejado "
         "de marcar la tanda. Sin ninguna, el arnés no comprueba que el podio "
         "escriba la corrección y aprueba una pantalla que la tire a la basura."
+    )
+
+    # LA PORTADA, CON ALGUNA SEÑAL QUE TRAIGA PERCENTIL.
+    #
+    # Lo mismo que arriba y por lo mismo. `percentilSinDibujar` recorre las
+    # líneas de `como_voy` y solo mira las que traen `percentil`; si el sembrado
+    # no llega a la n de referencia en ninguna, el bucle no da una vuelta, sale
+    # verde y la portada podría volver a quedarse sin un solo dibujo sin que
+    # nadie se entere -que es exactamente el estado del que viene-.
+    #
+    # No vale con pedir "alguna línea": las que llevan `na` se saltan a
+    # propósito, así que se exige una que además tenga percentil.
+    con_percentil = [
+        li
+        for li in salida["portada"]["como_voy"]["lineas"]
+        if not li["na"] and li["percentil"] is not None
+    ]
+    assert con_percentil, (
+        "la portada sembrada no trae ni una señal con percentil: o el sembrado "
+        "no llega a la n de referencia, o `_linea_de_serie` ha dejado de "
+        "calcularlo. Sin ninguna, el arnés no comprueba que la portada dibuje "
+        "nada y volvería a aprobar la pantalla de mil palabras y cero gráficos."
     )
 
     # LA LÍNEA DE LA DISCORDANCIA, POR LA RAMA BUENA.
