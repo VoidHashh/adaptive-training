@@ -276,21 +276,40 @@ async function pintarPortada(dias) {
  * en «el panel te está diciendo por qué está vacío», y sin él las cuatro vistas
  * sin datos son indistinguibles de cuatro vistas rotas.
  *
- * Cuando no falta nada NO se pinta nada. Es la única sección de todo el panel
- * que puede desaparecer, y puede porque su vacío no es un vacío de datos: es que
- * ya no hay ninguna pregunta cerrada. Un «no falta nada» permanente sería una
- * línea que se deja de leer a la semana.
+ * LA SECCIÓN QUE EXPLICA LOS VACÍOS NO PUEDE VACIARSE EN SILENCIO.
+ *
+ * Aquí ponía, y era la única excepción declarada de todo el panel: «cuando no
+ * falta nada NO se pinta nada, porque un "no falta nada" permanente es una línea
+ * que se deja de leer a la semana». El miedo se entiende y en parte es cierto,
+ * pero la conclusión estaba del revés: el bloque cuyo trabajo es distinguir
+ * «aquí no pasa nada» de «aquí falta un dato» desaparecía sin decir cuál de las
+ * dos cosas era. Justo el fallo del que protege, cometido por él.
+ *
+ * Y lo que se escribe en el hueco no es «no falta nada», que efectivamente no
+ * informa. Es la otra mitad: que a partir de aquí una vista vacía YA NO es por
+ * falta de histórico, y por tanto hay que mirar otra cosa. Eso es una noticia y
+ * no se puede deducir de una ausencia.
+ *
+ * Es el mismo criterio que `bloqueNa` aplica en las otras cinco vistas.
  */
 function bloqueLoQueFalta(lista) {
-  if (!lista || !lista.length) return "";
+  const cabecera = `<h2 class="grupo">Lo que todavía no se puede contestar</h2>`;
+  if (!lista || !lista.length) {
+    return (
+      cabecera +
+      `<p class="explica">Nada: las cuatro preguntas de esta pantalla ya tienen ` +
+      `datos suficientes detrás. Si alguna vista sale vacía a partir de aquí, ` +
+      `no es por falta de histórico.</p>`
+    );
+  }
   return (
-    `<h2 class="grupo">Lo que todavía no se puede contestar</h2>` +
+    cabecera +
     `<p class="explica">No es que esté roto: es que le falta un dato concreto, y ` +
     `aquí está cuál.</p>` +
     lista.map((f) => (
       `<article class="tarjeta fina">` +
       `<h3>${escapar(f.que)}</h3>` +
-      `<p class="lectura">Hace falta ${escapar(f.falta)}.</p>` +
+      `<p class="lectura">${escapar(f.falta)}</p>` +
       `<p class="ficha">Abriría: ${f.vistas.map((v) => (
         `<a href="#${escapar(v)}">${escapar(VISTAS[v] ? VISTAS[v].titulo : v)}</a>`
       )).join(" · ")}</p>` +

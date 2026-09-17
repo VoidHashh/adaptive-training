@@ -300,6 +300,29 @@ for (const v of VISTAS) {
   }
 }
 
+/* LA SECCIÓN QUE EXPLICA LOS VACÍOS, CON LA LISTA VACÍA.
+ *
+ * No se llega a este caso pintando la portada: el payload sembrado nunca trae
+ * los tres contadores por encima del umbral, así que el bucle de arriba solo
+ * ejercita la rama con fichas. Y la rama que faltaba por mirar es justo la que
+ * estaba mal: `bloqueLoQueFalta([])` devolvía la cadena vacía, o sea que el
+ * bloque cuyo trabajo es distinguir «aquí no pasa nada» de «aquí falta un dato»
+ * desaparecía de la pantalla sin decir cuál de las dos cosas era. Un vacío que
+ * se explica a sí mismo mientras hay huecos y se calla cuando no los hay es la
+ * peor de las dos opciones, porque el día bueno se lee igual que el día roto.
+ *
+ * Se llama a la función directamente y no por la vista porque lo que se vigila
+ * es la rama, no el montaje; el montaje ya lo cubre el bucle. */
+const sinHuecos = vm.runInContext("bloqueLoQueFalta([])", contexto);
+if (!sinHuecos || !sinHuecos.includes("<h2")) {
+  console.log(
+    `FALLO portada: \`bloqueLoQueFalta([])\` no pinta nada ` +
+    `(${JSON.stringify(sinHuecos)}). Con las cuatro preguntas ya contestables, ` +
+    `la sección que explica los vacíos se borra en silencio.`,
+  );
+  fallos++;
+}
+
 if (inventadas.size) {
   console.log(`\nCLAVES QUE EL PAYLOAD NO TRAE (${inventadas.size}):`);
   for (const k of [...inventadas].sort()) console.log(`  ${k}`);

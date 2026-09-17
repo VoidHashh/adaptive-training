@@ -246,6 +246,21 @@ HUELLAS_DEL_ARMAZON = {
     # lista, o sea que la pantalla se ve entera y bien; lo único mal ordenado es
     # justo la regla por la que se hizo el cambio.
     "v11": "7b0422fe51d0f5afa8dffd9ca7bd14e864645a1170445b60fa014959d4f1b16f",
+    # v12: la sección de la portada que explica los vacíos deja de vaciarse en
+    # silencio. Solo toca `metricas.js` -es una rama de `bloqueLoQueFalta`-, y
+    # el cambio de verdad va en el servidor: el umbral pasa de cero a
+    # `MINIMO_REFERENCIA`, o sea que la lista deja de quedarse vacía con una
+    # fila de cada.
+    #
+    # El móvil viejo falla aquí de la forma MENOS grave de todas las que lleva
+    # esta lista, y conviene decirlo: como el umbral nuevo lo aplica el
+    # servidor, el JavaScript de antes recibe las cuatro fichas y las pinta
+    # perfectamente. Lo único que se pierde es la frase del día en que ya no
+    # falte nada, que es un día que todavía no ha llegado. Se sube igual porque
+    # la regla no es "sube si se nota": es "sube si el armazón cambia", y una
+    # excepción por criterio propio es exactamente lo que dejó la versión
+    # clavada en "v5" durante dos cambios.
+    "v12": "55e614f192e4f1e8b4a2aff3dc19a6ff7a944efa4edb2f8fee303260c1b245cb",
 }
 
 

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.analysis.portada import (
     DIAS_RECIENTES,
+    MINIMO_REFERENCIA,
     Grupo,
     Lenguaje,
     grupo_de,
@@ -414,27 +415,96 @@ def test_la_ficha_lleva_el_numero_entero_al_lado_de_la_banda():
 # ---------------------------------------------------------------------------
 
 
+def _sembrar_contadores(db, cuantos: int) -> None:
+    """`cuantos` filas de cada uno de los tres contadores que mira la portada."""
+    for i in range(cuantos):
+        db.add(Checkin(date=dia(i), fatigue=3))
+        db.add(WorkoutLog(hevy_workout_id=f"w{i}", date=dia(i), routine_key="dia_1"))
+        db.add(
+            Decision(
+                date=dia(i), light="green", is_current=False,
+                fired_rules_json="[]", skipped_rules_json="[]",
+            )
+        )
+    db.commit()
+
+
 def test_lo_que_falta_se_cuenta_y_no_se_escribe(db):
     """Escrito a mano seguiría diciendo "hacen falta check-ins" con doscientos.
 
     Esa es la forma que tiene un texto de envejecer hacia falso en vez de hacia
     viejo, que es el mismo fallo que este proyecto lleva meses cazando.
+
+    ANTES ESTE TEST SEMBRABA UNA FILA DE CADA Y EXIGÍA LA LISTA VACÍA, o sea que
+    cifraba el fallo en vez de vigilarlo: daba por bueno que la pregunta «cómo se
+    relaciona lo que notas con lo que mide el reloj» dejara de estar pendiente al
+    llegar el check-in número UNO. Se siembra `MINIMO_REFERENCIA`, que es el
+    umbral que el propio módulo usa cien líneas más arriba para decidir si un
+    percentil significa algo. La propiedad que se protege -que se CUENTA y no se
+    escribe a mano- es la misma; lo que cambia es contra qué número se cuenta.
     """
     vacio = lo_que_falta(db)
     assert {f["vistas"][0] for f in vacio} == {
         "concordancia", "impacto", "auditoria", "percepcion"
     }
 
-    db.add(Checkin(date=dia(0), fatigue=3))
-    db.add(WorkoutLog(hevy_workout_id="w1", date=dia(0), routine_key="dia_1"))
-    db.add(
-        Decision(
-            date=dia(0), light="green", is_current=True,
-            fired_rules_json="[]", skipped_rules_json="[]",
-        )
-    )
-    db.commit()
+    _sembrar_contadores(db, MINIMO_REFERENCIA)
     assert lo_que_falta(db) == []
+
+
+def test_una_fila_de_cada_no_contesta_ninguna_de_las_cuatro(db):
+    """El umbral era cero, y cero no es el número que decide nada.
+
+    Con una fila de cada, las cuatro preguntas siguen sin poderse contestar: un
+    check-in no correlaciona con nada, una sesión no dice qué hace una rutina y
+    una decisión no audita un motor. Esto es lo que se veía en la base real el
+    2026-09-17 -2 check-ins, 4 decisiones, 16 sesiones- y la portada no tenía
+    nada pendiente que contar.
+    """
+    _sembrar_contadores(db, 1)
+    faltan = lo_que_falta(db)
+    assert {f["vistas"][0] for f in faltan} == {
+        "concordancia", "impacto", "auditoria", "percepcion"
+    }
+
+
+def test_a_medio_camino_la_pregunta_se_queda_y_dice_cuanto_queda(db):
+    """«Todavía no hay» y «llevas 19» son dos noticias distintas.
+
+    Empezar de cero es algo que hacer; ir por la mitad es una cuenta atrás, y la
+    diferencia decide si merece la pena rellenar el check-in de mañana. Un texto
+    que dijera «todavía no hay check-ins» con diecinueve puestos sería de nuevo
+    una frase perfecta y falsa.
+    """
+    _sembrar_contadores(db, MINIMO_REFERENCIA - 1)
+    porvista = {f["vistas"][0]: f["falta"] for f in lo_que_falta(db)}
+    assert set(porvista) == {
+        "concordancia", "impacto", "auditoria", "percepcion"
+    }
+    texto = porvista["concordancia"]
+    assert "Todavía no hay" not in texto
+    assert f"Llevas {MINIMO_REFERENCIA - 1}" in texto
+    assert "1 más" in texto
+    assert str(MINIMO_REFERENCIA) in texto
+
+
+def test_la_pregunta_que_necesita_dos_cosas_nombra_la_mas_atrasada(db):
+    """Mandar a apuntar sesiones cuando lo que falta son check-ins no desbloquea.
+
+    La percepción cruza lo que la mañana prometía con lo que salió, así que le
+    hacen falta las dos series. Nombrar la que ya está llena manda al usuario a
+    hacer treinta veces algo que no abre la vista.
+    """
+    for i in range(MINIMO_REFERENCIA):
+        db.add(WorkoutLog(hevy_workout_id=f"w{i}", date=dia(i), routine_key="dia_1"))
+    db.add(Checkin(date=dia(0), fatigue=3))
+    db.commit()
+
+    porvista = {f["vistas"][0]: f["falta"] for f in lo_que_falta(db)}
+    assert "impacto" not in porvista, "las sesiones ya están y siguen pedidas"
+    assert "check-ins" in porvista["percepcion"]
+    assert "sesiones apuntadas" not in porvista["percepcion"]
+    assert "Llevas 1" in porvista["percepcion"]
 
 
 def test_que_ha_cambiado_vacio_dice_por_que(db):

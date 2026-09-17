@@ -916,6 +916,27 @@ def _lectura_conteo(a: int, b: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _falta_para(n: int, cuantos: str) -> str:
+    """Lo que le falta a un contador para llegar a `MINIMO_REFERENCIA`.
+
+    Frase ENTERA y no un trozo. El navegador la imprime tal cual porque aquí es
+    donde se sabe el número, y las dos formas que hacen falta -«todavía no hay»
+    y «llevas N»- no se distinguen por un sufijo: son dos noticias distintas.
+    Empezar de cero es algo que hacer; ir por la mitad es una cuenta atrás.
+
+    Se evita a propósito meter el número delante del sustantivo («18 check-ins
+    más»), que obligaría a concordar el verbo de la frase que lo envuelve. Es la
+    misma razón por la que `LIGHT_ES` escribe los femeninos enteros en vez de
+    pegarle una letra al color.
+    """
+    if not n:
+        return f"Todavía no hay {cuantos}. Hacen falta {MINIMO_REFERENCIA}."
+    return (
+        f"Llevas {n} y hacen falta {MINIMO_REFERENCIA} para que el número "
+        f"signifique algo: {cuantos}, {MINIMO_REFERENCIA - n} más."
+    )
+
+
 def lo_que_falta(session: Session) -> list[dict[str, Any]]:
     """Qué preguntas no tienen respuesta todavía, y qué dato exacto las abriría.
 
@@ -926,41 +947,65 @@ def lo_que_falta(session: Session) -> list[dict[str, Any]]:
     Se calcula CONTANDO FILAS, no escribiendo el estado a mano. Escrito a mano
     seguiría diciendo "hacen falta check-ins" el día que haya doscientos, que es
     la forma que tiene un texto de envejecer hacia falso en vez de hacia viejo.
+
+    EL UMBRAL ERA CERO, Y CERO NO ES EL NÚMERO QUE DECIDE NADA
+
+    Esto preguntaba `if not n_checkin`. O sea que la pregunta desaparecía de la
+    lista al llegar el check-in NÚMERO UNO, y con las cuatro fuera la sección
+    entera se quedaba vacía y el bloque no se pintaba. Medido el 2026-09-17
+    sobre la base real: 2 check-ins, 4 decisiones, 16 sesiones. La portada no
+    tenía nada pendiente que contar mientras ninguna de las cuatro preguntas
+    podía contestarse todavía.
+
+    Y el número bueno estaba en este mismo fichero, cien líneas más arriba:
+    `MINIMO_REFERENCIA`, que es el que `_linea_de_serie` ya usa para decidir si
+    un percentil significa algo, con su frase «hacen falta 20» y todo. Dos varas
+    de medir en el mismo módulo, y gobernaba la floja justo la sección que
+    existe para explicar la ausencia. Un contador que se lee y no es el que
+    decide es la misma avería de siempre, esta vez en la primera pantalla.
     """
     n_checkin = session.scalar(select(func.count()).select_from(Checkin)) or 0
     n_decision = session.scalar(select(func.count()).select_from(Decision)) or 0
     n_fuerza = session.scalar(select(func.count()).select_from(WorkoutLog)) or 0
 
     faltan: list[dict[str, Any]] = []
-    if not n_checkin:
+    if n_checkin < MINIMO_REFERENCIA:
         faltan.append(
             {
                 "que": "Cómo se relaciona lo que NOTAS con lo que mide el reloj",
-                "falta": "que empieces a hacer check-ins por la mañana",
+                "falta": _falta_para(n_checkin, "check-ins por la mañana"),
                 "vistas": ["concordancia", "desfase"],
             }
         )
-    if not n_fuerza:
+    if n_fuerza < MINIMO_REFERENCIA:
         faltan.append(
             {
                 "que": "Qué te hace cada rutina de fuerza",
-                "falta": "que el sistema apunte sesiones de Hevy",
+                "falta": _falta_para(n_fuerza, "sesiones de Hevy apuntadas"),
                 "vistas": ["impacto"],
             }
         )
-    if not n_decision:
+    if n_decision < MINIMO_REFERENCIA:
         faltan.append(
             {
                 "que": "Si el motor acierta con el color del día",
-                "falta": "que el motor guarde decisiones, una por mañana",
+                "falta": _falta_para(n_decision, "decisiones guardadas, una por mañana"),
                 "vistas": ["auditoria"],
             }
         )
-    if not n_checkin or not n_fuerza:
+    if n_checkin < MINIMO_REFERENCIA or n_fuerza < MINIMO_REFERENCIA:
+        # Esta necesita las DOS cosas, así que se nombra la que vaya más
+        # atrasada. Decir "faltan check-ins y sesiones" cuando las sesiones ya
+        # están sería mandar a hacer algo que no desbloquea nada.
+        peor = "check-ins" if n_checkin <= n_fuerza else "sesiones apuntadas"
         faltan.append(
             {
                 "que": "Si lo que la mañana prometía se parece a lo que sale",
-                "falta": "check-ins y sesiones apuntadas: hacen falta las dos cosas",
+                "falta": (
+                    f"Hacen falta las dos cosas a la vez, y lo que va más corto "
+                    f"son los {peor}. "
+                    + _falta_para(min(n_checkin, n_fuerza), peor)
+                ),
                 "vistas": ["percepcion"],
             }
         )
