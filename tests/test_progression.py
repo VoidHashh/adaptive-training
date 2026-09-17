@@ -280,24 +280,40 @@ def volumen(cfg, señales, *, luz="green", day=LUNES):
     return evaluate_volume_gates(cfg.raw["progression"], señales, day, luz)
 
 
-def test_sin_partes_de_lumbar_la_puerta_de_volumen_pasa_pero_lo_dice(cfg):
-    """El fallo: se abría por falta de datos con el motivo de haber mirado.
+def test_sin_partes_de_lumbar_la_puerta_de_volumen_se_cierra(cfg):
+    """Sin partes no se sube volumen. No saber no es estar bien.
 
-    Con la ventana vacía devolvía "sin señales que desaconsejen", que es
-    literalmente la misma frase que cuando sí hay partes y salen bajos. Esa
-    frase se guarda en la decisión y se lee en Telegram y en la auditoría, así
-    que el registro afirmaba haber comprobado la lumbar de alguien con una
-    hernia L4-L5 en una semana en la que no había nada que comprobar.
+    Esto tuvo dos vidas anteriores y las dos estaban mal. Primero abría
+    devolviendo "sin señales que desaconsejen", que es literalmente la misma
+    frase que cuando sí hay partes y salen bajos: el registro que se lee en
+    Telegram y en la auditoría afirmaba haber comprobado la lumbar de alguien
+    con una hernia L4-L5 en una semana en la que no había nada que comprobar.
+    Después abría diciendo la verdad, que era mejor pero seguía subiendo
+    volumen a ciegas.
 
-    Que siga PASANDO es deliberado -bloquear sin datos revive la inanición que
-    documenta `volume_safety`-. Lo que se arregla es la coartada.
+    Ahora cierra, que es lo que el bucle de `brakes` hace noventa líneas más
+    arriba con cualquier señal que falte. La puerta estricta decide si se añade
+    una serie efectiva a la cadena posterior; el coste de equivocarse no es
+    simétrico.
     """
     for abierta, motivo in volumen(cfg, sig(LUNES)):
-        assert abierta, motivo
-        assert "SIN comprobar la lumbar" in motivo
+        assert not abierta, motivo
+        assert "sin saber cómo está la lumbar" in motivo
         assert "sin señales que desaconsejen" not in motivo, (
             "esa frase es la de haber mirado y salir bien; aquí no se ha mirado"
         )
+
+
+def test_el_motivo_dice_que_el_checkin_lo_desbloquea(cfg):
+    """Una puerta que se cierra sin explicar la llave es una puerta rota.
+
+    Este bloqueo no se levanta entrenando mejor ni esperando: se levanta
+    rellenando el check-in, que son treinta segundos. Si el motivo no lo dice,
+    el volumen se queda parado indefinidamente y desde fuera parece que el
+    sistema ha decidido que no toca subir.
+    """
+    for _, motivo in volumen(cfg, sig(LUNES)):
+        assert "check-in" in motivo, motivo
 
 
 def test_el_parte_de_hoy_no_llena_la_ventana_de_la_semana(cfg):
@@ -307,8 +323,9 @@ def test_el_parte_de_hoy_no_llena_la_ventana_de_la_semana(cfg):
     fácil dar por hecho que entonces la puerta de volumen también mira algo. No:
     su ventana son los días 1..7 ANTERIORES, y sigue vacía.
     """
-    for _, motivo in volumen(cfg, lumbar(LUNES, {0: 1})):
-        assert "SIN comprobar la lumbar" in motivo
+    for abierta, motivo in volumen(cfg, lumbar(LUNES, {0: 1})):
+        assert not abierta, motivo
+        assert "sin saber cómo está la lumbar" in motivo
 
 
 def test_con_la_semana_rellena_y_sana_el_motivo_es_el_de_siempre(cfg):

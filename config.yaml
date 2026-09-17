@@ -1005,6 +1005,14 @@ progression:
 
     # Ventana de la media lumbar. La molestia sí es una señal diaria, así que
     # esta se sigue midiendo en días.
+    #
+    # OJO: si esta ventana sale VACÍA -ningún check-in en esos días- las dos
+    # puertas CIERRAN, no pasan. Es la misma regla que el bucle de `brakes`
+    # aplica a cualquier señal que falte: no saber cómo está la lumbar no es
+    # lo mismo que saber que está bien, y con una L4-L5 la puerta que decide
+    # si se añade una serie a la cadena posterior no puede abrirse a ciegas.
+    # Se desbloquea rellenando el check-in, y el motivo que se guarda en la
+    # decisión lo dice con esas palabras.
     discomfort_lookback_days: 7
 
     # Si nunca se ha hecho esta rutina no hay sesión anterior con la que

@@ -508,25 +508,33 @@ def _volume_gate(
         series = signals.series("lower_discomfort")
         vals = [v for d in days if (v := series.get(d)) is not None]
         if not vals:
-            # SIN PARTES NO SE COMPRUEBA NADA, Y HAY QUE DECIRLO ASÍ.
+            # SIN PARTES NO SE COMPRUEBA NADA, Y ENTONCES NO SE SUBE VOLUMEN.
             #
-            # La molestia lumbar sale del check-in, que es voluntario: una
-            # semana sin rellenarlo deja esta ventana vacía. El
-            # comportamiento -dejar pasar- se mantiene a propósito, porque
-            # bloquear sin datos revive la inanición que el comentario de
-            # `volume_safety` documenta: el freno acabó castigando justo a los
-            # ejercicios que la hernia L4-L5 obliga a favorecer.
+            # Esta puerta era la excepción a la doctrina que está noventa
+            # líneas más arriba, en el bucle de `brakes`: «un freno que no se
+            # puede evaluar NO es un freno que no salta». Allí la ausencia de
+            # dato cierra por defecto y saltárselo hay que escribirlo a mano
+            # (`on_missing: skip`). Aquí la ausencia de dato abría, y abría la
+            # puerta ESTRICTA: la que decide si se añade una serie efectiva a
+            # la cadena posterior -hip thrust, curl femoral, peso muerto- en
+            # alguien con una hernia L4-L5. No saber no es estar bien.
             #
-            # Lo que NO se mantiene es el motivo que se escribía. Se devolvía
-            # "sin señales que desaconsejen", que es la misma frase que cuando
-            # sí hay partes y salen bajos. O sea que el registro afirmaba
-            # haber mirado. `gate_reason` y compañía se guardan en la decisión
-            # y se leen en Telegram y en la auditoría; una puerta que se abre
-            # por falta de datos diciendo que las señales están bien es una
-            # regla de seguridad decorativa, y encima con coartada.
-            return True, (
-                f"sin partes de molestia lumbar en {lookback} días: "
-                f"{label} pasa SIN comprobar la lumbar"
+            # LA INANICIÓN QUE TEMÍA EL COMENTARIO ANTERIOR NO ERA ESTA.
+            # Decía que bloquear sin datos revive lo que documenta
+            # `volume_safety`. Releído: aquella inanición venía de medir en
+            # DÍAS algo que pasa una vez por semana por rutina -un rojo en
+            # lunes cancelaba la única oportunidad de las tres rutinas-, y se
+            # arregló anclando el freno a la sesión anterior de la misma
+            # rutina. No venía de esta rama. El riesgo que sí queda es otro y
+            # es distinto en lo que importa: si el check-in se deja en blanco
+            # la puerta se queda cerrada, pero se abre rellenándolo, que es una
+            # acción de treinta segundos y del propio usuario. Por eso el
+            # motivo TIENE que decirlo; si no, esto es una puerta que se cierra
+            # sin explicar la llave.
+            return False, (
+                f"sin partes de molestia lumbar en {lookback} días: no se "
+                f"sube {label} sin saber cómo está la lumbar. Rellena el "
+                f"check-in y esto se desbloquea"
             )
         mean = sum(vals) / len(vals)
         if mean >= float(limit):
