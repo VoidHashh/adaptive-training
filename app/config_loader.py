@@ -54,7 +54,7 @@ from app.engine.tendencia import senales_de_regla
 # primera señal nueva y entonces el validador rechazaría nombres BUENOS, que es
 # peor que no validar: el sistema no arranca y el error acusa a un fichero de
 # configuración que está bien.
-from app.engine.signals import senales_producidas
+from app.engine.signals import senales_con_serie, senales_producidas
 # La MISMA función que usa el motor por la mañana para decidir cuántos días de
 # salidas hay que tener en caché. Se importa en vez de reimplementar el `max`
 # aquí: dos versiones del mismo criterio en dos ficheros divergen a la primera
@@ -1532,6 +1532,10 @@ def _validate(data: dict[str, Any]) -> list[str]:
             except RuleError as e:
                 require(False, f"{where}: {e}")
 
+    # Las señales que además de valor diario tienen serie. Solo importa para
+    # `consecutive_days`, que es lo único del YAML que lee el histórico.
+    con_serie = senales_con_serie(data)
+
     # Recorre el `when` de una regla del semáforo, que es el único con gramática
     # anidada (`all`/`any`/`not` + señales).
     def check_when(node: Any, where: str) -> None:
@@ -1551,6 +1555,28 @@ def _validate(data: dict[str, Any]) -> list[str]:
                 continue
             for op, operand in v.items():
                 if op == "consecutive_days":
+                    # NO ES UN OPERADOR, PERO TAMPOCO ES GRATIS
+                    # Aquí solo se saltaba, y saltárselo dejaba abierto el único
+                    # sitio del YAML donde una regla puede quedarse muerta sin
+                    # decir nada. `consecutive_days` no lee el valor de hoy: lee
+                    # la SERIE, hoy incluido. Y no todas las señales tienen
+                    # serie -ver `SENALES_CON_SERIE_FIJA`-: `sleep_min`, `hrv`,
+                    # `rhr`, `body_battery` tienen dato diario y ninguna serie.
+                    #
+                    # Sobre una de esas, la regla no falla: se anota como
+                    # saltada por falta de datos todos los días, para siempre,
+                    # mientras el dato que dice que falta está ahí delante. En
+                    # el log no se distingue de un día sin reloj. Una regla roja
+                    # que no puede ponerse roja es peor que no tenerla, porque
+                    # ocupa el sitio de la que sí vigilaría eso.
+                    if int(operand) > 1 and k not in con_serie:
+                        errors.append(
+                            f"{where}, señal '{k}': usa consecutive_days={operand} "
+                            f"sobre una señal que no tiene serie histórica, así "
+                            f"que la regla no se podría evaluar NUNCA y se "
+                            f"anotaría como falta de datos cada mañana. Con "
+                            f"serie: {sorted(con_serie)}."
+                        )
                     continue
                 check_op_name(op, f"{where}, señal '{k}'")
                 check_op_target(op, operand, f"{where}, señal '{k}'")

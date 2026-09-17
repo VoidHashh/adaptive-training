@@ -424,6 +424,76 @@ def test_ejercicio_sin_template_id(cfg):
 
 
 # ---------------------------------------------------------------------------
+# `consecutive_days` sobre una señal que no tiene serie
+#
+# El validador se lo saltaba entero -no es un operador, no hay comparación que
+# revisar- y saltárselo dejaba abierto el único sitio del YAML donde una regla
+# puede quedarse muerta sin decir nada. Es lo único que lee el HISTÓRICO en vez
+# del valor de hoy, y ocho de las quince señales fijas no tienen histórico.
+# Sobre una de esas la regla no da error ni color raro: se anota como saltada
+# por falta de datos todas las mañanas, para siempre, mientras el dato que dice
+# que falta está delante.
+# ---------------------------------------------------------------------------
+
+
+def test_consecutive_days_sobre_una_senal_sin_serie_no_arranca(cfg):
+    """El caso que está a una palabra de pasar de verdad.
+
+    `sueno_muy_corto` manda a rojo con `sleep_min < 300`. Pedir dos noches
+    seguidas antes de gastar un rojo es lo primero que uno querría escribir
+    ahí, y hasta hoy el sistema lo habría aceptado y la regla no se habría
+    vuelto a disparar nunca.
+    """
+    data = copy.deepcopy(cfg.raw)
+    regla = next(r for r in data["thresholds"]["red"] if r["name"] == "sueno_muy_corto")
+    regla["when"]["sleep_min"]["consecutive_days"] = 2
+    salida = errores(data)
+    assert "no tiene serie histórica" in salida
+    assert "sleep_min" in salida
+
+
+def test_el_error_dice_cuales_si_tienen_serie(cfg):
+    """Un validador que solo dice que no, obliga a irse a leer `signals.py`."""
+    data = copy.deepcopy(cfg.raw)
+    data["thresholds"]["amber"].append(
+        {"name": "inventada", "when": {"body_battery": {"lt": 30, "consecutive_days": 3}}}
+    )
+    salida = errores(data)
+    assert "hrv_ratio" in salida and "lower_discomfort" in salida
+
+
+def test_consecutive_days_sobre_una_senal_con_serie_pasa(cfg):
+    """CONTRAGUARDA, y no es teórica: es una regla que ya está en el config.
+
+    `hrv_hundida_2d` usa `consecutive_days: 2` sobre `hrv_ratio`. Si el
+    validador nuevo fuera más ancho de la cuenta, el sistema dejaría de
+    arrancar con su propia configuración; este test es lo que impide que el
+    arreglo se cobre una regla buena.
+    """
+    data = copy.deepcopy(cfg.raw)
+    assert "no tiene serie histórica" not in errores(data)
+
+    data["thresholds"]["amber"].append({
+        "name": "lumbar_dos_dias",
+        "when": {"lower_discomfort": {"gte": 4, "consecutive_days": 2}},
+    })
+    assert "no tiene serie histórica" not in errores(data)
+
+
+def test_consecutive_days_de_uno_no_mira_la_serie_y_se_permite(cfg):
+    """`consecutive_days: 1` es el valor por defecto, escrito a mano.
+
+    Con uno, `_eval_signal` se va por la rama de `days <= 1` y lee el valor de
+    hoy, así que la señal no necesita serie. Prohibirlo sería rechazar algo que
+    funciona.
+    """
+    data = copy.deepcopy(cfg.raw)
+    regla = next(r for r in data["thresholds"]["red"] if r["name"] == "sueno_muy_corto")
+    regla["when"]["sleep_min"]["consecutive_days"] = 1
+    assert "no tiene serie histórica" not in errores(data)
+
+
+# ---------------------------------------------------------------------------
 # Las dos puertas de volumen
 # ---------------------------------------------------------------------------
 # Añadir una serie efectiva es más arriesgado que sumar dos repeticiones. Que

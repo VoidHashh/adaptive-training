@@ -34,6 +34,7 @@ from app.engine.signals import (
     resolve_adaptive_threshold,
     rolling_load,
     rutina_de_ayer,
+    senales_con_serie,
     senales_producidas,
     week_start,
     zone_percentages,
@@ -952,6 +953,94 @@ def test_el_catalogo_lleva_la_ventana_que_dice_el_config(cfg_copia):
 def test_el_selector_no_es_una_senal(cfg):
     """No llega a `values` a propósito: es una cadena, no una medida."""
     assert CLAVE_SESION_ELEGIDA not in senales_producidas(cfg)
+
+
+# ---------------------------------------------------------------------------
+# El catálogo GEMELO: lo que además tiene serie
+#
+# `senales_producidas` contesta «¿existe esta señal?». `senales_con_serie`
+# contesta «¿se puede mirar hacia atrás?», que no es la misma pregunta y hasta
+# ahora no la contestaba nadie: ocho de las quince señales fijas tienen valor
+# diario y ningún histórico. Solo lo nota `consecutive_days`, que va a la serie
+# incluso para el día de hoy.
+# ---------------------------------------------------------------------------
+
+
+def _dia_con_todo(cfg, dias_wellness: int = 14, dias_checkin: int = 8):
+    """Un día en el que no falta NADA: wellness, salidas y formulario entero."""
+    metrics = [
+        DayMetrics(
+            date=LUNES - timedelta(days=i),
+            hrv=60.0, rhr=50.0, sleep_min=450.0, sleep_score=80, body_battery=70,
+        )
+        for i in range(dias_wellness)
+    ]
+    respuestas = {k: 1 for k in cfg.checkin_keys()}
+    historia = [
+        Checkin(date=LUNES - timedelta(days=i), values=dict(respuestas))
+        for i in range(1, dias_checkin)
+    ]
+    return build_signals(
+        cfg,
+        LUNES,
+        metrics=metrics,
+        rides=[ride(LUNES - timedelta(days=i), load=50.0) for i in range(dias_wellness)],
+        sessions=[StrengthSession(date=LUNES - timedelta(days=1), routine_key="dia_1")],
+        checkin_history=historia,
+        checkin=Checkin(date=LUNES, values=dict(respuestas)),
+    )
+
+
+def test_el_catalogo_de_series_es_exactamente_lo_que_se_historifica(cfg):
+    """La igualdad, en las dos direcciones, contra un día sin un solo hueco.
+
+    Si al catálogo le sobra un nombre, el validador deja pasar un
+    `consecutive_days` que mata la regla en silencio, que es justo lo que viene
+    a impedir. Si le falta uno, rechaza una regla buena y el sistema no arranca
+    culpando a un YAML que está bien. Las dos averías se cierran con la misma
+    igualdad y por eso se escribe como igualdad y no como dos inclusiones.
+    """
+    s = _dia_con_todo(cfg)
+    con_serie = {k for k, v in s.history.items() if v}
+    assert con_serie == senales_con_serie(cfg)
+
+
+def test_hay_senales_con_valor_y_sin_serie_y_son_estas(cfg):
+    """La premisa entera del catálogo nuevo, escrita para que se vea.
+
+    Si algún día `build_signals` acabara historificándolo todo, este test se
+    cae y entonces el catálogo -y su validador- sobran. Mientras tanto son
+    estas ocho, y `sleep_min` está entre ellas: `sueno_muy_corto` la mira.
+    """
+    s = _dia_con_todo(cfg)
+    con_valor = {k for k, v in s.values.items() if v is not None}
+    sin_serie = con_valor - {k for k, v in s.history.items() if v}
+    assert sin_serie == {
+        "hrv", "rhr", "sleep_min", "sleep_score", "body_battery",
+        "intense_count_7d", "yesterday_ride_level", "yesterday_routine",
+    }, "si esto cambia, hay que mirar si el validador sigue haciendo falta"
+
+
+def test_los_deslizadores_entran_en_el_catalogo_de_series(cfg_copia):
+    """Salen del YAML, así que el catálogo no los puede llevar escritos.
+
+    Es la mitad que no es fija: un deslizador nuevo tiene serie desde el primer
+    día, y el validador tiene que dejarle usar `consecutive_days` sin que nadie
+    toque el código.
+    """
+    cfg_copia.raw["checkin_sliders"].append(
+        {"key": "tobillo", "label": "Tobillo", "min": 0, "max": 10, "default": 0}
+    )
+    assert "tobillo" in senales_con_serie(cfg_copia)
+
+
+def test_el_catalogo_de_series_no_es_el_de_senales(cfg):
+    """CONTRAGUARDA: si los dos catálogos fueran iguales, validar sobra.
+
+    Los tests de arriba pasarían igual con `senales_con_serie = senales_producidas`,
+    y el validador no cerraría nada.
+    """
+    assert senales_con_serie(cfg) < senales_producidas(cfg)
 
 
 def test_la_rutina_de_ayer_llega_a_las_senales(cfg):

@@ -1229,6 +1229,68 @@ def _baseline_for(
 DIAS_DE_HISTORIA = 14
 
 
+# TENER VALOR Y TENER SERIE NO SON LO MISMO, Y `consecutive_days` LEE LA SERIE
+# ---------------------------------------------------------------------------
+# `build_signals` llena dos sitios y no los llena con lo mismo. En `values` cae
+# el dato de HOY de las quince de `SENALES_FIJAS`; en `history` solo cae serie
+# de estas siete y de lo que venga del formulario. `hrv`, `rhr`, `sleep_min`,
+# `sleep_score`, `body_battery`, `intense_count_Nd`, `yesterday_ride_level` y
+# `yesterday_routine` tienen valor diario y ninguna serie.
+#
+# La diferencia solo la nota `consecutive_days`, y ahí la nota entera: ese
+# modificador no mira `values` ni siquiera para el día de hoy, va a la serie
+# -`_eval_signal` en `rules.py`-. Sobre una señal sin serie la regla no falla y
+# no da un color raro: se anota como saltada por falta de datos todas las
+# mañanas, para siempre, mientras el dato que dice que falta está delante. En
+# el log eso se lee igual que un día en que el reloj no sincronizó.
+#
+# No es hipotético: `sueno_muy_corto` mira `sleep_min`, y añadirle
+# `consecutive_days: 2` -que es justo lo que uno querría para no mandar a rojo
+# por una mala noche suelta- la mataría en silencio.
+SENALES_CON_SERIE_FIJA = frozenset(
+    {
+        # Las derivadas contra la línea base se reconstruyen día a día.
+        "hrv_baseline",
+        "hrv_ratio",
+        "rhr_baseline",
+        "rhr_delta",
+        # La carga de las salidas sale ya en forma de serie.
+        "load_2d",
+        "load_7d",
+        # Derivada del formulario, y por eso con la serie de sus dos fuentes.
+        "discordancia",
+    }
+)
+
+
+def senales_con_serie(config: Any) -> set[str]:
+    """De todo lo que `build_signals` escribe, lo que además tiene histórico.
+
+    El gemelo de `senales_producidas`, y existe por el mismo motivo: que el YAML
+    no pueda declarar una regla que no se puede evaluar nunca. Aquella cierra
+    el nombre inventado; esta cierra el nombre bueno usado de una forma que la
+    señal no soporta.
+
+    Es un catálogo y no una lista suelta: `test_signals` lo comprueba contra lo
+    que `build_signals` deja de verdad en `history` en un día con todos los
+    datos, en las dos direcciones. Una lista de nombres escrita a mano y sin
+    atar se queda atrás a la primera señal nueva y entonces rechaza nombres
+    buenos, que es peor que no validar.
+    """
+    raw = config.raw if hasattr(config, "raw") else config
+    nombres = set(SENALES_CON_SERIE_FIJA)
+
+    # Los deslizadores y las preguntas van por el mismo bucle que las mete en
+    # `history`, así que las dos cosas entran juntas o no entra ninguna.
+    if hasattr(config, "checkin_keys"):
+        nombres |= set(config.checkin_keys())
+    else:
+        nombres |= {s["key"] for s in raw.get("checkin_sliders") or []}
+        nombres |= {p["key"] for p in raw.get("checkin_preguntas") or []}
+
+    return nombres
+
+
 def build_signals(
     config: Any,
     day: date,
