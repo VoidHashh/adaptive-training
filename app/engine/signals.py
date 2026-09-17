@@ -198,6 +198,39 @@ class DayMetrics:
     raw: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
 
+# Las medidas que sube el reloj mientras duermes: exactamente los cinco campos
+# numéricos de `DayMetrics`, y por eso viven pegadas a ella.
+#
+# Nacieron en el `scheduler`, subieron a `rules` -que es quien las usa para
+# promover a ámbar un verde decidido a ciegas- y bajan aquí porque había TRES
+# copias de los mismos cinco nombres: el conjunto de `rules`, una tupla suelta
+# dentro de `build_signals` y los campos de esta dataclass. Ninguna estaba atada
+# a ninguna.
+#
+# Que no lo estuvieran no era un problema de orden. El consumidor final,
+# `_lo_que_llego` en el scheduler, las lee con `getattr(hoy, m, None)`, es decir
+# CON valor por defecto: si un nombre se separase de su campo no habría error,
+# habría un None, y un None ahí significa «esa medida no llegó». La falta de
+# acuerdo se traduciría sola en el peor sentido posible -el ámbar por precaución
+# puesto, y la recomputación de la tarde sin saber que hay que quitarlo-, y con
+# las palabras de esta misma casa: un ámbar del que no se sale no avisa,
+# castiga.
+#
+# Deliberadamente NO están las derivadas (`hrv_ratio`, `hrv_baseline`,
+# `rhr_delta`, `rhr_baseline`). Una base que falta no la arregla refrescar el
+# dato de esta noche: le faltan días de historia. Y viajan acompañadas -la regla
+# `hrv_baja_1d` se salta con `["hrv", "hrv_baseline"]`, no con `hrv_ratio` a
+# secas-, así que mirar las directas ya las cubre.
+#
+# Se escribe a mano y NO se deriva de `DayMetrics`: derivarla convertiría en
+# «dato del reloj» cualquier campo que se añadiese, en silencio y con el ámbar
+# disparándose por algo que nadie decidió que fuera motivo. Escrita a mano, el
+# test que la compara con los campos obliga a decidir.
+MEDIDAS_DEL_RELOJ = frozenset(
+    {"hrv", "rhr", "sleep_min", "sleep_score", "body_battery"}
+)
+
+
 @dataclass(frozen=True)
 class Ride:
     """Una actividad de Garmin ya normalizada.
@@ -1353,7 +1386,9 @@ def build_signals(
 
     # --- wellness de hoy ---------------------------------------------------
     today = by_date.get(day)
-    for attr in ("hrv", "rhr", "sleep_min", "sleep_score", "body_battery"):
+    # `sorted` y no el frozenset a pelo: el orden de un conjunto cambia entre
+    # arranques y aquí decide el orden de las claves de `values`.
+    for attr in sorted(MEDIDAS_DEL_RELOJ):
         sig.values[attr] = getattr(today, attr) if today else None
 
     # --- líneas base y señales derivadas, con histórico --------------------

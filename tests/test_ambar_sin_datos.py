@@ -37,6 +37,7 @@ from app.engine.rules import (
     REGLA_SIN_DATOS,
     evaluate_light,
 )
+from app.engine.signals import DayMetrics, build_signals
 from tests.conftest import LUNES, sig, sig_completa
 
 
@@ -260,6 +261,60 @@ def test_la_lista_de_medidas_del_reloj_es_una_sola(cfg):
     from app.scheduler import MEDIDAS_DE_GARMIN
 
     assert MEDIDAS_DE_GARMIN is MEDIDAS_DEL_RELOJ
+
+
+def test_las_medidas_del_reloj_son_los_campos_de_daymetrics():
+    """La lista era una sola entre motor y scheduler, pero seguía sin estar atada
+    a los nombres REALES de los que cuelga: los campos de `DayMetrics`.
+
+    Y quien la consume al final, `_lo_que_llego`, los lee con
+    `getattr(hoy, m, None)` -con valor por defecto-. Renombrar un campo no daría
+    error: daría None, y un None ahí se lee como «esa medida no llegó». O sea que
+    el desacuerdo se traduciría solo hacia el lado malo: el ámbar por precaución
+    puesto y la recomputación de la tarde incapaz de quitarlo.
+    """
+    campos = set(DayMetrics.__dataclass_fields__) - {"date", "raw"}
+
+    assert MEDIDAS_DEL_RELOJ == campos, (
+        "si se añade o se renombra un campo numérico de DayMetrics hay que "
+        "decidir aquí si es «un dato del reloj», no heredarlo en silencio"
+    )
+
+
+def test_build_signals_escribe_esas_cinco_y_las_saca_de_la_fila():
+    """El tercer sitio donde estaban los cinco nombres era una tupla suelta
+    dentro de `build_signals`. Si se acortase, la señal que faltase se leería
+    como ausente cada mañana y el ámbar por precaución saldría todos los días
+    sin que ningún dato faltase de verdad.
+    """
+    fila = DayMetrics(
+        date=LUNES,
+        hrv=61.0,
+        rhr=52.0,
+        sleep_min=433,
+        sleep_score=77,
+        body_battery=66,
+    )
+    s = build_signals(
+        {}, LUNES, metrics=[fila], rides=[], sessions=[], checkin_history=[]
+    )
+
+    assert MEDIDAS_DEL_RELOJ <= set(s.values)
+    # Números distintos a propósito: un cable cruzado no pasaría por igualdad.
+    for medida in MEDIDAS_DEL_RELOJ:
+        assert s.values[medida] == getattr(fila, medida), medida
+
+
+def test_la_fila_de_wellness_tiene_campos_que_no_son_medidas():
+    """Contraguarda del pin de arriba: `DayMetrics` NO es cinco campos y ya, así
+    que comparar contra sus campos no es comparar un conjunto consigo mismo.
+    `date` identifica la fila y `raw` es la respuesta entera de Garmin; ninguno
+    de los dos es algo que se pueda echar en falta ni volver a pedir.
+    """
+    campos = set(DayMetrics.__dataclass_fields__)
+
+    assert {"date", "raw"} <= campos
+    assert MEDIDAS_DEL_RELOJ < campos, "el pin sería trivial si fuesen iguales"
 
 
 # ---------------------------------------------------------------------------

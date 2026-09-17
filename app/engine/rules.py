@@ -79,7 +79,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
-from app.engine.signals import WEEKDAY_NAMES, Signals
+from app.engine.signals import MEDIDAS_DEL_RELOJ, WEEKDAY_NAMES, Signals
 
 # Estados posibles de una regla.
 FIRED = "fired"
@@ -101,22 +101,13 @@ COMPARISONS = {
 ADAPTIVE_SUFFIX = "_adaptive"
 OPTION_SUFFIX = "_option"
 
-# Las medidas que sube el reloj mientras duermes. Viven aquí, y no en el
-# `scheduler` donde nacieron, porque desde que existe el ámbar por precaución
-# hay DOS sitios que tienen que estar de acuerdo sobre qué es «un dato del
-# reloj»: el motor, que promueve el verde ciego, y el scheduler, que decide si
-# vale la pena volver a preguntarle a Garmin. Si las dos listas se separasen, el
-# motor pintaría un ámbar provisional que la recomputación no sabría deshacer -y
-# un ámbar provisional que no se puede deshacer es un ámbar a secas-.
+# `MEDIDAS_DEL_RELOJ` se define ahora junto a `DayMetrics`, de donde salen sus
+# cinco nombres, y se importa arriba. Este módulo sigue siendo quien decide con
+# ellas -promover a ámbar un verde decidido a ciegas- pero ya no es quien las
+# escribe: eran tres copias sueltas y el porqué está contado en el original.
 #
-# Deliberadamente NO están las derivadas (`hrv_ratio`, `hrv_baseline`,
-# `rhr_delta`, `rhr_baseline`). Una base que falta no la arregla refrescar el
-# dato de esta noche: le faltan días de historia. Y viajan acompañadas -la regla
-# `hrv_baja_1d` se salta con `["hrv", "hrv_baseline"]`, no con `hrv_ratio` a
-# secas-, así que mirar las directas ya las cubre.
-MEDIDAS_DEL_RELOJ = frozenset(
-    {"hrv", "rhr", "sleep_min", "sleep_score", "body_battery"}
-)
+# El nombre local se conserva porque medio proyecto lo importa de aquí, y es el
+# MISMO objeto, no una copia.
 
 # El nombre con el que se guarda el ámbar por precaución. No es una regla del
 # YAML -no puede serlo, ver `evaluate_light`- pero se escribe en
