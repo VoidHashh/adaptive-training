@@ -122,6 +122,21 @@ def routine_key_de(workout: dict[str, Any], config: Any = None) -> str | None:
     NO PRUEBA INTENCIÓN. Lo que se hizo se lee del `routine_id` y de los
     ejercicios; lo que se quiere hacer se lee del `config.yaml`, o se pregunta.
 
+    REMEDIDO EL 2026-09-17, YA CON LOS 16 ENTRENAMIENTOS EN `workout_log`, que
+    es la primera vez que se puede contar sobre la tabla y no sobre una sonda.
+    Las discrepancias siguen siendo CUATRO -2026-08-14 y 2026-08-20 titulados
+    «Día 3» con el id de `dia_1`, 2026-08-17 y 2026-08-24 titulados «Día 1» con
+    el id de `dia_3`- y están TODAS el 2026-08-24 o antes. Del 2026-08-25 en
+    adelante los doce coinciden.
+
+    Eso encaja con el renombrado y NO ablanda la regla, ni un poco. Que hoy
+    coincidan es una propiedad de los datos de hoy, no una garantía del formato:
+    el título se puede editar a mano mañana y el siguiente renombrado vuelve a
+    desalinear el pasado entero de golpe. Lo que sí cambia es el reparto del
+    daño: el tonelaje recuperado de agosto queda agrupado por `routine_key`, o
+    sea bien, y quien mire la tabla a mano y ordene por título verá cuatro filas
+    en el día que no es.
+
     `None` significa que el entrenamiento no sale de ninguna rutina conocida
     -uno suelto, o una rutina que no está en `config.yaml`-. Es un dato, no un
     fallo: es exactamente lo que hay que poder contar en vez de perder.

@@ -331,9 +331,16 @@ vivir es aquí.
 
 ### Los títulos de Hevy no son dato
 
-Está medido y escrito en `routine_key_de`: de los 14 entrenamientos reales de la
-cuenta, **cuatro llevan un título que nombra una rutina distinta de la que dice
-su `routine_id`**. La clasificación ya sale del id por eso.
+Está medido y escrito en `routine_key_de`: de los 16 entrenamientos reales de la
+cuenta —remedidos el 2026-09-17, ya con el histórico entero en `workout_log`—,
+**cuatro llevan un título que nombra una rutina distinta de la que dice su
+`routine_id`**. La clasificación ya sale del id por eso.
+
+Las cuatro son del 2026-08-24 o antes, y del 2026-08-25 en adelante los doce
+coinciden. Eso encaja con el renombrado que las explica y **no ablanda la
+regla**: que hoy coincidan es una propiedad de los datos de hoy, no del formato.
+El título se edita a mano y el próximo renombrado vuelve a desalinear el pasado
+entero de una vez.
 
 Lo que faltaba decir es que **la regla vale también para inferir intención**. El
 2026-09-13, en el mismo análisis en que se había establecido ese 29% de títulos
@@ -456,10 +463,11 @@ explica el docstring—. El detalle serie a serie queda en `raw_json`, así que 
 desglose efectivo se recalcula sin volver a pedir nada. No hay que construir la
 medida: está hecha.
 
-**Lo que NO está es el histórico, y el motivo tiene arreglo.** Cuando se escribió
-esto `workout_log` tenía **una sola fila** (2026-09-15, `dia_1`, 44 series,
-13 815 kg). No porque falte el dato en origen. Son **dos causas distintas**, y
-confundirlas llevó meses a atribuirlo todo a la primera:
+**El histórico también está ya, desde el 2026-09-17.** `workout_log` tiene **16
+filas** entre el 2026-08-14 y el 2026-09-16: 483 series y 109 051,2 kg. Hasta ese
+día tenía **una sola** (2026-09-15, `dia_1`, 44 series, 13 815 kg), y no porque
+faltara el dato en origen. Son **dos causas distintas**, y confundirlas es lo que
+llevó a atribuirlo todo a la primera:
 
 1. **La ventana nocturna era fija.** `scheduler.job_reconcile` reconciliaba tres
    días y solo tres, y esto corre en un PC que se apaga: un hueco más largo que
@@ -480,19 +488,22 @@ confundirlas llevó meses a atribuirlo todo a la primera:
    estuvo —`get_workouts` LANZA cuando sus páginas no cubren lo pedido, en vez
    de devolver media lista haciéndola pasar por entera—.
 
-La cuenta de Hevy sí tiene el dato: **16 entrenamientos** entre el 2026-08-14 y
-el 2026-09-16, medidos el 2026-09-17 (eran 14 y `page_count: 2` el 2026-09-13,
-que es lo anotado en el docstring de `get_workouts`), y `get_workouts` pagina
-hacia atrás hasta el final. Es decir: **el histórico de tonelaje es recuperable
-de una pasada**, con la misma forma que el relleno de Body Battery, y esa parte
-no depende de esperar semanas. Lo que sí depende de esperar es tener suficientes
-sesiones BAJO el sistema como para que un coeficiente signifique algo.
+La recuperación fue de una pasada, con la misma forma que el relleno de Body
+Battery: `get_workouts` pagina hacia atrás hasta el final —eran 14 y
+`page_count: 2` el 2026-09-13, que es lo anotado en su docstring— y
+`run_reconcile` día a día hace el resto. Lo que NO se recupera de una pasada, y
+sigue dependiendo de esperar, es tener suficientes sesiones BAJO el sistema como
+para que un coeficiente signifique algo.
 
-Reconciliar días viejos **no mueve nada del motor**, y por eso se puede hacer sin
+Reconciliar días viejos **no mueve nada del motor**, y por eso se pudo hacer sin
 pensárselo: `run_reconcile` escribe la fila de `workout_log` lo primero y sin
 condiciones, pero solo avanza rachas y adopta cargas si ese día tiene una
 decisión guardada. Los días anteriores a que el sistema existiera no la tienen,
-así que entran como dato y no como historia reescrita.
+así que entran como dato y no como historia reescrita. Comprobado sobre la base
+real: los quince días de agosto y principios de septiembre no tocaron un solo
+`exercise_targets`; lo único que se movió fue el 2026-09-16, que sí tenía
+decisión —era la noche perdida— y adoptó peso muerto Smith 22,5→27,5 y jalón al
+pecho 40→45.
 
 **El candidato.** ACWR sobre el tonelaje —carga aguda de 7 días contra crónica
 de 28— es lo que se ha hablado. Dos avisos antes de escribir una línea de
