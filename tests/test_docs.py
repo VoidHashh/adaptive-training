@@ -21,6 +21,7 @@ fuera, que es como se murió la versión anterior.
 
 from __future__ import annotations
 
+import inspect
 import re
 
 from app.api import app
@@ -109,4 +110,86 @@ def test_el_documento_declara_su_estado_y_es_el_de_verdad():
     assert len(estado) == 2, "el documento tiene que declarar su estado"
     assert estado[1].lstrip().lower().startswith("implementada"), (
         "cinco vistas y seis endpoints sirviendo: el estado es implementada"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Las líneas de trabajo abiertas
+# ---------------------------------------------------------------------------
+#
+# Una línea de trabajo es una promesa a futuro escrita sobre el código de hoy, y
+# eso la hace MÁS frágil que el resto del documento, no menos: describe algo que
+# por definición no existe todavía, así que nada la ejecuta, y se apoya en
+# nombres de columnas y de funciones que sí existen y que se pueden renombrar
+# mañana. El día que pase, la nota no queda incompleta: queda falsa, y se lee
+# con la misma confianza que el resto. Es exactamente cómo murió la versión
+# anterior de este documento entero.
+
+
+def _linea_de_trabajo() -> str:
+    texto = DOC.read_text(encoding="utf-8")
+    partes = texto.split("## Líneas de trabajo abiertas", 1)
+    assert len(partes) == 2, (
+        "el documento ya no tiene sección de líneas de trabajo. Si se ha "
+        "cerrado la que había, este test sobra; si se ha renombrado, lo que "
+        "sobra es el título nuevo"
+    )
+    return partes[1].split("\n## ", 1)[0]
+
+
+def test_la_linea_de_la_carga_de_fuerza_nombra_cosas_que_existen():
+    """Las columnas y funciones en las que se apoya, comprobadas de verdad.
+
+    La línea dice que el tonelaje "está hecho, no hay que construirlo" y lo
+    justifica nombrando cuatro piezas concretas. Si alguna se renombra, lo que
+    queda escrito es que el trabajo ya está resuelto en un sitio que no existe,
+    y la próxima persona que abra la línea empieza buscando un fantasma.
+
+    Se comprueban contra el modelo y el módulo, no contra un `grep` del código:
+    una columna citada dentro de un comentario o de una migración vieja pasaría
+    un `grep` y no serviría para nada.
+    """
+    from app.integrations import hevy
+    from app.models import WorkoutLog
+
+    seccion = _linea_de_trabajo()
+    columnas = set(WorkoutLog.__table__.columns.keys())
+
+    for col in ("total_sets", "total_volume_kg", "raw_json"):
+        if f"`{col}`" in seccion or f"`workout_log.{col}`" in seccion:
+            assert col in columnas, (
+                f"la línea de trabajo nombra `workout_log.{col}` y esa columna "
+                f"ya no está. Hay: {sorted(columnas)}"
+            )
+
+    for fn in ("workout_totals", "get_workouts"):
+        assert f"`{fn}`" in seccion, (
+            f"la línea de trabajo ya no nombra `{fn}`; si la pieza ha cambiado, "
+            f"la nota hay que reescribirla, no dejarla a medias"
+        )
+        assert hasattr(hevy, fn) or hasattr(hevy.HevyClient, fn), (
+            f"la línea de trabajo se apoya en `{fn}`, que no está en "
+            f"`integrations/hevy.py`"
+        )
+
+
+def test_la_ventana_de_reconciliacion_que_cita_es_la_de_verdad():
+    """El `dias_atras=3` es el argumento entero de la línea.
+
+    De ahí sale que el histórico de tonelaje no exista -lo anterior a que la
+    reconciliación empezara a correr no se escribió nunca- y de ahí sale que
+    haga falta una pasada de relleno. Con otro valor el diagnóstico cambia, y
+    con una ventana lo bastante larga la línea dejaría de tener objeto.
+    """
+    from app.scheduler import job_reconcile
+
+    real = inspect.signature(job_reconcile).parameters["dias_atras"].default
+    citado = re.search(r"`dias_atras=(\d+)`", _linea_de_trabajo())
+    assert citado is not None, (
+        "la línea de trabajo ya no cita la ventana de reconciliación, que es de "
+        "donde sale todo su diagnóstico"
+    )
+    assert int(citado.group(1)) == real, (
+        f"la línea dice que se reconcilia con dias_atras={citado.group(1)} y el "
+        f"trabajo nocturno usa {real}"
     )

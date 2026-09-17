@@ -428,6 +428,64 @@ reconocer el día que Garmin renombre uno, y no fallaría: engordaría la base e
 silencio. Los escalares —fases de sueño, respiración, mínimos— pasan enteros, y
 es ahí donde vive lo que haría falta más adelante.
 
+## Líneas de trabajo abiertas
+
+Lo que se sabe que falta, con lo que ya se sabe de ello. Va aquí y no en la
+cabeza de nadie por el mismo motivo que todo lo demás de este documento: una
+intención que no está escrita no se distingue de una que nunca existió.
+
+### La carga de fuerza, que hoy no entra en ningún análisis
+
+**Decidido el 2026-09-17: no se hace ahora.** Se retoma cuando haya unas semanas
+de datos con el sistema funcionando. Lo que sigue es el estado del terreno
+medido ese día, para no volver a levantarlo desde cero.
+
+**El agujero.** El sistema mide la carga de la BICI y no mide la de la FUERZA.
+`activities` tenía ese día 59 filas, del 2026-03-07 al 2026-09-12, **las 59 con
+`is_cycling = 1`** y las 59 con `training_load`. Ni una de fuerza, y no es un
+fallo de la integración: la fuerza no se graba en el reloj. Así que cuando la
+vista de Impacto cruza "carga" contra HRV o contra las sensaciones, la palabra
+carga significa bici y solo bici, y las tres sesiones de pesas de la semana
+entran en el análisis como si no hubieran pasado.
+
+**Lo que SÍ está.** El tonelaje y las series de cada sesión de fuerza, ya
+calculados y ya escritos: `workout_totals` los saca del entrenamiento de Hevy y
+`run_reconcile` los guarda en `workout_log.total_sets` y
+`total_volume_kg` —con el calentamiento dentro, a propósito, por el escalón que
+explica el docstring—. El detalle serie a serie queda en `raw_json`, así que el
+desglose efectivo se recalcula sin volver a pedir nada. No hay que construir la
+medida: está hecha.
+
+**Lo que NO está es el histórico, y el motivo tiene arreglo.** Ese día
+`workout_log` tenía **una sola fila** (2026-09-15, `dia_1`, 44 series,
+13 815 kg). No porque falte el dato en origen, sino porque el trabajo nocturno
+(`scheduler.job_reconcile`) reconcilia con `dias_atras=3`: lo anterior a que la
+reconciliación empezara a correr nunca se escribió. La cuenta de Hevy sí lo tiene —14 entrenamientos y
+`page_count: 2` medidos el 2026-09-13, anotados en el docstring de
+`get_workouts`— y `get_workouts` pagina hacia atrás hasta el final. Es decir:
+**el histórico de tonelaje es recuperable de una pasada**, con la misma forma
+que el relleno de Body Battery, y esa parte no depende de esperar semanas. Lo
+que sí depende de esperar es tener suficientes sesiones BAJO el sistema como
+para que un coeficiente signifique algo.
+
+**El candidato.** ACWR sobre el tonelaje —carga aguda de 7 días contra crónica
+de 28— es lo que se ha hablado. Dos avisos antes de escribir una línea de
+código:
+
+- Un ACWR necesita 28 días de ventana crónica **antes** de dar su primer
+  número. Con el histórico de Hevy detrás se puede tener desde el principio;
+  sin él, el primer valor fiable llegaría un mes después de encenderlo.
+- Y el tonelaje no es comparable entre ejercicios ni entre días de rutina: 44
+  series de `dia_1` no son 44 series de `dia_3`. Sumar kilos de prensa con
+  kilos de tríceps da un número que sube y baja con la rotación y no con la
+  carga. Si esto llega a ser una señal, hay que decidir primero si se normaliza
+  por rutina o si se compara cada rutina consigo misma.
+
+**Lo que este documento NO dice todavía**, y es deliberado: que la carga de
+fuerza vaya a ser una regla del semáforo. No lo es y no está pedido. La primera
+pregunta es si el tonelaje explica algo de lo que ya se mide —que es una vista
+de Impacto, no una regla— y esa respuesta llega antes y cuesta mucho menos.
+
 ## Notas de diseño
 
 - Los endpoints van bajo `/api/metrics/...` y son **solo de lectura**. El
