@@ -268,6 +268,143 @@ class CheckinIn(BaseModel):
     day: date | None = None
 
 
+# Los campos que viajan en el mismo JSON que las respuestas y NO son respuestas.
+#
+# Escrito a mano y aparte por un motivo muy concreto: las respuestas se le pasan
+# a `pensar_el_dia` como `respuestas`, y de ahí van a `Checkin.values` y a
+# `signals.values`, que es el espacio de nombres de las reglas. Un `disagreed`
+# colado ahí dentro sería un booleano de opinión con voto en el color del día, y
+# encima quedaría escrito en el histórico con la misma cara que la lumbar.
+#
+# La exclusión va por lista explícita, y no por un prefijo o un `startswith`,
+# porque un campo nuevo que se olvidara de la convención no avisaría de nada:
+# entraría en las señales calladamente, que es justo el modo de fallo que esto
+# existe para cerrar. `tests/test_api.py` recorre esta lista y comprueba, campo
+# a campo, que ninguno llega ni a `answers_json` ni a `inputs.values`.
+CAMPOS_QUE_NO_SON_RESPUESTAS = frozenset({
+    "disagreed",
+    "disagreement_reason",
+    "requested_session",
+    "confirm_upgrade",
+    "override_reason",
+})
+
+
+class EnvioIn(CheckinIn):
+    """El check-in más la anulación: lo que acepta `POST /api/checkin`.
+
+    La anulación está en el ENVÍO y no solo en la previsualización a propósito.
+    Sin esto, previsualizar sería un callejón sin salida: el usuario ve que el
+    sistema propone una cosa, sabe que quiere otra, y para conseguirla tiene que
+    saltarse el sistema entero -entrar en Hevy a mano-. Un desacuerdo que obliga
+    a saltarse el sistema es un desacuerdo que no queda registrado en ninguna
+    parte, y por tanto uno que no se puede medir.
+
+    Hereda de `CheckinIn` en vez de repetir los campos: son literalmente las
+    mismas respuestas, y duplicarlas dejaría dos listas capaces de separarse -un
+    deslizador nuevo añadido arriba y olvidado aquí daría un 422 en una ruta y
+    un 200 en la otra-.
+    """
+
+    # Qué sesión se pide en vez de la propuesta: `full`, `reduced` o `recovery`.
+    # Sin `Literal[...]`, por lo mismo que `chosen_session`: quien valida el
+    # valor es el motor (`session_builder.DUREZA`), que es quien lo usa.
+    requested_session: str | None = None
+    override_reason: str | None = None
+    # Subir de dureza con el semáforo en ROJO. Por defecto `False`, y ese
+    # defecto es la guarda entera: sin marcarlo, el motor lanza
+    # `ConfirmacionNecesaria` y las dos rutas devuelven la pregunta en vez de la
+    # sesión. No es «he leído el aviso» en general; es la respuesta a una
+    # pregunta concreta que solo se hace ese día.
+    confirm_upgrade: bool = False
+
+
+class PreviewIn(EnvioIn):
+    """Lo mismo que un envío, más el desacuerdo, que solo existe al mirar.
+
+    `disagreed` no está en `EnvioIn` porque no se discrepa de lo que uno acaba
+    de mandar: se discrepa de lo que el sistema acaba de ENSEÑAR. Es la
+    diferencia entre las dos rutas, y meterlo arriba lo dejaría disponible en un
+    sitio donde no significa nada.
+    """
+
+    # `None` es «no he dicho nada», que es lo que va a ser casi siempre. Tres
+    # estados y no dos: ver `models.Preview.disagreed`.
+    disagreed: bool | None = None
+    disagreement_reason: str | None = None
+
+
+def _respuestas(body: CheckinIn) -> dict[str, Any]:
+    """Solo las respuestas del formulario, listas para el motor.
+
+    Los `None` se caen porque en `signals.values` un `None` no es un valor: es
+    «no contestado», y el sitio donde eso se representa es la AUSENCIA de la
+    clave. Meterlo haría que una regla con `requires: [fatigue]` lo diera por
+    presente y comparase contra nada.
+    """
+    return {
+        k: v
+        for k, v in body.model_dump(
+            exclude=CAMPOS_QUE_NO_SON_RESPUESTAS | {"comments", "day"}
+        ).items()
+        if v is not None
+    }
+
+
+def _sesion_pedida(body: EnvioIn) -> Any:
+    """La anulación del usuario como la entiende el motor, o `None` si no hay.
+
+    `None` y no un `SesionPedida` vacío: el motor distingue «no se pidió nada»
+    -el día normal- de «se pidió justo lo que ya proponía», y solo el segundo
+    deja rastro de anulación.
+    """
+    from app.engine.session_builder import SesionPedida
+
+    if not body.requested_session:
+        return None
+    return SesionPedida(
+        tipo=body.requested_session,
+        confirmada=bool(body.confirm_upgrade),
+        motivo=body.override_reason,
+    )
+
+
+# Lo que contesta cualquier respuesta que NO ha llegado a ejecutar nada.
+#
+# Va en una constante y no escrito a mano en cada sitio porque son tres salidas
+# distintas -la previsualización buena, el 409 de la confirmación y el 502 de
+# Garmin- y las tres tienen que decir lo mismo. La petición del usuario era «que
+# no me quede duda de si ya está hecho o no», y una de las tres callándose sería
+# exactamente esa duda.
+#
+# Se desglosa en cuatro hechos en vez de un `escrito: false` que sonaría mejor y
+# sería mentira: la fila de `previews` SÍ se escribe. Lo que no se ha tocado son
+# las respuestas guardadas, la decisión del día, Hevy y Telegram, que son las
+# cuatro cosas por las que uno se pregunta si ya está hecho.
+#
+# `hevy` y `telegram` dicen "sin tocar" y no `null` a posta: `null` es lo que
+# `_decidir` usa para «no sé hasta dónde se llegó», y aquí sí se sabe.
+#
+# Y NINGUNA CLAVE SE LLAMA COMO LAS DEL ENVÍO. No es descuido ni falta de
+# criterio: `static/app.js::pintarResultado` decide qué tarjeta pinta mirando
+# `decided`, y un `decision_guardada` que se llamara `decided` haría que una
+# previsualización cayera en la rama del envío fallido y anunciara "Guardado,
+# pero sin decidir" -dos mentiras seguidas- sin que nada fallara. Con nombres
+# distintos, una previsualización que llegue por error a esa función no encaja,
+# y `tests/test_api.py` lo comprueba clave a clave.
+NADA_EJECUTADO: dict[str, Any] = {
+    "ejecutado": False,
+    "checkin_guardado": False,
+    "decision_guardada": False,
+    "hevy": "sin tocar",
+    "telegram": "sin tocar",
+}
+
+# Las claves con las que `pintarResultado` distingue un envío que salió de uno
+# que falló. Ninguna respuesta de previsualización puede llevarlas.
+CLAVES_DEL_ENVIO = frozenset({"decided", "checkin_saved"})
+
+
 # ---------------------------------------------------------------------------
 # Rutas
 # ---------------------------------------------------------------------------
@@ -843,9 +980,113 @@ def _selector_de_hoy(s: Session, cfg: Any, day: date) -> dict[str, Any]:
     }
 
 
+@app.post("/api/preview")
+def post_preview(
+    body: PreviewIn,
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Enseña qué decidiría el sistema con estas respuestas. No decide nada.
+
+    MIRAR NO ES HACER, Y ESE ES EL PUNTO ENTERO
+    -------------------------------------------
+    No guarda el check-in, no deja decisión vigente, no escribe en Hevy y no
+    manda ningún Telegram. Sirve para CALIBRAR: probar respuestas hasta entender
+    dónde están los umbrales, y que con el tiempo lo que dice el sistema y lo
+    que el usuario sabe de sí mismo converjan.
+
+    Por eso las respuestas van por parámetro a `pensar_el_dia` en vez de
+    guardarse primero. Si se guardaran, una mañana probando cuatro fatigas
+    distintas metería cuatro lecturas inventadas en `checkins`, que es de donde
+    salen los percentiles de los umbrales adaptativos, y el sistema acabaría
+    calibrándose contra respuestas que nadie dio nunca. El fallo no daría ningún
+    error y se vería tres meses después, en un umbral movido sin motivo.
+
+    LO QUE SÍ ESCRIBE, Y POR QUÉ NO CONTRADICE LO ANTERIOR
+    -----------------------------------------------------
+    Escribe una fila en `previews`, que es una tabla que no alimenta ninguna
+    regla. Es el dato de calibración: qué se preguntó, qué contestó el sistema,
+    y si el usuario estuvo de acuerdo. Varias filas por día a propósito -la
+    segunda no tapa a la primera- porque la DIFERENCIA entre dos
+    previsualizaciones del mismo día es justamente lo que se quiere medir.
+
+    Y por eso la respuesta desglosa qué no se ha tocado en vez de decir un
+    `escrito: false` que sonaría más tranquilizador y sería mentira.
+    """
+    from app.engine.session_builder import ConfirmacionNecesaria
+    from app.runner import pensar_el_dia
+    from app.scheduler import garmin_para_previsualizar
+
+    day = body.day or date.today()
+    respuestas = _respuestas(body)
+
+    try:
+        # La versión con caché, y no `_fetch_garmin`. Una tanda de calibración
+        # son cinco o seis previsualizaciones en diez minutos, y cada una con su
+        # login es la forma de que Garmin corte el acceso justo el día que se
+        # está usando esto.
+        metrics, rides = garmin_para_previsualizar(cfg, day)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("no se pudo leer Garmin al previsualizar")
+        # 502 y no un 200 con los datos a medias. Sin wellness, todas las
+        # señales salen degradadas y el semáforo contesta ámbar por falta de
+        # datos: una previsualización con esa cara diría que el día es ámbar
+        # cuando lo que pasa es que no se ha podido mirar.
+        raise HTTPException(status_code=502, detail={
+            "error": f"no se ha podido leer Garmin, así que no hay nada que "
+                     f"previsualizar: {exc}",
+            **NADA_EJECUTADO,
+        }) from exc
+
+    try:
+        pensado = pensar_el_dia(
+            s, cfg, day,
+            metrics=metrics, rides=rides,
+            # Queda dentro del JSON guardado, y hace la fila autoexplicativa:
+            # un `source: checkin` dentro de `previews` sería justo la clase de
+            # etiqueta que dentro de tres meses hace dudar de la tabla entera.
+            source="preview",
+            respuestas=respuestas,
+            sesion_pedida=_sesion_pedida(body),
+        )
+    except ConfirmacionNecesaria as exc:
+        raise HTTPException(status_code=409, detail={
+            "confirmacion_necesaria": True,
+            "propuesta": exc.propuesta,
+            "pedida": exc.pedida,
+            "motivo": str(exc),
+            **NADA_EJECUTADO,
+        }) from exc
+
+    fila = repo.save_preview(
+        s, pensado.decision,
+        answers=respuestas,
+        disagreed=body.disagreed,
+        disagreement_reason=body.disagreement_reason,
+    )
+
+    return {
+        "day": day.isoformat(),
+        **NADA_EJECUTADO,
+        # Lo único que sí se ha escrito, con su nombre y su identificador. El
+        # `preview_id` no es decorativo: es lo que permite enlazar esta
+        # previsualización con la decisión, si acaba enviándose.
+        "previsualizacion_guardada": True,
+        "preview_id": fila.id,
+        "seq": fila.seq,
+        # Redundante con `seq > 1`, y a posta: quien pinta la tarjeta no tiene
+        # por qué saber que la numeración empieza en 1, y esa clase de detalle
+        # aritmético en el navegador es donde acaban apareciendo los off-by-one.
+        "revision": fila.seq > 1,
+        "light": pensado.decision.light,
+        "trigger_rule": pensado.decision.trigger_rule,
+        "decision": pensado.decision.to_dict(),
+    }
+
+
 @app.post("/api/checkin")
 def post_checkin(
-    body: CheckinIn,
+    body: EnvioIn,
     s: Session = Depends(get_session),
     cfg=Depends(get_config),
 ) -> dict[str, Any]:
@@ -855,12 +1096,10 @@ def post_checkin(
     guardara aquí y se decidiera en otro sitio, el usuario enviaría el
     formulario y no pasaría nada visible hasta una hora después.
     """
+    from app.engine.session_builder import ConfirmacionNecesaria
+
     day = body.day or date.today()
-    valores = {
-        k: v
-        for k, v in body.model_dump(exclude={"comments", "day"}).items()
-        if v is not None
-    }
+    valores = _respuestas(body)
 
     try:
         repo.upsert_checkin(s, day, valores, config=cfg, comments=body.comments)
@@ -868,7 +1107,34 @@ def post_checkin(
         # Clave desconocida: 400 y no un 200 que se traga el campo.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    resultado = _decidir(s, cfg, day, source="checkin")
+    try:
+        resultado = _decidir(
+            s, cfg, day, source="checkin", sesion_pedida=_sesion_pedida(body)
+        )
+    except ConfirmacionNecesaria as exc:
+        # El `rollback` es la mitad importante. Sin él, el check-in se quedaría
+        # guardado mientras la respuesta dice que hace falta confirmar: el
+        # usuario contestaría que no, y el día se quedaría con unas respuestas
+        # escritas que nunca llegaron a decidir nada.
+        s.rollback()
+        raise HTTPException(status_code=409, detail={
+            "confirmacion_necesaria": True,
+            "propuesta": exc.propuesta,
+            "pedida": exc.pedida,
+            "motivo": str(exc),
+            **NADA_EJECUTADO,
+        }) from exc
+
+    if resultado.get("decided"):
+        # Las previsualizaciones de hoy acaban de convertirse en algo que SÍ
+        # ocurrió, y esa es la respuesta a "¿la anulación se llegó a ejecutar?".
+        # Se enlazan aquí, dentro de la misma transacción que la decisión: un
+        # enlace que se guardara aparte podría afirmar que se ejecutó mientras
+        # `decisions` no tiene la fila.
+        decision = repo.current_decision(s, day)
+        if decision is not None:
+            repo.enlazar_previews_pendientes(s, day, decision.id)
+
     return {
         "day": day.isoformat(),
         "checkin_saved": True,
@@ -876,7 +1142,9 @@ def post_checkin(
     }
 
 
-def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
+def _decidir(
+    s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None
+) -> dict[str, Any]:
     """Decide el día, y si no puede lo dice sin fingir que sí.
 
     Y CUANDO NO PUEDE, DICE ADEMÁS HASTA DÓNDE LLEGÓ
@@ -899,7 +1167,17 @@ def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
     Así que ahora las dos ramas contestan lo que saben: la temprana pone
     `skipped` porque de verdad no se tocó nada, y la tardía saca el estado real
     del `DailyResult` que `DecisionInterrumpida` trae consigo.
+
+    Y HAY UNA EXCEPCIÓN QUE NO ES UN FALLO
+    --------------------------------------
+    `ConfirmacionNecesaria` no dice "no he podido": dice "necesito que me
+    contestes a una pregunta". El `except Exception` de abajo la convertiría en
+    un `decided: false` con un texto de error, y la pantalla la enseñaría como
+    una avería en vez de como el diálogo que es -«el sistema propone
+    recuperación, has pedido completa»-. Sale hacia arriba intacta para que
+    quien llama pueda redactar la pregunta.
     """
+    from app.engine.session_builder import ConfirmacionNecesaria
     from app.runner import DecisionInterrumpida, run_daily
     from app.scheduler import _fetch_garmin
 
@@ -923,7 +1201,13 @@ def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
             s, cfg, day, metrics=metrics, rides=rides,
             hevy_client=hevy, telegram_client=tg, client_errors=motivos,
             dry_run=settings.dry_run, source=source,
+            sesion_pedida=sesion_pedida,
         )
+    except ConfirmacionNecesaria:
+        # No es un fallo; ver el docstring. Salta DENTRO de `pensar_el_dia`, o
+        # sea antes de que se toque nada de fuera, así que no hay nada a medias
+        # que contar.
+        raise
     except DecisionInterrumpida as exc:
         log.exception("fallo decidiendo a medias")
         return {

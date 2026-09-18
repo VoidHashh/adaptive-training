@@ -26,12 +26,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, advance_state, decide
+from app.engine.session_builder import SesionPedida
 from app.models import (
     Activity,
     Base,
     Decision as DecisionRow,
     ExerciseTarget,
     LoadAdoption,
+    Preview as PreviewRow,
     RuleState,
     WorkoutLog,
 )
@@ -44,6 +46,8 @@ from app.repository import (
     columnas_actividad_sin_escribir,
     checkin_values,
     current_decision,
+    enlazar_preview,
+    enlazar_previews_pendientes,
     fusionar_metricas,
     get_checkin,
     guardar_adopciones,
@@ -52,7 +56,9 @@ from app.repository import (
     metricas_guardadas,
     opciones_del_config,
     preguntas_del_config,
+    previews_del_dia,
     save_decision,
+    save_preview,
     save_state,
     serie_decisiones,
     sliders_del_config,
@@ -1169,6 +1175,276 @@ def test_dos_decisiones_que_solo_se_diferencian_en_lo_elegido_se_distinguen(db, 
     )
     assert json.loads(fila_siete.inputs_snapshot_json)["sesion_elegida"] is None
     assert json.loads(fila_nueve.inputs_snapshot_json)["sesion_elegida"] == "dia_3"
+
+
+# ---------------------------------------------------------------------------
+# Previsualizaciones
+# ---------------------------------------------------------------------------
+
+
+RESPUESTAS = {"fatigue": 4, "lower_discomfort": 2, "chosen_session": "dia_1"}
+
+
+def _previsualizar(db, cfg, dia=LUNES, **kwargs):
+    """Una previsualización de un día tranquilo, sin nada anulado."""
+    d = decide(cfg, dia, sig_completa(dia), EngineState())
+    return save_preview(db, d, answers=dict(RESPUESTAS), **kwargs)
+
+
+def test_previsualizar_no_escribe_en_checkins(db, cfg):
+    """La razón de que exista la tabla, y lo primero que hay que poder afirmar.
+
+    Si las respuestas tentativas llegaran a `checkins`, entrarían en el
+    histórico del que salen los percentiles de los umbrales adaptativos. Cuatro
+    previsualizaciones moviendo el deslizador de fatiga serían cuatro lecturas
+    de fatiga en la ventana de 60 días, y el sistema calibraría sus umbrales
+    sobre respuestas que nunca se dieron.
+    """
+    _previsualizar(db, cfg)
+    _previsualizar(db, cfg)
+
+    assert get_checkin(db, LUNES) is None, "una previsualización no es una respuesta"
+    assert db.query(DecisionRow).count() == 0, "ni una decisión guardada"
+
+
+def test_la_segunda_previsualizacion_no_tapa_a_la_primera(db, cfg):
+    """«No quiero que la segunda tape a la primera: la diferencia es el dato.»"""
+    primera = _previsualizar(db, cfg)
+    segunda = _previsualizar(db, cfg)
+
+    filas = previews_del_dia(db, LUNES)
+    assert len(filas) == 2
+    assert [f.seq for f in filas] == [1, 2], "y en el orden en que se pidieron"
+    assert primera.id != segunda.id
+    assert json.loads(filas[0].answers_json) == RESPUESTAS, (
+        "cada una con las respuestas que la generaron, no con las últimas"
+    )
+
+
+def test_el_contador_de_revisiones_es_por_dia(db, cfg):
+    """Empieza de nuevo cada mañana: `seq` dice "la segunda de HOY"."""
+    _previsualizar(db, cfg, dia=LUNES)
+    _previsualizar(db, cfg, dia=LUNES)
+    manana = _previsualizar(db, cfg, dia=LUNES + timedelta(days=1))
+
+    assert manana.seq == 1, "un día nuevo no hereda las revisiones del anterior"
+
+
+def test_el_desacuerdo_tiene_tres_estados_y_el_tercero_es_no_haber_dicho(db, cfg):
+    """`NULL` no es `False`.
+
+    Casi todas las previsualizaciones se van a mirar sin opinar. Si eso contara
+    como acuerdo explícito, la medida de "cuántas veces discrepo" se dividiría
+    entre un denominador lleno de conformidades que nadie dio.
+    """
+    callado = _previsualizar(db, cfg)
+    conforme = _previsualizar(db, cfg, disagreed=False)
+    discrepa = _previsualizar(db, cfg, disagreed=True, disagreement_reason="me sobra")
+
+    assert callado.disagreed is None
+    assert conforme.disagreed is False
+    assert discrepa.disagreed is True
+    assert discrepa.disagreement_reason == "me sobra"
+
+
+def test_discrepar_no_toca_las_respuestas(db, cfg):
+    """«Sin tocar respuestas» es literal: es otra columna, no otra previsualización.
+
+    Es la diferencia entre las dos formas de no estar de acuerdo que el sistema
+    tiene que poder distinguir. Cambiar una respuesta y volver a previsualizar
+    deja DOS filas con respuestas distintas. Decir "no lo comparto" deja UNA
+    fila con las mismas respuestas y una marca. Si discrepar reescribiera las
+    respuestas, las dos cosas quedarían idénticas en la tabla y la medida de
+    "¿estoy calibrando o estoy forzando el resultado?" se quedaría sin poder
+    contestarse.
+    """
+    fila = _previsualizar(db, cfg, disagreed=True, disagreement_reason="hoy puedo más")
+
+    assert json.loads(fila.answers_json) == RESPUESTAS
+    assert len(previews_del_dia(db, LUNES)) == 1
+
+
+def test_la_anulacion_se_saca_de_la_decision_y_no_se_pide_aparte(db, cfg):
+    """Un solo sitio donde mirar qué se anuló.
+
+    La anulación ya viaja dentro de la sesión construida. Pedírsela además al
+    que llama abriría la puerta a que la fila dijera una cosa y la decisión
+    guardada otra.
+    """
+    d = decide(
+        cfg,
+        LUNES,
+        sig_completa(LUNES, lower_discomfort=7),
+        EngineState(),
+        sesion_pedida=SesionPedida(tipo="full", confirmada=True, motivo="hoy sí"),
+    )
+    assert d.light == "red", "el escenario ya no es un día rojo; rehacer"
+
+    fila = save_preview(db, d, answers=dict(RESPUESTAS))
+
+    assert fila.override_session_type == "full"
+    assert fila.forced_on_red is True, "subir en rojo se marca aparte"
+    assert fila.light == "red"
+    assert fila.session_type == "full", "lo que saldría, no lo que se proponía"
+
+
+def test_una_anulacion_que_no_sube_no_se_marca_como_forzada(db, cfg):
+    """Anular y forzar no son lo mismo, y la columna tiene que separarlos.
+
+    Con el semáforo en verde, pedir recuperación es la anulación más prudente
+    que existe: se baja de dureza por voluntad propia. Hay anulación -y tiene
+    que constar- pero no hay nada forzado.
+
+    Sin este caso, `forced_on_red` podría estar copiando "¿hay anulación?" en
+    vez de "¿se subió en rojo?" y los dos tests de al lado seguirían pasando:
+    uno no tiene anulación y el otro la tiene forzada. El que discrimina es
+    este.
+    """
+    d = decide(
+        cfg,
+        LUNES,
+        sig_completa(LUNES),
+        EngineState(),
+        sesion_pedida=SesionPedida(tipo="recovery", motivo="lumbar rara"),
+    )
+    assert d.light == "green", "el escenario ya no es un día verde; rehacer"
+
+    fila = save_preview(db, d, answers=dict(RESPUESTAS))
+
+    assert fila.override_session_type == "recovery", "la anulación consta"
+    assert fila.forced_on_red is False, "pero no se forzó nada"
+
+
+def test_enlazar_una_preview_que_no_existe_revienta(db, cfg):
+    """Un enlace perdido no se nota al guardar: se nota al medir, meses después.
+
+    La medida de "¿cuántas anulaciones acabé ejecutando?" sale de este enlace.
+    Si `enlazar_preview` se tragara un id que no existe, el número saldría bajo
+    -pareciendo que se anula mucho y se ejecuta poco- sin que nada indicase que
+    lo que falla es el registro y no la conducta.
+    """
+    with pytest.raises(ValueError, match="no hay previsualización"):
+        enlazar_preview(db, 9999, 1)
+
+
+def test_un_dia_sin_anular_nada_no_se_marca_como_forzado(db, cfg):
+    fila = _previsualizar(db, cfg)
+
+    assert fila.override_session_type is None
+    assert fila.override_routine is None
+    assert fila.forced_on_red is False
+
+
+def test_previsualizar_sin_enviar_queda_sin_decision(db, cfg):
+    """Mirar qué saldría y no enviar es un final legítimo, no un registro a medias."""
+    fila = _previsualizar(db, cfg)
+    assert fila.decision_id is None
+
+
+def test_enviar_despues_de_previsualizar_las_enlaza(db, cfg):
+    """Así se contesta "¿se ejecutó la anulación?" con un JOIN.
+
+    Y no con un booleano en la previsualización que habría que mantener al día
+    y que podría acabar diciendo que sí mientras `decisions` dice que no.
+    """
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
+    fila = save_preview(db, d, answers=dict(RESPUESTAS))
+    decidida = save_decision(db, d)
+
+    enlazar_preview(db, fila.id, decidida.id)
+
+    assert previews_del_dia(db, LUNES)[0].decision_id == decidida.id
+
+
+def test_la_segunda_decision_del_dia_no_se_lleva_las_previews_de_la_primera(db, cfg):
+    """Un día con dos envíos: cada previsualización se queda con la SUYA.
+
+    Pasa de verdad -el envío de la mañana y el de la tarde rehaciéndolo- y sin
+    la condición de "solo las pendientes" el segundo se llevaría por delante el
+    enlace del primero. Nada fallaría: la fila seguiría enlazada, solo que a una
+    decisión que no fue la que ejecutó lo que se miró por la mañana.
+
+    Y ahí se rompe justo la medida que la tabla existe para dar: "lo que miré,
+    ¿se llegó a hacer?" se contestaría comparando la anulación de la mañana con
+    la sesión de la tarde, que es otra pregunta y con otra respuesta.
+    """
+    def decidido():
+        return decide(cfg, LUNES, sig_completa(LUNES), EngineState())
+
+    manana = save_preview(db, decidido(), answers=dict(RESPUESTAS))
+    primera = save_decision(db, decidido())
+    assert enlazar_previews_pendientes(db, LUNES, primera.id) == 1
+
+    tarde = save_preview(db, decidido(), answers=dict(RESPUESTAS))
+    segunda = save_decision(db, decidido())
+    assert enlazar_previews_pendientes(db, LUNES, segunda.id) == 1, (
+        "ha enlazado más de una: se ha llevado también la de la mañana"
+    )
+
+    assert primera.id != segunda.id, "el escenario no tiene dos decisiones; rehacer"
+    db.refresh(manana)
+    db.refresh(tarde)
+    assert manana.decision_id == primera.id
+    assert tarde.decision_id == segunda.id
+
+
+def test_enviar_sin_haber_previsualizado_no_es_un_error(db, cfg):
+    """El camino de siempre sigue siendo un camino, y no devuelve cero por fallo.
+
+    Enviar el formulario sin mirar antes es lo normal. Si esto reventara -o si
+    devolviera algo que quien llama tuviera que tratar como excepción- el botón
+    de enviar acabaría dependiendo de haber pulsado antes el de previsualizar.
+    """
+    decidida = save_decision(db, decide(cfg, LUNES, sig_completa(LUNES), EngineState()))
+
+    assert enlazar_previews_pendientes(db, LUNES, decidida.id) == 0
+
+
+def test_ninguna_columna_de_previews_se_queda_sin_escribir(db, cfg):
+    """El guardián de la columna decorativa, aplicado a la tabla nueva.
+
+    Una columna declarada que nadie escribe nunca es peor que no tenerla:
+    aparece en un `SELECT *` y parece un dato que se está guardando. Este test
+    ejerce el camino completo -anulación, desacuerdo y envío- y exige que
+    después no quede ni una columna a `NULL` por falta de escritor.
+
+    Lo que se excluye va nombrado y con motivo, no por comodidad.
+    """
+    d = decide(
+        cfg,
+        LUNES,
+        sig_completa(LUNES, lower_discomfort=7),
+        EngineState(),
+        sesion_pedida=SesionPedida(tipo="full", confirmada=True, motivo="hoy sí"),
+    )
+    fila = save_preview(
+        db, d, answers=dict(RESPUESTAS), disagreed=True, disagreement_reason="puedo más"
+    )
+    enlazar_preview(db, fila.id, save_decision(db, d).id)
+    db.flush()
+    db.refresh(fila)
+
+    # `override_routine` solo se escribe cuando la rutina elegida se desvía de
+    # la que tocaba en el ciclo, y este día no se desvía: no es una columna sin
+    # escritor, es una columna sin caso. Tiene la suya en el test de arriba.
+    vacias = {
+        c.name
+        for c in PreviewRow.__table__.columns
+        if getattr(fila, c.name) is None and c.name != "override_routine"
+    }
+    assert not vacias, f"columnas declaradas y nunca escritas: {sorted(vacias)}"
+
+
+def test_la_rutina_anulada_se_guarda_cuando_de_verdad_se_desvia(db, cfg):
+    """La otra mitad de la anulación: no la dureza, sino qué rutina del ciclo."""
+    senales = sig_completa(LUNES)
+    senales.sesion_elegida = "dia_3"
+    d = decide(cfg, LUNES, senales, EngineState())
+    assert d.propuesta != "dia_3", "el escenario no discrimina; rehacer"
+
+    fila = save_preview(db, d, answers=dict(RESPUESTAS))
+
+    assert fila.override_routine == "dia_3"
 
 
 # ---------------------------------------------------------------------------

@@ -361,6 +361,138 @@ class Decision(Base):
     __table_args__ = (Index("ix_decisions_date_current", "date", "is_current"),)
 
 
+class Preview(Base):
+    """Cada vez que se pulsa PREVISUALIZAR, con las respuestas que la generaron.
+
+    Append-only y SIN `unique` sobre `date`. Las dos cosas son el punto.
+
+    POR QUÉ NO ES UNA COLUMNA MÁS EN `checkins`
+    -------------------------------------------
+    Porque las respuestas de una previsualización NO pueden entrar en
+    `checkins`. Esa tabla es de donde `build_signals` saca `values` e
+    `history`, y ese histórico es el que alimenta los umbrales adaptativos por
+    percentil. Una mañana en la que se previsualiza cuatro veces moviendo el
+    deslizador de fatiga metería cuatro lecturas de fatiga en la ventana de 60
+    días, y los percentiles de las semanas siguientes se calcularían sobre
+    respuestas tentativas que nunca se llegaron a dar. El sistema aprendería de
+    borradores.
+
+    `checkins` sigue siendo una fila por día con la respuesta definitiva. Esta
+    tabla es el cuaderno de al lado, y nada de lo que hay aquí dentro toca al
+    motor: se escribe y se lee, no se evalúa.
+
+    POR QUÉ VARIAS FILAS POR DÍA, Y POR QUÉ ESO ES EL DATO
+    -----------------------------------------------------
+    Si se previsualiza, se cambia una respuesta y se vuelve a previsualizar, la
+    segunda NO tapa a la primera. La diferencia entre las dos es justamente lo
+    que hay que poder mirar: dice qué respuesta se movió y en qué dirección
+    cambió el resultado, que es la única forma de ver si uno está calibrando o
+    ajustando las respuestas hasta que salga lo que le apetecía.
+
+    Guardar solo la última daría la versión limpia de la mañana y borraría
+    exactamente el rastro que justifica la funcionalidad entera.
+    """
+
+    __tablename__ = "previews"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Indexada y NO única: varias por día es el caso normal, no el error.
+    date: Mapped[date] = mapped_column(Date, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Qué número de previsualización es dentro de su día, empezando en 1.
+    #
+    # No es redundante con `created_at`, y no por gusto: el `server_default` de
+    # SQLite es `CURRENT_TIMESTAMP`, que tiene resolución de SEGUNDO. Dos
+    # previsualizaciones seguidas -cambiar un deslizador y volver a pulsar cabe
+    # de sobra en un segundo- quedarían con la misma marca de tiempo y sin nada
+    # que dijera cuál fue antes. Y es el orden lo único que convierte dos filas
+    # en "hubo una revisión".
+    #
+    # `server_default` y no solo `default=1`: el de Python solo lo aplica el ORM.
+    # Una NOT NULL sin defecto EN LA BASE no se puede añadir con `ALTER TABLE` a
+    # una tabla que ya tiene filas, y `ensure_schema` -con razón- se niega a
+    # arrancar antes que inventarse el valor. Hoy la tabla nace entera y no se
+    # notaría; se notaría en el despliegue siguiente, que es cuando ya tiene
+    # filas dentro.
+    seq: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"))
+
+    # Las respuestas TAL CUAL se enviaron, sin normalizar a señales. Es lo que
+    # permite reconstruir la previsualización y compararla con la siguiente.
+    answers_json: Mapped[str | None] = mapped_column(Text)
+
+    # Los dos ejes con columna propia, y solo esos dos.
+    #
+    # Son de los que salen las tres medidas: cuántas veces se discrepa, en qué
+    # dirección, y si el desacuerdo se agolpa en un umbral. Eso son `GROUP BY`,
+    # y un `GROUP BY` sobre un campo de dentro de un JSON es lento y frágil.
+    light: Mapped[str | None] = mapped_column(String(8), index=True)
+    session_type: Mapped[str | None] = mapped_column(String(16))
+
+    # Todo lo demás de la decisión previsualizada, en un solo bloque.
+    #
+    # A propósito sin desglosar en columnas: `decisions` va a seguir creciendo,
+    # y cada columna que se replicase aquí sería una que alguien añade allí y
+    # olvida aquí. Una columna declarada que nadie escribe es peor que no
+    # tenerla, porque parece un dato guardado.
+    decision_json: Mapped[str | None] = mapped_column(Text)
+
+    # «No estoy de acuerdo», que es la razón de ser de todo esto.
+    #
+    # NULABLE Y CON TRES ESTADOS: `True` es "lo he mirado y no lo comparto",
+    # `False` es "lo he mirado y me parece bien", y `NULL` es "no dije nada",
+    # que es lo que va a ser la mayoría de las veces. Un `NOT NULL DEFAULT 0`
+    # convertiría cada previsualización sin opinar en un acuerdo explícito, y
+    # entonces la medida de "cuántas veces discrepo" saldría dividida entre un
+    # denominador lleno de conformidades que nadie dio.
+    disagreed: Mapped[bool | None] = mapped_column(Boolean)
+    disagreement_reason: Mapped[str | None] = mapped_column(Text)
+
+    # Lo que se pidió en vez de lo propuesto. Nulo cuando no se anuló nada.
+    override_session_type: Mapped[str | None] = mapped_column(String(16))
+    override_routine: Mapped[str | None] = mapped_column(String(64))
+    # Subir de dureza con el semáforo en rojo, confirmado a mano. Se marca
+    # aparte porque no es una anulación más: es la que hay que poder mirar por
+    # separado después. Solo significa algo junto a `override_session_type`;
+    # sin anulación es `False` porque no se forzó nada, no porque se contuviera.
+    #
+    # Con `server_default`, por lo mismo que `seq`.
+    forced_on_red: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("0")
+    )
+
+    # La decisión que de verdad se guardó, si es que se llegó a enviar.
+    #
+    # Así se contesta "¿se ejecutó la anulación?" con un JOIN, en vez de con un
+    # booleano aquí que habría que mantener al día y que podría acabar diciendo
+    # que sí mientras `decisions` dice que no. `NULL` es "esta previsualización
+    # se quedó en previsualización", que es un final legítimo y frecuente: mirar
+    # qué saldría y no enviar es justamente uno de los usos.
+    decision_id: Mapped[int | None] = mapped_column(ForeignKey("decisions.id"))
+
+    # POR QUÉ NO HAY UNIQUE SOBRE (date, seq)
+    # ---------------------------------------
+    # Porque lo que haría es RECHAZAR la segunda previsualización, y guardar la
+    # segunda es la razón de existir de esta tabla.
+    #
+    # `seq` se calcula como el máximo del día más uno. Dos escrituras que se
+    # crucen pueden leer el mismo máximo y pedir las dos el mismo número. Con
+    # un UNIQUE encima, la segunda revienta con `UNIQUE constraint failed` y esa
+    # previsualización no se guarda: se pierde justo el dato que se quería
+    # capturar, y el usuario ve un error donde esperaba una tarjeta.
+    #
+    # Sin él, las dos filas entran y lo único que queda dañado es el orden
+    # relativo entre ese par concreto. Dos filas con `seq: 2` siguen diciendo lo
+    # que importa -que hubo revisión, con qué respuestas y qué salió-, y el
+    # empate se rompe mirando `id`, que es monótono porque lo da SQLite.
+    #
+    # Es la lección de `notifications`, que tenía un UNIQUE sobre (date, kind) y
+    # costó un día de sistema: una restricción que salta después de que el hecho
+    # haya ocurrido no impide nada, solo destruye el registro de que ocurrió.
+    # Aquí el hecho es "el usuario ha previsualizado", y ya ha ocurrido cuando
+    # llega el INSERT.
+
+
 class ExerciseTarget(Base):
     """Carga objetivo actual de cada ejercicio, y su racha de sesiones limpias.
 

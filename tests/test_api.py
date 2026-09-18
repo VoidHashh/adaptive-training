@@ -84,6 +84,12 @@ def cliente(db, cfg, monkeypatch):
 
     monkeypatch.setattr("app.scheduler._fetch_garmin", fetch)
     monkeypatch.setattr("app.api._clientes", lambda cfg_: (None, None, {}))
+    # La caché de previsualizar vive en el módulo y dura diez minutos, así que
+    # sin vaciarla sobrevive de un test al siguiente: el primero que
+    # previsualice el LUNES deja ahí su lectura y el resto de la batería
+    # decidiría con datos de otro test. Un diccionario nuevo por test, que
+    # `monkeypatch` además deshace al terminar.
+    monkeypatch.setattr("app.scheduler._previsualizaciones", {})
 
     app.dependency_overrides[get_session] = lambda: db
     app.dependency_overrides[get_config] = lambda: cfg
@@ -1136,6 +1142,375 @@ def test_reenviar_el_checkin_vuelve_a_decidir_y_no_duplica(cliente, db):
         select(Notification).where(Notification.date == LUNES)
     ).all()
     assert len(avisos) == 3
+
+
+# ---------------------------------------------------------------------------
+# La previsualización
+# ---------------------------------------------------------------------------
+#
+# LO QUE SE PROTEGE AQUÍ ES QUE MIRAR NO SEA HACER.
+#
+# `POST /api/preview` contesta a "¿qué decidirías con esto?" y no decide nada:
+# ni guarda el check-in, ni deja decisión vigente, ni escribe en Hevy, ni manda
+# un Telegram. Todo lo de esta sección son formas distintas de comprobar esa
+# misma frase, porque es la única que sostiene el uso que tiene: probar
+# respuestas hasta entender dónde están los umbrales.
+#
+# El fallo que estos tests existen para impedir no daría ningún error. Una
+# previsualización que escribiera el check-in se vería igual en pantalla, y lo
+# que rompería está tres meses más allá: `checkins` es de donde salen los
+# percentiles de los umbrales adaptativos, así que una mañana probando cuatro
+# fatigas distintas metería cuatro lecturas inventadas en la ventana y el
+# sistema se calibraría contra respuestas que nadie dio nunca.
+
+
+def _filas(db, modelo, day=None):
+    from sqlalchemy import select as _select
+
+    q = _select(modelo)
+    if day is not None:
+        q = q.where(modelo.date == day)
+    return list(db.scalars(q).all())
+
+
+def test_previsualizar_no_guarda_ni_el_checkin_ni_la_decision(cliente, db):
+    """La frase entera, comprobada por ausencia en las dos tablas que importan."""
+    from app.models import Checkin as CheckinRow, Decision as DecisionRow
+    from app.models import Preview as PreviewRow
+
+    r = cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 3})
+    assert r.status_code == 200, r.text
+
+    assert _filas(db, CheckinRow, LUNES) == [], (
+        "previsualizar ha guardado el check-in: esas respuestas tentativas "
+        "entran en la ventana de los umbrales adaptativos"
+    )
+    assert _filas(db, DecisionRow, LUNES) == [], (
+        "previsualizar ha dejado una decisión: el día queda decidido sin que "
+        "nadie lo haya enviado"
+    )
+    # Y lo que sí se guarda, se guarda: la previsualización misma, que es el
+    # dato de calibración.
+    assert len(_filas(db, PreviewRow, LUNES)) == 1
+
+
+def test_previsualizar_no_deja_una_fila_nueva_en_ninguna_otra_tabla(cliente, db):
+    """El invariante entero, y no solo en las dos tablas que uno se acuerda de mirar.
+
+    `pensar_el_dia` hoy solo lee, pero eso es una propiedad que se pierde sin
+    querer: basta con que alguien meta ahí dentro un `save_*`, o con que una
+    función que ya se llama desde ahí empiece a sembrar una fila por su cuenta.
+    El test de arriba mira `checkins` y `decisions` porque son las que rompen la
+    calibración; este cuenta TODAS, que es lo que convierte «mirar no es hacer»
+    en algo comprobable en vez de una intención.
+    """
+    from sqlalchemy import func as _func, select as _select
+
+    from app.models import Base
+
+    def censo():
+        return {
+            t.name: db.scalar(_select(_func.count()).select_from(t))
+            for t in Base.metadata.sorted_tables
+        }
+
+    antes = censo()
+    r = cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 3})
+    assert r.status_code == 200, r.text
+    despues = censo()
+
+    crecieron = {t for t, n in despues.items() if n != antes[t]}
+    assert crecieron == {"previews"}, (
+        f"previsualizar ha escrito donde no debía: {sorted(crecieron - {'previews'})}"
+    )
+
+
+def test_la_previsualizacion_dice_con_todas_las_letras_lo_que_no_ha_hecho(cliente):
+    """Y también lo que SÍ ha hecho, que es lo que la hace creíble.
+
+    La petición del usuario era "que no me quede duda de si ya está hecho o
+    no". Un `escrito: false` a secas cumpliría la letra y sería mentira: la
+    fila de `previews` se escribe. Así que se contesta desglosado -qué no se ha
+    tocado, y qué sí- porque un sistema que miente en lo pequeño para sonar
+    tranquilizador es exactamente el que no se puede usar para calibrar.
+    """
+    c = cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 3}).json()
+
+    assert c["ejecutado"] is False
+    assert c["checkin_guardado"] is False
+    assert c["decision_guardada"] is False
+    assert c["hevy"] == "sin tocar"
+    assert c["telegram"] == "sin tocar"
+    # Lo único que sí se ha escrito, dicho por su nombre y con su identificador.
+    assert c["previsualizacion_guardada"] is True
+    assert isinstance(c["preview_id"], int)
+
+
+def test_la_previsualizacion_no_se_puede_confundir_con_un_envio(cliente):
+    """El fallo de pantalla que esto cierra, y que no daría ningún error.
+
+    `static/app.js::pintarResultado` elige qué tarjeta pinta mirando `decided`.
+    Si la respuesta de aquí llevara esa clave -o `checkin_saved`- una
+    previsualización caída por error en esa función anunciaría «Guardado, pero
+    sin decidir»: dos afirmaciones falsas seguidas, en la pantalla que existe
+    justamente para que no quede duda de si ya está hecho.
+
+    Con nombres distintos, no encaja. Y este test es lo que impide que alguien
+    los unifique más adelante buscando coherencia.
+    """
+    from app.api import CLAVES_DEL_ENVIO
+
+    for ruta, cuerpo, codigo in (
+        ("/api/preview", {"day": str(LUNES), "fatigue": 3}, 200),
+        # Las dos salidas de error tienen que cumplirlo igual: son las que se
+        # pintan con más prisa y menos mirando.
+        (
+            "/api/preview",
+            {"day": str(LUNES), "lower_discomfort": 7, "requested_session": "full"},
+            409,
+        ),
+    ):
+        r = cliente.post(ruta, json=cuerpo)
+        assert r.status_code == codigo, r.text
+        c = r.json()
+        c = c.get("detail", c)
+        assert CLAVES_DEL_ENVIO.isdisjoint(c), (
+            f"la respuesta {codigo} lleva claves del envío: "
+            f"{sorted(CLAVES_DEL_ENVIO & set(c))}"
+        )
+
+
+def test_previsualizar_ni_siquiera_fabrica_los_clientes_de_fuera(
+    cliente, monkeypatch
+):
+    """No basta con no llamarlos: no se construyen.
+
+    `_clientes` lee el `.env` y monta el cliente de Hevy y el de Telegram. Si la
+    ruta lo llamara, un fallo posterior de cualquier clase dejaría abierta la
+    puerta por la que esta batería ya se escapó una vez a producción -ver el
+    test del cerrojo de red, arriba-. Se sustituye por algo que revienta: la
+    única forma de que este test pase es que nadie lo llame.
+    """
+    def explota(cfg_):
+        raise AssertionError("previsualizar ha fabricado los clientes de fuera")
+
+    monkeypatch.setattr("app.api._clientes", explota)
+
+    r = cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 3})
+    assert r.status_code == 200, r.text
+
+
+def test_lo_que_solo_existe_al_previsualizar_no_entra_en_las_senales(cliente, db):
+    """El campo de opinión que viaja de incógnito como si fuera del cuerpo.
+
+    `disagreed` y compañía llegan por el mismo cuerpo JSON que la fatiga y la
+    lumbar. Si se colaran en `respuestas`, irían a `signals.values`, que es el
+    espacio de nombres donde se evalúan las reglas del semáforo: un booleano de
+    opinión con voto en el color del día, y encima uno que quedaría escrito en
+    el histórico como si fuera una señal más.
+    """
+    from app.api import CAMPOS_QUE_NO_SON_RESPUESTAS
+    from app.models import Preview as PreviewRow
+
+    cliente.post("/api/preview", json={
+        "day": str(LUNES),
+        "fatigue": 3,
+        "disagreed": True,
+        "disagreement_reason": "me encuentro mejor de lo que dice",
+    })
+
+    fila = _filas(db, PreviewRow, LUNES)[0]
+    respuestas = json.loads(fila.answers_json)
+    decision = json.loads(fila.decision_json)
+
+    for campo in CAMPOS_QUE_NO_SON_RESPUESTAS:
+        assert campo not in respuestas, (
+            f"{campo!r} se ha guardado como si fuera una respuesta del "
+            f"formulario"
+        )
+        assert campo not in decision["inputs"]["values"], (
+            f"{campo!r} ha llegado al espacio de nombres de las reglas"
+        )
+
+    # Y el desacuerdo sí queda, en su sitio y no en el de las señales.
+    assert fila.disagreed is True
+    assert fila.disagreement_reason == "me encuentro mejor de lo que dice"
+
+
+def test_la_segunda_previsualizacion_del_dia_se_marca_como_revision(cliente, db):
+    """«No quiero que la segunda tape a la primera».
+
+    La diferencia entre las dos ES el dato: qué respuesta se cambió y cuánto
+    movió eso la decisión. Por eso se numeran en vez de sobrescribirse, y por
+    eso la pantalla tiene que poder decir que esto ya es una revisión.
+    """
+    from app.models import Preview as PreviewRow
+
+    primera = cliente.post(
+        "/api/preview", json={"day": str(LUNES), "fatigue": 3}
+    ).json()
+    segunda = cliente.post(
+        "/api/preview", json={"day": str(LUNES), "fatigue": 8}
+    ).json()
+
+    assert (primera["seq"], primera["revision"]) == (1, False)
+    assert (segunda["seq"], segunda["revision"]) == (2, True)
+    assert primera["preview_id"] != segunda["preview_id"]
+
+    filas = _filas(db, PreviewRow, LUNES)
+    assert len(filas) == 2, "la segunda previsualización ha tapado a la primera"
+    assert [json.loads(f.answers_json)["fatigue"] for f in filas] == [3, 8]
+
+
+def test_subir_en_rojo_sin_confirmar_devuelve_la_pregunta_y_no_la_sesion(
+    cliente, db
+):
+    """El día peligroso, con una hernia L4-L5 de por medio.
+
+    No se impide: se pregunta. Y mientras no se conteste no hay sesión que
+    enseñar, así que la respuesta es un 409 con las dos sesiones puestas para
+    que la pantalla pueda redactar la pregunta sin volver a calcular nada.
+
+    NO se guarda fila. No es un olvido: sin decisión no hay nada que guardar
+    -`ConfirmacionNecesaria` salta dentro del motor, antes de que exista- y el
+    intento sin confirmar no dice nada que no diga la fila confirmada que viene
+    dos segundos después.
+    """
+    from app.models import Preview as PreviewRow
+
+    r = cliente.post("/api/preview", json={
+        "day": str(LUNES),
+        "lower_discomfort": 7,
+        "requested_session": "full",
+    })
+
+    assert r.status_code == 409, r.text
+    detalle = r.json()["detail"]
+    assert detalle["confirmacion_necesaria"] is True
+    assert detalle["propuesta"] == "recovery"
+    assert detalle["pedida"] == "full"
+    # Aunque no haya sesión, el contrato de "no se ha tocado nada" se mantiene.
+    assert detalle["ejecutado"] is False
+
+    assert _filas(db, PreviewRow, LUNES) == []
+
+
+def test_confirmando_la_subida_en_rojo_queda_marcada_como_forzada(cliente, db):
+    """Y ahora sí sale la sesión pedida, con su marca puesta en los datos.
+
+    La marca no es para impedirlo después: es para poder mirar cuántas veces se
+    subió el día que el semáforo decía que no, que es la tercera de las medidas
+    que esto existe para dar.
+    """
+    from app.models import Preview as PreviewRow
+
+    c = cliente.post("/api/preview", json={
+        "day": str(LUNES),
+        "lower_discomfort": 7,
+        "requested_session": "full",
+        "confirm_upgrade": True,
+        "override_reason": "es solo agujetas",
+    }).json()
+
+    assert c["light"] == "red"
+    assert c["decision"]["session"]["kind"] == "full"
+
+    fila = _filas(db, PreviewRow, LUNES)[0]
+    assert fila.override_session_type == "full"
+    assert fila.forced_on_red is True
+    assert fila.light == "red"
+
+
+def test_previsualizar_y_luego_enviar_enlaza_las_dos(cliente, db):
+    """La pregunta de "¿se llegó a hacer?", contestada sin un booleano aparte.
+
+    Es la segunda medida del usuario: quién tenía razón, medido contra cómo
+    fue la sesión. Sin el enlace, una previsualización con anulación y una
+    ejecutada de verdad se cuentan igual, y el número de "anulaciones que
+    acabaron ocurriendo" sale de la nada.
+    """
+    from app import repository as repo_
+    from app.models import Preview as PreviewRow
+
+    prev = cliente.post(
+        "/api/preview", json={"day": str(LUNES), "fatigue": 3}
+    ).json()
+    enviado = cliente.post(
+        "/api/checkin", json={"day": str(LUNES), "fatigue": 3}
+    ).json()
+    assert enviado["decided"] is True, enviado.get("error")
+
+    decision = repo_.current_decision(db, LUNES)
+    fila = db.get(PreviewRow, prev["preview_id"])
+    assert fila.decision_id == decision.id
+
+
+def test_una_previsualizacion_que_no_se_envia_se_queda_sin_decision(cliente, db):
+    """La otra mitad del enlace, que es la que le da significado.
+
+    Si se enlazara siempre -o si el enlace se rellenara con la decisión de
+    cualquier día- la medida diría que todo se ejecuta y no mediría nada. Un
+    `None` aquí es una previsualización que se miró y no se mandó, y esas son
+    justamente las que cuentan cuando el usuario cambia de idea al verlo.
+    """
+    from app.models import Preview as PreviewRow
+
+    cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 3})
+
+    fila = _filas(db, PreviewRow, LUNES)[0]
+    assert fila.decision_id is None
+
+
+def test_el_envio_tambien_acepta_la_anulacion_y_la_deja_escrita(cliente, db):
+    """«Que se envíe lo que yo decida, registrado como anulación».
+
+    Sin esto, la previsualización sería un callejón sin salida: el usuario ve
+    que quiere otra cosa, y para conseguirla tiene que saltarse el sistema. Un
+    desacuerdo que obliga a saltarse el sistema es un desacuerdo que no se
+    puede medir.
+    """
+    from app import repository as repo_
+
+    enviado = cliente.post("/api/checkin", json={
+        "day": str(LUNES),
+        "fatigue": 3,
+        "requested_session": "reduced",
+        "override_reason": "vengo justo de tiempo",
+    }).json()
+    assert enviado["decided"] is True, enviado.get("error")
+    assert enviado["kind"] == "reduced"
+
+    # Se lee con el mismo accesor que usa producción, para que el test recorra
+    # el camino de verdad y no una copia suya que puede quedarse atrás.
+    fila = repo_.current_decision(db, LUNES)
+    anulacion = repo_.planned_session(fila)["anulacion"]
+    assert anulacion["propuesta"] == "full"
+    assert anulacion["pedida"] == "reduced"
+    assert anulacion["motivo"] == "vengo justo de tiempo"
+    # Bajar de intensidad no se marca como forzado ni aunque el día fuera rojo:
+    # lo que se vigila es subir.
+    assert anulacion["forzada_en_rojo"] is False
+
+
+def test_el_envio_tampoco_sube_en_rojo_sin_que_se_lo_confirmen(cliente, db):
+    """La misma guarda en la puerta por la que se escribe de verdad.
+
+    Tenerla solo en la previsualización sería peor que no tenerla: daría la
+    impresión de que el sistema pregunta, mientras el camino que sí escribe en
+    Hevy la esquiva entera.
+    """
+    from app.models import Decision as DecisionRow
+
+    r = cliente.post("/api/checkin", json={
+        "day": str(LUNES),
+        "lower_discomfort": 7,
+        "requested_session": "full",
+    })
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["pedida"] == "full"
+    # Y el check-in NO se ha guardado a medias: o entra todo o no entra nada.
+    assert _filas(db, DecisionRow, LUNES) == []
 
 
 # ---------------------------------------------------------------------------

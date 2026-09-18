@@ -48,6 +48,7 @@ from app.models import (
 )
 from app.models import Checkin as CheckinRow
 from app.models import Decision as DecisionRow
+from app.models import Preview as PreviewRow
 
 log = logging.getLogger(__name__)
 
@@ -675,6 +676,140 @@ def _las_dos_progresiones(decision: Any) -> dict[str, Any] | None:
         datos = dict(datos or {})
         datos["hiit"] = hiit.to_dict()
     return datos
+
+
+# ---------------------------------------------------------------------------
+# Previsualizaciones
+# ---------------------------------------------------------------------------
+
+
+def save_preview(
+    session: Session,
+    decision: Any,
+    *,
+    answers: dict[str, Any] | None = None,
+    disagreed: bool | None = None,
+    disagreement_reason: str | None = None,
+) -> PreviewRow:
+    """Guarda una previsualización. NO escribe en `checkins` ni en `decisions`.
+
+    Esa ausencia es la función entera. Las respuestas que llegan aquí son
+    tentativas, y `checkins` alimenta el histórico del que salen los percentiles
+    de los umbrales adaptativos: una mañana probando cuatro valores de fatiga
+    metería cuatro lecturas en la ventana de 60 días y el sistema acabaría
+    calibrándose contra respuestas que nunca se dieron.
+
+    LO QUE SE ANULÓ SE SACA DE LA DECISIÓN, NO SE PIDE APARTE
+    --------------------------------------------------------
+    La anulación ya viaja dentro de `decision.session.anulacion`, y la rutina
+    elegida se ve comparando `rotation_routine` con `propuesta`. Pedírselo
+    además a quien llama daría dos fuentes para el mismo hecho y un sitio donde
+    pudieran discrepar. Lo único que no se puede derivar -si el usuario dijo que
+    no lo comparte, y por qué- es lo único que se pasa por parámetro.
+    """
+    sesion = getattr(decision, "session", None)
+    anulacion = getattr(sesion, "anulacion", None)
+
+    # La rutina solo cuenta como anulada si de verdad se desvía del ciclo.
+    # Iguales es el día normal, y escribirlo ahí convertiría cada día corriente
+    # en una anulación a efectos de las cuentas.
+    rotacion = getattr(decision, "rotation_routine", None)
+    propuesta = getattr(decision, "propuesta", None)
+    rutina_anulada = rotacion if rotacion and rotacion != propuesta else None
+
+    return _insertar_preview(
+        session,
+        day=decision.day,
+        answers_json=_json(answers or {}),
+        light=decision.light,
+        session_type=getattr(sesion, "kind", None),
+        decision_json=_json(decision.to_dict()),
+        disagreed=disagreed,
+        disagreement_reason=disagreement_reason,
+        override_session_type=getattr(anulacion, "pedida", None),
+        override_routine=rutina_anulada,
+        forced_on_red=bool(getattr(anulacion, "forzada_en_rojo", False)),
+    )
+
+
+def _insertar_preview(session: Session, *, day: date, **campos: Any) -> PreviewRow:
+    """El INSERT, con el número de revisión del día ya calculado.
+
+    `seq` sale del máximo del día más uno, y se calcula aquí y no en el modelo
+    porque necesita mirar la tabla. El `or 0` sí hace falta: `MAX()` sobre cero
+    filas devuelve NULL, y el primer día de cada fecha es exactamente ese caso.
+    """
+    ultimo = session.scalar(
+        select(func.max(PreviewRow.seq)).where(PreviewRow.date == day)
+    )
+    fila = PreviewRow(date=day, seq=int(ultimo or 0) + 1, **campos)
+    session.add(fila)
+    session.flush()
+    return fila
+
+
+def previews_del_dia(session: Session, day: date) -> list[PreviewRow]:
+    """Las previsualizaciones de un día, en el orden en que se pidieron.
+
+    Se ordena por `seq` y luego por `id`. El desempate por `id` no es adorno:
+    no hay UNIQUE sobre (date, seq) -ver `models.Preview`, donde está el motivo-
+    así que dos escrituras cruzadas pueden dejar dos filas con el mismo número.
+    Cuando pasa, el `id` las ordena igual, porque lo da SQLite y es monótono.
+    """
+    return list(
+        session.scalars(
+            select(PreviewRow)
+            .where(PreviewRow.date == day)
+            .order_by(PreviewRow.seq, PreviewRow.id)
+        ).all()
+    )
+
+
+def enlazar_preview(session: Session, preview_id: int, decision_id: int) -> None:
+    """Marca que esta previsualización acabó enviándose, y con qué decisión.
+
+    Es la respuesta a "¿se ejecutó la anulación?", y se guarda como un enlace y
+    no como un booleano a propósito: un `ejecutada: True` aquí podría acabar
+    afirmando que sí mientras `decisions` no tiene la fila. Con la clave ajena,
+    la única forma de que diga que se ejecutó es que exista la decisión.
+    """
+    fila = session.get(PreviewRow, preview_id)
+    if fila is None:
+        # No se traga el fallo. Un enlace perdido no se nota al guardar: se nota
+        # meses después, midiendo cuántas anulaciones se ejecutaron, y el número
+        # sale bajo sin que nada diga por qué.
+        raise ValueError(f"no hay previsualización con id={preview_id}")
+    fila.decision_id = decision_id
+    session.flush()
+
+
+def enlazar_previews_pendientes(
+    session: Session, day: date, decision_id: int
+) -> int:
+    """Enlaza las previsualizaciones del día que todavía no llevaban decisión.
+
+    Es lo que corre al enviar el formulario: todo lo que se miró desde la última
+    decisión acaba de convertirse en algo que sí ocurrió.
+
+    SOLO LAS PENDIENTES, Y ESA CONDICIÓN ES LA FUNCIÓN ENTERA
+    ---------------------------------------------------------
+    Un día puede tener dos decisiones -el envío de las 07:10 y el de las 19:00
+    rehaciéndolo-, y las previsualizaciones de la mañana pertenecen a la
+    primera. Reenlazarlas a la segunda las movería a una decisión que no fue la
+    suya, y la pregunta que esta tabla existe para contestar -«lo que miré, ¿se
+    llegó a hacer, y con qué?»- pasaría a contestarse con la decisión
+    equivocada. El fallo no se nota al guardar: se nota meses después, midiendo.
+
+    Devuelve cuántas ha enlazado. Cero es normal -enviar sin previsualizar sigue
+    siendo el camino de siempre- y por eso no es un error.
+    """
+    n = 0
+    for fila in previews_del_dia(session, day):
+        if fila.decision_id is None:
+            fila.decision_id = decision_id
+            n += 1
+    session.flush()
+    return n
 
 
 def current_decision(session: Session, day: date) -> DecisionRow | None:

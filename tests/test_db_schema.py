@@ -379,6 +379,68 @@ def test_una_base_anterior_al_backfill_aprende_a_marcar_lo_recuperado(vieja, tmp
     )
 
 
+def test_la_tabla_de_previsualizaciones_llega_a_una_base_que_ya_existia(
+    vieja, monkeypatch
+):
+    """`previews` es tabla NUEVA, y llega a un despliegue donde la base SOBREVIVE.
+
+    Es el caso exacto de este proyecto en Umbrel: el código va horneado en la
+    imagen y la base de datos está montada fuera, así que al reconstruir el
+    contenedor llega un `models.py` con una tabla que el disco no tiene. Si
+    nadie la crea, el arranque no se queja: lo que revienta es el primer
+    PREVISUALIZAR, delante del usuario y a las siete de la mañana.
+
+    Y aquí perder el dato es perder la funcionalidad entera, no un adorno:
+    estas filas SON la medida de si el sistema y el usuario convergen. No se
+    reconstruyen después desde ningún sitio, porque una previsualización que no
+    se guardó no dejó rastro en ninguna otra tabla -ese es justamente su diseño-.
+
+    Se escribe y se lee una fila de verdad: `sqlite_master` solo demostraría que
+    la tabla tiene nombre.
+    """
+    from app.models import Preview
+
+    with vieja.begin() as c:
+        c.exec_driver_sql('DROP TABLE "previews"')
+
+    assert ensure_schema(vieja) == [], (
+        "de las tablas AUSENTES no se encarga esta función"
+    )
+
+    monkeypatch.setattr(db, "engine", vieja)
+    db.init_db()
+
+    Sesion = sessionmaker(bind=vieja, future=True)
+    with Sesion() as s:
+        s.add(Preview(
+            date=date(2026, 9, 10), seq=1,
+            answers_json='{"fatigue": 4}', light="red", session_type="full",
+            decision_json="{}", disagreed=True,
+            disagreement_reason="hoy puedo mas",
+            override_session_type="full", forced_on_red=True,
+        ))
+        s.commit()
+
+    with Sesion() as s:
+        fila = s.query(Preview).one()
+        assert fila.disagreed is True
+        assert fila.forced_on_red is True
+        assert fila.decision_id is None, "previsualizada y no enviada"
+        # Los defectos tienen que venir del servidor y no solo de Python.
+        assert fila.created_at is not None
+
+    with vieja.begin() as c:
+        # Dos filas el mismo día. Es el caso que la tabla existe para admitir,
+        # así que no basta con que la tabla esté: tiene que estar SIN el UNIQUE
+        # que la haría rechazar la segunda previsualización de la mañana.
+        c.exec_driver_sql(
+            "INSERT INTO previews (date, seq, light) VALUES ('2026-09-10', 2, 'amber')"
+        )
+        assert c.exec_driver_sql(
+            "SELECT count(*) FROM previews WHERE date = '2026-09-10'"
+        ).scalar() == 2
+
+
 def test_la_tabla_de_rendimiento_llega_a_una_base_que_ya_existia(vieja, monkeypatch):
     """`session_performance` es tabla NUEVA, y de las que no pueden perder nada.
 
