@@ -279,6 +279,17 @@ function elemento(id) {
   if (!porId.has(id)) {
     const el = new Elemento("div");
     el.id = id;
+    // NACEN COMO NACEN EN EL HTML, no en blanco. Un `<section hidden>` que aquí
+    // empezara visible haría que «la tarjeta no está en pantalla» fuese
+    // imposible de comprobar: saldría siempre un hueco vacío haciéndose pasar
+    // por una tarjeta pintada, y el test que quisiera demostrar que todavía no
+    // se ha previsualizado nada estaría mirando un `false` que no significa
+    // nada. Lo mismo con `disabled` y el botón de enviar.
+    const nace = ID_DEL_HTML.get(id);
+    if (nace) {
+      el.hidden = nace.hidden;
+      el.disabled = nace.disabled;
+    }
     porId.set(id, el);
   }
   return porId.get(id);
@@ -299,6 +310,78 @@ function buscarTodo(sel) {
 
 let cuerpoEnviado = null;
 let vecesEnviado = 0;
+
+// Lo que sale por el cable al previsualizar. En lista y no en una variable
+// suelta: la segunda previsualización del día es medio encargo -«no quiero que
+// la segunda tape a la primera»- y con una sola variable el arnés haría
+// exactamente lo que el encargo prohíbe, quedarse con la última.
+const cuerposPrevisualizados = [];
+let cuerpoDesacuerdo = null;
+let urlDesacuerdo = null;
+
+/* Lo que contesta `/api/preview` cuando el guion no dice otra cosa.
+ *
+ * Copia la forma del endpoint de verdad, incluido lo que más importa: el
+ * desglose de `NADA_EJECUTADO` va SUELTO en la raíz -no dentro de `decision`- y
+ * no lleva ni `decided` ni `checkin_saved`. Un doble que los trajera dejaría
+ * pasar el día que el backend empezara a mandarlos, que es justo la confusión
+ * que esta pantalla existe para no tener.
+ *
+ * `preview_id` y `seq` suben con cada llamada porque la tabla es de añadir: un
+ * doble que devolviera siempre `seq: 1` haría imposible ver la revisión, que es
+ * media razón de que la tabla exista.
+ */
+function previsualizacionPorDefecto(n) {
+  return {
+    day: "2026-09-15",
+    ejecutado: false,
+    checkin_guardado: false,
+    decision_guardada: false,
+    hevy: "sin tocar",
+    telegram: "sin tocar",
+    previsualizacion_guardada: true,
+    preview_id: n,
+    seq: n,
+    revision: n > 1,
+    light: "amber",
+    trigger_rule: "fatiga_alta",
+    decision: {
+      light: "amber",
+      trigger_rule: "fatiga_alta",
+      fired_rules: [
+        { name: "fatiga_alta", detail: ["fatigue 7 ≥ 6"] },
+        { name: "sueño_corto", detail: ["sleep 5.1 h < 6 h"] },
+      ],
+      skipped_rules: [
+        { name: "dolor_lumbar", missing: ["lower_back_pain"] },
+      ],
+      notes: ["Ayer fue día de pierna"],
+      session: {
+        title: "Día 3 · Pierna",
+        kind: "reduced",
+        changes: ["Sentadilla: 4×5 → 3×5"],
+        dropped: ["Peso muerto rumano"],
+        notes: ["Sin fallo en ninguna serie"],
+      },
+      progression: {
+        gate_open: false,
+        gate_reason: "La progresión está cerrada mientras el día no sea verde",
+        changes: [],
+      },
+      progression_hiit: { changes: [] },
+      bike: {
+        applies: true,
+        label: "Rodaje suave",
+        duration_min: 40,
+        duration_max: 55,
+        detail: "Zona 2, sin series",
+        baseline_en_claro: "Punto de partida: 50 min, de tus 4 últimas salidas",
+        downgrades: [{ why: "Día ámbar: se recorta un escalón" }],
+        notas: ["Si el lumbar molesta, bájate"],
+      },
+    },
+  };
+}
 
 // El `localStorage` del móvil. De verdad, no un doble mudo: el borrador es la
 // red del envío que no llega, y el guion puede sembrarlo para arrancar como
@@ -365,6 +448,54 @@ const contexto = {
         },
       };
     }
+    // EL DESACUERDO ANTES QUE LA PREVISUALIZACIÓN, y no es cosmético: su URL
+    // es `/api/preview/3/desacuerdo`, que CONTIENE `/api/preview`. Al revés,
+    // esta rama no se pisaría nunca, el desacuerdo se contaría como una
+    // previsualización más y el test que mira `veces_previsualizado` daría un
+    // número de más sin que nada reventara.
+    if (u.includes("/api/preview/") && u.includes("/desacuerdo")) {
+      urlDesacuerdo = u;
+      cuerpoDesacuerdo = JSON.parse(opciones.body);
+      const g = guion.desacuerdo || {};
+      const status = g.status || 200;
+      return {
+        ok: status < 400,
+        status,
+        json: async () => g.respuesta ?? {
+          day: "2026-09-15",
+          preview_id: Number(/\/api\/preview\/(\d+)\//.exec(u)[1]),
+          seq: 1,
+          // EL MOTIVO NORMALIZADO, como lo devuelve el servidor de verdad: uno
+          // de solo espacios se guarda como nada. El defecto lo imita porque la
+          // tarjeta tiene que pintar lo GUARDADO y no lo tecleado, y un doble
+          // que devolviera el texto tal cual dejaría esa diferencia sin poder
+          // verse.
+          disagreed: cuerpoDesacuerdo.disagreed,
+          disagreement_reason: (cuerpoDesacuerdo.reason || "").trim() || null,
+          ejecutado: false,
+          checkin_guardado: false,
+          decision_guardada: false,
+          hevy: "sin tocar",
+          telegram: "sin tocar",
+        },
+      };
+    }
+    if (u.includes("/api/preview")) {
+      cuerposPrevisualizados.push(JSON.parse(opciones.body));
+      const n = cuerposPrevisualizados.length;
+      // La enésima previsualización recibe la enésima respuesta del guion, y si
+      // se acaban se repite la última. Así un test que solo quiere una tarjeta
+      // escribe una, y el que quiere ver la revisión escribe dos.
+      const guionadas = guion.previsualizaciones || [];
+      const elegida = guionadas[n - 1] ?? guionadas[guionadas.length - 1];
+      const status = (elegida && elegida.status) || 200;
+      return {
+        ok: status < 400,
+        status,
+        json: async () =>
+          (elegida && elegida.respuesta) ?? previsualizacionPorDefecto(n),
+      };
+    }
     if (u.includes("/api/health")) {
       // Todo en orden: los avisos de salud tienen su propio arnés y aquí solo
       // estorbarían encima del formulario.
@@ -382,13 +513,28 @@ const contexto = {
 };
 contexto.globalThis = contexto;
 
-// Los `id` que existen en `index.html`. Fuera de esta lista, `getElementById`
-// devuelve `null` como en un navegador: si `app.js` empieza a pedir un hueco que
-// nadie ha puesto en el HTML, aquí revienta con un `null` en vez de inventarse
-// el elemento y dejar el olvido sin consecuencias.
-const ID_DEL_HTML = new Set(
-  [...fs.readFileSync("static/index.html", "utf8").matchAll(/\bid="([^"]+)"/g)]
-    .map((m) => m[1]),
+// Los `id` que existen en `index.html`, CON el estado con el que nacen. Fuera de
+// esta lista, `getElementById` devuelve `null` como en un navegador: si `app.js`
+// empieza a pedir un hueco que nadie ha puesto en el HTML, aquí revienta con un
+// `null` en vez de inventarse el elemento y dejar el olvido sin consecuencias.
+//
+// Se leen las etiquetas enteras y no solo `id="..."` porque hace falta saber si
+// el elemento viene con `hidden` o con `disabled` puestos a mano. Son atributos
+// sin valor -`<section id="x" hidden>`-, así que se buscan como palabra suelta
+// dentro de los atributos de SU etiqueta; buscarlos en todo el archivo los
+// encontraría en cualquier otra.
+const ID_DEL_HTML = new Map(
+  [...fs.readFileSync("static/index.html", "utf8")
+      .matchAll(/<([A-Za-z][\w-]*)((?:\s+[\w:-]+(?:\s*=\s*"[^"]*")?)*)\s*\/?>/g)]
+    .map((m) => m[2])
+    .filter((atributos) => /\bid\s*=\s*"/.test(atributos))
+    .map((atributos) => [
+      /\bid\s*=\s*"([^"]*)"/.exec(atributos)[1],
+      {
+        hidden: /(^|\s)hidden(\s|$)/.test(atributos),
+        disabled: /(^|\s)disabled(\s|$)/.test(atributos),
+      },
+    ]),
 );
 
 vm.createContext(contexto);
@@ -437,6 +583,26 @@ for (const a of guion.acciones || []) {
     disparar(boton, "click");
   } else if (a.tipo === "enviar") {
     disparar(elemento("formulario"), "submit", { preventDefault() {} });
+    await drenar();
+  } else if (a.tipo === "previsualizar") {
+    // Por el BOTÓN y no llamando a `previsualizar()` dentro del contexto. La
+    // función existía y nadie la había enganchado: un arnés que la invocara a
+    // mano habría pintado la tarjeta perfectamente en verde mientras en el
+    // móvil el botón no hacía absolutamente nada.
+    disparar(elemento("previsualizar"), "click");
+    await drenar();
+  } else if (a.tipo === "abrir-desacuerdo") {
+    const b = elemento("previsualizacion").querySelector(".abrir-desacuerdo");
+    if (!b) throw new Error("la tarjeta no ofrece dónde declarar el desacuerdo");
+    disparar(b, "click");
+  } else if (a.tipo === "motivo") {
+    const caja = elemento("previsualizacion").querySelector(".texto-desacuerdo");
+    if (!caja) throw new Error("no hay caja del motivo: ¿se abrió el desacuerdo?");
+    caja.value = String(a.texto);
+  } else if (a.tipo === "guardar-desacuerdo") {
+    const b = elemento("previsualizacion").querySelector(".guardar-desacuerdo");
+    if (!b) throw new Error("no hay botón de guardar el desacuerdo");
+    disparar(b, "click");
     await drenar();
   } else {
     throw new Error(`acción desconocida: ${a.tipo}`);
@@ -565,9 +731,28 @@ console.log(JSON.stringify({
         html: elemento("resultado").innerHTML,
       },
   enviar_deshabilitado: elemento("enviar").disabled,
+  // La tarjeta de mirar, en su propio hueco. Sale el HTML entero porque lo que
+  // hay que poder comprobar es la cabecera de qué se ha tocado, que es un `<dl>`.
+  previsualizacion: elemento("previsualizacion").hidden
+    ? null
+    : {
+        clase: elemento("previsualizacion").className,
+        html: elemento("previsualizacion").innerHTML,
+        texto: elemento("previsualizacion").textContent,
+      },
+  // Que el botón sea `type="button"` NO sale por aquí, y no es un olvido: este
+  // arnés fabrica un `<div>` por cada `id` y no conoce la etiqueta de verdad.
+  // Ese es un hecho del HTML y se comprueba leyendo el HTML.
+  previsualizar_deshabilitado: elemento("previsualizar").disabled,
   valores: vm.runInContext("JSON.stringify(estado.valores)", contexto),
   cuerpo: cuerpoEnviado,
   veces_enviado: vecesEnviado,
+  // Todos los cuerpos previsualizados, en orden. Que la segunda no tape a la
+  // primera vale también aquí.
+  cuerpos_previsualizados: cuerposPrevisualizados,
+  veces_previsualizado: cuerposPrevisualizados.length,
+  cuerpo_desacuerdo: cuerpoDesacuerdo,
+  url_desacuerdo: urlDesacuerdo,
   borrador: almacen.has("checkin-borrador")
     ? JSON.parse(almacen.get("checkin-borrador"))
     : null,

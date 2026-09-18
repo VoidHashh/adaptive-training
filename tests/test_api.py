@@ -1514,6 +1514,201 @@ def test_el_envio_tampoco_sube_en_rojo_sin_que_se_lo_confirmen(cliente, db):
 
 
 # ---------------------------------------------------------------------------
+# «No estoy de acuerdo», declarado sobre una previsualización que ya se ha visto
+# ---------------------------------------------------------------------------
+#
+# `PreviewIn` ya acepta `disagreed`, y aun así hace falta esta ruta: cuando se
+# manda el POST que crea la previsualización todavía no se ha visto nada, y de lo
+# que no se ha visto no se discrepa. Son dos PUERTAS al mismo hecho -la columna
+# es la misma- y lo que cambia es CUÁNDO se sabe.
+#
+# Lo que no se hace, y es lo que más importa de este bloque: no se inserta una
+# fila nueva. Volver a previsualizar relee Garmin y vuelve a correr el motor, así
+# que la fila nueva puede traer OTRA decisión; el juicio quedaría pegado a una
+# tarjeta que nadie vio, `seq` subiría y `revision` se encendería anunciando un
+# cambio de respuestas que no hubo. Nada de eso da error, y las tres medidas que
+# esta tabla existe para dar saldrían torcidas a la vez.
+
+
+def _una_previsualizacion(cliente) -> dict:
+    r = cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 3})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_el_desacuerdo_se_apunta_en_la_fila_que_se_estaba_mirando(cliente, db):
+    """Anota la fila existente. Ni una fila más, ni un `seq` movido."""
+    from app.models import Preview as PreviewRow
+
+    prev = _una_previsualizacion(cliente)
+
+    r = cliente.post(
+        f"/api/preview/{prev['preview_id']}/desacuerdo",
+        json={"disagreed": True, "reason": "el lumbar está bien hoy"},
+    )
+    assert r.status_code == 200, r.text
+
+    filas = _filas(db, PreviewRow, LUNES)
+    assert len(filas) == 1, (
+        "declarar el desacuerdo ha insertado una fila nueva: el juicio queda "
+        "pegado a una previsualización que nadie ha visto"
+    )
+    assert filas[0].id == prev["preview_id"]
+    assert filas[0].seq == 1
+    assert filas[0].disagreed is True
+    assert filas[0].disagreement_reason == "el lumbar está bien hoy"
+
+
+def test_lo_que_contesta_es_lo_que_ha_quedado_guardado(cliente):
+    """Relee la fila, no repite el cuerpo.
+
+    La pantalla pinta la confirmación con esto, así que un eco del cuerpo
+    enseñaría como apuntado un motivo que en la base de datos no está. Aquí se ve
+    con el motivo en blanco, que es el caso donde las dos cosas se separan.
+    """
+    prev = _una_previsualizacion(cliente)
+
+    d = cliente.post(
+        f"/api/preview/{prev['preview_id']}/desacuerdo",
+        json={"disagreed": True, "reason": "   \n  "},
+    ).json()
+
+    assert d["disagreement_reason"] is None, (
+        "un motivo de solo espacios se ha guardado como si fuera un motivo"
+    )
+    assert d["disagreed"] is True
+    assert d["preview_id"] == prev["preview_id"]
+    assert d["seq"] == 1
+    assert d["day"] == str(LUNES)
+
+
+def test_declarar_el_desacuerdo_no_ejecuta_nada(cliente, db):
+    """El mismo desglose que las otras tres salidas, y por el mismo motivo.
+
+    La pantalla pinta esta cabecera con lo que informe la respuesta, hecho por
+    hecho. Una respuesta que no informara dejaría la tarjeta diciendo «no se
+    sabe» justo después de tocar un botón, que es cuando la pregunta «¿ha pasado
+    algo?» más se hace.
+    """
+    from app.models import Checkin as CheckinRow
+    from app.models import Decision as DecisionRow
+
+    prev = _una_previsualizacion(cliente)
+
+    d = cliente.post(
+        f"/api/preview/{prev['preview_id']}/desacuerdo",
+        json={"disagreed": True},
+    ).json()
+
+    assert d["ejecutado"] is False
+    assert d["checkin_guardado"] is False
+    assert d["decision_guardada"] is False
+    assert d["hevy"] == "sin tocar"
+    assert d["telegram"] == "sin tocar"
+    # Y que sea verdad, no solo que lo diga.
+    assert _filas(db, CheckinRow, LUNES) == []
+    assert _filas(db, DecisionRow, LUNES) == []
+
+
+def test_un_cuerpo_sin_decir_si_se_discrepa_no_pasa(cliente):
+    """`disagreed` NO tiene defecto, y ésa es toda la decisión de `DesacuerdoIn`.
+
+    Con `disagreed: bool = True`, un cuerpo vacío -una petición a medias, un
+    reintento raro del navegador- apuntaría un desacuerdo que nadie declaró. Eso
+    no rompe nada hoy y estropea justo el número que esta tabla existe para dar:
+    cuántas veces se discrepó.
+    """
+    prev = _una_previsualizacion(cliente)
+    ruta = f"/api/preview/{prev['preview_id']}/desacuerdo"
+
+    assert cliente.post(ruta, json={}).status_code == 422
+    assert cliente.post(ruta, json={"reason": "sin decir que no"}).status_code == 422
+    # Y nada que no sea del modelo: un `reasson` mal escrito tiene que cantar,
+    # no guardarse un desacuerdo mudo.
+    assert cliente.post(
+        ruta, json={"disagreed": True, "reasson": "ups"}
+    ).status_code == 422
+
+
+def test_se_puede_retirar_el_desacuerdo(cliente, db):
+    """`disagreed: false` vuelve a dejarlo sin marcar, motivo incluido.
+
+    Hace falta porque el botón se puede pulsar sin querer, y un desacuerdo
+    declarado por error que no se pueda quitar es ruido permanente en la única
+    medida que no se puede reconstruir después.
+    """
+    from app.models import Preview as PreviewRow
+
+    prev = _una_previsualizacion(cliente)
+    ruta = f"/api/preview/{prev['preview_id']}/desacuerdo"
+
+    cliente.post(ruta, json={"disagreed": True, "reason": "me he colado"})
+    d = cliente.post(ruta, json={"disagreed": False}).json()
+
+    assert d["disagreed"] is False
+    assert d["disagreement_reason"] is None, (
+        "se ha quitado el desacuerdo y el motivo se ha quedado colgando"
+    )
+    fila = db.get(PreviewRow, prev["preview_id"])
+    db.refresh(fila)
+    assert fila.disagreed is False
+    assert fila.disagreement_reason is None
+
+
+def test_discrepar_de_una_fila_que_no_existe_da_404_y_lo_dice(cliente):
+    """Y con el desglose puesto, que es lo que la pantalla del error va a pintar.
+
+    Sin él, el 404 saldría en la tarjeta con los cinco hechos en «no se sabe»
+    detrás de un botón que no toca nada.
+    """
+    r = cliente.post("/api/preview/9999/desacuerdo", json={"disagreed": True})
+
+    assert r.status_code == 404
+    detalle = r.json()["detail"]
+    assert "9999" in detalle["error"]
+    assert detalle["ejecutado"] is False
+    assert detalle["checkin_guardado"] is False
+    assert detalle["hevy"] == "sin tocar"
+
+
+def test_el_desacuerdo_no_toca_las_respuestas_de_la_previsualizacion(cliente, db):
+    """«Sin tocar respuestas», literal del encargo.
+
+    Si discrepar cambiara alguna, la fila dejaría de servir para la medida que
+    importa: en qué umbral se concentra el desacuerdo.
+
+    Se recorren TODAS las columnas y se exceptúan las dos del juicio, en vez de
+    nombrar las que no deben cambiar. Es la diferencia entre un test que mira lo
+    que se le dijo que mirara y uno que se entera de una columna nueva: esta
+    tabla va a crecer -las medidas de calibración todavía no están escritas- y
+    una lista a mano se quedaría corta sin que nada lo dijera.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.models import Preview as PreviewRow
+
+    JUICIO = {"disagreed", "disagreement_reason"}
+
+    prev = _una_previsualizacion(cliente)
+    fila = db.get(PreviewRow, prev["preview_id"])
+    columnas = [c.key for c in sa_inspect(PreviewRow).mapper.column_attrs]
+    assert JUICIO < set(columnas), "las columnas del juicio han cambiado de nombre"
+    antes = {c: getattr(fila, c) for c in columnas if c not in JUICIO}
+
+    cliente.post(
+        f"/api/preview/{prev['preview_id']}/desacuerdo",
+        json={"disagreed": True, "reason": "hoy me encuentro bien"},
+    )
+
+    db.refresh(fila)
+    despues = {c: getattr(fila, c) for c in columnas if c not in JUICIO}
+    assert despues == antes, (
+        f"declarar el desacuerdo ha tocado "
+        f"{ {c for c in antes if antes[c] != despues[c]} }"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Cuando la decisión falla
 # ---------------------------------------------------------------------------
 

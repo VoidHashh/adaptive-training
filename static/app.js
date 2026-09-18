@@ -67,6 +67,17 @@
 const API = {
   hoy: "/api/checkin/today",
   enviar: "/api/checkin",
+  // Mirar qué saldría, sin que salga. También POST, y aquí el motivo es otro
+  // que el de los tres de abajo: no tiene efecto en el mundo, pero sí escribe
+  // una fila -la previsualización queda apuntada, que es la mitad de para qué
+  // está- y las respuestas viajan en el cuerpo. Un GET las pondría en la URL.
+  previsualizar: "/api/preview",
+  // El desacuerdo va contra UNA previsualización concreta, la que está en
+  // pantalla, y por eso la ruta lleva su `id`. No es cosmética: previsualizar
+  // otra vez vuelve a leer Garmin y a pasar por el motor, así que la fila nueva
+  // puede traer otra decisión. El juicio tiene que pegarse a la tarjeta que se
+  // miró, no a la siguiente que salga.
+  desacuerdo: (id) => `/api/preview/${id}/desacuerdo`,
   salud: "/api/health",
   // Son POST, no GET, aunque "probar" suene a consulta: mandar un Telegram
   // tiene efecto en el mundo, y las cosas con efecto no se ponen detrás de un
@@ -103,6 +114,11 @@ const estado = {
   comentarios: "",
   etiquetaComentarios: "Comentarios",
   enviando: false,
+  // Aparte de `enviando` y no un solo `ocupado`: son dos cosas que hay que
+  // poder distinguir. Mientras se previsualiza, enviar sigue prohibido por el
+  // mismo motivo -una petición a la vez-, pero la frase del botón y lo que pasa
+  // al terminar no se parecen en nada.
+  previsualizando: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -551,7 +567,19 @@ function revisar() {
   } else {
     p.hidden = true;
   }
-  $("enviar").disabled = faltan.length > 0 || estado.enviando;
+  $("enviar").disabled =
+    faltan.length > 0 || estado.enviando || estado.previsualizando;
+
+  // Y el de previsualizar NO mira `faltan`, que es toda la diferencia entre los
+  // dos y está razonada entera en `index.html`: previsualizar con una respuesta
+  // sin contestar es una pregunta legítima -el motor sabe seguir sin ella y lo
+  // dice- y ésta es la única pantalla donde se puede hacer sin consecuencias.
+  //
+  // Lo único que lo apaga es que haya una petición en marcha. Se decide aquí, y
+  // no en `previsualizar()`, para que los dos botones tengan un solo sitio que
+  // diga cuándo están grises: repartido, el día que se añada un tercer estado
+  // uno de los dos se queda sin enterarse.
+  $("previsualizar").disabled = estado.enviando || estado.previsualizando;
 }
 
 /* El borrador se marca con el día QUE DIGA EL SERVIDOR, no con el del móvil.
@@ -577,7 +605,26 @@ function guardarBorrador() {
 
 async function enviar(ev) {
   ev.preventDefault();
-  if (estado.enviando) return;
+  if (estado.enviando || estado.previsualizando) return;
+
+  // LA TARJETA DE LA PREVISUALIZACIÓN SE RETIRA AQUÍ, y no es limpieza.
+  //
+  // Lo que dice esa tarjeta -«todavía no se ha escrito nada»- es una afirmación
+  // sobre un momento, no sobre el día, y deja de ser cierta exactamente al
+  // pulsar este botón. Dejándola puesta quedarían las dos a la vez en la misma
+  // pantalla: arriba la que jura que no se ha tocado nada y abajo la que cuenta
+  // que se ha escrito la rutina y salido el Telegram. Y la de arriba es la que
+  // se leyó hace diez segundos, así que es la que suena a verdad.
+  //
+  // Es el mismo fallo del 18 de septiembre con otra ropa: una frase que era
+  // cierta cuando se escribió y que nadie retiró cuando dejó de serlo.
+  //
+  // Se retira ANTES de saber cómo acaba el envío, y a propósito: si el POST
+  // falla, lo que se pintará abajo es que no se ha enviado -eso ya lo dice
+  // `resultadoMal` con todas las letras-, y volver a colgar la previsualización
+  // de antes no añadiría nada que no esté ahí. Lo que no puede pasar es que un
+  // envío a medias conviva con una tarjeta que promete que no ha pasado nada.
+  $("previsualizacion").hidden = true;
 
   estado.enviando = true;
   revisar();
@@ -737,6 +784,509 @@ function aviso(texto, clase) {
   p.className = `aviso ${clase}`;
   p.textContent = texto;
   $("formulario").prepend(p);
+}
+
+// ---------------------------------------------------------------------------
+// Previsualizar
+// ---------------------------------------------------------------------------
+/*
+ * PARA QUÉ ESTÁ ESTA PANTALLA
+ * ---------------------------
+ * Para calibrar. No para forzar el resultado que apetece: para pulsar el botón,
+ * ver qué contesta el sistema, y que con el tiempo lo que dice el sistema y lo
+ * que uno sabe de sí mismo acaben coincidiendo. Por eso cada previsualización
+ * se guarda con las respuestas que la generaron, por eso la segunda no tapa a
+ * la primera -la diferencia entre las dos es el dato- y por eso se puede
+ * apuntar «no estoy de acuerdo» sin tocar ninguna respuesta.
+ *
+ * LO PRIMERO QUE TIENE QUE DECIR LA TARJETA ES QUE NO HA PASADO NADA
+ * -----------------------------------------------------------------
+ * Fue la condición explícita del encargo: «que no me quede duda de si ya está
+ * hecho o no». Un botón que se pulsa justo encima del de enviar y que contesta
+ * con un semáforo, una sesión y unas cargas se parece muchísimo a un día ya
+ * decidido, y si la tarjeta no lo desmiente en la primera línea, el día que se
+ * pulse el que no era nadie se va a enterar hasta que no llegue el Telegram.
+ *
+ * Y NO SE DESMIENTE CON UNA FRASE FIJA. Eso es lo que había en `pintarResultado`
+ * hasta el 18 de septiembre de 2026 -una frase clavada diciendo que no se había
+ * tocado nada, encima de un día en que sí- y es la razón de que aquí se escriba
+ * lo que el servidor INFORMA, hecho por hecho, con «no se sabe» cuando no
+ * informa. La cabecera tranquilizadora solo sale si los cinco hechos dicen que
+ * no se ha tocado nada; en cuanto uno no lo dice, o no se sabe, sale la otra.
+ *
+ * NI UN NÚMERO SE CALCULA AQUÍ
+ * ----------------------------
+ * El semáforo, el motivo, el título de la sesión, los cambios de carga y la
+ * recomendación de bici llegan ya redactados por el motor, que es quien tiene
+ * el `config.yaml`, el histórico y los tests. Esta función elige dónde va cada
+ * frase y no escribe ninguna. Hasta `revision` viene resuelto del servidor
+ * -podría salir de `seq > 1`- para que la pantalla no tenga que saber que la
+ * numeración empieza en uno.
+ */
+
+/* Los cuatro hechos por los que uno se pregunta «¿ya está hecho?», con la
+ * palabra que les corresponde en cada estado.
+ *
+ * `si` y `no` escritos los dos, en vez de un `no` y dar por hecho el contrario:
+ * el caso que importa de verdad es el `si`, o sea la previsualización que SÍ ha
+ * guardado el check-in, que no debería poder pasar nunca y que es exactamente
+ * lo que hay que poder leer el día que pase. */
+const HECHOS_DEL_MIRAR = [
+  {
+    clave: "checkin_guardado",
+    que: "Tus respuestas de hoy",
+    no: "no se han guardado",
+    si: "SÍ se han guardado",
+  },
+  {
+    clave: "decision_guardada",
+    que: "La decisión del día",
+    no: "no se ha tomado",
+    si: "SÍ se ha tomado",
+  },
+];
+
+function hecho(h, valor) {
+  // El mismo criterio que `comoQuedo`, y por el mismo motivo: un hueco no se
+  // rellena con la opción optimista. `undefined` aquí es un servidor que no lo
+  // ha dicho, y no decirlo no es decir que no.
+  if (valor === false) return h.no;
+  if (valor === true) return h.si;
+  return "no se sabe";
+}
+
+/* Si un canal se ha quedado sin tocar, DECIDIDO POR LO QUE NO DICE.
+ *
+ * Las claves de `QUEDO_HEVY` y `QUEDO_TELEGRAM` son los estados de una
+ * EJECUCIÓN: escrita, revertida, en seco, fallada... Una previsualización no
+ * ejecuta, así que lo que manda -«sin tocar»- no es ninguna de ellas, y eso es
+ * lo que se comprueba.
+ *
+ * Escrito así y no comparando con la cadena «sin tocar» a propósito: esa cadena
+ * la elige el servidor, y repetirla aquí pondría la afirmación más importante
+ * de esta pantalla a depender de que dos ficheros escriban igual dos palabras,
+ * sin nada que lo comprobara. Preguntando por lo contrario, cualquier palabra
+ * nueva que el servidor invente para «no se tocó» sigue funcionando, y
+ * cualquier estado de ejecución de verdad enciende el aviso aunque sea uno que
+ * todavía no existe.
+ *
+ * `null` no cuenta como intacto, por lo de siempre: no se sabe no es una
+ * garantía, y ésta es la línea de la pantalla que menos puede permitirse
+ * afirmar de más. */
+function canalIntacto(tabla, valor) {
+  if (valor === null || valor === undefined) return false;
+  return tabla[valor] === undefined;
+}
+
+/* La cabecera: qué se ha tocado, según lo que informe la respuesta.
+ *
+ * La usan las DOS tarjetas -la buena y la del error-, y ése es medio motivo de
+ * que esté aparte. El otro es el 502 de Garmin: ahí no hay previsualización que
+ * enseñar, pero la pregunta «¿ha pasado algo?» sigue teniendo la misma
+ * respuesta y sigue haciendo la misma falta. El servidor manda el desglose en
+ * las tres salidas -la buena, el 409 y el 502- precisamente para esto.
+ */
+function cabeceraDeLoQueSeHaTocado(d) {
+  const hevy = comoQuedo(QUEDO_HEVY, d.hevy);
+  const tg = comoQuedo(QUEDO_TELEGRAM, d.telegram);
+
+  const intacto =
+    d.ejecutado === false &&
+    d.checkin_guardado === false &&
+    d.decision_guardada === false &&
+    canalIntacto(QUEDO_HEVY, d.hevy) &&
+    canalIntacto(QUEDO_TELEGRAM, d.telegram);
+
+  const filas = HECHOS_DEL_MIRAR.map(
+    (h) => `<dt>${escapar(h.que)}</dt><dd>${escapar(hecho(h, d[h.clave]))}</dd>`,
+  ).join("");
+
+  // LA QUINTA LÍNEA, que es la que impide que la cabecera sea una mentira
+  // pequeña. «No se ha escrito nada» no es exacto: la previsualización SÍ se
+  // apunta, y esa fila es la mitad de para qué existe el botón. Callarlo para
+  // que el mensaje quedara más redondo sería empezar esta pantalla haciendo
+  // justo lo que vino a arreglar.
+  const apuntada = d.previsualizacion_guardada === true
+    ? `sí, queda apuntada${d.seq ? ` (la nº ${escapar(d.seq)} de hoy)` : ""}`
+    : d.previsualizacion_guardada === false
+      ? "no se ha llegado a apuntar"
+      : "no se sabe";
+
+  return (
+    (intacto
+      ? `<h2>Todavía no se ha escrito nada</h2>
+         <p>Esto es solo una mirada: el sistema ha pensado el día con estas
+            respuestas y te lo enseña. Para que ocurra de verdad hay que darle
+            a <strong>Enviar</strong>.</p>`
+      : `<h2>Ojo: esto no ha sido solo mirar</h2>
+         <p>Algo de lo que esta pantalla da por no tocado no consta como tal.
+            Léelo antes de volver a enviar, no vaya a hacerse dos veces.</p>`) +
+    `<dl class="lo-tocado">
+       ${filas}
+       <dt>Hevy</dt><dd>${escapar(hevy)}</dd>
+       <dt>Telegram</dt><dd>${escapar(tg)}</dd>
+       <dt>Esta previsualización</dt><dd>${apuntada}</dd>
+     </dl>`
+  );
+}
+
+/* Las tres durezas, en castellano. Diccionario de palabra a frase, como
+ * `QUEDO_HEVY`: aquí no se decide nada, se traduce. Con el valor crudo de
+ * respaldo, que es peor de leer y mejor que un hueco: una dureza nueva en el
+ * motor saldría como `deload` y se entendería; sustituida por "" no se vería
+ * que falta. */
+const DUREZA = {
+  full: "sesión completa",
+  reduced: "sesión reducida",
+  recovery: "sesión de recuperación",
+};
+
+const NOMBRE_DE_LA_LUZ = { green: "Verde", amber: "Ámbar", red: "Rojo" };
+
+function bloqueLista(titulo, items) {
+  if (!items || !items.length) return "";
+  return (
+    `<h3>${escapar(titulo)}</h3>` +
+    `<ul>${items.map((x) => `<li>${escapar(x)}</li>`).join("")}</ul>`
+  );
+}
+
+/* Por qué ha salido este color.
+ *
+ * La regla que disparó viene en `trigger_rule` y su detalle en la entrada de
+ * `fired_rules` que se llama igual. Es una BÚSQUEDA POR NOMBRE, no una cuenta:
+ * las frases ya están escritas: aquí solo se emparejan. Es exactamente lo que
+ * hace el mensaje de Telegram con los mismos dos campos.
+ *
+ * `for...of` y no `.find()`, por lo mismo que en `fijar`: aquí llega un array
+ * de JSON de verdad, pero la costumbre de no depender de los métodos cómodos es
+ * la que evitó el `NodeList.some` que sí habría reventado en el móvil.
+ */
+function porQue(d) {
+  const dec = d.decision || {};
+  const lineas = [];
+
+  if (d.trigger_rule) {
+    let disparo = null;
+    for (const r of dec.fired_rules || []) {
+      if (r.name === d.trigger_rule) disparo = r;
+    }
+    const det = disparo && disparo.detail && disparo.detail.length
+      ? `: ${disparo.detail.join("; ")}`
+      : "";
+    lineas.push(`${d.trigger_rule}${det}`);
+  } else {
+    lineas.push("Ninguna regla ha saltado hoy");
+  }
+
+  // Las demás reglas que saltaron. El mensaje de la mañana solo nombra la que
+  // decidió el color, y ahí está bien -es un mensaje, no un informe-; aquí se
+  // está calibrando, y «han saltado tres» frente a «ha saltado una por los
+  // pelos» son dos días que no se parecen en nada aunque salgan del mismo color.
+  for (const r of dec.fired_rules || []) {
+    if (r.name === d.trigger_rule) continue;
+    const det = r.detail && r.detail.length ? `: ${r.detail.join("; ")}` : "";
+    lineas.push(`${r.name}${det}`);
+  }
+
+  for (const n of dec.notes || []) lineas.push(n);
+
+  return lineas;
+}
+
+/* Las reglas que NO se pudieron mirar por falta de datos.
+ *
+ * Es lo que contesta «¿y si hoy no contesto esto?», que es media razón de que
+ * el botón de previsualizar no se ponga gris cuando falta una respuesta. Sin
+ * esta lista, un día con la mitad del formulario en blanco sale verde y parece
+ * un día bueno, cuando lo que pasa es que no se ha podido mirar.
+ *
+ * Plegada en un `<details>` porque la mayoría de los días está vacía o dice
+ * algo que ya se sabe, y desplegada taparía lo que sí se viene a ver. */
+function sinDatos(d) {
+  const dec = d.decision || {};
+  const cojas = [];
+  for (const r of dec.skipped_rules || []) {
+    if (r.missing && r.missing.length) {
+      cojas.push(`${r.name}: falta ${r.missing.join(", ")}`);
+    }
+  }
+  if (!cojas.length) return "";
+  return (
+    `<details class="sin-datos">` +
+    `<summary>No se han podido mirar ${escapar(cojas.length)} reglas</summary>` +
+    `<ul>${cojas.map((x) => `<li>${escapar(x)}</li>`).join("")}</ul>` +
+    `</details>`
+  );
+}
+
+/* La sesión que se escribiría, y todo lo que se le ha hecho por el camino.
+ *
+ * Tres listas distintas y no una, porque son tres cosas distintas y el usuario
+ * pidió los «cambios de carga» por su nombre: `progression.changes` es lo que
+ * SUBE hoy, `session.changes` es lo que se le ha recortado a la rutina base y
+ * `session.dropped` es lo que se ha caído del todo. Juntas en un montón se
+ * leerían como veinte modificaciones de la misma clase. */
+function bloqueSesion(d) {
+  const dec = d.decision || {};
+  const ses = dec.session || {};
+
+  const dureza = ses.kind ? (DUREZA[ses.kind] || ses.kind) : "no se sabe";
+
+  const sube = [];
+  for (const p of [dec.progression, dec.progression_hiit]) {
+    for (const c of (p && p.changes) || []) sube.push(c.text);
+  }
+
+  // La puerta cerrada se dice aunque no haya cambios, y sobre todo entonces:
+  // «hoy no sube nada» y «hoy no puede subir nada, y este es el motivo» son la
+  // misma pantalla en blanco con dos significados opuestos.
+  const puerta =
+    dec.progression && dec.progression.gate_open === false
+      ? `<p class="tenue">${escapar(dec.progression.gate_reason || "progresión cerrada")}</p>`
+      : "";
+
+  return (
+    `<h3>Lo que propondría</h3>` +
+    `<p class="sesion">${escapar(ses.title || "—")}</p>` +
+    `<p class="tenue">${escapar(dureza)}</p>` +
+    bloqueLista("Sube hoy", sube) +
+    puerta +
+    bloqueLista("Cambios sobre la rutina", ses.changes) +
+    bloqueLista("Hoy se quedan fuera", ses.dropped) +
+    bloqueLista("Apuntes de la sesión", ses.notes)
+  );
+}
+
+/* La bici. Sale entera del motor, incluidas las dos frases que explican de
+ * dónde viene el punto de partida: `baseline_en_claro` está escrita para leerse
+ * en el móvil y `baseline_why` para reconstruirlo después, y por eso aquí se
+ * pinta la primera. */
+function bloqueBici(d) {
+  const b = (d.decision || {}).bike;
+  if (!b) return "";
+
+  if (!b.applies) {
+    // `skip_visible` distingue «hoy aquí no se habla» de «hoy no he podido
+    // calcularlo». Lo segundo se dice; lo primero no ocupa sitio.
+    if (!b.skip_visible) return "";
+    return (
+      `<h3>Bici</h3>` +
+      `<p>${escapar(b.skip_reason || "hoy no hay recomendación")}</p>`
+    );
+  }
+
+  const rango =
+    b.duration_min !== null && b.duration_min !== undefined &&
+    b.duration_max !== null && b.duration_max !== undefined
+      ? ` (${escapar(b.duration_min)}–${escapar(b.duration_max)} min)`
+      : "";
+
+  const recortes = [];
+  for (const r of b.downgrades || []) recortes.push(r.why);
+
+  return (
+    `<h3>Bici</h3>` +
+    `<p class="sesion">Si sales hoy: ${escapar(b.label || b.level || "—")}${rango}</p>` +
+    (b.detail ? `<p>${escapar(b.detail)}</p>` : "") +
+    (b.baseline_en_claro ? `<p class="tenue">${escapar(b.baseline_en_claro)}</p>` : "") +
+    bloqueLista("Rebajada porque", recortes) +
+    bloqueLista("A tener en cuenta", b.notas)
+  );
+}
+
+/* «No estoy de acuerdo», en dos toques y no en uno.
+ *
+ * El primero abre el hueco del motivo; el segundo lo guarda. Podría ser uno
+ * solo -caja de texto y botón siempre a la vista- y sería menos código, pero
+ * dejaría una invitación permanente a discrepar encima de cada tarjeta. El
+ * encargo dice lo contrario con todas las letras: «el objetivo no es forzar el
+ * resultado que me apetece». Que haya que buscarlo es parte de que signifique
+ * algo.
+ *
+ * El motivo NO es obligatorio. Un desacuerdo sin explicación sigue sirviendo
+ * para las dos medidas que se cuentan -cuántas veces y en qué umbral- y
+ * exigirlo dejaría sin registrar justo los días con prisa, que no son una
+ * muestra al azar.
+ *
+ * `id` no lleva ninguno de estos elementos y no es descuido: `$()` busca por
+ * `id` en el HTML, y un `id` escrito dentro de una plantilla no está en
+ * `index.html`. Se buscan por clase desde la propia tarjeta, que además es lo
+ * único que garantiza que el botón que se escucha sea el de ESTA tarjeta y no
+ * el de una anterior que se quedó colgando.
+ */
+function pintarDesacuerdo(caja, previewId) {
+  const hueco = caja.querySelector(".desacuerdo");
+  if (!hueco) return;
+
+  hueco.innerHTML =
+    `<button type="button" class="abrir-desacuerdo">No estoy de acuerdo</button>`;
+
+  hueco.querySelector(".abrir-desacuerdo").addEventListener("click", () => {
+    hueco.innerHTML = `
+      <label class="motivo">
+        <span>¿Por qué? Una línea basta, y puede quedarse en blanco.</span>
+        <textarea class="texto-desacuerdo" rows="2"
+                  placeholder="Lo que tú sabes y el sistema no"></textarea>
+      </label>
+      <button type="button" class="guardar-desacuerdo">
+        Guardar el desacuerdo
+      </button>
+      <p class="nota">Esto no cambia lo que se propone ni envía nada. Queda
+         apuntado al lado de esta previsualización para poder mirarlo después.</p>`;
+
+    const boton = hueco.querySelector(".guardar-desacuerdo");
+    boton.addEventListener("click", async () => {
+      boton.disabled = true;
+      boton.textContent = "Guardando…";
+      const texto = hueco.querySelector(".texto-desacuerdo").value.trim();
+      try {
+        const r = await fetch(API.desacuerdo(previewId), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          // `disagreed` explícito y no dado por hecho por el servidor: el
+          // modelo no le pone defecto justamente para que un cuerpo vacío no
+          // apunte un desacuerdo que nadie declaró.
+          body: JSON.stringify({ disagreed: true, reason: texto || null }),
+        });
+        const datos = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(escapar(JSON.stringify(datos.detail || r.status)));
+        // Se pinta LO QUE HA QUEDADO GUARDADO, releído de la respuesta, no lo
+        // que se acaba de escribir en la caja. El servidor normaliza -un motivo
+        // de espacios se guarda como nada- y una confirmación que repitiera el
+        // cuerpo enseñaría un motivo apuntado que en la base no está.
+        hueco.innerHTML =
+          `<p class="aviso tenue">Queda apuntado que no estás de acuerdo` +
+          (datos.disagreement_reason
+            ? `: «${escapar(datos.disagreement_reason)}»`
+            : `, sin motivo escrito`) +
+          `. Lo que decide sigue siendo lo que envíes.</p>`;
+      } catch (e) {
+        // Que no se haya guardado se dice, y se deja el botón otra vez
+        // pulsable: un desacuerdo que se pierde no se nota hoy -la pantalla
+        // parecería haberlo recogido- y sale como un cero limpio dentro de seis
+        // meses, midiendo.
+        boton.disabled = false;
+        boton.textContent = "Guardar el desacuerdo";
+        const mal = document.createElement("p");
+        mal.className = "aviso mal";
+        mal.textContent =
+          `NO se ha guardado el desacuerdo (${e.message || e}). Inténtalo otra vez.`;
+        hueco.appendChild(mal);
+      }
+    });
+  });
+}
+
+function pintarPrevisualizacion(d) {
+  const caja = $("previsualizacion");
+  caja.hidden = false;
+  caja.className = `previsualizacion semaforo-${escapar(d.light)}`;
+
+  // `revision` viene del servidor resuelto, no de comparar `seq` con 1 aquí.
+  // Es el aviso de que ésta no es la primera mirada del día, y eso es justo lo
+  // que el encargo quiere poder ver: «no quiero que la segunda tape a la
+  // primera, la diferencia entre ambas es el dato».
+  const revision = d.revision === true
+    ? `<p class="aviso ojo">No es la primera vez que miras hoy. Las anteriores
+         siguen guardadas: la diferencia entre ellas es lo que se quiere
+         medir.</p>`
+    : "";
+
+  caja.innerHTML =
+    cabeceraDeLoQueSeHaTocado(d) +
+    revision +
+    `<h3><span class="punto"></span>` +
+    `${escapar(NOMBRE_DE_LA_LUZ[d.light] || d.light || "—")}</h3>` +
+    bloqueLista("Por qué", porQue(d)) +
+    sinDatos(d) +
+    bloqueSesion(d) +
+    bloqueBici(d) +
+    // El hueco del desacuerdo se pinta vacío aquí y lo rellena
+    // `pintarDesacuerdo`, que necesita colgarle oyentes. Y solo si hay
+    // `preview_id`: sin él no hay contra qué guardarlo, y un botón que no puede
+    // hacer su trabajo es peor que no tenerlo.
+    (d.preview_id ? `<div class="desacuerdo"></div>` : "");
+
+  if (d.preview_id) pintarDesacuerdo(caja, d.preview_id);
+}
+
+/* Cuando la previsualización no sale.
+ *
+ * Pinta la MISMA cabecera de qué se ha tocado que la tarjeta buena, y ése es el
+ * motivo de que el servidor mande el desglose también en el 409 y en el 502: un
+ * error es exactamente el momento en que uno se pregunta si ha pasado algo, y
+ * es el momento en que esta pantalla se callaba.
+ *
+ * El texto sale del `detail` en tres intentos y el último es el JSON crudo. Es
+ * feo a propósito: un `[object Object]` en el sitio del motivo es el fallo que
+ * `describirPendiente` ya se encontró una vez, y un aviso sin contenido manda a
+ * buscar a ciegas. */
+function previsualizacionMal(titulo, detalle) {
+  const caja = $("previsualizacion");
+  caja.hidden = false;
+  caja.className = "previsualizacion mal";
+
+  const objeto = detalle && typeof detalle === "object" ? detalle : {};
+  const texto = typeof detalle === "string"
+    ? detalle
+    : objeto.error || objeto.motivo || JSON.stringify(detalle);
+
+  caja.innerHTML =
+    cabeceraDeLoQueSeHaTocado(objeto) +
+    `<h3>${escapar(titulo)}</h3>` +
+    `<p>${escapar(texto)}</p>`;
+}
+
+async function previsualizar() {
+  if (estado.enviando || estado.previsualizando) return;
+
+  estado.previsualizando = true;
+  revisar();
+  $("previsualizar").textContent = "Mirando…";
+
+  // Sin `comments`, al revés que el envío. No es un olvido: `/api/preview` no
+  // guarda el comentario en ninguna parte -la fila apunta las respuestas, y el
+  // comentario no es una respuesta-, así que mandarlo sería un campo que viaja
+  // y se tira. La regla de esta casa es que no haya campos así.
+  //
+  // Tampoco `day`: lo mismo que hace `enviar()`. El día lo pone el reloj del
+  // servidor, y que las dos rutas lo resuelvan igual es lo único que garantiza
+  // que lo que se mira y lo que se manda sean del mismo día.
+  const cuerpo = { ...estado.valores };
+
+  try {
+    const r = await fetch(API.previsualizar, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cuerpo),
+    });
+    const datos = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      previsualizacionMal(
+        `No se ha podido previsualizar (${r.status})`,
+        datos.detail !== undefined ? datos.detail : datos,
+      );
+    } else {
+      pintarPrevisualizacion(datos);
+    }
+  } catch (err) {
+    // Sin servidor no hay nada que previsualizar, y aquí no hay borrador que
+    // salvar ni nada que pueda haberse quedado a medias: la petición no salió.
+    // Se dice así, y no como un fallo del sistema, porque llevan a mirar sitios
+    // distintos.
+    previsualizacionMal(
+      "No se ha podido preguntar",
+      `No se ha podido hablar con el servidor (${err.message || err}). ` +
+      `Esto no dice nada sobre cómo está hoy: dice que no se ha podido ` +
+      `preguntar.`,
+    );
+  } finally {
+    estado.previsualizando = false;
+    $("previsualizar").textContent = "Previsualizar otra vez";
+    revisar();
+    $("previsualizacion").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 }
 
 // `escapar` y `fechaLarga` estaban aquí duplicadas, letra por letra, con las de
@@ -1026,6 +1576,18 @@ document.querySelectorAll("[data-prueba]").forEach((b) => {
 
 $("formulario").addEventListener("submit", enviar);
 $("comentarios").addEventListener("input", guardarBorrador);
+
+// El de previsualizar se engancha aquí, al lado del envío y no dentro de
+// `arrancar()`, porque los dos botones están escritos en `index.html` y existen
+// desde el primer momento: no los pinta nadie, así que no hay que esperar a
+// ninguna respuesta para poder escucharlos.
+//
+// `() => previsualizar()` y no `previsualizar` a secas. La diferencia es que un
+// oyente recibe el evento como primer argumento, y `previsualizar()` no lo
+// espera hoy; pasárselo funciona por casualidad y deja una trampa puesta para el
+// día que la función crezca un parámetro -de esos que no revientan, sino que
+// reciben un objeto `Event` donde esperaban una opción-.
+$("previsualizar").addEventListener("click", () => previsualizar());
 
 // La barra de abajo, antes de pedir nada. No depende del servidor, así que se
 // pinta ya: si el formulario no carga, desde aquí todavía se puede ir a mirar

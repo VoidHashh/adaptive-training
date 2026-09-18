@@ -334,6 +334,34 @@ class PreviewIn(EnvioIn):
     disagreement_reason: str | None = None
 
 
+class DesacuerdoIn(BaseModel):
+    """El juicio sobre una previsualización que ya está en pantalla.
+
+    Modelo propio y no `PreviewIn` recortado: aquí no hay ni una sola respuesta
+    del formulario, y heredar de `CheckinIn` dejaría esta ruta aceptando una
+    fatiga que no iría a ninguna parte. Un campo aceptado que nadie lee es la
+    forma más barata de perder un dato sin enterarse.
+
+    `disagreed` NO tiene defecto a propósito, y es la única guarda de este
+    modelo. Con `= True` puesto, un cuerpo vacío por un error de la pantalla
+    apuntaría un desacuerdo que nadie declaró, y esa fila contaría en la medida
+    de «cuántas veces discrepo» exactamente igual que las de verdad. Sin
+    defecto, ese cuerpo se va en un 422 que se ve.
+
+    Los tres estados del modelo -`True`, `False`, `NULL`- siguen vivos en la
+    COLUMNA: el `NULL` es no haber pasado por aquí, y por eso no se puede pedir
+    desde aquí. «No dije nada» no es algo que se diga.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    disagreed: bool
+    # `reason` y no `disagreement_reason`: dentro de un cuerpo que solo habla de
+    # esto, el prefijo no distingue de nada. En `PreviewIn` sí hace falta,
+    # porque allí convive con siete deslizadores y dos preguntas.
+    reason: str | None = None
+
+
 def _respuestas(body: CheckinIn) -> dict[str, Any]:
     """Solo las respuestas del formulario, listas para el motor.
 
@@ -1081,6 +1109,62 @@ def post_preview(
         "light": pensado.decision.light,
         "trigger_rule": pensado.decision.trigger_rule,
         "decision": pensado.decision.to_dict(),
+    }
+
+
+@app.post("/api/preview/{preview_id}/desacuerdo")
+def post_desacuerdo(
+    preview_id: int,
+    body: DesacuerdoIn,
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Anota que lo que enseñó esta previsualización no se comparte, y por qué.
+
+    ES UNA RUTA APARTE PORQUE EL DESACUERDO LLEGA DESPUÉS
+    ----------------------------------------------------
+    `PreviewIn` ya acepta `disagreed`, y aun así la pantalla no puede usar esa
+    puerta: cuando se manda el POST que crea la previsualización todavía no se
+    ha visto nada, y de lo que no se ha visto no se discrepa. El desacuerdo se
+    declara mirando la tarjeta, o sea sobre una fila que ya existe, y por eso se
+    identifica con el `preview_id` que la respuesta de arriba devuelve.
+
+    Las dos puertas no son dos fuentes del mismo hecho: la de `PreviewIn` sirve
+    para reproducir de una sola vez una previsualización con su juicio -el CLI,
+    los tests, cualquier cliente que ya sepa las dos cosas-, y ésta es la del
+    usuario delante del móvil. Escriben la misma columna porque es el mismo
+    hecho; lo que cambia es en qué momento se sabe.
+
+    NO EJECUTA NADA, y lo dice con las mismas palabras que la previsualización.
+    Importa que lo diga aquí también: es un botón que se pulsa justo encima del
+    de enviar, y «he apuntado que no estoy de acuerdo» podría leerse como que el
+    sistema ha hecho algo al respecto. No lo ha hecho. Lo que decide sigue
+    decidiéndose en el formulario.
+    """
+    try:
+        fila = repo.marcar_desacuerdo(
+            s, preview_id, disagreed=body.disagreed, reason=body.reason
+        )
+    except ValueError as exc:
+        # 404 y no 400: lo que no existe es el recurso de la URL. Un 400 haría
+        # pensar que el cuerpo está mal y mandaría a mirar el sitio equivocado.
+        raise HTTPException(status_code=404, detail={
+            "error": str(exc),
+            **NADA_EJECUTADO,
+        }) from exc
+
+    return {
+        "day": fila.date.isoformat(),
+        "preview_id": fila.id,
+        "seq": fila.seq,
+        # Se devuelve lo que ha QUEDADO ESCRITO, releído de la fila, y no lo que
+        # venía en el cuerpo. Es la diferencia entre confirmar que se ha
+        # guardado y repetir lo que me acaban de decir: el motivo se normaliza
+        # al guardarlo -unos espacios en blanco quedan en `null`- y una pantalla
+        # que pintara el eco del cuerpo enseñaría un motivo apuntado que en la
+        # base no está.
+        "disagreed": fila.disagreed,
+        "disagreement_reason": fila.disagreement_reason,
+        **NADA_EJECUTADO,
     }
 
 

@@ -812,6 +812,62 @@ def enlazar_previews_pendientes(
     return n
 
 
+def marcar_desacuerdo(
+    session: Session,
+    preview_id: int,
+    *,
+    disagreed: bool,
+    reason: str | None = None,
+) -> PreviewRow:
+    """Anota si el usuario comparte lo que esta previsualización le enseñó.
+
+    POR QUÉ ES UNA ANOTACIÓN SOBRE UNA FILA Y NO UNA FILA NUEVA
+    ----------------------------------------------------------
+    Uno no discrepa de unas respuestas: discrepa de lo que el sistema ACABA DE
+    ENSEÑAR. Así que el desacuerdo tiene que pegarse a la tarjeta que estaba en
+    pantalla, y esa tarjeta es una fila que ya existe, con su `id`.
+
+    La alternativa -volver a previsualizar con `disagreed: true`- parecía más
+    simple y está mal por dos motivos distintos, y el segundo es el que decide:
+
+      - `seq` subiría, y `revision` se encendería, diciendo «cambiaste una
+        respuesta y volviste a mirar» sobre un día en que no se tocó ninguna.
+        La medida que esta tabla existe para dar -cuántas veces se discrepa-
+        saldría contando cada desacuerdo como una previsualización más.
+      - y sobre todo: previsualizar OTRA VEZ vuelve a leer Garmin y a pasar por
+        el motor, así que la fila nueva puede llevar una decisión distinta de la
+        que se estaba mirando. El desacuerdo quedaría pegado a una tarjeta que
+        el usuario no vio nunca, y eso no se nota al guardarlo: se nota dentro
+        de seis meses, midiendo contra la decisión equivocada.
+
+    SE PUEDE RECTIFICAR, Y AQUÍ SÍ SE SOBRESCRIBE
+    ---------------------------------------------
+    Es la única escritura de este módulo que pisa lo anterior, y conviene decir
+    por qué no contradice el append-only de la tabla. Lo append-only son las
+    PREVISUALIZACIONES: la segunda no tapa a la primera porque la diferencia
+    entre ambas es el dato. Esto es un juicio sobre una de ellas, y un juicio
+    corregido diez segundos después -una errata en el motivo, un «no» que era
+    «sí»- no tiene ningún valor histórico: tenerlo guardado haría que la cuenta
+    de desacuerdos incluyera versiones que el usuario ya retiró.
+    """
+    fila = session.get(PreviewRow, preview_id)
+    if fila is None:
+        # Mismo criterio que `enlazar_preview`: no se traga el fallo. Un
+        # desacuerdo que se pierde no se nota al guardarlo -la pantalla diría
+        # que quedó apuntado- y sale como un cero limpio en la medida de dentro
+        # de seis meses, que es el peor sitio donde puede salir.
+        raise ValueError(f"no hay previsualización con id={preview_id}")
+
+    fila.disagreed = disagreed
+    # `strip() or None` y no la cadena tal cual: un motivo de espacios en blanco
+    # es no haber dicho nada, y guardarlo como texto lo convertiría en un motivo
+    # vacío que hay que ir a leer para descubrir que no dice nada.
+    limpio = (reason or "").strip()
+    fila.disagreement_reason = limpio or None
+    session.flush()
+    return fila
+
+
 def current_decision(session: Session, day: date) -> DecisionRow | None:
     return session.scalars(
         select(DecisionRow).where(

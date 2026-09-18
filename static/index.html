@@ -102,12 +102,51 @@
 
     <p class="faltan" id="faltan" hidden></p>
 
+    <!--
+      Previsualizar: ver qué decidiría el sistema con estas respuestas SIN que
+      pase nada.
+
+      Va ENCIMA del de enviar y no debajo, y el orden es la mitad de lo que
+      hace. Leídos de arriba abajo son los dos pasos en el orden en que se dan
+      -mirar y luego mandar-; al revés, el que mira quedaría después del que ya
+      lo hizo todo, y eso lo convierte en el botón que se pulsa por error.
+
+      `type="button"` y no `submit`, que es la diferencia entera entre los dos.
+      Dentro de un `<form>`, un botón sin tipo ES un botón de envío: bastaría
+      olvidarlo para que «previsualizar» guardara el check-in, escribiera la
+      rutina en Hevy y mandara el Telegram. Es el fallo más caro que cabe en
+      este archivo y cabe en un atributo.
+
+      NO SE DESACTIVA CUANDO FALTAN RESPUESTAS, al revés que el de enviar. Es
+      deliberado: para eso está. El motor tiene camino para las señales que
+      faltan -las anota como saltadas y lo dice-, así que «¿qué pasa si hoy no
+      contesto el dolor lumbar?» es una pregunta legítima y esta es la única
+      pantalla donde se puede hacer sin consecuencias. Un botón gris hasta
+      rellenarlo todo dejaría esa pregunta sin forma de hacerse.
+    -->
+    <button type="button" id="previsualizar">Previsualizar</button>
+
     <button type="submit" id="enviar" disabled>Enviar</button>
   </form>
 
   <!-- Mientras carga y cuando no se puede cargar. Nunca un formulario en
        blanco haciéndose pasar por uno cargado. -->
   <p class="cargando" id="cargando">Cargando…</p>
+
+  <!--
+    La tarjeta de la previsualización, en su PROPIO hueco y no en `#resultado`.
+
+    Reutilizar el de abajo habría ahorrado este elemento y habría metido una
+    previsualización dentro de `pintarResultado`, que decide qué pinta mirando
+    si el día se decidió. Una respuesta de `/api/preview` no lleva esa clave, así
+    que caería en la rama del fallo y anunciaría «Guardado, pero sin decidir»
+    -dos mentiras seguidas- en la única pantalla que existe para quitar
+    exactamente esa duda.
+
+    Con dos huecos distintos eso no puede pasar por descuido: son dos funciones
+    que escriben en dos sitios, y ninguna de las dos sabe del otro.
+  -->
+  <section id="previsualizacion" hidden></section>
 
   <section id="resultado" hidden></section>
 

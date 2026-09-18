@@ -337,6 +337,31 @@ HUELLAS_DEL_ARMAZON = {
     # v8 otra vez, sólo que esta vez el hueco lo rellena una afirmación falsa en
     # lugar de un guion.
     "v16": "39c1f111438685821f039b32b0bbd8bb74124122c7553b6cdcf788f2dee0e927",
+    # v17: el botón de PREVISUALIZAR y su tarjeta. Toca `index.html` -el botón
+    # nuevo encima del de enviar- y `app.js` -la tarjeta entera, la cabecera de
+    # lo que no se ha tocado y los dos toques del desacuerdo-.
+    #
+    # El móvil viejo ENTERO falla como en la v10: el botón no está, y desde el
+    # teléfono eso es indistinguible de que el trabajo no se haya hecho todavía.
+    # Molesto, pero honrado: no se puede pulsar lo que no se ve.
+    #
+    # Lo que obliga a subir el número es el móvil A MEDIAS, y es el primer
+    # cambio de esta lista donde esa mezcla importa de verdad. El `fetch` del
+    # service worker va a la red primero y hace `cache.put` ARCHIVO A ARCHIVO,
+    # así que un teléfono que se traiga `/index.html` con cobertura y pierda la
+    # red antes de pedir `/app.js` se queda con el HTML nuevo y el JavaScript de
+    # antes. Sin subir la versión, ese `app.js` viejo sigue siendo el que hay en
+    # `armazon-v16` y `activate` no lo borra, porque el nombre no ha cambiado.
+    # Queda un botón PREVISUALIZAR pintado y sin oyente: no hace nada al
+    # pulsarlo. Ni error en la consola, ni petición, ni tarjeta.
+    #
+    # Y no es un modo de fallo hipotético: es el bug que tenía este mismo commit
+    # antes de escribirse los tests -`previsualizar()` estaba entera y nadie la
+    # había enganchado-. Aquí la red primero tampoco salva: el problema no es
+    # que llegue un dato bueno y se tire, como en la v8, sino que el botón que
+    # existe para prometer «esto todavía no ha escrito nada» incumple la otra
+    # mitad de la promesa, que era hacer algo.
+    "v17": "ab1a09f2ab556a81577ede60f26f72d571ceee251b5f97a97d6f75427937fa09",
 }
 
 
@@ -1404,7 +1429,13 @@ def test_no_hay_dos_copias_del_escape_de_html():
 
 
 def _rellenar(
-    tmp_path, hoy: dict, acciones: list[dict], borrador=None, respuesta=None
+    tmp_path,
+    hoy: dict,
+    acciones: list[dict],
+    borrador=None,
+    respuesta=None,
+    previsualizaciones=None,
+    desacuerdo=None,
 ) -> dict:
     """Abre el formulario contra un `/api/checkin/today` de mentira y lo rellena.
 
@@ -1427,6 +1458,10 @@ def _rellenar(
                 # Lo que contesta el POST. `None` deja el de siempre, que es un
                 # día decidido y salido bien.
                 "respuesta": respuesta,
+                # Y lo que contesta `/api/preview`, una entrada por llamada.
+                # `None` deja el defecto del arnés, que sube `seq` con cada una.
+                "previsualizaciones": previsualizaciones,
+                "desacuerdo": desacuerdo,
             },
             ensure_ascii=False,
         ),
@@ -2335,6 +2370,500 @@ def test_el_arnes_no_se_traga_un_selector_con_espacios(tmp_path):
         "`casa()` vuelve a tragarse un selector con descendientes y a devolver "
         "una lista vacía. Todo lo que se busque así contará cero para siempre"
     )
+
+
+# ---------------------------------------------------------------------------
+# Previsualizar: mirar qué decidiría el sistema SIN que pase nada
+# ---------------------------------------------------------------------------
+#
+# Lo que se compra con este botón es calibración: contestar, ver qué sale, y con
+# el tiempo que lo que dice el sistema y lo que uno sabe de sí mismo converjan.
+# Lo que se arriesga es la confusión más cara de la aplicación -creerse que el
+# día ya está mandado cuando solo se ha mirado, o al revés-, y por eso casi todo
+# lo que se comprueba aquí abajo es la CABECERA y no el semáforo.
+#
+# El semáforo lo calcula el motor y tiene sus propios tests. Lo que no tiene
+# tests en ninguna otra parte es que esta pantalla no mienta sobre lo que ha
+# pasado, y eso solo se puede mirar pulsando el botón.
+
+
+def _mirar(tmp_path, acciones=None, **kwargs) -> dict:
+    """Rellena lo mínimo para que el formulario esté completo y previsualiza."""
+    return _rellenar(
+        tmp_path,
+        _hoy(),
+        [
+            {"tipo": "deslizar", "key": "fatigue", "valor": 7},
+            {"tipo": "responder", "key": "wants_to_train", "respuesta": "no"},
+            {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+            {"tipo": "previsualizar"},
+        ]
+        + (acciones or []),
+        **kwargs,
+    )
+
+
+def test_previsualizar_no_puede_ser_un_boton_de_enviar():
+    """`type="button"`, y este test vale por todo lo demás de este bloque.
+
+    Dentro de un `<form>`, un botón SIN `type` es un botón de envío. Es el
+    defecto del HTML, no una rareza. O sea que olvidar el atributo convierte
+    «previsualizar» en «guardar el check-in, escribir la rutina en Hevy y mandar
+    el Telegram», y lo hace en silencio: el botón sigue diciendo Previsualizar.
+
+    Es el fallo más caro que cabe en `index.html` y cabe en una palabra. Se mira
+    leyendo el HTML y no con el arnés porque el arnés fabrica un `<div>` por cada
+    `id` y no conoce ni la etiqueta ni sus atributos.
+    """
+    html = (ESTATICOS / "index.html").read_text(encoding="utf-8")
+
+    m = re.search(r"<button([^>]*\bid=\"previsualizar\"[^>]*)>", html)
+    assert m, "no hay ningún <button id=\"previsualizar\"> en index.html"
+    assert 'type="button"' in m.group(1), (
+        "el botón de previsualizar no lleva `type=\"button\"`. Dentro de un "
+        "<form>, eso lo convierte en un botón de ENVÍO: previsualizar guardaría "
+        "el check-in, escribiría en Hevy y mandaría el Telegram"
+    )
+
+    # Y encima del de enviar: leídos de arriba abajo son los dos pasos en el
+    # orden en que se dan. Al revés, el que solo mira queda debajo del que ya lo
+    # hizo todo, que es la posición del botón que se pulsa por error.
+    assert html.index('id="previsualizar"') < html.index('id="enviar"')
+    assert html.index('id="previsualizacion"') < html.index('id="resultado"'), (
+        "la tarjeta de previsualizar tiene que tener su PROPIO hueco, separado "
+        "del de `pintarResultado`"
+    )
+
+
+def test_el_boton_esta_enganchado_a_algo(tmp_path):
+    """Que al pulsarlo pase algo. Parece tonto y no lo fue.
+
+    `previsualizar()` existió escrita entera -con su tarjeta, su cabecera y su
+    desacuerdo- y sin una sola línea que la enganchara al botón. En el móvil eso
+    es un botón que no hace absolutamente nada: sin error en consola, sin aviso,
+    sin nada. Y todos los tests de la tarjeta habrían pasado igual si el arnés
+    llamara a la función por dentro en vez de pulsar el botón.
+    """
+    salida = _mirar(tmp_path)
+
+    assert salida["veces_previsualizado"] == 1, (
+        "pulsar «Previsualizar» no ha llegado a preguntarle nada al servidor: "
+        "el botón no está enganchado a `previsualizar()`"
+    )
+
+
+def test_previsualizar_no_envia_el_checkin(tmp_path):
+    """La línea entera: mirar no es hacer.
+
+    Si esto se rompiera, cada previsualización guardaría un check-in. Y no daría
+    ningún error: el día quedaría decidido, la rutina escrita y el Telegram
+    enviado, con la pantalla enseñando una tarjeta que dice que no ha pasado
+    nada.
+    """
+    salida = _mirar(tmp_path)
+
+    assert salida["veces_enviado"] == 0, (
+        "previsualizar ha llamado a `/api/checkin`: eso guarda el check-in, "
+        "escribe en Hevy y manda el Telegram"
+    )
+    assert salida["resultado"] is None, (
+        "previsualizar ha pintado la tarjeta del ENVÍO, que es la que dice que "
+        "el día está decidido"
+    )
+
+
+def test_la_tarjeta_empieza_diciendo_que_no_se_ha_escrito_nada(tmp_path):
+    """La condición explícita del encargo: «que no me quede duda».
+
+    Y el desglose debajo, hecho por hecho, porque es lo que hace que la frase
+    valga algo: una cabecera tranquilizadora sin nada que la sostenga es
+    exactamente lo que había en `pintarResultado` el 18 de septiembre de 2026,
+    afirmando que no se había mandado ningún mensaje con el Telegram ya en el
+    móvil.
+    """
+    salida = _mirar(tmp_path)
+
+    tarjeta = salida["previsualizacion"]
+    assert tarjeta is not None, "no se ha pintado ninguna tarjeta"
+
+    texto = tarjeta["texto"]
+    assert "Todavía no se ha escrito nada" in texto
+    assert "Ojo" not in texto
+
+    # Los cinco hechos, uno por uno. La cabecera se calcula a partir de ellos,
+    # así que comprobar solo la cabecera dejaría sin mirar de dónde sale.
+    assert "no se han guardado" in texto, "falta el hecho de las respuestas"
+    assert "no se ha tomado" in texto, "falta el hecho de la decisión"
+    assert texto.count("sin tocar") == 2, "faltan Hevy y/o Telegram"
+    # Y la quinta, la que impide que la cabecera sea una mentira pequeña: la
+    # previsualización SÍ se apunta, y callarlo para que el mensaje quedara más
+    # redondo sería empezar esta pantalla haciendo lo que vino a arreglar.
+    assert "queda apuntada" in texto
+    assert "no se sabe" not in texto
+
+
+@pytest.mark.parametrize(
+    "toque",
+    [
+        {"checkin_guardado": True},
+        {"decision_guardada": True},
+        {"ejecutado": True},
+        {"hevy": "ok"},
+        {"telegram": "sent"},
+        # Y los que NO son una afirmación. `null` no es «no se tocó»: es que el
+        # servidor no lo ha dicho, y esta es la línea de la pantalla que menos
+        # puede permitirse afirmar de más.
+        {"hevy": None},
+        {"telegram": None},
+        {"checkin_guardado": None},
+    ],
+)
+def test_si_algo_no_consta_como_intacto_la_tarjeta_deja_de_tranquilizar(
+    tmp_path, toque
+):
+    """Cualquiera de los cinco hechos apaga la frase buena. Los cinco.
+
+    Escrito como parametrización y no como un test con cinco assertions porque
+    lo que puede fallar aquí es que UNO de los cinco se deje de mirar, y en un
+    solo test eso se ve como un fallo y no como cuál.
+    """
+    respuesta = {
+        "day": "2026-09-15",
+        "ejecutado": False,
+        "checkin_guardado": False,
+        "decision_guardada": False,
+        "hevy": "sin tocar",
+        "telegram": "sin tocar",
+        "previsualizacion_guardada": True,
+        "preview_id": 1,
+        "seq": 1,
+        "revision": False,
+        "light": "green",
+        "trigger_rule": None,
+        "decision": {"session": {"title": "Día 1", "kind": "full"}},
+    }
+    respuesta.update(toque)
+
+    salida = _mirar(
+        tmp_path, previsualizaciones=[{"status": 200, "respuesta": respuesta}]
+    )
+
+    texto = salida["previsualizacion"]["texto"]
+    assert "Ojo: esto no ha sido solo mirar" in texto, (
+        f"con {toque!r} la tarjeta sigue diciendo que no se ha escrito nada"
+    )
+    assert "Todavía no se ha escrito nada" not in texto
+
+
+def test_el_cuerpo_previsualizado_lleva_las_respuestas_y_nada_mas(tmp_path):
+    """Lo que viaja al mirar son las respuestas, sin comentario y sin día.
+
+    El comentario no viaja porque `/api/preview` no lo guarda en ninguna parte:
+    sería un campo que sale del móvil y se tira, y la regla de esta casa es que
+    no haya campos así. El día no viaja porque lo pone el reloj del servidor, y
+    que las dos rutas lo resuelvan igual es lo único que garantiza que lo que se
+    mira y lo que se manda sean del mismo día.
+    """
+    salida = _mirar(tmp_path)
+
+    cuerpo = salida["cuerpos_previsualizados"][0]
+    assert cuerpo["fatigue"] == 7
+    # El mismo `is False` que en el envío, y por el mismo motivo: `0 == False`
+    # en Python, así que un `== False` daría verde con el fallo puesto.
+    assert cuerpo["wants_to_train"] is False
+    assert cuerpo["will_train"] is True
+    assert "comments" not in cuerpo, (
+        "el comentario viaja al previsualizar y el servidor no lo guarda"
+    )
+    assert "day" not in cuerpo, "el día lo pone el reloj del servidor"
+
+
+def test_se_puede_mirar_con_respuestas_sin_contestar(tmp_path):
+    """El botón NO se pone gris cuando falta algo, al revés que el de enviar.
+
+    Es deliberado y es media razón de que el botón exista: «¿qué pasa si hoy no
+    contesto el dolor lumbar?» es una pregunta legítima -el motor tiene camino
+    para las señales que faltan, las anota como saltadas y lo dice- y ésta es la
+    única pantalla donde se puede hacer sin consecuencias. Gris hasta rellenarlo
+    todo, esa pregunta se queda sin forma de hacerse.
+    """
+    salida = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 7},
+        {"tipo": "previsualizar"},
+    ])
+
+    assert salida["previsualizar_deshabilitado"] is False, (
+        "el botón de previsualizar se ha puesto gris por faltar respuestas"
+    )
+    assert salida["enviar_deshabilitado"] is True, (
+        "el de ENVIAR sí tiene que estar gris: si los dos se comportan igual, "
+        "esta diferencia se ha perdido"
+    )
+    assert salida["veces_previsualizado"] == 1
+
+    # Y lo que contesta el motor cuando le faltan señales se ve, que es lo que
+    # da sentido a haber podido preguntar.
+    assert "No se han podido mirar" in salida["previsualizacion"]["texto"]
+    assert "dolor_lumbar: falta lower_back_pain" in salida["previsualizacion"]["texto"]
+
+
+def test_la_segunda_mirada_no_tapa_a_la_primera(tmp_path):
+    """«No quiero que la segunda tape a la primera: la diferencia es el dato».
+
+    La tabla es de añadir y el servidor manda `revision` ya resuelto. Lo que se
+    comprueba aquí es que la pantalla lo DICE: dos filas guardadas que en el
+    móvil se vean igual que una son dos filas que nadie va a ir a comparar.
+    """
+    salida = _mirar(tmp_path, acciones=[
+        {"tipo": "deslizar", "key": "fatigue", "valor": 2},
+        {"tipo": "previsualizar"},
+    ])
+
+    assert salida["veces_previsualizado"] == 2
+    cuerpos = salida["cuerpos_previsualizados"]
+    assert cuerpos[0]["fatigue"] == 7 and cuerpos[1]["fatigue"] == 2, (
+        "las dos miradas tienen que llevar las respuestas con las que se hizo "
+        "cada una: si no, la diferencia entre ellas no se puede medir"
+    )
+
+    texto = salida["previsualizacion"]["texto"]
+    assert "No es la primera vez que miras hoy" in texto
+    assert "la nº 2 de hoy" in texto, (
+        "la tarjeta no dice cuál de las de hoy es"
+    )
+
+
+def test_enviar_retira_la_tarjeta_de_mirar(tmp_path):
+    """La tarjeta afirma algo sobre un MOMENTO, y ese momento se acaba al enviar.
+
+    «Todavía no se ha escrito nada» deja de ser verdad exactamente cuando se
+    pulsa Enviar. Dejarla en pantalla al lado del resultado es el mismo fallo del
+    18 de septiembre con otra ropa: una frase que fue cierta cuando se escribió y
+    que nadie vuelve a mirar.
+    """
+    salida = _mirar(tmp_path, acciones=[{"tipo": "enviar"}])
+
+    assert salida["previsualizacion"] is None, (
+        "la tarjeta de «todavía no se ha escrito nada» sigue en pantalla "
+        "después de enviar"
+    )
+    assert salida["resultado"] is not None, "no se ha pintado el resultado"
+
+
+def test_el_desacuerdo_se_declara_en_dos_toques_y_viaja_con_su_id(tmp_path):
+    """Discrepar cuesta dos toques, y va contra la fila que se está mirando.
+
+    Los dos toques no son ceremonia: en uno solo, cada tarjeta llevaría una
+    invitación permanente a discrepar encima. El encargo dice lo contrario con
+    todas las letras -«el objetivo no es forzar el resultado que me apetece»- y
+    que haya que buscarlo es parte de que signifique algo.
+
+    Y el `preview_id` en la URL es lo que impide que el juicio se pegue a una
+    tarjeta que nadie vio: volver a previsualizar relee Garmin y vuelve a correr
+    el motor, así que la fila nueva puede traer OTRA decisión.
+    """
+    salida = _mirar(tmp_path, acciones=[
+        {"tipo": "abrir-desacuerdo"},
+        {"tipo": "motivo", "texto": "el lumbar está bien hoy"},
+        {"tipo": "guardar-desacuerdo"},
+    ])
+
+    assert salida["cuerpo_desacuerdo"] == {
+        "disagreed": True,
+        "reason": "el lumbar está bien hoy",
+    }
+    assert salida["url_desacuerdo"].endswith("/api/preview/1/desacuerdo"), (
+        f"el desacuerdo ha ido a {salida['url_desacuerdo']!r}"
+    )
+    # Y no ha enviado nada por el camino.
+    assert salida["veces_enviado"] == 0
+    assert salida["veces_previsualizado"] == 1, (
+        "guardar el desacuerdo ha vuelto a previsualizar: eso subiría `seq` y "
+        "marcaría una revisión que nadie hizo"
+    )
+
+
+def test_un_motivo_en_blanco_viaja_como_nada_y_se_dice(tmp_path):
+    """El motivo NO es obligatorio, y un motivo vacío no viaja como espacios.
+
+    Exigirlo dejaría sin registrar justo los días con prisa, que no son una
+    muestra al azar. Y un desacuerdo sin explicación sigue sirviendo para las dos
+    medidas que se cuentan: cuántas veces y en qué umbral.
+    """
+    salida = _mirar(
+        tmp_path,
+        acciones=[
+            {"tipo": "abrir-desacuerdo"},
+            {"tipo": "motivo", "texto": "   "},
+            {"tipo": "guardar-desacuerdo"},
+        ],
+    )
+
+    assert salida["cuerpo_desacuerdo"] == {"disagreed": True, "reason": None}, (
+        "un motivo en blanco tiene que viajar como `null` y no como espacios"
+    )
+    texto = salida["previsualizacion"]["texto"]
+    assert "Queda apuntado que no estás de acuerdo, sin motivo escrito" in texto
+    assert "Lo que decide sigue siendo lo que envíes" in texto
+
+
+def test_la_confirmacion_dice_lo_guardado_y_no_lo_tecleado(tmp_path):
+    """Se repinta desde la RESPUESTA, no desde la caja de texto.
+
+    Aquí el servidor contesta un motivo DISTINTO del que se escribió, que es la
+    única forma de distinguir las dos cosas: mientras coincidan, una pantalla que
+    repite lo tecleado y una que lee lo guardado se ven exactamente igual.
+
+    Y no es un supuesto de laboratorio. `marcar_desacuerdo` ya normaliza -un
+    motivo de solo espacios se guarda como nada-, y cualquier recorte o limpieza
+    que se le añada mañana entra por aquí. Una confirmación que repitiera el
+    cuerpo enseñaría un motivo apuntado que en la base de datos no está, y esa
+    diferencia no se descubre hasta que alguien va a leer la columna.
+    """
+    salida = _mirar(
+        tmp_path,
+        acciones=[
+            {"tipo": "abrir-desacuerdo"},
+            {"tipo": "motivo", "texto": "lo que tecleé"},
+            {"tipo": "guardar-desacuerdo"},
+        ],
+        desacuerdo={"respuesta": {
+            "day": "2026-09-15", "preview_id": 1, "seq": 1,
+            "disagreed": True,
+            "disagreement_reason": "lo que el servidor guardó",
+            "ejecutado": False, "checkin_guardado": False,
+            "decision_guardada": False,
+            "hevy": "sin tocar", "telegram": "sin tocar",
+        }},
+    )
+
+    assert salida["cuerpo_desacuerdo"]["reason"] == "lo que tecleé"
+    texto = salida["previsualizacion"]["texto"]
+    assert "«lo que el servidor guardó»" in texto, (
+        "la confirmación repite lo tecleado: enseñaría un motivo apuntado que "
+        "en la base de datos no está"
+    )
+    assert "lo que tecleé" not in texto
+
+
+def test_un_desacuerdo_que_no_se_guarda_lo_dice(tmp_path):
+    """Y deja el botón otra vez pulsable.
+
+    Un desacuerdo que se pierde no se nota hoy -la pantalla parecería haberlo
+    recogido- y sale como un cero limpio dentro de seis meses, midiendo cuántas
+    veces se discrepó. Es el peor tipo de fallo que puede tener esta pantalla:
+    silencioso y que solo estropea el dato que vino a recoger.
+    """
+    salida = _mirar(
+        tmp_path,
+        acciones=[
+            {"tipo": "abrir-desacuerdo"},
+            {"tipo": "motivo", "texto": "no lo veo"},
+            {"tipo": "guardar-desacuerdo"},
+        ],
+        desacuerdo={"status": 500, "respuesta": {"detail": "la base está caída"}},
+    )
+
+    texto = salida["previsualizacion"]["texto"]
+    assert "NO se ha guardado el desacuerdo" in texto
+    assert "Queda apuntado" not in texto, (
+        "la pantalla ha dicho que lo apuntó y no lo apuntó"
+    )
+    # El botón vuelve a estar disponible: si no, el desacuerdo se pierde para
+    # siempre por un corte de un segundo.
+    assert "Guardar el desacuerdo" in texto
+
+
+def test_sin_preview_id_no_se_ofrece_declarar_el_desacuerdo(tmp_path):
+    """Un botón que no puede hacer su trabajo es peor que no tener botón.
+
+    Sin `preview_id` no hay contra qué guardarlo. Pintarlo igual daría un botón
+    que al pulsarse manda un POST a `/api/preview/undefined/desacuerdo`.
+    """
+    salida = _mirar(tmp_path, previsualizaciones=[{"status": 200, "respuesta": {
+        "day": "2026-09-15",
+        "ejecutado": False, "checkin_guardado": False,
+        "decision_guardada": False,
+        "hevy": "sin tocar", "telegram": "sin tocar",
+        "previsualizacion_guardada": False,
+        "light": "green", "trigger_rule": None,
+        "decision": {"session": {"title": "Día 1", "kind": "full"}},
+    }}])
+
+    assert "abrir-desacuerdo" not in salida["previsualizacion"]["html"]
+    # Y que no se haya apuntado también se dice, en vez de callarlo.
+    assert "no se ha llegado a apuntar" in salida["previsualizacion"]["texto"]
+
+
+def test_una_mirada_que_falla_sigue_diciendo_lo_que_no_se_ha_tocado(tmp_path):
+    """El 502 de Garmin, que es cuando más falta hace la cabecera.
+
+    Un error es exactamente el momento en que uno se pregunta si ha pasado algo,
+    y es el momento en que esta clase de pantalla se calla. El servidor manda el
+    desglose en las tres salidas -la buena, el 409 y el 502- para esto.
+    """
+    salida = _mirar(tmp_path, previsualizaciones=[{"status": 502, "respuesta": {
+        "detail": {
+            "error": "no se ha podido leer Garmin, así que no hay nada que "
+                     "previsualizar: 429 Too Many Requests",
+            "ejecutado": False, "checkin_guardado": False,
+            "decision_guardada": False,
+            "hevy": "sin tocar", "telegram": "sin tocar",
+        },
+    }}])
+
+    tarjeta = salida["previsualizacion"]
+    assert tarjeta is not None, "un 502 no ha pintado nada: la pantalla se calla"
+    assert "mal" in tarjeta["clase"]
+
+    texto = tarjeta["texto"]
+    assert "No se ha podido previsualizar (502)" in texto
+    assert "429 Too Many Requests" in texto, (
+        "el motivo no se ve: sin él, esto manda a buscar a ciegas"
+    )
+    # Y lo que de verdad importa del error: que no ha pasado nada.
+    assert "Todavía no se ha escrito nada" in texto
+    # `previsualizacion_guardada` no viene en el 502 -no se llegó a apuntar
+    # nada-, y eso se dice como lo que es: no se sabe, no que sí.
+    assert "no se sabe" in texto
+
+
+def test_la_tarjeta_pinta_las_frases_del_motor_y_no_las_suyas(tmp_path):
+    """Ni un número se calcula aquí.
+
+    El semáforo, el motivo, la sesión, los cambios de carga y la bici llegan ya
+    redactados por quien tiene el `config.yaml`, el histórico y los tests. Esta
+    pantalla elige dónde va cada frase y no escribe ninguna: si empezara a
+    redactar, habría dos sitios donde se explica el mismo día y uno de los dos se
+    quedaría viejo sin que nada lo dijera.
+    """
+    salida = _mirar(tmp_path)
+    texto = salida["previsualizacion"]["texto"]
+
+    # El porqué del color: la regla que disparó CON su detalle, y las demás.
+    assert "fatiga_alta: fatigue 7 ≥ 6" in texto
+    assert "sueño_corto: sleep 5.1 h < 6 h" in texto
+    assert "Ayer fue día de pierna" in texto
+
+    # La sesión, su dureza en castellano y los recortes, en tres listas.
+    assert "Día 3 · Pierna" in texto
+    assert "sesión reducida" in texto
+    assert "Sentadilla: 4×5 → 3×5" in texto
+    assert "Peso muerto rumano" in texto
+
+    # La puerta cerrada se dice aunque no suba nada, y sobre todo entonces:
+    # «hoy no sube nada» y «hoy no PUEDE subir nada, y este es el motivo» son la
+    # misma pantalla en blanco con dos significados opuestos.
+    assert "La progresión está cerrada mientras el día no sea verde" in texto
+
+    # La bici entera, incluido de dónde sale el punto de partida.
+    assert "Rodaje suave" in texto and "40–55 min" in texto
+    assert "Punto de partida: 50 min, de tus 4 últimas salidas" in texto
+    assert "Día ámbar: se recorta un escalón" in texto
+
+    # Y el color, con su nombre y no con su clave.
+    assert "Ámbar" in texto
+    assert "semaforo-amber" in salida["previsualizacion"]["clase"]
 
 
 def test_el_html_tiene_donde_pintar_el_selector():
