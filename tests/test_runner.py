@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.engine.decision import ActiveRule, EngineState, apply_execution
@@ -2940,3 +2940,103 @@ def test_en_ensayo_no_se_deshace_nada_pero_se_dice(db, cfg):
     assert hevy.reversiones == []
     assert "Se habría deshecho" in res.hevy_reason
     assert "Día 1" in res.hevy_reason
+
+
+# ---------------------------------------------------------------------------
+# Pensar el día sin ejecutarlo
+# ---------------------------------------------------------------------------
+#
+# La mitad de arriba de `run_daily` no escribe nada: lee el check-in, fusiona el
+# wellness, construye las señales y llama al motor. La de abajo guarda, escribe
+# en Hevy y manda el Telegram. Esa frontera existía ya -se trazó para que una
+# excepción pudiera decir hasta dónde había llegado la mañana- pero no tenía
+# nombre propio ni forma de llamarse sola.
+#
+# Ahora sí, porque la previsualización la necesita: enseñar qué decidiría el
+# sistema con unas respuestas que todavía no se han enviado. Y lo que hay que
+# atar no es que devuelva la decisión -eso se vería enseguida- sino que NO
+# ESCRIBA, que es lo que no se ve.
+
+
+def test_pensar_el_dia_no_deja_ni_una_fila(db, cfg):
+    """Lo que hace útil a la previsualización es exactamente lo que no hace.
+
+    Si esto se rompe, el fallo es silencioso y de la peor clase: la pantalla
+    dice «esto es lo que pasaría» y por debajo ya ha pasado.
+    """
+    from app.models import Checkin, DailyMetrics, RuleState
+    from app.runner import pensar_el_dia
+
+    antes = {
+        t: db.scalar(select(func.count()).select_from(t))
+        for t in (Decision, Checkin, Notification, HevyWrite, DailyMetrics, RuleState)
+    }
+
+    pensado = pensar_el_dia(db, cfg, LUNES, metrics=metricas(), rides=[])
+    db.flush()
+
+    assert pensado.decision is not None
+    assert pensado.decision.light in {"green", "amber", "red"}
+    assert pensado.decision.session is not None
+
+    despues = {
+        t: db.scalar(select(func.count()).select_from(t))
+        for t in (Decision, Checkin, Notification, HevyWrite, DailyMetrics, RuleState)
+    }
+    assert despues == antes, (
+        f"pensar el día ha escrito en la base: {antes} -> {despues}. Una "
+        f"previsualización que guarda no es una previsualización"
+    )
+
+
+def test_pensar_el_dia_con_respuestas_que_no_estan_guardadas(db, cfg):
+    """El dato de la previsualización viene del formulario, no de la base.
+
+    Es lo que separa esta función de `run_daily`: allí el check-in se lee con
+    `repo.get_checkin` porque ya está enviado, y aquí todavía no lo está. Sin
+    esto, previsualizar enseñaría la decisión de las respuestas de la última
+    vez, que es justo la pregunta que no se está haciendo.
+    """
+    from app.runner import pensar_el_dia
+
+    tranquilo = pensar_el_dia(
+        db, cfg, LUNES, metrics=metricas(), rides=[],
+        respuestas=dict(CHECKIN_VERDE),
+    )
+    hecho_polvo = pensar_el_dia(
+        db, cfg, LUNES, metrics=metricas(), rides=[],
+        respuestas=dict(CHECKIN_ROJO),
+    )
+
+    assert tranquilo.decision.light != hecho_polvo.decision.light, (
+        "las mismas métricas con respuestas opuestas han dado el mismo "
+        "semáforo: las respuestas inyectadas no están llegando al motor"
+    )
+    # Y no se ha guardado ninguna de las dos, que es la otra mitad.
+    from app.models import Checkin
+
+    assert db.scalars(select(Checkin)).first() is None
+
+
+def test_pensar_el_dia_sin_respuestas_lee_las_que_haya_guardadas(db, cfg):
+    """`respuestas=None` no es `respuestas={}`, y la diferencia importa.
+
+    `None` es «no me han dado ninguna, mira en la base», que es lo que necesita
+    `run_daily` cuando el check-in ya está enviado. Un diccionario vacío es «hoy
+    no hay respuestas», que es la mañana sin check-in. Aplastar los dos casos
+    dejaría la previsualización leyendo el formulario de ayer.
+    """
+    from app.runner import pensar_el_dia
+
+    upsert_checkin(db, LUNES, dict(CHECKIN_ROJO), config=cfg)
+    db.flush()
+
+    leido = pensar_el_dia(db, cfg, LUNES, metrics=metricas(), rides=[])
+    vacio = pensar_el_dia(
+        db, cfg, LUNES, metrics=metricas(), rides=[], respuestas={}
+    )
+
+    assert leido.decision.light != vacio.decision.light, (
+        "con un check-in rojo guardado, leerlo y no leerlo tiene que dar "
+        "semáforos distintos"
+    )

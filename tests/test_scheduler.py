@@ -1191,3 +1191,199 @@ def test_sin_cache_la_decision_se_trae_el_historico_entero(monkeypatch, cfg):
     )
     mod._fetch_garmin(cfg, LUNES)
     assert visto["ride_days"] == cfg.raw["cycling"]["fetch"]["backfill_days"]
+
+
+# ---------------------------------------------------------------------------
+# La caché de previsualizar: para qué es, y sobre todo para qué NO
+# ---------------------------------------------------------------------------
+#
+# Previsualizar es mirar qué decidiría el sistema con lo que hay escrito en el
+# formulario, sin escribir en Hevy, sin Telegram y sin guardar decisión. Eso
+# invita a hacerlo varias veces seguidas -es justo lo que se pide: cambiar una
+# respuesta y volver a mirar-, y cada pasada era un `client.connect()` contra
+# Garmin. Garmin limita por IP y ya ha limitado a este usuario una vez.
+#
+# La caché es, por tanto, para previsualizar Y PARA NADA MÁS. Los tests de aquí
+# abajo pinchan las dos mitades de esa frase, y la segunda es la que importa.
+
+
+@pytest.fixture
+def sin_previsualizaciones(monkeypatch):
+    """Cada test arranca con la caché vacía y no se la deja al siguiente.
+
+    Se sustituye el diccionario entero en vez de vaciarlo porque `monkeypatch`
+    lo devuelve solo al terminar. Una caché con estado que sobreviviera entre
+    tests haría que el orden de ejecución decidiera el resultado, que es el
+    fallo más caro de diagnosticar que existe.
+    """
+    import app.scheduler as mod
+
+    monkeypatch.setattr(mod, "_previsualizaciones", {})
+    return mod
+
+
+def _garmin_contado(monkeypatch, mod):
+    """Sustituye la lectura real y devuelve la lista de días que se pidieron."""
+    llamadas: list = []
+
+    def falso(cfg_, day):
+        llamadas.append(day)
+        return [f"wellness de {day}"], [f"salidas de {day}"]
+
+    monkeypatch.setattr(mod, "_fetch_garmin", falso)
+    return llamadas
+
+
+def test_previsualizar_dos_veces_el_mismo_dia_es_un_solo_login(
+    monkeypatch, cfg, sin_previsualizaciones
+):
+    """Cinco previsualizaciones eran cinco logins, y de ahí salió el 429.
+
+    Calibrar es previsualizar, cambiar una respuesta y volver a previsualizar.
+    Lo que cambia entre una pasada y la siguiente es el formulario; el wellness
+    del día es el mismo -el reloj ya sincronizó o todavía no-, así que la
+    segunda lectura no aporta nada y sí gasta cupo.
+    """
+    mod = sin_previsualizaciones
+    llamadas = _garmin_contado(monkeypatch, mod)
+
+    primera = mod.garmin_para_previsualizar(cfg, LUNES, ahora=100.0)
+    segunda = mod.garmin_para_previsualizar(cfg, LUNES, ahora=120.0)
+
+    assert llamadas == [LUNES]
+    assert primera == segunda
+
+
+def test_pasado_el_plazo_la_previsualizacion_vuelve_a_preguntar(
+    monkeypatch, cfg, sin_previsualizaciones
+):
+    """El plazo no es una optimización más: es el compromiso entero.
+
+    Garmin corrige hacia atrás -el sueño de esta noche cambia cuando el reloj
+    termina de sincronizar-, así que una lectura guardada envejece de verdad.
+    El plazo dura lo que dura una tanda de calibración; pasada esa, se vuelve a
+    mirar aunque sea el mismo día.
+    """
+    mod = sin_previsualizaciones
+    llamadas = _garmin_contado(monkeypatch, mod)
+
+    mod.garmin_para_previsualizar(cfg, LUNES, ahora=100.0)
+    mod.garmin_para_previsualizar(
+        cfg, LUNES, ahora=100.0 + mod.TTL_PREVISUALIZAR_S + 1
+    )
+
+    assert llamadas == [LUNES, LUNES]
+
+
+def test_la_cache_de_previsualizar_no_sirve_un_dia_por_otro(
+    monkeypatch, cfg, sin_previsualizaciones
+):
+    """Servir el wellness de ayer como el de hoy es el mismo fallo que el
+    service worker tiene prohibido: una mentira que no se distingue de la
+    verdad, porque la pantalla sale igual de completa."""
+    mod = sin_previsualizaciones
+    llamadas = _garmin_contado(monkeypatch, mod)
+    martes = LUNES + timedelta(days=1)
+
+    lunes = mod.garmin_para_previsualizar(cfg, LUNES, ahora=100.0)
+    otro = mod.garmin_para_previsualizar(cfg, martes, ahora=101.0)
+
+    assert llamadas == [LUNES, martes]
+    assert lunes != otro
+    assert otro[0] == [f"wellness de {martes}"]
+
+
+def test_la_decision_de_verdad_no_se_sirve_de_la_cache_de_previsualizar(
+    monkeypatch, cfg, sin_previsualizaciones
+):
+    """LA GUARDA QUE IMPORTA, Y LA QUE ALGUIEN VA A QUERER QUITAR.
+
+    La caché vive por ENCIMA de `_fetch_garmin`, no dentro. Bajarla un nivel
+    parece la simplificación evidente -una sola caché para todos- y rompe dos
+    cosas a la vez, ninguna de las cuales se ve desde la pantalla:
+
+    - Previsualizar a las 06:50, antes de que el reloj sincronice, y enviar a
+      las 06:55, después, decidiría de verdad con la lectura de las 06:50. El
+      usuario habría visto un semáforo, aceptado, y el sistema habría escrito
+      la rutina con un sueño que ya no era el de hoy.
+    - Los trabajos de las 07:00, 09:00 y 09:40 existen precisamente para
+      recoger lo que Garmin corrige hacia atrás. Servirles una copia haría que
+      recalcular no recalculara nada, y el síntoma sería «sale lo mismo»,
+      que se parece demasiado a «no había nada que corregir».
+
+    Por eso se cuentan los `connect()` de verdad y no las llamadas a
+    `_fetch_garmin`: lo que no debe repetirse es el login, y lo que no debe
+    ahorrarse es el de la decisión.
+    """
+    mod = sin_previsualizaciones
+    conexiones = []
+
+    @doble_de(GarminClient)
+    class ClienteFalso:
+        def connect(self):
+            conexiones.append(1)
+
+        def window(self, day, days=7, ride_days=None):
+            return [], []
+
+    monkeypatch.setattr(
+        "app.integrations.activity_cache.load_cached_rides",
+        lambda p: cache_sana(LUNES),
+    )
+    monkeypatch.setattr(
+        "app.integrations.garmin.build_client", lambda s, c=None: ClienteFalso()
+    )
+
+    mod.garmin_para_previsualizar(cfg, LUNES, ahora=100.0)
+    assert len(conexiones) == 1
+
+    # La decisión de verdad, con la caché de previsualizar recién calentada.
+    mod._fetch_garmin(cfg, LUNES)
+    assert len(conexiones) == 2
+
+
+def test_un_garmin_que_revienta_no_se_queda_guardado(
+    monkeypatch, cfg, sin_previsualizaciones
+):
+    """Guardar el fallo daría diez minutos de pantalla rota sin poder hacer
+    nada. Y guardarlo como lectura vacía, que es la versión que sale sola si
+    uno no piensa en ello, sería peor: la previsualización decidiría sin datos
+    y lo enseñaría con la misma cara que una decisión con datos."""
+    mod = sin_previsualizaciones
+    llamadas: list = []
+
+    def revienta(cfg_, day):
+        llamadas.append(day)
+        raise RuntimeError("garmin dice que no")
+
+    monkeypatch.setattr(mod, "_fetch_garmin", revienta)
+
+    for momento in (100.0, 101.0):
+        with pytest.raises(RuntimeError):
+            mod.garmin_para_previsualizar(cfg, LUNES, ahora=momento)
+
+    assert llamadas == [LUNES, LUNES]
+    assert mod._previsualizaciones == {}
+
+
+def test_la_cache_de_previsualizar_no_crece_sin_freno(
+    monkeypatch, cfg, sin_previsualizaciones
+):
+    """Este proceso vive meses seguidos dentro del Umbrel sin reiniciarse.
+
+    Una entrada por día que no se borra nunca retiene el histórico de salidas
+    entero por cada día que el usuario previsualizó alguna vez, y ninguna de
+    esas entradas puede volver a servir a nadie: pasado el plazo están muertas
+    por definición. Se barren al entrar, que es el único momento en el que hay
+    alguien mirando.
+    """
+    mod = sin_previsualizaciones
+    _garmin_contado(monkeypatch, mod)
+
+    for i in range(30):
+        mod.garmin_para_previsualizar(
+            cfg, LUNES + timedelta(days=i),
+            ahora=100.0 + i * (mod.TTL_PREVISUALIZAR_S + 1),
+        )
+
+    assert len(mod._previsualizaciones) == 1

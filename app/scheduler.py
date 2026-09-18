@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -548,6 +549,83 @@ def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
     )
 
     return metrics, merge_rides(cache.rides if cache.available else [], rides)
+
+
+# ---------------------------------------------------------------------------
+# La caché de previsualizar, y por qué está AQUÍ ARRIBA y no dentro
+# ---------------------------------------------------------------------------
+#
+# Previsualizar es ver qué decidiría el sistema con lo que hay escrito en el
+# formulario, sin tocar Hevy, sin Telegram y sin guardar decisión. Sirve para
+# calibrar: mirar, cambiar una respuesta, volver a mirar. Es decir, invita a
+# repetirse, y cada pasada era un `client.connect()` contra Garmin. Garmin
+# limita por IP y ya limitó a este usuario una vez.
+#
+# LO QUE NO HACE, QUE ES LO QUE HAY QUE VIGILAR
+# ---------------------------------------------
+# Esta caché envuelve a `_fetch_garmin` desde fuera; no está dentro. Meterla
+# dentro es la simplificación que sale sola -una caché y no dos- y rompe dos
+# cosas que no se ven desde la pantalla:
+#
+#   - Previsualizar a las 06:50, antes de que el reloj sincronice, y enviar a
+#     las 06:55, después. La decisión de verdad reutilizaría la lectura de las
+#     06:50 y escribiría la rutina con un sueño que ya no era el de hoy. El
+#     usuario vio un semáforo, dijo que sí, y se ejecutó otro.
+#   - Los trabajos de las 07:00, 09:00 y 09:40 existen para recoger lo que
+#     Garmin corrige hacia atrás. Servirles una copia haría que recalcular no
+#     recalculara, y el síntoma -«sale lo mismo»- es indistinguible de «no
+#     había nada que corregir».
+#
+# Por eso `_fetch_garmin` sigue siendo la lectura cruda y sin memoria, y quien
+# quiera ahorrar logins tiene que pedirlo por su nombre.
+
+# Cuánto vale una lectura antes de volver a pedirla. Diez minutos es lo que
+# dura una tanda de calibración -mirar, cambiar dos respuestas, mirar otra vez-
+# y está por debajo de lo que tarda el reloj en cambiar de opinión sobre la
+# noche anterior.
+TTL_PREVISUALIZAR_S = 600
+
+# Clave: el día. No hace falta meter el config en la clave porque `get_config`
+# lo carga UNA vez por proceso (`api.py`), así que dentro de un mismo proceso
+# no cambia. Si algún día se recargara en caliente, esto habría que revisarlo.
+_previsualizaciones: dict[date, tuple[float, tuple[list, list]]] = {}
+
+
+def garmin_para_previsualizar(
+    cfg: Any, day: date, *, ahora: float | None = None
+) -> tuple[list, list]:
+    """Lo mismo que `_fetch_garmin`, pero sin repetir el login en diez minutos.
+
+    `ahora` se inyecta desde los tests. En producción no se pasa y manda
+    `time.monotonic()`, que es el que hay que usar aquí: `time.time()` salta
+    hacia atrás cuando el NTP del Umbrel corrige, y un salto hacia atrás deja
+    una entrada válida para siempre.
+
+    Un fallo NO se guarda. Si se guardara, diez minutos de pantalla rota sin
+    poder reintentar; y si se guardara como lectura vacía -la versión que sale
+    sola si uno no lo piensa- la previsualización decidiría sin datos con la
+    misma cara que una decisión con datos.
+    """
+    t = time.monotonic() if ahora is None else ahora
+
+    # Se barre al entrar. Este proceso vive meses seguidos en el Umbrel y una
+    # entrada por día que no se borra nunca retiene un histórico de salidas
+    # entero por cada día previsualizado. Pasado el plazo están muertas por
+    # definición, así que barrerlas aquí no pierde nada y no hace falta ningún
+    # trabajo aparte que se encargue.
+    for clave in [
+        k for k, (puesto, _) in _previsualizaciones.items()
+        if t - puesto > TTL_PREVISUALIZAR_S
+    ]:
+        del _previsualizaciones[clave]
+
+    guardado = _previsualizaciones.get(day)
+    if guardado is not None:
+        return guardado[1]
+
+    leido = _fetch_garmin(cfg, day)
+    _previsualizaciones[day] = (t, leido)
+    return leido
 
 
 # ---------------------------------------------------------------------------

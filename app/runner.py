@@ -248,8 +248,84 @@ def run_daily(
     Lo que sí se lee aquí es la MEMORIA: `metrics` es lo que Garmin acaba de
     contestar, y lo que ya se sabía está en la base. Ver abajo.
     """
-    checkin_row = repo.get_checkin(session, day)
-    valores = repo.checkin_values(checkin_row)
+    pensado = pensar_el_dia(
+        session, cfg, day,
+        metrics=metrics, rides=rides, source=source, anulacion=anulacion,
+    )
+    res = DailyResult(day=day, decision=pensado.decision)
+    # A PARTIR DE AQUÍ SE TOCAN COSAS DE FUERA, así que a partir de aquí una
+    # excepción tiene que llevarse consigo hasta dónde se llegó.
+    #
+    # Hevy y Telegram no entran en la transacción: el `rollback` de quien llame
+    # deshace la decisión y no deshace ni la rutina escrita ni el mensaje
+    # entregado. Dejar subir la excepción pelada obliga a la pantalla del fallo
+    # a adivinar, y adivinando dijo "no se ha enviado ningún mensaje" el día que
+    # el mensaje ya estaba en el móvil. Ver `DecisionInterrumpida`.
+    try:
+        return _ejecutar_el_dia(
+            session, cfg, day, pensado.decision, pensado.state, pensado.signals,
+            metrics, res,
+            hevy_client=hevy_client, telegram_client=telegram_client,
+            client_errors=client_errors, dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DecisionInterrumpida(exc, res) from exc
+
+
+@dataclass
+class DiaPensado:
+    """El día decidido y todavía sin ejecutar, con lo que hace falta para hacerlo.
+
+    Salen las tres piezas y no solo la decisión porque `_ejecutar_el_dia` las
+    necesita las tres: el estado para avanzarlo, las señales para archivar lo
+    que se leyó. Devolverlas aquí es lo que permite que la mitad de arriba se
+    llame sola.
+    """
+
+    decision: Any
+    state: Any
+    signals: Any
+
+
+def pensar_el_dia(
+    session: Session,
+    cfg: Any,
+    day: date,
+    *,
+    metrics: list,
+    rides: list,
+    source: str = "checkin",
+    anulacion: Any = None,
+    # Las respuestas del formulario cuando TODAVÍA NO ESTÁN GUARDADAS. Ver abajo.
+    respuestas: dict[str, Any] | None = None,
+) -> DiaPensado:
+    """La mitad que decide. No escribe nada, y eso es lo que la hace útil.
+
+    Lee -el check-in, el wellness guardado, el estado del motor, lo que se
+    entrenó- y llama a las reglas. Ni una escritura: la primera es el
+    `save_decision` de `_ejecutar_el_dia`, que es la mitad de abajo.
+
+    Esa frontera ya existía dentro de `run_daily`, trazada para que una
+    excepción pudiera decir hasta dónde había llegado la mañana. Lo que cambia
+    al sacarla aquí es que ahora se puede llamar SOLA, que es lo que necesita
+    la previsualización: enseñar qué decidiría el sistema sin decidirlo.
+
+    `RESPUESTAS` NO ES LO MISMO QUE EL CHECK-IN GUARDADO
+    ----------------------------------------------------
+    `run_daily` no lo pasa: cuando decide de verdad, el formulario ya está
+    enviado y lo suyo es leerlo de la base. La previsualización sí, porque su
+    pregunta es exactamente la contraria -«qué saldría con ESTO, que aún no he
+    mandado»- y leer la base contestaría con las respuestas de la última vez.
+
+    Y `None` no es `{}`. `None` significa «no me dan ninguna, mira en la base»;
+    `{}` significa «hoy no hay check-in», que es la mañana de las 07:00 antes de
+    que nadie conteste. Aplastar los dos casos en uno dejaría la previsualización
+    enseñando el formulario de ayer, que es el fallo que no se ve.
+    """
+    if respuestas is None:
+        valores = repo.checkin_values(repo.get_checkin(session, day))
+    else:
+        valores = dict(respuestas)
     checkin = Checkin(date=day, values=valores) if valores else None
 
     # `sessions` es lo que se entrenó DE VERDAD, leído de `workout_log`. Lo leen
@@ -383,23 +459,7 @@ def run_daily(
         orden, repo.sesiones_del_ciclo(session, orden, hasta=day)
     )
 
-    res = DailyResult(day=day, decision=decision)
-    # A PARTIR DE AQUÍ SE TOCAN COSAS DE FUERA, así que a partir de aquí una
-    # excepción tiene que llevarse consigo hasta dónde se llegó.
-    #
-    # Hevy y Telegram no entran en la transacción: el `rollback` de quien llame
-    # deshace la decisión y no deshace ni la rutina escrita ni el mensaje
-    # entregado. Dejar subir la excepción pelada obliga a la pantalla del fallo
-    # a adivinar, y adivinando dijo "no se ha enviado ningún mensaje" el día que
-    # el mensaje ya estaba en el móvil. Ver `DecisionInterrumpida`.
-    try:
-        return _ejecutar_el_dia(
-            session, cfg, day, decision, state, signals, metrics, res,
-            hevy_client=hevy_client, telegram_client=telegram_client,
-            client_errors=client_errors, dry_run=dry_run,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise DecisionInterrumpida(exc, res) from exc
+    return DiaPensado(decision=decision, state=state, signals=signals)
 
 
 def _ejecutar_el_dia(
