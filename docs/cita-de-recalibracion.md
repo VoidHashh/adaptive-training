@@ -1,0 +1,237 @@
+# Cita de recalibración
+
+Escrito el **18 de septiembre de 2026**, con el sistema ya decidiendo de verdad
+(`dry_run: false`, escritura en Hevy y Telegram activos) y a punto de dejarlo
+correr unas semanas sin tocarlo.
+
+Este documento existe para no depender de la memoria. Dice tres cosas: en qué
+estado quedó, qué hay que mirar y cuándo, y qué es normal aunque parezca roto.
+
+> Las fechas de las citas son **estimaciones con el ritmo de hoy** (un check-in
+> al día). Si se salta días, se retrasan; el número que manda no es la fecha,
+> es el recuento. Cada cita dice cómo comprobar el recuento de verdad en vez de
+> fiarse del calendario.
+
+---
+
+## 1. De dónde se parte
+
+Contado sobre la base del contenedor el 18 de septiembre de 2026:
+
+| Qué | Cuánto | Desde | Hasta |
+|---|---|---|---|
+| Check-ins | **3** | 2026-09-15 | 2026-09-18 |
+| Decisiones guardadas | 5 | 2026-09-14 | 2026-09-18 |
+| Mensajes escritos en Hevy | 5 | 2026-09-14 | 2026-09-18 |
+| Previsualizaciones | **1** | 2026-09-18 | 2026-09-18 |
+| Desacuerdos marcados | **0** | — | — |
+| Bienestar de Garmin | 188 días | 2026-03-15 | 2026-09-18 |
+| Salidas de bici | 59 | 2026-03-07 | 2026-09-12 |
+| Entrenos de fuerza (Hevy) | 16 | 2026-08-14 | 2026-09-16 |
+
+**El cuello de botella es el check-in, y con diferencia.** Garmin trae seis
+meses y Hevy cinco semanas; el check-in lleva cuatro días. Casi todo lo que
+está en blanco lo está por eso, y se desatasca solo contestando el formulario
+cada mañana. No hay nada que arreglar para que esas vistas empiecen a hablar.
+
+---
+
+## 2. Los umbrales, que son los que mandan
+
+No son opiniones repartidas por el código: son constantes con nombre, y la
+pantalla los cita cuando no llega.
+
+| Constante | Vale | Dónde | Qué desbloquea |
+|---|---|---|---|
+| `N_MINIMO_CALCULABLE` | 3 | `app/analysis/stats.py:56` | que una relación se pueda calcular |
+| `N_MINIMO_FIABLE` | 20 | `app/analysis/stats.py:61` | que además se pueda creer |
+| `N_MINIMO_EXPUESTOS` | 3 | `app/analysis/impacto.py:69` | comparar «con» contra «sin» (3 de cada) |
+| `MINIMO_JUICIOS` | 5 | `app/analysis/calibracion.py:83` | el veredicto de calibración |
+| `MINIMO_RECIENTES` | 4 | `app/analysis/portada.py:69` | la media de 7 días de la portada |
+| `MINIMO_REFERENCIA` | 20 | `app/analysis/portada.py:74` | la referencia contra la que se compara |
+| `MINIMO_SLIDERS` | 4 | `app/analysis/rendimiento.py:90` | que una sesión se pueda juzgar (4 de 6) |
+| `N_MINIMO_TRAMO` | 3 | `app/analysis/umbral.py:141` | la media de un tramo de carga |
+
+---
+
+## 3. Las citas
+
+### Cita 1 — hacia el **20 de septiembre** (2 check-ins más)
+
+Con tres días que tengan a la vez check-in y el otro dato, **Coincide** y
+**Retraso** dejan de decir «solo hay 2 días con las dos cosas medidas» y
+empiezan a dibujar. Serán números malos —tres puntos no son nada— y la propia
+pantalla lo dirá.
+
+- **Qué revisar:** que las vistas Coincide, Retraso y la portada pasen de «no
+  hay bastante» a un número. Si con 4-5 check-ins seguidos alguna sigue
+  diciendo que solo hay 2 días, **eso sí es un fallo**: significa que el
+  check-in se está guardando y no se está emparejando.
+- **Cómo:** abrir `http://192.168.8.201:8317/metricas.html#concordancia` y
+  `#desfase`.
+
+### Cita 2 — hacia el **28 de septiembre** (dos semanas de plan)
+
+Coincide con la revisión del plan de las semanas 49-50, que ya estaba puesta.
+
+- **Qué revisar:** la vista **Real** (auditoría). Hoy dice «no hay decisión
+  guardada para este día» en casi todos porque las decisiones empezaron el 14.
+  Para entonces habrá dos semanas seguidas y se podrá ver, por primera vez, qué
+  reglas han disparado y cuáles no.
+- **Ojo con una cosa:** la tabla `rule_states` está **a cero**. Mientras siga
+  así, la parte de la auditoría que cuenta la vida de cada regla no tendrá nada
+  que contar. Si el 28 sigue vacía con dos semanas de decisiones detrás, hay
+  que mirar por qué: es de las pocas cosas de esta lista que no se explica sola
+  por falta de días.
+- **Cómo:** `#auditoria`, y
+  `docker exec adaptive-training python -c "import sqlite3; print(sqlite3.connect('/app/data/app.db').execute('select count(*) from rule_states').fetchone())"`
+
+### Cita 3 — hacia el **8 de octubre** (20 check-ins)
+
+`N_MINIMO_FIABLE`. Es el primer día en que un número de estas pantallas se
+puede leer como algo más que un indicio.
+
+- **Qué revisar:** Coincide y Efecto (impacto) con veinte días. Aquí es donde
+  empieza a tener sentido preguntarse si algún deslizador no aporta nada y
+  sobra del formulario.
+- **Cómo:** `#concordancia`, `#impacto`, y la vista Umbral si ha habido bici.
+
+### Cita 4 — hacia el **10 de noviembre** (8 semanas desde el primer check-in)
+
+El plazo que el propio proyecto se puso antes de fiarse de una correlación
+—está escrito en `docs/analisis.md` y en el aviso de muestra insuficiente de la
+interfaz—. Ocho semanas desde el 15 de septiembre.
+
+- **Qué revisar:** todo lo que hasta entonces se haya leído como «indicio» pasa
+  a poder discutirse. Es la cita para decidir si alguna regla del `config.yaml`
+  se cambia.
+
+### Cita sin fecha — **calibración**
+
+No depende del calendario sino de cuántas veces se pulse **Previsualizar** y se
+marque si se está de acuerdo. Hoy: 1 previsualización, **0 opiniones**.
+
+Para el veredicto hacen falta **5 juicios**, y un juicio no es solo un
+desacuerdo: hace falta haber marcado el desacuerdo, **haber pedido otra
+sesión**, que se ejecutara la que se pidió, y que esa sesión se pudiera
+puntuar. Es deliberadamente exigente, y el motivo está en `docs/analisis.md`:
+el juez no es independiente, porque `comp_rpe` va dentro de `performance_pct`.
+
+- **Cómo ver cuánto falta:** `#calibracion` lo dice con todas las letras («van
+  N de los 5»).
+- **Lo que hace falta para que avance:** pulsar Previsualizar por la mañana
+  antes de enviar, y marcar «no estoy de acuerdo» cuando de verdad no se esté.
+  Sin eso esta vista no se mueve nunca, por muchos meses que pasen.
+
+---
+
+## 4. Qué es normal estas semanas aunque parezca roto
+
+- **Vistas en blanco diciendo «no hay bastante».** Es lo correcto y es la mitad
+  del diseño: la pantalla dice cuánto falta en vez de pintar un cero. «Solo hay
+  2 días con las dos cosas medidas; falta 1» no es un error, es el contador.
+- **Percepción sin contador.** Dice «todavía no hay ninguna sesión que se haya
+  podido juzgar». Las 16 sesiones de Hevy son anteriores al check-in, así que
+  tienen 0 de 6 deslizadores contestados y no llegan a `MINIMO_SLIDERS = 4`. Se
+  arregla solo según se vayan acumulando sesiones con su check-in delante.
+- **Reglas que no disparan.** Una regla que no dispara no está rota: está
+  diciendo que no se ha dado su condición. Lo que sí habría que mirar es una
+  que dispare TODOS los días.
+- **Ámbar por precaución.** El mensaje del 18 de septiembre decía «Ámbar por
+  precaución: no se han podido evaluar...». Con pocos datos es el
+  comportamiento previsto —ante la duda, no subir carga—, y con una hernia L4-L5
+  es la dirección correcta del error.
+- **La calibración parada en cero.** No avanza con el tiempo, solo con el uso
+  del botón.
+- **El botón de previsualizar tarda un arranque en aparecer.** Desde la v19 el
+  service worker sirve el armazón del caché de su versión: tras reconstruir, el
+  móvil instala la versión nueva en un arranque y la usa en el siguiente.
+
+---
+
+## 5. Qué NO es normal
+
+Estas son las señales de que algo va mal de verdad:
+
+| Señal | Qué significa |
+|---|---|
+| No llega el Telegram diario | El planificador no corrió, o falló el envío. Mirar `/api/health`. |
+| Llega un ⚠️ de trabajo fallido o no ejecutado | Lo manda el propio sistema. Dice qué trabajo y por qué. |
+| La pantalla de check-in avisa de escritura a medias | Una rutina de Hevy quedó escrita a medias. Ver §6. |
+| Con 5+ check-ins seguidos, Coincide sigue en «solo hay 2 días» | El check-in se guarda y no se empareja. |
+| `rule_states` sigue a 0 en la cita 2 | La auditoría de reglas no está registrando nada. |
+| `/api/health` con `in_sync: false` | El `config.yaml` del disco no es el que está decidiendo. |
+| `/api/health` con `pending_write` no nulo | Escritura de Hevy a medias. |
+
+Comprobación rápida de una sola línea:
+
+```bash
+curl -s http://192.168.8.201:8317/api/health | python -m json.tool
+```
+
+Hoy sale: `status: ok`, `secrets_missing: []`, `problemas: []`,
+`scheduler.running: true`, `clock.matches: true`, `config_file.in_sync: true`,
+`writes.pending_write: null`.
+
+---
+
+## 6. Comandos
+
+Todos contra el contenedor, que es donde están los datos de verdad (el `data/`
+del repositorio es una base de desarrollo vieja y **no** es la que corre).
+
+```bash
+docker exec adaptive-training python -m app.rutina estado
+```
+
+Escrituras de Hevy a medias y copias por rutina. Es lo primero que hay que
+mirar si la pantalla avisa de una escritura a medias. `revertir` deshace;
+`cerrar` retira la marca cuando Hevy ya coincide con la copia.
+
+```bash
+docker exec adaptive-training python -m app.cli --dry-run --date 2026-09-25
+```
+
+Decide un día y enseña el resultado **sin escribir en Hevy ni enviar Telegram**.
+Es la forma de preguntarle al motor «¿qué habrías hecho?» sin consecuencias.
+
+```bash
+docker exec adaptive-training python -m app.cli --dry-run --checkin lower=6,fatigue=8
+```
+
+Lo mismo con un check-in inventado: para probar si una regla dispara cuando
+debería, sin esperar a tener un mal día de verdad.
+
+```bash
+docker logs --since 24h adaptive-training | grep -iE "error|warning"
+```
+
+---
+
+## 7. Lo que quedó construido y esperando
+
+Nada de esto está a medias: está terminado y sin datos que enseñar.
+
+- **Las ocho vistas de métricas.** Todas calculan; casi todas dicen cuánto
+  falta.
+- **Calibración** (`/api/metrics/calibracion`). La única que depende de un
+  hábito y no del tiempo.
+- **Previsualizar**, con su tarjeta y su desacuerdo. Recién visible: hasta el
+  commit `518fb3e` el botón se pintaba sin una sola regla de CSS y medía
+  92 × 20 píxeles en gris sobre fondo oscuro.
+
+## 8. Lo que queda sin hacer, anotado
+
+- **El control de tipo de sesión en la tarjeta de previsualización** («pedir
+  completa / reducida / recuperación»). Es lo que haría alcanzable
+  `override_session_type` desde el móvil, y por tanto lo que permitiría que la
+  medida (b) de calibración acumulase casos juzgables. Sin esto, la cita de
+  calibración puede no llegar nunca: se puede marcar el desacuerdo, pero no
+  pedir otra sesión.
+- **`notifications` partida en dos.** Ver el aviso del cierre: las 5 filas
+  viejas están en `_vieja_notifications` y la tabla en uso arrancó vacía. No
+  rompe nada —nadie lee esa tabla, solo se escribe— pero el histórico de
+  mensajes está en dos sitios.
+- **Los tres READMEs y `docs/primer-dia.md`** no los ata ningún test, a
+  diferencia de `docs/analisis.md`. Decisión consciente: son documentación que
+  se lee a mano.
