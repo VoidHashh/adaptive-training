@@ -27,6 +27,14 @@ que ninguna se pueda quitar sin que algo se ponga rojo:
 Las tres primeras se comprueban al arrancar (`_validate`), la cuarta dentro del
 motor. Las dos capas se prueban por separado a propósito: son dos cerraduras, no
 una comprobada dos veces.
+
+Y hay una quinta sección que NO es una cerradura: es la puerta que se abre a
+propósito para que el usuario pueda pedir otra sesión de la que el semáforo
+propone. Está en este fichero, y no en uno suyo, justamente porque lo que hay
+que demostrar no es que funcione, sino que no es este mismo fallo otra vez con
+mejor nombre. La diferencia cabe en una frase: aquello subía la sesión sin que
+nadie lo pidiera y sin dejar rastro; esto exige que lo pida una persona, ese
+día, y lo apunta.
 """
 
 from __future__ import annotations
@@ -37,8 +45,16 @@ from datetime import date
 import pytest
 
 from app.config_loader import _validate
+from app.engine.progression import ExerciseProgression, ProgressionPlan
 from app.engine.rules import RuleError
-from app.engine.session_builder import RECOVERY, build_session, siguiente_en_rotacion
+from app.engine.session_builder import (
+    RECOVERY,
+    REDUCED,
+    ConfirmacionNecesaria,
+    SesionPedida,
+    build_session,
+    siguiente_en_rotacion,
+)
 
 
 def errores(data) -> str:
@@ -193,6 +209,270 @@ def test_el_dia_rojo_del_config_real_es_de_recuperacion(cfg):
     s = build_session(cfg, date(2026, 9, 14), "red", rotation_routine="dia_1")
     assert s.kind == RECOVERY
     assert s.exercises, "el día rojo llega sin un solo ejercicio"
+
+
+# ---------------------------------------------------------------------------
+# 5. La puerta que SÍ se abre, y con qué llave
+# ---------------------------------------------------------------------------
+#
+# Las cuatro cerraduras de arriba cierran el paso al YAML y a las erratas. Esta
+# sección es distinta: aquí se abre una puerta A PROPÓSITO, y hay que escribir
+# muy claro en qué se diferencia de un agujero.
+#
+# El usuario pidió poder anular la sesión propuesta -"si quiero la completa
+# donde el sistema propone reducida, que se escriba la mía, registrada como
+# anulación"- porque el objetivo del sistema es CALIBRAR: que sus respuestas y
+# las decisiones converjan. Un sistema al que no se le puede llevar la contraria
+# no se calibra, se obedece o se ignora, y lo segundo es lo que pasa de verdad.
+#
+# La diferencia con el fallo del `str(action.get("session", FULL))` es entera y
+# cabe en una frase: aquello subía la sesión SIN QUE NADIE LO PIDIERA y sin
+# dejar rastro. Esto exige que lo pida una persona, y lo apunta.
+#
+# Y la puerta tiene una llave de más para el caso peligroso. Subir de intensidad
+# un día ROJO -el día que el cuerpo ha dicho que pares, con una hernia L4-L5-
+# pide confirmación explícita, y queda marcado distinto en los datos. No para
+# impedirlo: para poder mirarlo después y ver si el que se equivocaba era el
+# umbral o era el usuario.
+
+
+def _reducida(cfg):
+    """Un config cuyo ámbar propone sesión reducida: el caso de la anulación."""
+    d = copy.deepcopy(cfg.raw)
+    d["actions"]["amber"]["session"] = "reduced"
+    return d
+
+
+# Una progresión que SÍ subiría algo, sobre un ejercicio que SÍ está en `dia_1`.
+#
+# Las dos condiciones importan. Con un plan sin cambios, o con una clave que no
+# existe en la rutina, `test_anular_la_sesion_no_toca_ni_el_semaforo_ni_la_
+# progresion` pasaría aunque alguien abriera la puerta de par en par: no habría
+# nada que aplicar y `changes` saldría vacío de todas formas.
+PROGRESION_CON_CAMBIOS = ProgressionPlan(
+    routine_key="dia_1",
+    gate_open=True,
+    gate_reason="abierta a propósito: quien cierra en rojo es allow_progression",
+    sets_allowed=True,
+    sets_reason="",
+    reps_allowed=True,
+    reps_reason="",
+    exercises=[
+        ExerciseProgression(
+            key="prensa_horizontal",
+            name="Prensa horizontal",
+            mode="load",
+            changed=True,
+            kind="load",
+            what="60 -> 62,5 kg",
+            why="dos sesiones limpias",
+            weight_delta_kg=2.5,
+        )
+    ],
+)
+
+
+def test_pedir_la_completa_donde_el_sistema_propone_reducida(cfg):
+    """El caso que el usuario dijo que más iba a querer anular.
+
+    Hoy elegir rutina ya se podía -`chosen_session`-, pero pedir la sesión
+    entera donde el sistema recortaba no: no había por dónde. La consecuencia
+    práctica era que el desacuerdo no se registraba en ningún sitio, porque la
+    única forma de tenerlo era no usar el sistema ese día.
+    """
+    s = build_session(
+        _reducida(cfg), date(2026, 9, 14), "amber",
+        rotation_routine="dia_1", sesion_pedida=SesionPedida("full"),
+    )
+    assert s.kind == "full"
+    assert s.anulacion is not None
+    assert s.anulacion.propuesta == "reduced"
+    assert s.anulacion.pedida == "full"
+    assert s.anulacion.forzada_en_rojo is False
+
+
+def test_en_rojo_subir_sin_confirmar_no_sube_Y_LO_DICE(cfg):
+    """Las dos mitades, y la segunda es la que importa.
+
+    Que no suba es la mitad fácil. La difícil es que se ENTERE: devolver la
+    sesión de recuperación calladamente sería darle al usuario lo contrario de
+    lo que pidió con cara de haberle hecho caso, y ese es exactamente el modo
+    de fallo que este fichero entero existe para prohibir. Por eso revienta con
+    su propia excepción en vez de ignorar la petición.
+    """
+    with pytest.raises(ConfirmacionNecesaria) as e:
+        build_session(
+            cfg, date(2026, 9, 14), "red",
+            rotation_routine="dia_1", sesion_pedida=SesionPedida("full"),
+        )
+    assert e.value.propuesta == RECOVERY
+    assert e.value.pedida == "full"
+
+
+def test_en_rojo_subir_confirmado_sube_y_queda_marcado_aparte(cfg):
+    """Se permite siempre. Lo que cambia es que se sabe."""
+    s = build_session(
+        cfg, date(2026, 9, 14), "red",
+        rotation_routine="dia_1",
+        sesion_pedida=SesionPedida("full", confirmada=True, motivo="me encuentro bien"),
+    )
+    assert s.kind == "full"
+    assert s.anulacion.forzada_en_rojo is True
+    assert s.anulacion.motivo == "me encuentro bien"
+
+
+def test_la_marca_de_forzada_no_se_pone_sola_por_venir_confirmada(cfg):
+    """La guarda del DATO, no la del entrenamiento.
+
+    Si `forzada_en_rojo` copiara el `confirmada` que llega, una pantalla que
+    mandara siempre `true` -porque es más cómodo que preguntar- marcaría como
+    forzadas todas las anulaciones. La medida que el usuario quiere sacar de
+    aquí -cuántas veces sube el día que no debía- se llenaría de días verdes y
+    no mediría nada. La marca es una propiedad del día, no del formulario.
+    """
+    s = build_session(
+        _reducida(cfg), date(2026, 9, 14), "amber",
+        rotation_routine="dia_1",
+        sesion_pedida=SesionPedida("full", confirmada=True),
+    )
+    assert s.anulacion.forzada_en_rojo is False
+
+
+def test_bajar_no_pide_confirmacion_ningun_dia(cfg):
+    """Pedir menos de lo que el sistema propone no necesita permiso.
+
+    Hacerlo simétrico sonaría a coherencia y sería un estorbo diario: la
+    confirmación existe por la hernia, no por el formalismo, y una que salta
+    también cuando uno se cuida enseña a darle a «sí» sin leerla. Ese es el
+    mecanismo exacto por el que las confirmaciones dejan de confirmar nada.
+
+    Y pide EJERCICIOS, no solo el `kind`. Este test se puso rojo por eso: el
+    bloque de recuperación se leía de `actions.<luz>.recovery_block`, que el
+    validador exige que exista si y solo si esa luz propone recuperación, o sea
+    que solo está bajo `red`. Un día verde pidiendo recuperación reventaba. Sin
+    mirar `exercises`, la versión que «arregla» eso devolviendo un bloque vacío
+    pasaría igual, y esa es precisamente la avería B-2 de este mismo fichero.
+    """
+    s = build_session(
+        cfg, date(2026, 9, 14), "green",
+        rotation_routine="dia_1", sesion_pedida=SesionPedida(RECOVERY),
+    )
+    assert s.kind == RECOVERY
+    assert s.anulacion.pedida == RECOVERY
+    assert s.anulacion.forzada_en_rojo is False
+    assert s.exercises, "la recuperación pedida llega sin un solo ejercicio"
+
+
+def test_la_recuperacion_pedida_es_LA_MISMA_que_la_del_dia_rojo(cfg):
+    """No una recuperación cualquiera: la que el sistema da cuando frena.
+
+    El config real tiene UN bloque, así que «coge el del rojo» y «coge el que
+    haya» dan hoy el mismo resultado y este test no distinguiría entre los dos.
+    Por eso mete un segundo bloque, y lo mete DELANTE: así la implementación
+    perezosa -el primero del diccionario- devuelve el que no es y se pone roja
+    hoy, en vez de el día lejano en que alguien añada un bloque de verdad.
+    """
+    d = copy.deepcopy(cfg.raw)
+    d["recovery_blocks"] = {
+        "otro_cualquiera": {
+            "title": "Otro bloque",
+            "exercises": [{"key": "paseo", "name": "Paseo", "sets": []}],
+        },
+        **d["recovery_blocks"],
+    }
+
+    pedida = build_session(
+        d, date(2026, 9, 14), "green",
+        rotation_routine="dia_1", sesion_pedida=SesionPedida(RECOVERY),
+    )
+    roja = build_session(d, date(2026, 9, 14), "red", rotation_routine="dia_1")
+    assert pedida.routine_key == roja.routine_key
+    assert pedida.exercises == roja.exercises
+
+
+def test_en_rojo_bajar_tampoco_se_marca_como_forzada(cfg):
+    """La marca es «ha subido en rojo», no «ha tocado algo en rojo».
+
+    Con el config real esto no puede pasar -en rojo se propone recuperación, y
+    por debajo no hay nada-, así que hace falta el config de las tres luces
+    iguales, que la monotonía admite y que tiene su propio test unas secciones
+    más arriba. Con `red: full`, bajar a reducida en rojo es una anulación
+    legítima y PRUDENTE. Si la marca mirase solo la luz, la contaría como una
+    imprudencia: la medida que el usuario quiere -cuántas veces sube el día que
+    no debía- saldría inflada justo por los días en que se cuidó.
+    """
+    d = copy.deepcopy(cfg.raw)
+    for luz in ("green", "amber", "red"):
+        d["actions"][luz]["session"] = "full"
+    # El validador prohíbe nombrar bloque en una luz que no propone
+    # recuperación, así que un config de tres completas no lo lleva.
+    d["actions"]["red"].pop("recovery_block", None)
+    assert "no puede ser más suelto" not in errores(d), "el config del test no es legal"
+
+    s = build_session(
+        d, date(2026, 9, 14), "red",
+        rotation_routine="dia_1", sesion_pedida=SesionPedida(REDUCED),
+    )
+    assert s.kind == REDUCED
+    assert s.anulacion.forzada_en_rojo is False
+
+
+def test_pedir_exactamente_lo_propuesto_no_es_una_anulacion(cfg):
+    """Estar de acuerdo no es llevar la contraria.
+
+    La pantalla manda el tipo de sesión en cada envío, coincida o no. Si eso
+    contara como anulación, el histórico diría que el usuario discrepa todos
+    los días y las tres medidas que pidió -cuántas veces, en qué dirección, si
+    se agrupan en un umbral- saldrían al 100% y no dirían nada.
+    """
+    s = build_session(
+        cfg, date(2026, 9, 14), "red",
+        rotation_routine="dia_1", sesion_pedida=SesionPedida(RECOVERY),
+    )
+    assert s.kind == RECOVERY
+    assert s.anulacion is None
+
+
+def test_una_sesion_pedida_que_no_existe_revienta(cfg):
+    """La misma cerradura que `actions.<luz>.session`, en la puerta nueva.
+
+    Sin esto, la ruta que el usuario controla desde el móvil sería la ÚNICA
+    que acepta un valor desconocido, justo la que no pasa por el validador del
+    arranque. `full_pero_suave` caería por descarte en la rama de siempre.
+    """
+    with pytest.raises(RuleError, match="full_pero_suave"):
+        build_session(
+            cfg, date(2026, 9, 14), "amber",
+            rotation_routine="dia_1",
+            sesion_pedida=SesionPedida("full_pero_suave"),
+        )
+
+
+def test_anular_la_sesion_no_toca_ni_el_semaforo_ni_la_progresion(cfg):
+    """Lo que la anulación NO anula, que es casi todo.
+
+    Cambia el tipo de sesión y nada más. La luz sigue roja, y como la puerta de
+    la progresión la abre `actions.<luz>.allow_progression` -que se lee por LUZ
+    y no por sesión-, sigue cerrada. Pedir la sesión entera es pedir hacer los
+    movimientos, no pedir además subir el peso el día que el cuerpo ha dicho
+    que pares: son dos cosas y solo se ha pedido una.
+
+    Está probado aquí, y no solo confiado a que el código lea `light`, porque
+    es exactamente el atajo que alguien tomaría al implementarlo -«si pide
+    completa, trátalo como un día bueno»- y el resultado sería progresión en
+    rojo sin que nadie lo hubiera pedido.
+    """
+    s = build_session(
+        cfg, date(2026, 9, 14), "red",
+        rotation_routine="dia_1",
+        sesion_pedida=SesionPedida("full", confirmada=True),
+        progression=PROGRESION_CON_CAMBIOS,
+    )
+    assert s.kind == "full"
+    assert any("el semáforo está en red" in n for n in s.notes)
+    # Sin reglas activas ni descarga, lo único que podría haber escrito aquí es
+    # la progresión. Que la lista esté vacía es que no se aplicó.
+    assert s.changes == []
 
 
 # ---------------------------------------------------------------------------

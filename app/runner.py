@@ -237,6 +237,10 @@ def run_daily(
     # La construye `job_decision`, que es el único que sabe qué había antes y
     # qué dato del reloj ha llegado desde entonces.
     anulacion: Any = None,
+    # La sesión que el usuario pide en vez de la propuesta, cuando anula. Llega
+    # desde el envío del formulario, no desde ningún trabajo programado: las
+    # 07:00 y las 09:00 deciden sin nadie delante y no anulan nada.
+    sesion_pedida: Any = None,
 ) -> DailyResult:
     """Decide el día y lo ejecuta. Los clientes se inyectan a propósito.
 
@@ -251,6 +255,7 @@ def run_daily(
     pensado = pensar_el_dia(
         session, cfg, day,
         metrics=metrics, rides=rides, source=source, anulacion=anulacion,
+        sesion_pedida=sesion_pedida,
     )
     res = DailyResult(day=day, decision=pensado.decision)
     # A PARTIR DE AQUÍ SE TOCAN COSAS DE FUERA, así que a partir de aquí una
@@ -298,6 +303,10 @@ def pensar_el_dia(
     anulacion: Any = None,
     # Las respuestas del formulario cuando TODAVÍA NO ESTÁN GUARDADAS. Ver abajo.
     respuestas: dict[str, Any] | None = None,
+    # La sesión que el usuario pide en vez de la que el semáforo propone. Un
+    # `SesionPedida`. Ojo con el nombre: NO es el `anulacion` de aquí arriba,
+    # que es la decisión del sistema anulada por un recálculo.
+    sesion_pedida: Any = None,
 ) -> DiaPensado:
     """La mitad que decide. No escribe nada, y eso es lo que la hace útil.
 
@@ -403,7 +412,7 @@ def pensar_el_dia(
     # El estado sale de la base de datos, no de cero. Es la diferencia entre un
     # sistema que recuerda y uno que cada mañana vuelve a nacer.
     state = repo.load_state(session, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
-    decision = decide(cfg, day, signals, state, source=source)
+    decision = decide(cfg, day, signals, state, source=source, sesion_pedida=sesion_pedida)
 
     # Esto viaja con la decisión hasta el renderizador, y NO hasta la base:
     # `save_decision` escribe columna a columna y no hay ninguna para la

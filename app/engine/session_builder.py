@@ -95,6 +95,162 @@ def _tipo_de_sesion(action: dict[str, Any], light: str) -> str:
     return sesion
 
 
+# ---------------------------------------------------------------------------
+# La anulación: pedir otra sesión de la que el semáforo propone
+# ---------------------------------------------------------------------------
+#
+# Esto ABRE a propósito la puerta que `_tipo_de_sesion` acaba de cerrar, así que
+# conviene escribir en qué se diferencia de volver a aquel fallo.
+#
+# Aquel subía la sesión SIN QUE NADIE LO PIDIERA -una errata en el YAML- y sin
+# dejar rastro: el fichero decía "recovery" y el gimnasio recibía "full", y no
+# había dónde mirarlo. Esto exige que lo pida una persona, ese día, y lo apunta
+# en la decisión.
+#
+# Y existe porque el objetivo del sistema es CALIBRAR: que las respuestas del
+# usuario y las decisiones converjan hasta coincidir con lo que él sabe de sí
+# mismo. Un sistema al que no se le puede llevar la contraria no se calibra; se
+# obedece o se ignora, y lo que pasa de verdad es lo segundo. Un desacuerdo que
+# obliga a saltarse el sistema es un desacuerdo que no se puede medir.
+
+# Para saber si una petición SUBE o BAJA la intensidad. No es el orden
+# alfabético ni el de declaración: es el del riesgo sobre una hernia L4-L5, y
+# por eso está escrito y no deducido.
+DUREZA = {RECOVERY: 0, REDUCED: 1, FULL: 2}
+
+
+@dataclass
+class SesionPedida:
+    """Lo que el usuario pide, que puede no ser lo que el sistema propone."""
+
+    tipo: str
+    # Solo hace falta para SUBIR en rojo. No es «he leído el aviso» en general:
+    # es la respuesta a una pregunta concreta que solo se hace ese día.
+    confirmada: bool = False
+    motivo: str | None = None
+
+
+@dataclass
+class SesionAnulada:
+    """El rastro. Existe solo cuando lo pedido y lo propuesto NO coinciden."""
+
+    propuesta: str
+    pedida: str
+    motivo: str | None = None
+    # La marca del caso peligroso: subir de intensidad un día ROJO. Se calcula
+    # aquí a partir de la LUZ y de la dirección del cambio; nunca se copia del
+    # `confirmada` que llega de fuera. Si lo copiara, una pantalla que mandase
+    # siempre `true` -porque es más cómodo que preguntar- marcaría como forzadas
+    # todas las anulaciones, y la medida que esto existe para dar -cuántas veces
+    # sube el día que no debía- se llenaría de días verdes y no mediría nada.
+    forzada_en_rojo: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "propuesta": self.propuesta,
+            "pedida": self.pedida,
+            "motivo": self.motivo,
+            "forzada_en_rojo": self.forzada_en_rojo,
+        }
+
+
+class ConfirmacionNecesaria(Exception):
+    """Falta la confirmación para subir en rojo.
+
+    Revienta en vez de devolver calladamente la sesión propuesta porque el modo
+    de fallo que este módulo entero existe para prohibir es dar una cosa con
+    cara de haber dado la otra. Ignorar la petición sería justo eso: el usuario
+    pidió la completa, se le entrega la de recuperación, y nada se lo dice.
+
+    Lleva las dos sesiones puestas para que la API pueda pintar el diálogo
+    -«el sistema propone X, has pedido Y»- sin volver a calcular nada.
+    """
+
+    def __init__(self, propuesta: str, pedida: str):
+        super().__init__(
+            f"la luz está en rojo y se ha pedido subir de {propuesta} a {pedida}: "
+            f"hace falta confirmación explícita"
+        )
+        self.propuesta = propuesta
+        self.pedida = pedida
+
+
+def _aplicar_sesion_pedida(
+    propuesta: str, pedida: SesionPedida | None, light: str
+) -> tuple[str, SesionAnulada | None]:
+    """Devuelve la sesión que se construye y el rastro, si lo hay."""
+    if pedida is None:
+        return propuesta, None
+
+    tipo = str(pedida.tipo)
+    if tipo not in DUREZA:
+        # La misma cerradura que `actions.<luz>.session`, en la puerta nueva.
+        # Sin esto, la ruta que el usuario maneja desde el móvil sería la ÚNICA
+        # que acepta un valor desconocido, y encima la que no pasa por el
+        # validador del arranque.
+        raise RuleError(
+            f"la sesión pedida vale {tipo!r}, que no es {FULL}, {REDUCED} ni "
+            f"{RECOVERY}."
+        )
+
+    # Estar de acuerdo no es llevar la contraria. La pantalla manda el tipo en
+    # cada envío, coincida o no; si eso contara como anulación, el histórico
+    # diría que el usuario discrepa todos los días.
+    if tipo == propuesta:
+        return propuesta, None
+
+    sube = DUREZA[tipo] > DUREZA[propuesta]
+    # Bajar no pide permiso, ningún día. La simetría sonaría a coherencia y
+    # sería un estorbo diario: la confirmación existe por la hernia, no por el
+    # formalismo, y una que salta también cuando uno se cuida enseña a darle a
+    # «sí» sin leerla. Así es como las confirmaciones dejan de confirmar nada.
+    if sube and light == "red" and not pedida.confirmada:
+        raise ConfirmacionNecesaria(propuesta, tipo)
+
+    return tipo, SesionAnulada(
+        propuesta=propuesta,
+        pedida=tipo,
+        motivo=pedida.motivo,
+        forzada_en_rojo=(sube and light == "red"),
+    )
+
+
+def _clave_del_bloque(actions: dict[str, Any], light: str) -> str:
+    """Qué bloque de recuperación toca, incluso si esta luz no nombra ninguno.
+
+    Sin esto, la anulación MÁS PRUDENTE de todas -pedir recuperación un día
+    verde, «hoy vengo hecho polvo aunque el semáforo no lo vea»- moría con un
+    `RuleError` por un detalle del fichero: `recovery_block` solo está bajo
+    `actions.red`, porque el validador exige que esté si y solo si esa luz
+    propone recuperación. O sea que la petición se negaba precisamente en el
+    caso en que hacerle caso no tiene ningún riesgo.
+
+    La búsqueda va de peor luz a mejor porque el bloque es del sistema, no de la
+    luz: `recovery_blocks` vive en la raíz del config y `actions.<luz>` solo
+    dice cuál se usa. Con la monotonía puesta -el rojo no puede ser más suelto
+    que el ámbar- la que lo nombra es el rojo, siempre; el bucle es para que
+    esto siga siendo verdad si alguien reordena el fichero, no porque hoy haga
+    falta recorrer nada.
+
+    Si NINGUNA luz propone recuperación, no se elige un bloque cualquiera de
+    `recovery_blocks` aunque haya uno solo: adivinar en silencio es el fallo
+    que este módulo entero está escrito para no repetir.
+    """
+    propia = (actions.get(light) or {}).get("recovery_block")
+    if propia:
+        return str(propia)
+    for otra in ("red", "amber", "green"):
+        clave = (actions.get(otra) or {}).get("recovery_block")
+        if clave:
+            return str(clave)
+    raise RuleError(
+        f"se ha pedido sesión de recuperación con la luz en {light}, pero "
+        f"ninguna luz declara `recovery_block`, así que no hay bloque que dar. "
+        f"El bloque lo nombra la luz que propone recuperación (normalmente el "
+        f"rojo); sin eso, la sesión saldría sin un solo ejercicio."
+    )
+
+
 # Aquí vivía `caducidad_del_aplazamiento`, que leía del YAML cuántos días
 # sobrevivía una sesión de fuerza aplazada por un día rojo. Ya no hay
 # aplazamiento que caducar: la rotación sale de lo EJECUTADO en Hevy (ver
@@ -151,6 +307,10 @@ class BuiltSession:
     # escribe en Hevy hoy puede ser menos que esto; lo de aquí es a lo que se
     # vuelve mañana.
     target_sets: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # `None` cuando lo construido es lo que el semáforo proponía, que es casi
+    # siempre. No es lo mismo que una anulación vacía: el `None` es «no hubo
+    # desacuerdo» y lo otro sería «hubo uno del que no sabemos nada».
+    anulacion: SesionAnulada | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,6 +331,12 @@ class BuiltSession:
             # separación: sin esto, la noche solo tendría la lista de fuerza y
             # volvería a no saber qué se había prescrito de HIIT.
             "hiit": self.hiit.to_dict() if self.hiit is not None else None,
+            # Va al JSON de la decisión porque las tres medidas que el usuario
+            # quiere -cuántas veces discrepa, en qué dirección, y si el
+            # desacuerdo se agolpa en un umbral- se sacan de aquí. Sin esto, una
+            # sesión anulada y una propuesta se guardan idénticas y el
+            # desacuerdo desaparece en el momento en que se ejecuta.
+            "anulacion": self.anulacion.to_dict() if self.anulacion else None,
         }
 
     def total_effective_sets(self, set_cfg: dict[str, Any]) -> int:
@@ -643,6 +809,7 @@ def build_session(
     deload_active: bool = False,
     program_start: date | None = None,
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
+    sesion_pedida: SesionPedida | None = None,
 ) -> BuiltSession:
     """Construye la sesión del día completa.
 
@@ -653,6 +820,13 @@ def build_session(
     dato son dos sitios que pueden acabar diciendo cosas distintas sin que nada
     los compare. Es obligatorio y sin defecto por lo de siempre: el defecto
     habría sido «hoy no toca fuerza», que no da error, da una mañana en blanco.
+
+    `sesion_pedida` es la anulación del usuario y cambia SOLO el tipo de sesión.
+    No toca la luz ni abre la progresión: esa la gobierna
+    `actions.<luz>.allow_progression`, que se lee por LUZ, unas líneas más
+    abajo. Pedir la sesión entera es pedir hacer los movimientos, no pedir
+    además subir el peso el día que el cuerpo ha dicho que pares. Son dos cosas
+    y aquí solo se pide una.
     """
     raw = config.raw if hasattr(config, "raw") else config
     actions = raw.get("actions", {}) or {}
@@ -677,10 +851,14 @@ def build_session(
     # Quién decide si se va es el usuario, y el sistema se entera al leer Hevy.
 
     sesion = _tipo_de_sesion(action, light)
+    # La anulación entra AQUÍ, en un solo sitio y antes de que se ramifique
+    # nada. Más abajo ya no vale: la rama de recuperación se va con un `return`
+    # propio, y pedir la completa en rojo tiene que evitar entrar en ella.
+    sesion, anulacion = _aplicar_sesion_pedida(sesion, sesion_pedida, light)
 
     # --- día rojo: bloque de recuperación -----------------------------------
     if sesion == RECOVERY:
-        block_key = str(action.get("recovery_block", ""))
+        block_key = _clave_del_bloque(actions, light)
         bloques = raw.get("recovery_blocks", {}) or {}
         # Un nombre que no existe daba `{}`, y de `{}` salía una sesión de
         # recuperación con título, cero ejercicios y cara de estar bien. El día
@@ -688,8 +866,12 @@ def build_session(
         # que se para. Lo valida también el `config_loader` al arrancar; esto es
         # la cerradura de dentro.
         if block_key not in bloques:
+            # No dice `actions.{light}.recovery_block` porque desde que existe
+            # la anulación la clave puede venir de OTRA luz (ver
+            # `_clave_del_bloque`), y un mensaje que señale a la luz equivocada
+            # manda a buscar la errata donde no está.
             raise RuleError(
-                f"actions.{light}.recovery_block '{block_key}' no está en "
+                f"el recovery_block '{block_key}' no está en "
                 f"recovery_blocks (hay: {sorted(bloques)}). Antes esto devolvía "
                 f"un bloque vacío y el día rojo llegaba a Telegram sin un solo "
                 f"ejercicio, sin que nada dijera que faltaba."
@@ -700,6 +882,7 @@ def build_session(
             title=str(block.get("title", "Recuperación")),
             exercises=copy.deepcopy(block.get("exercises") or []),
             write_to_hevy=bool(block.get("write_to_hevy", False)),
+            anulacion=anulacion,
         )
         # La nota ya no promete recuperar nada, porque no hay nada que
         # recuperar: el bloque de recuperación no es ninguna rutina del ciclo,
@@ -726,6 +909,7 @@ def build_session(
         routine_key=routine_key,
         title=str(routine.get("title", routine_key)),
         hevy_routine_id=routine.get("hevy_routine_id"),
+        anulacion=anulacion,
     )
 
     # 1. retiradas por regla especial

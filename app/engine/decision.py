@@ -54,6 +54,7 @@ from app.engine.rotacion import to_dict as pendientes_to_dict
 from app.engine.rules import COMPARISONS, LightDecision, RuleError, evaluate_light
 from app.engine.session_builder import (
     BuiltSession,
+    SesionPedida,
     build_session,
     clave_del_bloque_hiit,
     orden_de_rotacion,
@@ -793,6 +794,7 @@ def decide(
     signals: Signals,
     state: EngineState | None = None,
     source: str = "checkin",
+    sesion_pedida: SesionPedida | None = None,
 ) -> DayDecision:
     """Decide el día completo.
 
@@ -800,6 +802,22 @@ def decide(
     y el check-in. `state` es lo que el motor recuerda; si falta se asume un
     arranque en frío, que es un estado válido y no un error: el primer día del
     sistema no tiene rachas ni reglas vigentes.
+
+    `sesion_pedida` NO ES UNA SEÑAL, Y POR ESO ES UN PARÁMETRO
+    ---------------------------------------------------------
+    Es la anulación del usuario: completa donde el sistema propone reducida, o
+    al revés. No entra por `signals` aunque `sesion_elegida` -qué RUTINA del
+    ciclo se hace- sí lo haga, y la diferencia importa. Las señales son lo que
+    se sabe del cuerpo esta mañana, y parte de ellas alimenta el histórico del
+    que salen los percentiles de los umbrales. Una anulación es una instrucción
+    sobre qué hacer con esa lectura, no una lectura más: metida ahí dentro
+    acabaría moviendo los umbrales que sirven para juzgarla.
+
+    Cuidado con el nombre: `DayDecision.anulacion` es OTRA cosa -la decisión de
+    esta misma mañana que un recálculo deja sin efecto cuando Garmin entrega la
+    noche tarde-. Esa la pone el sistema sobre sí mismo. Esta la pone el
+    usuario sobre el sistema, y viaja dentro de la sesión
+    (`session.anulacion`).
     """
     raw = config.raw if hasattr(config, "raw") else config
     state = state or EngineState()
@@ -1005,6 +1023,10 @@ def decide(
         deload_active=deload.active,
         program_start=state.program_start,
         current_sets=state.current_sets,
+        # La anulación del usuario. Puede levantar `ConfirmacionNecesaria`, que
+        # sube entera hasta quien llamó: subir de intensidad en rojo se
+        # pregunta, no se resuelve aquí con un valor por defecto.
+        sesion_pedida=sesion_pedida,
     )
 
     # EL BLOQUE NO HA ENTRADO: EL PLAN NO HA PASADO.

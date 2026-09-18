@@ -679,6 +679,63 @@ def test_elegir_otro_dia_del_ciclo_si_cambia_lo_que_se_escribe(db, cfg):
 
 
 # ---------------------------------------------------------------------------
+# La anulación del usuario, desde el envío hasta la fila guardada
+# ---------------------------------------------------------------------------
+#
+# Qué SESIÓN se construye -completa, reducida, recuperación- cuando el usuario
+# pide otra de la que el semáforo propone. Las reglas de cuándo se permite y
+# cuándo hace falta confirmación están probadas sobre `build_session`, que es
+# puro, en `test_dia_rojo_no_suelta.py`. Aquí solo se comprueba una cosa, y es
+# la que aquellos tests no pueden ver: que el parámetro LLEGA.
+#
+# Sin esto, `sesion_pedida` podría existir en las cuatro firmas del camino
+# -`run_daily`, `pensar_el_dia`, `decide`, `build_session`- y perderse en
+# cualquiera de los tres saltos sin que ningún test se pusiera rojo. Un
+# parámetro que nadie pasa es la avería favorita de este proyecto: se declara,
+# se documenta, y no hace nada.
+
+
+def test_la_sesion_pedida_llega_desde_run_daily_hasta_la_fila_guardada(db, cfg):
+    """Los tres saltos del camino, comprobados contra lo que queda escrito."""
+    from app.engine.session_builder import SesionPedida
+    from app.models import Decision as DecisionRow
+
+    res = corre(
+        db, cfg, hevy=HevyFalso(), tg=TelegramFalso(),
+        sesion_pedida=SesionPedida("recovery", motivo="vengo reventado"),
+    )
+
+    assert res.decision.session.kind == "recovery"
+    fila = db.scalars(select(DecisionRow)).first()
+    anulacion = json.loads(fila.planned_session_json).get("anulacion")
+    assert anulacion, (
+        "la sesión se ha anulado y la fila guardada no lo dice: dentro de tres "
+        "meses ese día se lee como una recuperación que decidió el sistema"
+    )
+    assert anulacion["pedida"] == "recovery"
+    assert anulacion["motivo"] == "vengo reventado"
+    # Y la contraparte: la propuesta que se anuló sigue escrita. Sin ella no se
+    # puede medir en qué DIRECCIÓN discrepa el usuario, que es una de las tres
+    # cosas que hay que poder preguntarle a este histórico.
+    assert anulacion["propuesta"] == "full"
+
+
+def test_un_dia_sin_anular_nada_no_deja_marca_de_anulacion(db, cfg):
+    """El contraste. Si la marca saliera siempre, no distinguiría nada.
+
+    Es el mismo argumento que `test_pedir_exactamente_lo_propuesto_no_es_una_
+    anulacion`, pero sobre la fila guardada: lo que se mide más adelante se
+    cuenta de aquí, y un campo que está lleno todos los días da un 100% de
+    desacuerdo y no dice nada de nadie.
+    """
+    from app.models import Decision as DecisionRow
+
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    fila = db.scalars(select(DecisionRow)).first()
+    assert json.loads(fila.planned_session_json).get("anulacion") is None
+
+
+# ---------------------------------------------------------------------------
 # Lo que se leyó de Garmin, archivado
 # ---------------------------------------------------------------------------
 #
