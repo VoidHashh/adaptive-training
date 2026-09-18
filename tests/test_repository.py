@@ -17,6 +17,7 @@ vieja el día que alguien añada uno-, sino un recorrido por
 
 from __future__ import annotations
 
+import json
 from dataclasses import fields as dataclass_fields
 from datetime import date, timedelta
 
@@ -1131,6 +1132,43 @@ def test_decidir_dos_veces_el_mismo_dia_deja_rastro_de_la_primera(db, cfg):
     assert sum(1 for f in todas if f.is_current) == 1
     assert current_decision(db, LUNES).light == segunda.light
     assert segunda.light == "red", "el escenario ya no cambia el semáforo; rehacer"
+
+
+def test_dos_decisiones_que_solo_se_diferencian_en_lo_elegido_se_distinguen(db, cfg):
+    """El caso real de arriba, pero con la entrada que no viajaba en la foto.
+
+    A las 07:00 no hay formulario y se planifica la propuesta del ciclo. A las
+    09:40 llega el check-in diciendo `dia_3` y se planifica otra rutina. Las dos
+    filas quedan guardadas, que es lo que promete `append-only`, pero hasta
+    ahora quedaban con el MISMO `inputs_snapshot_json`: mismas señales, misma
+    configuración, distinta rutina planificada y nada que lo explicase.
+
+    `checkins.chosen_session` no tapa el hueco. Guarda una fila por día con la
+    respuesta final, así que leída después dice `dia_3` para las dos
+    decisiones, incluida la que se tomó cuando todavía no se había contestado.
+
+    El test compara las fotos ENTERAS, no solo la clave nueva: lo que hay que
+    poder afirmar es que las dos filas son distinguibles, no que existe un
+    campo.
+    """
+    a_las_siete = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
+    fila_siete = save_decision(db, a_las_siete)
+
+    con_formulario = sig_completa(LUNES)
+    con_formulario.sesion_elegida = "dia_3"
+    a_las_nueve = decide(cfg, LUNES, con_formulario, EngineState())
+    fila_nueve = save_decision(db, a_las_nueve)
+
+    assert a_las_siete.rotation_routine != "dia_3", (
+        "el escenario no discrimina: la propuesta del ciclo ya era la elegida"
+    )
+    assert a_las_nueve.rotation_routine == "dia_3", "la elección manda para hoy"
+
+    assert fila_siete.inputs_snapshot_json != fila_nueve.inputs_snapshot_json, (
+        "dos decisiones con entradas distintas no pueden guardar la misma foto"
+    )
+    assert json.loads(fila_siete.inputs_snapshot_json)["sesion_elegida"] is None
+    assert json.loads(fila_nueve.inputs_snapshot_json)["sesion_elegida"] == "dia_3"
 
 
 # ---------------------------------------------------------------------------

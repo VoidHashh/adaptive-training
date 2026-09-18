@@ -1638,6 +1638,52 @@ def test_lo_elegido_NO_entra_en_el_espacio_de_nombres_de_las_reglas(cfg):
         )
 
 
+def test_lo_elegido_SI_entra_en_el_snapshot_aunque_no_entre_en_values(cfg):
+    """La otra mitad, y va justo al revés que la de arriba.
+
+    `values` y el snapshot no son lo mismo aunque uno contenga al otro.
+    `values` es el espacio de nombres de las reglas, y ahí una cadena no pinta
+    nada. El snapshot es la foto de las entradas -eso dice la columna: «para
+    poder reproducir la decisión»- y de ahí no puede faltar una entrada que
+    CAMBIA la salida: `decide` saca `rotation_routine` y `eleccion_sin_fuerza`
+    de esto, o sea qué rutina se planifica y si la progresión se evalúa
+    siquiera.
+
+    Sin esta línea, lo elegido solo vive en `checkins.chosen_session`, que
+    guarda UNA fila por día con la respuesta FINAL. Las decisiones son
+    append-only y hay varias por día: la de las 07:00 sin formulario y la de
+    las 09:40 con él. Mirando las dos filas meses después se vería que
+    planificaron rutinas distintas y no habría con qué explicar por qué.
+
+    El sitio es el primer nivel y no `values`, que es exactamente donde ya está
+    `intense_count` por la misma razón: dato de entrada, no señal evaluable.
+    """
+    sig = _con_eleccion(cfg, "dia_2")
+    foto = sig.snapshot()
+
+    assert foto["sesion_elegida"] == "dia_2"
+    assert CLAVE_SESION_ELEGIDA not in foto["values"], (
+        "en el snapshot sí, en el espacio de nombres de las reglas no"
+    )
+
+
+def test_la_manana_en_que_no_se_eligio_nada_tambien_queda_escrita(cfg):
+    """La clave está siempre, con `None` dentro. No se omite.
+
+    Un `None` dice «no contestó», que es el caso de casi todas las decisiones
+    de las 07:00. Una clave ausente no dice eso: dice lo mismo que diría una
+    decisión guardada antes de que el selector existiera, y son dos cosas
+    distintas que hay que poder separar al leer el histórico.
+    """
+    sig = build_signals(
+        cfg, LUNES, metrics=[], rides=[], sessions=[], checkin_history=[]
+    )
+    foto = sig.snapshot()
+
+    assert "sesion_elegida" in foto
+    assert foto["sesion_elegida"] is None
+
+
 def test_elegir_una_rutina_no_toca_nada_de_lo_que_decide_el_color(cfg):
     """El selector informa; no negocia el semáforo.
 

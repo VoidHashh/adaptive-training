@@ -366,6 +366,12 @@ class Signals:
     #
     # Y no tiene histórico en `history` por lo mismo. Cuando haga falta la serie
     # de lo elegido, sale de `checkins` con una consulta que sabe que es texto.
+    #
+    # Fuera de `values` NO quiere decir fuera del registro: `snapshot()` la
+    # guarda en el primer nivel, igual que `intense_count`. Lo que se le cierra
+    # es el espacio de nombres de las reglas y las cuentas del análisis, no la
+    # foto de las entradas -y es una entrada: de aquí salen `rotation_routine` y
+    # `eleccion_sin_fuerza`.
     sesion_elegida: str | None = None
 
     def get(self, name: str) -> Any:
@@ -394,6 +400,20 @@ class Signals:
         va entero -qué día y de qué tipo fue cada sesión- porque un contador sin
         desglose no se puede auditar y un contador que no se puede auditar acaba
         siendo un número en el que nadie confía.
+
+        `sesion_elegida` entra por el mismo motivo y en el mismo sitio: primer
+        nivel, fuera de `values`. Que no sea una señal evaluable -es una cadena
+        categórica, y por eso se le cierra la puerta de `values`- no la hace
+        menos entrada. `decide` saca de ella `rotation_routine` y
+        `eleccion_sin_fuerza`, o sea qué rutina se planifica y si la progresión
+        llega a evaluarse.
+
+        Y no basta con que esté en `checkins.chosen_session`. Esa tabla guarda
+        UNA fila por día con la respuesta final; las decisiones son append-only
+        y hay varias por día. Leída meses después diría lo mismo para la
+        decisión de las 07:00 -tomada sin formulario- que para la de las 09:40,
+        y las dos planificaron rutinas distintas. La foto tiene que poder
+        explicar la fila a la que pertenece, no el estado final del día.
         """
         return {
             "day": self.day.isoformat(),
@@ -404,6 +424,10 @@ class Signals:
             "intense_count": (
                 self.intense_count.to_dict() if self.intense_count else None
             ),
+            # Siempre presente, con `None` cuando no se contestó. Omitirla en
+            # ese caso haría indistinguible «no eligió» de «se decidió antes de
+            # que el selector existiera».
+            "sesion_elegida": self.sesion_elegida,
         }
 
 
