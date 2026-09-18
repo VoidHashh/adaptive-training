@@ -439,6 +439,18 @@ HUELLAS_DEL_ARMAZON = {
     # `tests/test_estilos.py`, y es lo que faltaba para que un botón no pudiera
     # volver a nacer invisible.
     "v20": "7bad666e85b7b6d605a7a72dd092d629024e874c84ea108e701fb96d40aee455",
+    # v21: `svg.g-hrv` entra en la regla de los otros gráficos, o sea una línea
+    # de `styles.css` y nada más. Le faltaba el `display: block`: un SVG en
+    # línea se sienta sobre la línea base y deja debajo el hueco que el
+    # navegador reserva para las colas de las letras.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE, y es la más leve de toda esta
+    # lista: tres o cuatro píxeles de más debajo de la curva de HRV. Se apunta
+    # igual, y el motivo de apuntarlo no es este cambio sino la regla que lo
+    # obliga: desde la v19 subir el número es el único camino por el que entra
+    # un archivo nuevo, así que la pregunta «¿merece la pena subir la versión
+    # por esto?» ya no tiene sentido. O sube, o no llega.
+    "v21": "c2c08eed83f4f0ed00a1b0cdf10e87403b05084fcee05de6cb034f660ca54de9",
 }
 
 

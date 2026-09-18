@@ -245,14 +245,6 @@ SIN_REGLA_A_PROPOSITO = {
         '`width="..."` en la etiqueta porque el ancho lo calcula el propio '
         "dibujante a partir de cuántas semanas hay"
     ),
-    "g-hrv": (
-        'lleva `width="100%"` como ATRIBUTO en la etiqueta (graficos.js), '
-        "así que se estira sin ayuda del CSS. Es el único de los ocho gráficos "
-        "que no tiene regla ni padre `.desliza`, y lo que le falta es el "
-        "`display: block` que tienen los demás: de ahí sale el hueco de tres o "
-        "cuatro píxeles que deja la línea base debajo del dibujo. Se deja "
-        "apuntado aquí en vez de arreglado de tapadillo"
-    ),
 }
 
 # IDS cuyo elemento no lleva ninguna clase y aun así no pinta nada de su
@@ -380,7 +372,7 @@ def test_las_dos_listas_de_excepciones_no_se_quedan_hablando_de_fantasmas():
     """Una excepción para algo que ya no existe es una excepción que tapa.
 
     Es la avería de siempre de este repositorio, aplicada a las dos listas de
-    arriba: el día que `g-hrv` se renombre o que el botón de previsualizar
+    arriba: el día que una clase se renombre o que el botón de previsualizar
     desaparezca, la entrada correspondiente se queda, y lo que queda no es una
     línea de más sino un permiso abierto con el nombre de nadie. Peor todavía:
     si el nombre vuelve más adelante para otra cosa, nace ya perdonado.
@@ -399,3 +391,34 @@ def test_las_dos_listas_de_excepciones_no_se_quedan_hablando_de_fantasmas():
             f"{sobran}. Quítalas: mientras estén, el nombre que vuelva a "
             f"aparecer nace perdonado."
         )
+
+
+def test_no_se_perdona_a_quien_ya_tiene_regla():
+    """El fantasma del otro sentido, y es el que casi se cuela.
+
+    `g-hrv` estuvo en la lista de excepciones con su motivo escrito -se
+    estiraba por un `width="100%"` en la etiqueta, le faltaba solo el
+    `display: block`-. Al añadirle la regla, la excepción se quedaba ahí
+    perdonando a alguien que ya no lo necesita, y la comprobación de arriba no
+    la veía: `g-hrv` SE SIGUE ESCRIBIENDO, así que no era un nombre de nadie.
+
+    Una excepción así no rompe nada hoy y hace daño mañana: dice que ese
+    elemento se pinta por otros medios cuando ya no es verdad, así que el día
+    que alguien borre la regla -limpiando CSS que "no usa nadie", por ejemplo-
+    el test no se va a quejar. El permiso sigue firmado.
+    """
+    css_clases, css_ids = _nombres_del_css()
+
+    ya_peinadas = sorted(n for n in SIN_REGLA_A_PROPOSITO if n in css_clases)
+    assert not ya_peinadas, (
+        f"estas clases están en `SIN_REGLA_A_PROPOSITO` y `styles.css` ya las "
+        f"nombra: {ya_peinadas}. La excepción sobra, y mientras esté cubre el "
+        f"día que alguien borre esa regla."
+    )
+
+    ya_peinados = sorted(n for n in SOLO_SON_ASIDEROS if n in css_ids)
+    assert not ya_peinados, (
+        f"estos `id` están en `SOLO_SON_ASIDEROS` -o sea declarados como "
+        f"asideros que no pintan- y `styles.css` les escribe una regla: "
+        f"{ya_peinados}. Una de las dos cosas es mentira."
+    )

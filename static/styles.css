@@ -929,7 +929,13 @@ body.con-nav { padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
 
 /* --- gráficos ------------------------------------------------------------ */
 
-svg.g-barra, svg.g-curva, svg.g-regla, svg.g-serie {
+/* `g-hrv` entró tarde en esta lista y por eso: llevaba `width="100%"` como
+ * atributo en la etiqueta, así que se estiraba y parecía estar bien. Lo que le
+ * faltaba era el `display: block`, y sin él un SVG es una caja EN LÍNEA: se
+ * sienta sobre la línea base del texto y deja debajo el hueco que el navegador
+ * reserva para las colas de las letras. Tres o cuatro píxeles que nadie mira,
+ * y el único de los ocho gráficos que los tenía. */
+svg.g-barra, svg.g-curva, svg.g-regla, svg.g-serie, svg.g-hrv {
   display: block;
   margin: 0.5rem 0 0;
   max-width: 100%;
