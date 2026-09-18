@@ -37,6 +37,7 @@ from tests.conftest import LUNES, sig, sig_completa
 from tests.dobles import doble_de
 from app.engine.bike_advisor import BikeRecommendation
 from app.engine.decision import ActiveRule, DecisionAnulada
+from app.engine.session_builder import SesionPedida
 from app.engine.tendencia import Tendencia
 
 
@@ -784,6 +785,75 @@ def test_un_dia_de_recuperacion_no_lleva_foco(cfg):
     txt = render_plain(d, cfg)
     for r in cfg.raw["routines"].values():
         assert r.get("focus", "\0") not in txt
+
+
+# ---------------------------------------------------------------------------
+# «Esto lo has pedido tú»
+# ---------------------------------------------------------------------------
+#
+# El mensaje es lo que se lee dentro de tres meses; el código no lo lee nadie.
+# Y el día que se fuerza la sesión completa en rojo, sin una línea que lo diga,
+# el mensaje anuncia una sesión completa bajo una cabecera roja: por fuera,
+# exactamente lo que se veía con el fallo de `str(action.get("session", FULL))`.
+# Es el único fallo de este proyecto que soltaba en vez de frenar, y la
+# diferencia entre aquello y esto -que lo pidió una persona- no existe para
+# quien lee el móvil si el móvil no la cuenta.
+
+
+def _anulando(cfg, pedida, **valores):
+    """Un día decidido con la sesión anulada por el usuario.
+
+    Con `sig_completa` y no con `sig`: al día de `sig` le faltan datos y sale
+    ámbar por eso, y entonces «bajar» y «subir» se medirían desde una propuesta
+    que no es la que el test quiere contrastar.
+    """
+    return decide(
+        cfg, LUNES, sig_completa(LUNES, **valores), EngineState(),
+        sesion_pedida=pedida,
+    )
+
+
+def test_forzar_la_completa_en_rojo_se_dice_y_se_dice_fuerte(cfg):
+    d = _anulando(
+        cfg,
+        SesionPedida("full", confirmada=True, motivo="dolor de ayer, hoy nada"),
+        lower_discomfort=7,
+    )
+    assert d.light == "red" and d.session.kind == "full"
+
+    txt = render_telegram(d, cfg)
+    assert "la has pedido tú" in txt.lower(), (
+        "sesión completa con el semáforo en rojo y el mensaje no dice de quién "
+        "fue la idea: se lee igual que el fallo que soltaba"
+    )
+    assert "recuperación" in txt, "hay que decir QUÉ proponía el sistema"
+    assert "dolor de ayer, hoy nada" in txt, "y el motivo que se dio"
+    # En negrita, no en cursiva entre apuntes: es el caso que el usuario quiso
+    # poder mirar después.
+    assert "<b>Esta sesión la has pedido tú.</b>" in txt
+
+
+def test_bajar_la_sesion_tambien_se_dice_pero_sin_alarma(cfg):
+    """El mismo hecho, y no la misma noticia.
+
+    Pedir menos es prudente y no hay nada que avisar. Si las dos líneas fueran
+    iguales, el ⚠️ dejaría de significar «has subido el día que no tocaba» y
+    pasaría a significar «has tocado el selector», que es la forma habitual de
+    que un aviso deje de avisar de nada.
+    """
+    d = _anulando(cfg, SesionPedida("recovery"))
+    assert d.light == "green" and d.session.kind == "recovery"
+
+    txt = render_telegram(d, cfg)
+    assert "la has pedido tú" in txt.lower()
+    assert "sesión completa" in txt, "hay que decir qué proponía el sistema"
+    assert "⚠️" not in txt, "bajar la intensidad no es una imprudencia"
+
+
+def test_un_dia_normal_no_lleva_esa_linea(cfg):
+    """El contraste. Una nota que sale siempre no informa de nada."""
+    txt = render_telegram(decision(cfg), cfg)
+    assert "pedido tú" not in txt.lower()
 
 
 # ---------------------------------------------------------------------------

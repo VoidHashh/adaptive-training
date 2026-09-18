@@ -324,6 +324,54 @@ def _concordar(claves: list[str], singular: str, plural: str) -> str:
     return singular if len(claves) == 1 else plural
 
 
+# Los tres tipos de sesión en castellano. Era un diccionario suelto dentro de
+# `_lineas_sesion`; sale aquí desde que hay un segundo sitio que nombra un tipo
+# de sesión -el aviso de anulación-, y dos tablas iguales en dos funciones son
+# dos sitios que pueden acabar llamando de forma distinta a lo mismo en el
+# mismo mensaje.
+NOMBRE_SESION = {
+    "full": "sesión completa",
+    "reduced": "sesión reducida",
+    "recovery": "recuperación",
+}
+
+
+def _lineas_anulada(s: Any) -> list[str]:
+    """«Esto lo has pedido tú», dicho en el sitio donde se lee la sesión.
+
+    Sin esta línea, el día que se fuerza la sesión completa en rojo el mensaje
+    anuncia una sesión completa bajo una cabecera roja: por fuera, EXACTAMENTE
+    lo que se veía con el fallo de `str(action.get("session", FULL))`, que es el
+    único de este proyecto que soltaba en vez de frenar. Que esta vez sea a
+    petición del usuario no se nota en ningún sitio si no se dice, y quien lea
+    el histórico dentro de tres meses lee el mensaje, no el código.
+
+    El aviso de rojo va en negrita y con el motivo delante porque es el caso
+    que el usuario quiso poder mirar después: no para impedírselo, para saber
+    cuántas veces sube el día que el cuerpo había dicho que parase.
+    """
+    a = getattr(s, "anulacion", None)
+    if a is None:
+        return []
+
+    propuesta = NOMBRE_SESION.get(a.propuesta, a.propuesta)
+    # El motivo es opcional -se puede anular sin explicarse- y por eso se monta
+    # después de saberlo: con el prefijo puesto por delante, un motivo vacío
+    # dejaba la frase terminando en «porque: ».
+    motivo = f" Dijiste: «{escapar_html(a.motivo)}»." if a.motivo else ""
+
+    if a.forzada_en_rojo:
+        return [
+            f"⚠️ <b>Esta sesión la has pedido tú.</b> El semáforo está en rojo y "
+            f"proponía {escapar_html(propuesta)}; confirmaste subir igual."
+            f"{motivo}"
+        ]
+    return [
+        f"✋ <i>Esta sesión la has pedido tú: el sistema proponía "
+        f"{escapar_html(propuesta)}.{motivo}</i>"
+    ]
+
+
 def _lineas_sesion(s: Any, raw: dict, set_cfg: dict[str, Any]) -> list[str]:
     """El bloque que prescribe: qué sesión tocaría hoy y con qué series.
 
@@ -348,11 +396,7 @@ def _lineas_sesion(s: Any, raw: dict, set_cfg: dict[str, Any]) -> list[str]:
     propone para hoy. Ponerle un "si vas al gimnasio" delante lo ofrecería como
     alternativa al gimnasio, que es lo contrario de lo que dice un rojo.
     """
-    etiqueta = {
-        "full": "sesión completa",
-        "reduced": "sesión reducida",
-        "recovery": "recuperación",
-    }.get(s.kind, s.kind)
+    etiqueta = NOMBRE_SESION.get(s.kind, s.kind)
 
     if s.kind == "recovery":
         cab = f"💪 <b>{escapar_html(s.title)}</b> ({escapar_html(etiqueta)})"
@@ -376,7 +420,10 @@ def _lineas_sesion(s: Any, raw: dict, set_cfg: dict[str, Any]) -> list[str]:
     if foco:
         cab += f" — {escapar_html(foco)}"
 
-    out = ["", cab]
+    # Pegado a la cabecera y antes de los ejercicios: la lista que viene debajo
+    # es la de la sesión pedida, y hay que saber de quién es la sesión ANTES de
+    # leerla, no después de haberla leído como si la propusiera el sistema.
+    out = ["", cab, *_lineas_anulada(s)]
     for ex in s.exercises:
         nombre_ex = escapar_html(ex.get("name", ex.get("key")))
         out.append(f"• {nombre_ex} — {_describe_sets(ex, set_cfg)}")
