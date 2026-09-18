@@ -317,6 +317,26 @@ HUELLAS_DEL_ARMAZON = {
     # antes no conoce ninguna de las cinco y las tira a la basura en silencio,
     # que es el fallo callado de la v8 repetido cinco veces.
     "v15": "f04eec657e86de02f1a8070107e1a136a222417c3e2ad52c0feb9d8ce96d827f",
+    # v16: la tarjeta de «guardado, pero sin decidir» deja de afirmar lo que no
+    # sabe. Tenía una frase fija -«no se ha tocado la rutina de Hevy ni se ha
+    # enviado ningún mensaje»- y ahora escribe el estado que informa el
+    # servidor, con «no se sabe» cuando no informa ninguno.
+    #
+    # El móvil viejo falla de la forma GRAVE, y es el único caso de esta lista
+    # en que lo grave no es que falte una pantalla sino que SOBRA UNA MENTIRA.
+    # Un teléfono que se quede con el `app.js` de antes seguirá diciendo que no
+    # se envió nada exactamente en el escenario en que sí se envió: el fallo
+    # tardío, con la rutina escrita en Hevy y el Telegram ya entregado, que es
+    # lo que pasó de verdad el 18 de septiembre de 2026. Y lo dice sin un error
+    # en la consola y con el detalle del fallo justo debajo dándole autoridad,
+    # o sea que el usuario reenviaría a mano algo que ya estaba hecho.
+    #
+    # Aquí la red primero no salva: la respuesta nueva de `/api/checkin` trae
+    # `hevy` y `telegram` también en la rama de fallo, y el JavaScript de antes
+    # no los mira. Llega el dato bueno y se tira, que es el fallo callado de la
+    # v8 otra vez, sólo que esta vez el hueco lo rellena una afirmación falsa en
+    # lugar de un guion.
+    "v16": "39c1f111438685821f039b32b0bbd8bb74124122c7553b6cdcf788f2dee0e927",
 }
 
 
@@ -1383,7 +1403,9 @@ def test_no_hay_dos_copias_del_escape_de_html():
 # JSON que sale por el cable, y eso es lo que hace `tests/checkin_pwa.mjs`.
 
 
-def _rellenar(tmp_path, hoy: dict, acciones: list[dict], borrador=None) -> dict:
+def _rellenar(
+    tmp_path, hoy: dict, acciones: list[dict], borrador=None, respuesta=None
+) -> dict:
     """Abre el formulario contra un `/api/checkin/today` de mentira y lo rellena.
 
     Devuelve lo que quedó en pantalla y, sobre todo, `cuerpo`: el JSON EXACTO
@@ -1398,7 +1420,14 @@ def _rellenar(tmp_path, hoy: dict, acciones: list[dict], borrador=None) -> dict:
     guion = tmp_path / "guion.json"
     guion.write_text(
         json.dumps(
-            {"hoy": hoy, "acciones": acciones, "borrador": borrador},
+            {
+                "hoy": hoy,
+                "acciones": acciones,
+                "borrador": borrador,
+                # Lo que contesta el POST. `None` deja el de siempre, que es un
+                # día decidido y salido bien.
+                "respuesta": respuesta,
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -1512,6 +1541,99 @@ def test_un_no_viaja_como_false_y_no_como_cero(tmp_path):
     assert salida["elegidas"] == {"wants_to_train": "si", "will_train": "no"}
     assert salida["aria"]["will_train.no"] == "true"
     assert salida["aria"]["will_train.si"] == "false"
+
+
+def _fallar(tmp_path, **estados) -> str:
+    """Rellena, envía, y devuelve el HTML de la tarjeta de un día NO decidido."""
+    salida = _rellenar(
+        tmp_path, _hoy(),
+        [
+            {"tipo": "deslizar", "key": "fatigue", "valor": 3},
+            {"tipo": "responder", "key": "wants_to_train", "respuesta": "si"},
+            {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+            {"tipo": "enviar"},
+        ],
+        respuesta={
+            "decided": False,
+            "error": "UNIQUE constraint failed: notifications.date, "
+                     "notifications.kind",
+            **estados,
+        },
+    )
+    assert salida["resultado"] is not None, "no se ha pintado ninguna tarjeta"
+    assert "mal" in salida["resultado"]["clase"]
+    return salida["resultado"]["html"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_si_el_mensaje_SI_se_envio_la_tarjeta_del_fallo_no_dice_que_no(tmp_path):
+    """La pantalla del 18 de septiembre de 2026, que decía lo contrario de todo.
+
+    Ese día el fallo llegó TARDE: la rutina estaba escrita en Hevy, el Telegram
+    estaba entregado en el móvil, y lo que reventó fue apuntar el aviso en la
+    tabla `notifications`. El `rollback` se llevó la fila de la base de datos y
+    no se llevó ni la rutina ni el mensaje, porque los dos están fuera de la
+    transacción.
+
+    Y la tarjeta, que tenía una frase fija, dijo que no se había tocado la rutina
+    de Hevy ni se había enviado ningún mensaje. Con el mensaje en la pantalla de
+    al lado. Eso no es un texto impreciso: es la instrucción exacta para que el
+    usuario lo repita todo a mano y acabe con la rutina escrita dos veces.
+    """
+    html = _fallar(tmp_path, hevy="ok", telegram="sent")
+
+    assert "ningún mensaje" not in html and "ningun mensaje" not in html, (
+        "ha vuelto la frase fija. La tarjeta no puede afirmar que no se envió "
+        "nada: cuando el fallo es tardío, se envió"
+    )
+    assert "sí se ha enviado el mensaje" in html, (
+        f"el servidor ha dicho telegram='sent' y la tarjeta no lo cuenta:\n{html}"
+    )
+    assert "sí se ha escrito la rutina" in html
+    # El detalle técnico sigue estando: lo que sobraba era la afirmación, no el
+    # volcado del fallo.
+    assert "UNIQUE constraint failed" in html
+    assert "no se sabe" not in html
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_fallo_sin_rastro_dice_que_no_se_sabe_y_no_que_no_se_toco(tmp_path):
+    """La otra mitad, que es la que hace honrada a la primera.
+
+    Si la tarjeta pintara siempre lo optimista cuando no hay dato, habríamos
+    cambiado una mentira por otra. Sin `hevy` ni `telegram` en la respuesta el
+    estado es DESCONOCIDO, y desconocido no es «no se ha tocado»: hay que
+    decirlo y mandar al usuario a mirar antes de repetir.
+    """
+    html = _fallar(tmp_path)
+
+    # En los `<dd>` y no en el HTML entero: el aviso de abajo entrecomilla la
+    # frase para explicarla, y contarlo también haría que este número dependiera
+    # de cómo esté redactado el aviso.
+    assert html.count("<dd>no se sabe</dd>") == 2, (
+        f"con la respuesta muda hay que decirlo en los dos canales:\n{html}"
+    )
+    assert "no vaya a hacerse dos veces" in html, (
+        "decir «no se sabe» y no decir qué hacer con eso deja al usuario en el "
+        "mismo sitio que la frase falsa"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_un_fallo_temprano_si_puede_decir_que_no_se_toco_nada(tmp_path):
+    """Y cuando de verdad no se tocó nada, se dice, sin el aviso de ir a mirar.
+
+    Es la rama de Garmin: se cae leyendo las métricas, antes de escribir en
+    ningún sitio, y el servidor manda `skipped` en los dos. Ahí la tarjeta sí
+    puede tranquilizar, y si además soltara el «mira el móvil por si acaso»
+    estaría mandando a mirar todos los días por nada.
+    """
+    html = _fallar(tmp_path, hevy="skipped", telegram="skipped")
+
+    assert "<dd>no se ha tocado</dd>" in html
+    assert "<dd>no se ha enviado</dd>" in html
+    assert "no se sabe" not in html
+    assert "no vaya a hacerse dos veces" not in html
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")

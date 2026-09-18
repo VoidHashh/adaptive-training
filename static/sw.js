@@ -37,7 +37,7 @@
  * que salte nada. Ahora la ata `tests/test_pwa.py`, que guarda la huella del
  * armazón al lado de la versión y se pone rojo si el contenido se mueve y el
  * número no. */
-const VERSION = "v15";
+const VERSION = "v16";
 const CACHE = `armazon-${VERSION}`;
 
 /* TODO el armazón, no "lo principal".

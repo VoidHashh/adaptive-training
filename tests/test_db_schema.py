@@ -23,7 +23,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import UniqueConstraint, create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import CreateColumn
 
@@ -94,8 +94,79 @@ def vieja(tmp_path):
             c.exec_driver_sql(f'DROP TABLE "{tabla}"')
             c.exec_driver_sql(f'ALTER TABLE "_tmp" RENAME TO "{tabla}"')
 
+    def con_unique(tabla: str, columnas: tuple[str, ...], nombre: str) -> None:
+        """Rehace la tabla con un UNIQUE de tabla que el modelo ya no declara.
+
+        Hace falta un camino aparte de `envejecer` porque un UNIQUE declarado en
+        el CREATE TABLE no es un índice que se pueda soltar: no sale en
+        `sqlite_master` como objeto propio -sale como `sqlite_autoindex_*`, que
+        SQLite se niega a borrar- y la única forma de quitarlo es rehacer la
+        tabla. Ésa es justo la razón por la que este desfase sobrevivió a todo.
+        """
+        existentes = {c.name for c in Base.metadata.tables[tabla].columns}
+        assert set(columnas) <= existentes, (
+            f"se pide un UNIQUE sobre {columnas} de {tabla} y alguna no es "
+            f"columna del modelo: la base 'vieja' saldría sin restricción y el "
+            f"test no probaría nada."
+        )
+        declaradas = {
+            tuple(sorted(c.name for c in r.columns))
+            for r in Base.metadata.tables[tabla].constraints
+            if isinstance(r, UniqueConstraint)
+        }
+        assert tuple(sorted(columnas)) not in declaradas, (
+            f"el modelo YA declara un UNIQUE sobre {columnas} en {tabla}: la "
+            f"base 'vieja' saldría idéntica a la nueva y no habría desfase."
+        )
+        cols = list(Base.metadata.tables[tabla].columns)
+        nombres = ", ".join(f'"{c.name}"' for c in cols)
+        defs = ", ".join(
+            str(CreateColumn(c).compile(dialect=eng.dialect)) for c in cols
+        )
+        pks = [c.name for c in cols if c.primary_key]
+        if pks:
+            defs += ", PRIMARY KEY (" + ", ".join(f'"{n}"' for n in pks) + ")"
+        defs += (
+            f', CONSTRAINT "{nombre}" UNIQUE ('
+            + ", ".join(f'"{n}"' for n in columnas)
+            + ")"
+        )
+        with eng.begin() as c:
+            c.exec_driver_sql(f'CREATE TABLE "_tmp" ({defs})')
+            c.exec_driver_sql(f'INSERT INTO "_tmp" SELECT {nombres} FROM "{tabla}"')
+            c.exec_driver_sql(f'DROP TABLE "{tabla}"')
+            c.exec_driver_sql(f'ALTER TABLE "_tmp" RENAME TO "{tabla}"')
+
     eng.envejecer = envejecer  # type: ignore[attr-defined]
+    eng.con_unique = con_unique  # type: ignore[attr-defined]
     return eng
+
+
+def _uniques_reales(eng, tabla: str) -> set[tuple[str, ...]]:
+    """Los UNIQUE que hay EN EL DISCO, vengan de donde vengan.
+
+    `PRAGMA index_list` los da todos juntos y el `origin` dice de dónde salen:
+    'u' de un UNIQUE de tabla, 'c' de un CREATE UNIQUE INDEX, 'pk' de la clave
+    primaria. Para lo que aquí se compara da igual entre los dos primeros —los
+    dos rechazan el mismo INSERT con el mismo mensaje—, pero la clave primaria
+    hay que dejarla fuera.
+
+    Y no por pulcritud. `job_runs.job_id` es una primary key de TEXTO, y SQLite
+    respalda ésas con un `sqlite_autoindex_*` UNIQUE de verdad. Contándola, esa
+    tabla parece arrastrar un UNIQUE sobrante en una base recién creada, y la
+    migración se pondría a rehacerla en cada arranque para quitar algo que el
+    modelo sí declara —sólo que lo declara como `primary_key=True`—.
+    """
+    fuera = set()
+    with eng.begin() as c:
+        for fila in c.exec_driver_sql(f"PRAGMA index_list('{tabla}')"):
+            _, nombre, es_unico, origen, _parcial = (list(fila) + [None] * 5)[:5]
+            if not es_unico or origen == "pk":
+                continue
+            cols = [f[2] for f in c.exec_driver_sql(f"PRAGMA index_info('{nombre}')")]
+            if all(c is not None for c in cols):
+                fuera.add(tuple(sorted(cols)))
+    return fuera
 
 
 # ---------------------------------------------------------------------------
@@ -815,3 +886,164 @@ def test_tras_migrar_no_sobra_ni_una_columna(vieja):
     for nombre, tabla in Base.metadata.tables.items():
         sobran = _columnas(vieja, nombre) - {c.name for c in tabla.columns}
         assert not sobran, f"{nombre} arrastra {sorted(sobran)}"
+
+
+# ---------------------------------------------------------------------------
+# Las RESTRICCIONES, que es lo que no miraba nadie en ninguna de las dos
+# direcciones
+# ---------------------------------------------------------------------------
+
+# Todo lo de arriba compara COLUMNAS. Una restricción de tabla no es una
+# columna, así que nada de lo anterior la ve, y eso costó un día entero de
+# sistema.
+#
+# El 18 de septiembre de 2026 el check-in se guardó y la decisión reventó con
+# `UNIQUE constraint failed: notifications.date, notifications.kind`. Esa
+# restricción llevaba borrada del modelo desde f5e9758, con un docstring en
+# `Notification` que empieza por "POR QUÉ NO HAY UNIQUE SOBRE (date, kind)" y
+# cuenta este fallo exacto -el mensaje ya se ha mandado cuando salta, así que
+# la excepción no impide el segundo aviso: solo destruye el registro de lo que
+# sí pasó-. El modelo estaba arreglado, los tests pasaban, y la base de datos
+# desplegada seguía teniendo la restricción, porque `create_all` no toca las
+# tablas que ya existen y `ensure_schema` solo sabía de columnas.
+#
+# Es el peor sabor de desfase que hay: el que tiene el arreglo escrito, probado
+# y documentado, y no ha llegado al único sitio donde importa.
+
+
+def test_un_unique_que_el_modelo_ya_no_declara_se_va(vieja):
+    """El fallo del 18 de septiembre, en una línea.
+
+    La restricción se quitó del modelo hace meses y siguió viva en el disco. No
+    la veía nadie: no es una columna, y comparar columnas es lo único que había.
+    """
+    vieja.con_unique("notifications", ("date", "kind"), "uq_notification_date_kind")
+    assert ("date", "kind") in _uniques_reales(vieja, "notifications")
+
+    cambios = ensure_schema(vieja)
+
+    assert ("date", "kind") not in _uniques_reales(vieja, "notifications")
+    assert any("notifications" in c for c in cambios), (
+        f"la restricción se fue sin que `ensure_schema` lo contara: {cambios}. "
+        f"Una migración muda es la que nadie encuentra cuando algo sale mal."
+    )
+
+
+def test_quitar_el_unique_no_se_lleva_por_delante_el_historico(vieja):
+    """Lo que hay dentro de `notifications` es el registro de lo que se envió.
+
+    Rehacer una tabla es copiar filas de una a otra, y ahí es donde se pierden
+    los historiales. Este test existe porque el arreglo del desfase es más
+    peligroso que el desfase: la restricción sobrante solo rompe el día que se
+    decide dos veces, y una copia mal hecha se lleva el año entero.
+    """
+    vieja.con_unique("notifications", ("date", "kind"), "uq_notification_date_kind")
+    Session = sessionmaker(bind=vieja, future=True)
+    with Session() as s:
+        s.execute(
+            text(
+                "INSERT INTO notifications (date, kind, channel, status, body) "
+                "VALUES ('2026-09-17', 'decision', 'telegram', 'sent', 'el de ayer')"
+            )
+        )
+        s.commit()
+
+    ensure_schema(vieja)
+
+    with vieja.begin() as c:
+        filas = list(
+            c.exec_driver_sql(
+                "SELECT date, kind, channel, status, body FROM notifications"
+            )
+        )
+    assert filas == [("2026-09-17", "decision", "telegram", "sent", "el de ayer")]
+
+
+def test_sin_el_unique_caben_dos_decisiones_del_mismo_dia(vieja):
+    """La prueba que de verdad importa: que el segundo check-in del día entre.
+
+    Los dos tests de arriba miran el esquema. Éste mira lo único que el usuario
+    nota, que es si rehacer el check-in le contesta con la decisión o con un
+    error de SQLAlchemy. Se escribe aparte porque un `PRAGMA` que dice lo que
+    uno quiere oír y un INSERT que pasa no son la misma afirmación.
+    """
+    vieja.con_unique("notifications", ("date", "kind"), "uq_notification_date_kind")
+
+    ensure_schema(vieja)
+
+    with vieja.begin() as c:
+        for cual in ("el de las nueve", "el de rehacer el check-in"):
+            c.exec_driver_sql(
+                "INSERT INTO notifications (date, kind, channel, status, body) "
+                f"VALUES ('2026-09-18', 'decision', 'telegram', 'sent', '{cual}')"
+            )
+        assert c.exec_driver_sql(
+            "SELECT count(*) FROM notifications WHERE date='2026-09-18'"
+        ).scalar() == 2
+
+
+def test_un_unique_sobrante_con_datos_que_lo_violarian_no_se_puede_dar(vieja):
+    """Rehacer la tabla NO puede fallar por las filas que ya tiene.
+
+    Es la trampa del orden: si el UNIQUE se quitara creando la tabla nueva con
+    la restricción todavía puesta, o copiando antes de quitarla, una base con
+    dos avisos del mismo día -que es exactamente la que se quiere arreglar-
+    reventaría al migrar. La tabla nueva se hace SIN la restricción, así que
+    cualquier cosa que hubiera dentro cabe.
+    """
+    vieja.con_unique("notifications", ("date", "kind"), "uq_notification_date_kind")
+    with vieja.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO notifications (date, kind, channel, status, body) "
+            "VALUES ('2026-09-16', 'decision', 'telegram', 'sent', 'uno')"
+        )
+
+    ensure_schema(vieja)
+
+    with vieja.begin() as c:
+        c.exec_driver_sql(
+            "INSERT INTO notifications (date, kind, channel, status, body) "
+            "VALUES ('2026-09-16', 'decision', 'telegram', 'sent', 'dos')"
+        )
+        assert c.exec_driver_sql("SELECT count(*) FROM notifications").scalar() == 2
+
+
+def test_una_base_al_dia_no_rehace_tablas_que_no_lo_necesitan(vieja):
+    """Sin desfase, ni un cambio.
+
+    Sin esto, la forma más fácil de poner verde todo lo de arriba es rehacer
+    `notifications` en cada arranque: el UNIQUE se iría siempre, y con él se
+    iría media tabla cada vez que la copia tuviera un fallo. Una migración que
+    corre cuando no hace falta es una que nadie mira.
+    """
+    assert ensure_schema(vieja) == []
+
+
+def test_tras_migrar_no_sobra_ni_un_unique_en_ninguna_tabla(vieja):
+    """La comprobación de conjunto, en la dirección que faltaba entera.
+
+    Un test por restricción se olvida de la que alguien quite mañana, que es
+    precisamente lo que pasó con ésta: se quitó del modelo en un commit que
+    explicaba muy bien por qué, y no había nada comparando el modelo con el
+    disco que pudiera notarlo.
+    """
+    vieja.con_unique("notifications", ("date", "kind"), "uq_notification_date_kind")
+    # `activities` va porque el modelo SÍ declara un UNIQUE suyo
+    # -`garmin_activity_id`-, y una barrida que se lleve el sobrante y también
+    # ése deja de detectarse mirando solo `notifications`.
+    vieja.con_unique("activities", ("date",), "uq_activity_date")
+
+    ensure_schema(vieja)
+
+    for nombre, tabla in Base.metadata.tables.items():
+        declarados = {
+            tuple(sorted(c.name for c in r.columns))
+            for r in tabla.constraints
+            if isinstance(r, UniqueConstraint)
+        } | {
+            tuple(sorted(c.name for c in i.columns))
+            for i in tabla.indexes
+            if i.unique
+        }
+        sobran = _uniques_reales(vieja, nombre) - declarados
+        assert not sobran, f"{nombre} arrastra el UNIQUE {sorted(sobran)}"

@@ -1192,6 +1192,79 @@ def test_decided_esta_siempre_pase_lo_que_pase(cliente, monkeypatch):
     ).json()
     assert "decided" in cuerpo
 
+
+def test_si_revienta_DESPUES_de_mandar_el_telegram_se_dice_que_se_mando(
+    cliente, monkeypatch
+):
+    """La pantalla del fallo afirmaba dos cosas que no podía saber.
+
+    El 18 de septiembre de 2026 la decisión reventó al apuntar el aviso en
+    `notifications` -el `UNIQUE` que seguía vivo en la base desplegada-, o sea
+    DESPUÉS de escribir en Hevy y DESPUÉS de que Telegram entregara el mensaje.
+    La PWA pintó "no se ha tocado la rutina de Hevy ni se ha enviado ningún
+    mensaje" mientras el móvil tenía el mensaje delante.
+
+    Esa frase estaba escrita a mano en `app.js` y no miraba nada: era verdad si
+    el fallo ocurría pronto y mentira si ocurría tarde, y el caso tardío es
+    justo el que deja efectos fuera de la base de datos, que son los únicos que
+    el `rollback` no deshace. Decirle a alguien que no se mandó un mensaje que
+    sí se mandó es peor que no decirle nada: le hace rehacer el check-in.
+
+    Así que el servidor cuenta hasta dónde llegó, y el que no llegó a empezar lo
+    dice también.
+    """
+    from app import runner
+
+    real = runner.run_daily
+
+    def revienta_al_final(*a, **kw):
+        res = real(*a, **kw)
+        # El estado que tenía `res` cuando saltó el `UNIQUE`: Hevy escrito y
+        # Telegram entregado.
+        assert res.telegram_status in {"sent", "dry_run", "skipped"}
+        raise runner.DecisionInterrumpida(RuntimeError("UNIQUE constraint"), res)
+
+    monkeypatch.setattr("app.runner.run_daily", revienta_al_final)
+
+    cuerpo = cliente.post(
+        "/api/checkin", json={"day": str(LUNES), "fatigue": 3}
+    ).json()
+
+    assert cuerpo["decided"] is False
+    assert "UNIQUE" in cuerpo["error"]
+    # Lo que la pantalla necesita para no inventarse nada.
+    assert cuerpo["hevy"] is not None, (
+        "sin el estado de Hevy la pantalla vuelve a tener que adivinar, que es "
+        "exactamente de donde venía la frase falsa"
+    )
+    assert cuerpo["telegram"] is not None
+
+
+def test_si_revienta_ANTES_de_empezar_se_dice_que_no_se_toco_nada(
+    cliente, monkeypatch
+):
+    """La otra mitad, que es la que hace útil a la primera.
+
+    Un servidor que contestara "no se sabe" siempre sería igual de inútil que
+    uno que miente: el día que de verdad no se ha tocado nada hay que poder
+    decirlo, porque es cuando reenviar el check-in es la respuesta correcta.
+    """
+    def revienta(cfg_, day):
+        raise RuntimeError("Garmin ha devuelto 429")
+
+    monkeypatch.setattr("app.scheduler._fetch_garmin", revienta)
+
+    cuerpo = cliente.post(
+        "/api/checkin", json={"day": str(LUNES), "fatigue": 3}
+    ).json()
+
+    assert cuerpo["decided"] is False
+    assert cuerpo["hevy"] == "skipped", (
+        "fallar leyendo Garmin es fallar antes de tocar nada, y eso no es lo "
+        "mismo que no saberlo"
+    )
+    assert cuerpo["telegram"] == "skipped"
+
     def revienta(cfg_, day):
         raise RuntimeError("nada va")
 

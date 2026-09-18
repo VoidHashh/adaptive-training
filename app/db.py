@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import UniqueConstraint, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.elements import TextClause
@@ -75,6 +75,99 @@ def _indices_por_columna(conn, tabla: str) -> dict[str, set[str]]:
             if col[2] is not None:
                 fuera.setdefault(col[2], set()).add(indice)
     return fuera
+
+
+def _uniques_reales(conn, tabla: str) -> set[tuple[str, ...]]:
+    """Los UNIQUE que hay en el disco, vengan de un CREATE TABLE o de un índice.
+
+    `PRAGMA index_list` los da todos juntos y su columna `origin` distingue el
+    origen -'u' si viene de un UNIQUE de tabla, 'c' si de un CREATE UNIQUE
+    INDEX, 'pk' si es la clave primaria-, pero aquí ese detalle no cambia nada:
+    los tres rechazan el mismo INSERT con el mismo mensaje, y lo que se compara
+    contra el modelo son las COLUMNAS, no de dónde salió la restricción.
+
+    La clave primaria se queda fuera. En estas tablas es siempre un `id`
+    autoincremental que el modelo declara aparte, y meterla aquí haría que toda
+    tabla pareciera tener un UNIQUE de más el primer día.
+
+    Un índice sobre una EXPRESIÓN tiene columnas a `None` en `index_info`, y de
+    ésos se pasa: no hay ninguno, y adivinar a qué columna equivale una
+    expresión es justo la clase de conjetura que no cabe en algo que rehace
+    tablas.
+    """
+    fuera: set[tuple[str, ...]] = set()
+    for fila in conn.exec_driver_sql(f"PRAGMA index_list('{tabla}')"):
+        _, nombre, es_unico, origen, _parcial = (list(fila) + [None] * 5)[:5]
+        if not es_unico or origen == "pk":
+            continue
+        cols = [c[2] for c in conn.exec_driver_sql(f"PRAGMA index_info('{nombre}')")]
+        if all(c is not None for c in cols):
+            fuera.add(tuple(sorted(cols)))
+    return fuera
+
+
+def _uniques_del_modelo(tabla) -> set[tuple[str, ...]]:
+    """Los que el modelo declara, por las dos vías que tiene para declararlos.
+
+    `UniqueConstraint` y `Index(..., unique=True)` producen el mismo efecto en
+    SQLite y se escriben en sitios distintos del modelo. Mirar solo una de las
+    dos haría que la otra pareciera sobrante y acabara borrada en el primer
+    arranque, que es un fallo bastante peor que el que esto viene a arreglar.
+
+    `unique=True` en un `mapped_column` -como `activities.garmin_activity_id`-
+    llega aquí como un `UniqueConstraint` de una sola columna, así que ya está
+    contado.
+    """
+    de_restricciones = {
+        tuple(sorted(c.name for c in r.columns))
+        for r in tabla.constraints
+        if isinstance(r, UniqueConstraint)
+    }
+    de_indices = {
+        tuple(sorted(c.name for c in i.columns)) for i in tabla.indexes if i.unique
+    }
+    de_columnas = {(c.name,) for c in tabla.columns if c.unique}
+    return de_restricciones | de_indices | de_columnas
+
+
+def _rehacer_sin_restricciones(conn, nombre: str, tabla) -> None:
+    """La danza de doce pasos de SQLite, que es la única forma de quitar un UNIQUE.
+
+    Un UNIQUE declarado en el CREATE TABLE no es un objeto que se pueda soltar:
+    SQLite lo materializa como un `sqlite_autoindex_*` y se niega a borrarlo con
+    DROP INDEX. No hay ALTER que lo quite. Rehacer la tabla es el camino que
+    documenta el propio SQLite, y se hace aquí en el orden que evita las dos
+    trampas conocidas:
+
+      - la tabla NUEVA se crea desde el modelo, o sea SIN la restricción, ANTES
+        de copiar nada. Copiando a una tabla que todavía la tuviera, una base
+        con dos avisos del mismo día -que es justo la que hay que arreglar-
+        reventaría al migrar;
+
+      - se copian las columnas POR NOMBRE y no con un `SELECT *`. El orden de
+        las columnas en el disco no tiene por qué coincidir con el del modelo
+        después de un ADD COLUMN, y un `INSERT ... SELECT *` desalineado no da
+        error: mete la fecha en el campo del texto y sigue.
+
+    Se llama con las columnas ya reconciliadas, así que los dos lados tienen el
+    mismo juego de nombres. Aun así se corta la lista contra lo que hay en el
+    disco, porque una migración que rehace tablas no es sitio para dar nada por
+    hecho.
+    """
+    reales = _columnas_reales(conn, nombre)
+    cols = [c.name for c in tabla.columns if c.name in reales]
+    lista = ", ".join(f'"{c}"' for c in cols)
+
+    # Los índices no viajan con los datos: son objetos de `sqlite_master` que
+    # apuntan a la tabla vieja y desaparecen con ella. `tabla.create` los vuelve
+    # a poner, pero solo si sus nombres están libres, y el DROP de la tabla ya
+    # se ha llevado los suyos por delante.
+    conn.exec_driver_sql(f'ALTER TABLE "{nombre}" RENAME TO "_vieja_{nombre}"')
+    tabla.create(conn)
+    conn.exec_driver_sql(
+        f'INSERT INTO "{nombre}" ({lista}) SELECT {lista} FROM "_vieja_{nombre}"'
+    )
+    conn.exec_driver_sql(f'DROP TABLE "_vieja_{nombre}"')
 
 
 def _sufijo(col) -> str:
@@ -164,6 +257,38 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
     que hay dentro puede ser la única copia. Borrarlo sola sería la clase de
     fallo silencioso que este sistema no se puede permitir, porque un
     `ALTER TABLE DROP COLUMN` no se deshace.
+
+    Y LAS RESTRICCIONES, QUE ERA EL AGUJERO DE DEBAJO DEL AGUJERO
+    ------------------------------------------------------------
+    Todo lo anterior compara COLUMNAS. Una restricción de tabla no es una
+    columna, así que no la veía nada de esto, y costó un día de sistema.
+
+    El 18 de septiembre de 2026 el check-in se guardó y la decisión reventó con
+    `UNIQUE constraint failed: notifications.date, notifications.kind`. Esa
+    restricción llevaba borrada del modelo desde f5e9758, con un docstring en
+    `Notification` que empieza literalmente por "POR QUÉ NO HAY UNIQUE SOBRE
+    (date, kind)" y que describe este fallo exacto: el mensaje de Telegram ya se
+    ha enviado cuando salta, así que la excepción no impide el segundo aviso
+    -sólo destruye el registro de lo que sí pasó- y encima hace `rollback` de la
+    decisión entera. El usuario se queda con un plan en el móvil que no existe
+    en la base de datos.
+
+    El modelo estaba arreglado, el docstring lo explicaba, la suite pasaba, y la
+    base desplegada seguía con la restricción puesta, porque `create_all` no
+    toca lo que ya existe y esto sólo sabía de columnas. Es el peor sabor de
+    desfase: el que tiene el arreglo escrito, probado y documentado, y no ha
+    llegado al único sitio donde importa.
+
+    Un UNIQUE de tabla no se puede soltar con un ALTER -SQLite lo materializa
+    como `sqlite_autoindex_*` y rechaza el DROP INDEX-, así que la tabla se
+    rehace. Eso es mover el histórico de sitio, que es más peligroso que el
+    desfase que arregla, y por eso va en `_rehacer_sin_restricciones` con el
+    orden escrito y con tests que cuentan las filas después.
+
+    En la dirección contraria NO se hace nada: un UNIQUE que el modelo declara y
+    el disco no tiene se queda como está. Ponerlo significaría fallar sobre las
+    filas que ya lo violan, y esas filas son historial: la respuesta correcta
+    ahí es mirarlas una por una, no que un arranque decida solo.
     """
     eng = eng or engine
     if eng.dialect.name != "sqlite":  # pragma: no cover
@@ -174,6 +299,7 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
     anadir: list[tuple[str, str, str]] = []
     quitar: list[tuple[str, str, tuple[str, ...]]] = []
     rehacer: list[str] = []
+    destrabar: list[tuple[str, list[tuple[str, ...]]]] = []
 
     # Se mira TODO antes de tocar NADA. Son dos pasadas a propósito: mezclarlas
     # significa que la primera tabla ya está migrada cuando la tercera resulta
@@ -230,6 +356,16 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
                     continue
                 quitar.append((nombre, col_name, tuple(sorted(indices.get(col_name, ())))))
 
+            # Las restricciones se miran DESPUÉS de las columnas y con la
+            # decisión tomada, pero se aplican al final de todo: rehacer la
+            # tabla aquí dejaría la copia hecha desde un esquema que todavía no
+            # tiene la columna que se está a punto de añadir.
+            sobran_uq = sorted(
+                _uniques_reales(conn, nombre) - _uniques_del_modelo(tabla)
+            )
+            if sobran_uq:
+                destrabar.append((nombre, sobran_uq))
+
     if bloqueos:
         raise SchemaDesfasado(
             "la base de datos no se puede poner al día sola:\n"
@@ -256,6 +392,12 @@ def ensure_schema(eng: Engine | None = None) -> list[str]:
             conn.exec_driver_sql(f'DROP TABLE "{nombre}"')
             Base.metadata.tables[nombre].create(conn)
             cambios.append(f"{nombre} (rehecha, estaba vacía)")
+        for nombre, sobran_uq in destrabar:
+            if nombre in rehacer:
+                continue  # acaba de nacer del modelo: ya viene sin ellas
+            _rehacer_sin_restricciones(conn, nombre, Base.metadata.tables[nombre])
+            cuales = ", ".join("+".join(u) for u in sobran_uq)
+            cambios.append(f"{nombre} (rehecha para soltar el UNIQUE de {cuales})")
 
     if cambios:
         log.warning(

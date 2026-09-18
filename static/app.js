@@ -634,21 +634,77 @@ function terminar() {
   $("resultado").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+/* Cómo se traduce a castellano el estado de cada canal cuando el día se cayó.
+ *
+ * Esto no calcula nada: es un diccionario de palabra a frase. El número, o aquí
+ * el hecho, lo decide el servidor; la pantalla sólo lo escribe con letras que se
+ * entiendan sin saber qué es un `read_only`. */
+const QUEDO_HEVY = {
+  ok: "sí se ha escrito la rutina",
+  skipped: "no se ha tocado",
+  dry_run: "no se ha tocado, estaba en modo prueba",
+  read_only: "no se ha tocado, estaba en modo solo lectura",
+  stale: "no se ha tocado, había una escritura anterior a medias",
+  reverted: "se escribió y se ha deshecho",
+  error: "se ha intentado escribir y ha fallado",
+};
+
+const QUEDO_TELEGRAM = {
+  sent: "sí se ha enviado el mensaje",
+  skipped: "no se ha enviado",
+  dry_run: "no se ha enviado, estaba en modo prueba",
+  error: "se ha intentado enviar y ha fallado",
+};
+
+/* `null` no es `skipped`, y ésa es toda la gracia de esta función.
+ *
+ * «No se ha tocado» es una afirmación y «no se sabe» es la ausencia de una, y
+ * confundirlas es lo que rompió la pantalla el 18 de septiembre de 2026. Si el
+ * servidor no manda el estado, aquí no se rellena el hueco con la opción
+ * optimista: se dice que no se sabe y el usuario va a mirar. */
+function comoQuedo(tabla, estado) {
+  if (estado === null || estado === undefined) return "no se sabe";
+  return tabla[estado] || estado;
+}
+
 /* El servidor puede contestar 200 con `decided: false`: el check-in se guardó y
  * la decisión falló. Eso NO es un éxito y no puede parecerlo, porque el usuario
  * cerraría el móvil convencido de que ya está y se enteraría al no llegarle el
- * mensaje. */
+ * mensaje.
+ *
+ * Y TAMPOCO PUEDE PARECER MÁS LIMPIO DE LO QUE FUE
+ * ------------------------------------------------
+ * Aquí había una frase fija que decía que no se había tocado Hevy ni enviado
+ * ningún mensaje, y era una frase que esta pantalla no estaba en condiciones de
+ * firmar. Hevy y Telegram se tocan FUERA de la transacción: cuando el fallo
+ * llega tarde, el `rollback` borra la fila de la base de datos y deja la rutina
+ * escrita y el mensaje entregado.
+ *
+ * El 18 de septiembre de 2026 pasó exactamente eso -reventó al apuntar el aviso,
+ * con el Telegram ya en el móvil- y la pantalla dijo que no se había mandado
+ * nada, teniendo el usuario el mensaje delante. Ahora se escribe lo que el
+ * servidor informa, y si no informa se dice que no se sabe. */
 function pintarResultado(d) {
   const caja = $("resultado");
   caja.hidden = false;
 
   if (!d.decided) {
+    const hevy = comoQuedo(QUEDO_HEVY, d.hevy);
+    const tg = comoQuedo(QUEDO_TELEGRAM, d.telegram);
+    const aOjo = hevy === "no se sabe" || tg === "no se sabe";
     caja.className = "resultado mal";
     caja.innerHTML = `
       <h2>Guardado, pero sin decidir</h2>
       <p>El check-in <strong>sí</strong> se ha guardado. Lo que ha fallado es la
-         decisión del día, así que <strong>no</strong> se ha tocado la rutina de
-         Hevy ni se ha enviado ningún mensaje.</p>
+         decisión del día.</p>
+      <dl>
+        <dt>Hevy</dt><dd>${escapar(hevy)}</dd>
+        <dt>Telegram</dt><dd>${escapar(tg)}</dd>
+      </dl>
+      ${aOjo ? `
+        <p class="aviso ojo">Donde pone «no se sabe» es que el fallo no dejó rastro de
+           hasta dónde llegó la mañana. Mira la rutina y el móvil antes de
+           volver a enviar, no vaya a hacerse dos veces.</p>` : ""}
       <pre>${escapar(d.error || "sin detalle")}</pre>`;
     return;
   }

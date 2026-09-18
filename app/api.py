@@ -877,8 +877,30 @@ def post_checkin(
 
 
 def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
-    """Decide el día, y si no puede lo dice sin fingir que sí."""
-    from app.runner import run_daily
+    """Decide el día, y si no puede lo dice sin fingir que sí.
+
+    Y CUANDO NO PUEDE, DICE ADEMÁS HASTA DÓNDE LLEGÓ
+    ------------------------------------------------
+    Un fallo decidiendo no es un suceso, son dos muy distintos, y hasta el 18 de
+    septiembre de 2026 los dos salían por el mismo sitio y con la misma cara.
+
+    Uno es caerse ANTES: Garmin no contesta, no hay métricas, no hay decisión y
+    no se ha tocado nada de fuera. El otro es caerse DESPUÉS: la rutina ya está
+    escrita en Hevy y el mensaje ya está en el móvil, y lo que revienta es
+    apuntarlo. Hevy y Telegram están fuera de la transacción, así que el
+    `rollback` deshace la fila y no deshace ni la rutina ni el mensaje.
+
+    Los dos devolvían un diccionario sin `hevy` ni `telegram`, y la pantalla, que
+    no tenía de dónde sacarlos, se los inventaba: decía que no se había enviado
+    nada. Ese día había un Telegram entregado en el móvil del usuario mientras la
+    pantalla decía lo contrario, que es la clase de mentira que hace que alguien
+    reenvíe a mano algo que ya estaba hecho.
+
+    Así que ahora las dos ramas contestan lo que saben: la temprana pone
+    `skipped` porque de verdad no se tocó nada, y la tardía saca el estado real
+    del `DailyResult` que `DecisionInterrumpida` trae consigo.
+    """
+    from app.runner import DecisionInterrumpida, run_daily
     from app.scheduler import _fetch_garmin
 
     try:
@@ -889,6 +911,10 @@ def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
             "decided": False,
             "error": f"el check-in SÍ se ha guardado, pero no se pudo leer "
                      f"Garmin y por tanto no se ha decidido: {exc}",
+            # Aquí sí se puede afirmar: leer Garmin es lo primero que se hace y
+            # pasa antes de tocar nada de fuera.
+            "hevy": "skipped",
+            "telegram": "skipped",
         }
 
     try:
@@ -898,12 +924,27 @@ def _decidir(s: Session, cfg, day: date, *, source: str) -> dict[str, Any]:
             hevy_client=hevy, telegram_client=tg, client_errors=motivos,
             dry_run=settings.dry_run, source=source,
         )
+    except DecisionInterrumpida as exc:
+        log.exception("fallo decidiendo a medias")
+        return {
+            "decided": False,
+            "error": f"el check-in SÍ se ha guardado, pero la decisión ha "
+                     f"fallado: {exc}",
+            "hevy": exc.res.hevy_status,
+            "telegram": exc.res.telegram_status,
+            "problems": exc.res.problemas,
+        }
     except Exception as exc:  # noqa: BLE001
         log.exception("fallo decidiendo")
         return {
             "decided": False,
             "error": f"el check-in SÍ se ha guardado, pero la decisión ha "
                      f"fallado: {exc}",
+            # Sin `DecisionInterrumpida` no hay forma de saber hasta dónde se
+            # llegó, y `None` es precisamente eso: no lo sé. La pantalla tiene
+            # que distinguir «no se tocó» de «no lo sé», porque no son lo mismo.
+            "hevy": None,
+            "telegram": None,
         }
 
     return {

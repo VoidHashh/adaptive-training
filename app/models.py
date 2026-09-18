@@ -723,6 +723,19 @@ class Notification(Base):
     Cada intento de aviso es una fila. Dos mensajes en el móvil son dos filas,
     porque el registro tiene que parecerse a la realidad: colapsarlos en uno
     haría que el histórico dijera que solo se avisó una vez.
+
+    Y QUITARLO DE AQUÍ NO LO QUITÓ DE NINGUNA BASE DE DATOS
+    -------------------------------------------------------
+    Esto de arriba se escribió meses antes del 18 de septiembre de 2026, que es
+    el día en que el fallo volvió a pasar, exactamente como está contado, en la
+    máquina de verdad. El modelo llevaba arreglado desde f5e9758 y la base
+    desplegada seguía con la restricción puesta: `create_all` crea las tablas
+    que faltan y no toca las que ya existen, y `ensure_schema` sólo comparaba
+    columnas —una restricción de tabla no es una columna—.
+
+    O sea que este docstring describía el fallo con precisión mientras el fallo
+    seguía armado. Un arreglo que no llega al disco no es un arreglo, y la parte
+    que faltaba está ahora en `_rehacer_sin_restricciones`, en `app/db.py`.
     """
 
     __tablename__ = "notifications"

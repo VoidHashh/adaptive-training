@@ -350,13 +350,19 @@ const contexto = {
     if (u.includes("/api/checkin")) {
       vecesEnviado += 1;
       cuerpoEnviado = JSON.parse(opciones.body);
+      // `guion.respuesta` deja que el test elija QUÉ contesta el servidor, y no
+      // es un lujo: la rama interesante de `pintarResultado` es la de
+      // `decided: false`, y con la respuesta clavada a `decided: true` esa rama
+      // no la pisaba el arnés nunca. Ahí vivió durante meses una frase fija que
+      // afirmaba que no se había enviado ningún mensaje, incluso los días en que
+      // sí se había enviado.
       return {
         ok: true,
         status: 200,
-        json: async () => ({
+        json: async () => guion.respuesta ?? {
           decided: true, light: "green", session: "Día 1",
           hevy: "escrita", telegram: "enviado", problems: [],
-        }),
+        },
       };
     }
     if (u.includes("/api/health")) {
@@ -550,6 +556,14 @@ console.log(JSON.stringify({
     ]),
   ),
   faltan: faltan.hidden ? null : faltan.textContent,
+  // La tarjeta del final, tal cual queda. Sale el HTML y no el texto porque lo
+  // que se quiere mirar incluye el `<dl>` de Hevy y Telegram.
+  resultado: elemento("resultado").hidden
+    ? null
+    : {
+        clase: elemento("resultado").className,
+        html: elemento("resultado").innerHTML,
+      },
   enviar_deshabilitado: elemento("enviar").disabled,
   valores: vm.runInContext("JSON.stringify(estado.valores)", contexto),
   cuerpo: cuerpoEnviado,

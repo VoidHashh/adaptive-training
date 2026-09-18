@@ -104,6 +104,34 @@ class DailyResult:
         return not self.problemas
 
 
+class DecisionInterrumpida(RuntimeError):
+    """La mañana se cayó A MEDIAS, y trae consigo hasta dónde llegó.
+
+    POR QUÉ NO BASTA CON DEJAR SUBIR LA EXCEPCIÓN
+    ---------------------------------------------
+    Hevy y Telegram están FUERA de la transacción. Cuando algo revienta después
+    de escribir la rutina o de entregar el mensaje, el `rollback` deshace la
+    decisión en la base de datos y no deshace ninguna de las dos cosas: el
+    teléfono se queda con un plan que el sistema ya no recuerda haber tomado.
+
+    Sin esto, la única forma que tenía la PWA de contar ese momento era una
+    frase escrita a mano -"no se ha tocado la rutina de Hevy ni se ha enviado
+    ningún mensaje"- que acertaba si el fallo era temprano y mentía si era
+    tardío. El 18 de septiembre de 2026 fue tardío: la excepción saltó al
+    apuntar el aviso en `notifications`, con el mensaje ya en el móvil, y la
+    pantalla dijo que no se había mandado nada.
+
+    Así que el resultado parcial viaja con la excepción. `res` es el mismo
+    objeto que habría devuelto `run_daily`, con `hevy_status` y
+    `telegram_status` diciendo lo que de verdad ocurrió antes del golpe.
+    """
+
+    def __init__(self, causa: BaseException, res: DailyResult) -> None:
+        super().__init__(str(causa))
+        self.causa = causa
+        self.res = res
+
+
 @dataclass
 class ReconcileResult:
     """Qué se ha dado por hecho, y de qué pruebas."""
@@ -356,6 +384,46 @@ def run_daily(
     )
 
     res = DailyResult(day=day, decision=decision)
+    # A PARTIR DE AQUÍ SE TOCAN COSAS DE FUERA, así que a partir de aquí una
+    # excepción tiene que llevarse consigo hasta dónde se llegó.
+    #
+    # Hevy y Telegram no entran en la transacción: el `rollback` de quien llame
+    # deshace la decisión y no deshace ni la rutina escrita ni el mensaje
+    # entregado. Dejar subir la excepción pelada obliga a la pantalla del fallo
+    # a adivinar, y adivinando dijo "no se ha enviado ningún mensaje" el día que
+    # el mensaje ya estaba en el móvil. Ver `DecisionInterrumpida`.
+    try:
+        return _ejecutar_el_dia(
+            session, cfg, day, decision, state, signals, metrics, res,
+            hevy_client=hevy_client, telegram_client=telegram_client,
+            client_errors=client_errors, dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise DecisionInterrumpida(exc, res) from exc
+
+
+def _ejecutar_el_dia(
+    session: Session,
+    cfg: Any,
+    day: date,
+    decision: Any,
+    state: Any,
+    signals: Any,
+    metrics: list,
+    res: DailyResult,
+    *,
+    hevy_client: Any,
+    telegram_client: Any,
+    client_errors: dict[str, str] | None,
+    dry_run: bool,
+) -> DailyResult:
+    """La mitad que escribe: base de datos, Hevy y Telegram, en ese orden.
+
+    Está separada de `run_daily` solo para que el `try` de arriba tenga un
+    cuerpo con nombre en vez de cuarenta líneas indentadas. La frontera no es
+    caprichosa: por encima se decide -y decidir no toca nada de fuera-, por
+    debajo se ejecuta.
+    """
     fila = repo.save_decision(session, decision)
 
     # El recordatorio de recalibración, DESPUÉS de guardar. `save_decision`
