@@ -826,19 +826,23 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_cuatro_trabajos_del_dia_y_los_dos_del_arranque(cfg):
-    """Cuatro con hora y dos que se disparan al arrancar.
+def test_estan_los_cinco_trabajos_del_dia_y_los_dos_del_arranque(cfg):
+    """Cinco con hora y dos que se disparan al arrancar.
 
     Los dos del arranque hacen cosas distintas y por eso son dos: uno recupera
     de Garmin los días de bienestar que falten, y el otro -`startup_audit`-
     mira qué trabajos DEBIERON correr mientras el sistema no estaba. Ver
     `tests/test_arranque_perdido.py` para por qué el aviso de APScheduler no
     cubre ese caso.
+
+    El quinto con hora es `watchdog`, y es de otra clase que los otros cuatro:
+    aquéllos HACEN algo -leen Garmin, deciden, reconcilian, evalúan- y éste
+    solo mira. Ver `tests/test_vigilancia.py`.
     """
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
         "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
-        "backfill_wellness", "startup_audit",
+        "watchdog", "backfill_wellness", "startup_audit",
     }
 
 
@@ -863,6 +867,12 @@ def test_el_aviso_de_percepcion_va_despues_de_la_decision(cfg):
 
     assert minutos("perception_notice") > minutos("decision_fallback"), (
         "el aviso de ayer tiene que llegar despues del plan de hoy"
+    )
+    # Y la vigilancia también, por otro motivo: mira en qué estado ha quedado
+    # el sistema DESPUÉS de las escrituras del día. Antes de las nueve estaría
+    # mirando las de ayer y diría que todo está bien el día que se rompa.
+    assert minutos("watchdog") > minutos("decision_fallback"), (
+        "la vigilancia tiene que mirar despues de que se haya escrito en Hevy"
     )
 
 

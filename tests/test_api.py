@@ -264,7 +264,7 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     assert sched["running"] is True, "la aplicación arrancó sin planificador"
     assert set(sched["jobs"]) == {
         "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
-        "backfill_wellness", "startup_audit",
+        "watchdog", "backfill_wellness", "startup_audit",
     }
     assert all(sched["jobs"].values()), (
         "un trabajo sin próxima ejecución está montado pero no se va a ejecutar, "
@@ -606,8 +606,10 @@ def test_un_planificador_vivo_y_sin_trabajos_tampoco_es_sano(cliente, monkeypatc
     """
     from app import api as mod
 
-    monkeypatch.setattr(mod, "_estado_planificador",
-                        lambda req: {"running": True, "jobs": {}, "error": None})
+    monkeypatch.setattr(
+        mod, "_estado_planificador",
+        lambda sched, error=None: {"running": True, "jobs": {}, "error": None},
+    )
     cuerpo = cliente.get("/api/health").json()
 
     assert cuerpo["status"] == "revisar"
@@ -630,7 +632,12 @@ def test_cuando_el_planificador_dice_por_que_el_veredicto_lo_repite(cliente, mon
     """
     from app import api as mod
 
-    monkeypatch.setattr(mod, "_estado_planificador", lambda req: {
+    # Dos argumentos: `_estado_planificador` recibe el planificador y su error,
+    # no la petición. Cambió al sacar `estado_de_salud` del endpoint para que el
+    # trabajo de vigilancia de las 09:45 pudiera mirar lo mismo que la pantalla,
+    # y ese trabajo corre en el hilo del planificador, donde no hay ninguna
+    # petición de la que sacarlo.
+    monkeypatch.setattr(mod, "_estado_planificador", lambda sched, error=None: {
         "running": False, "jobs": {},
         "error": "desactivado por SCHEDULER_ENABLED",
     })

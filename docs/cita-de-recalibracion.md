@@ -153,6 +153,14 @@ el juez no es independiente, porque `comp_rpe` va dentro de `performance_pct`.
 
 Estas son las señales de que algo va mal de verdad:
 
+Desde el 18 de septiembre hay un **trabajo de vigilancia a las 09:45** que
+mira el estado del sistema y manda un Telegram SOLO si hay algo: una escritura
+de Hevy a medias, una credencial que falta, el `config.yaml` del disco distinto
+del cargado o el reloj desajustado. Avisa cada mañana mientras dure, a
+propósito. Lo que NO puede vigilar es a sí mismo: si el planificador no
+arranca, este trabajo tampoco, y de eso avisan `auditar_arranque` y el
+healthcheck de Docker.
+
 | Señal | Qué significa |
 |---|---|
 | No llega el Telegram diario | El planificador no corrió, o falló el envío. Mirar `/api/health`. |
@@ -228,10 +236,28 @@ Nada de esto está a medias: está terminado y sin datos que enseñar.
   medida (b) de calibración acumulase casos juzgables. Sin esto, la cita de
   calibración puede no llegar nunca: se puede marcar el desacuerdo, pero no
   pedir otra sesión.
-- **`notifications` partida en dos.** Ver el aviso del cierre: las 5 filas
-  viejas están en `_vieja_notifications` y la tabla en uso arrancó vacía. No
-  rompe nada —nadie lee esa tabla, solo se escribe— pero el histórico de
-  mensajes está en dos sitios.
+
+  **QUEDA FUERA A PROPÓSITO, y el criterio es del usuario:** si durante estas
+  semanas echa de menos poder pedir la sesión completa, eso demuestra que hace
+  falta de verdad; si no lo echa de menos, es que sobraba. O sea que la
+  ausencia de la medida (b) no es un fallo que arreglar en la próxima cita: es
+  el experimento. Lo que hay que traer a la cita no es el control construido,
+  sino la respuesta a «¿lo he echado de menos?».
+- **Por qué se cortó a medias la migración de `notifications`.** El 18 de
+  septiembre la tabla apareció vacía con las 5 filas reales en una
+  `_vieja_notifications` que debería haberse borrado. Se copiaron y se limpió
+  la tabla sobrante ese mismo día (copia previa de la base en
+  `/app/data/app.db.antes-de-notifications-20260918191949`), así que el
+  síntoma está resuelto. **Lo que no se ha explicado es la causa**: esa
+  migración corre entera dentro de un `with eng.begin()` en
+  `app/db.py:377`, o sea en una sola transacción, y SQLite hace las DDL
+  transaccionales. Un corte a mitad debería haber deshecho también el
+  renombrado, y no lo hizo. Hipótesis sin comprobar: el renombrado se
+  confirmó en un arranque anterior y el `create_all()` de `init_db()`
+  —que corre ANTES de `ensure_schema`— recreó la tabla vacía en el siguiente,
+  con lo que la migración ya se vio innecesaria y no reintentó. Si es eso,
+  puede repetirse con cualquier tabla la próxima vez que se toque el esquema,
+  y esta vez sí podría tocarle a una que se lea. **Mirarlo en la cita del 28.**
 - **Los tres READMEs y `docs/primer-dia.md`** no los ata ningún test, a
   diferencia de `docs/analisis.md`. Decisión consciente: son documentación que
   se lee a mano.

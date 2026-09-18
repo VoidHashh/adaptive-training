@@ -1817,3 +1817,56 @@ def test_el_selector_no_entra_en_las_claves_del_checkin(cfg):
     """
     assert cfg.selector()["key"] not in cfg.checkin_keys()
     assert cfg.checkin_keys() == cfg.slider_keys() + cfg.pregunta_keys()
+
+
+# ---------------------------------------------------------------------------
+# El orden de los trabajos de la mañana
+# ---------------------------------------------------------------------------
+#
+# Dos reglas de orden viven en el validador y ninguna de las dos la comprobaba
+# nadie. Se descubrió al añadir la segunda: un banco de mutaciones sobre el
+# trabajo de vigilancia cambió `require(vigilancia > decision, ...)` por
+# `require(True, ...)` y la batería entera siguió verde.
+#
+# Es exactamente la avería que este repositorio persigue, cometida por una
+# guarda. Una regla de validación sin test no protege de nada: protege hasta el
+# día que alguien la toque, que es justo el día en que hace falta.
+
+
+def test_el_aviso_de_percepcion_no_puede_adelantarse_a_la_decision(cfg_copia):
+    """Habla de AYER, y adelantarlo no rompe nada visible.
+
+    El trabajo se ejecutaría, el mensaje saldría y todo parecería correcto. Lo
+    que se pierde es el motivo entero de que el aviso vaya aparte: llegando
+    primero se convierte en el preámbulo del plan de hoy, o sea en un argumento
+    sobre si entrenar. Y a esa hora puede que no haya check-in todavía, que es
+    el dato del que sale el esfuerzo percibido de ayer.
+    """
+    cfg_copia.raw["schedule"]["fallback_decision_time"] = "09:00"
+    cfg_copia.raw["schedule"]["perception_notice_time"] = "08:30"
+    fallo = errores(cfg_copia.raw)
+    assert "perception_notice_time" in fallo
+    assert "08:30" in fallo
+
+
+def test_la_vigilancia_no_puede_adelantarse_a_la_decision(cfg_copia):
+    """Mira en qué estado ha QUEDADO el sistema, así que va después.
+
+    Las dos cosas que pueden dejarlo mal son las escrituras en Hevy: la de las
+    06:30 con check-in y la de respaldo de las 09:00. Puesta antes, la
+    vigilancia miraría el estado de ayer y diría que todo está bien
+    precisamente el día que se rompa; el aviso llegaría veinticuatro horas
+    tarde y nadie ataría una cosa con la otra.
+    """
+    cfg_copia.raw["schedule"]["fallback_decision_time"] = "09:00"
+    cfg_copia.raw["schedule"]["watchdog_time"] = "07:00"
+    fallo = errores(cfg_copia.raw)
+    assert "watchdog_time" in fallo
+    assert "07:00" in fallo
+
+
+def test_la_hora_de_la_vigilancia_tiene_que_ser_una_hora(cfg_copia):
+    """Como las otras cuatro. Una hora ilegible revienta al montar el
+    planificador, y sería a las seis de la mañana del día del despliegue."""
+    cfg_copia.raw["schedule"]["watchdog_time"] = "y cuarto"
+    assert "watchdog_time" in errores(cfg_copia.raw)

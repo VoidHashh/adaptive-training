@@ -2549,6 +2549,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
             "fallback_decision_time",
             "evening_summary_time",
             "perception_notice_time",
+            "watchdog_time",
             "garmin_retry",
         },
         "schedule",
@@ -2558,6 +2559,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "fallback_decision_time",
         "evening_summary_time",
         "perception_notice_time",
+        "watchdog_time",
     )
     for clave in HORAS:
         v = sched.get(clave)
@@ -2604,6 +2606,22 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"tiene que llegar cuando el plan de hoy ya se ha mandado, o los dos "
             f"mensajes se leen como uno solo y el contador acaba pareciendo un "
             f"argumento a favor o en contra de entrenar hoy",
+        )
+
+    # La vigilancia mira el ESTADO en el que ha quedado el sistema, y los dos
+    # momentos en que puede quedar mal son las escrituras en Hevy: la de las
+    # 06:30 con check-in y la de respaldo de las 09:00. Puesta antes, miraría
+    # lo de ayer y diría que todo está bien el día que se rompa; el aviso
+    # llegaría veinticuatro horas tarde y nadie ataría una cosa con la otra.
+    vigilancia = _min("watchdog_time", "09:45")
+    if vigilancia is not None and decision is not None:
+        require(
+            vigilancia > decision,
+            f"schedule.watchdog_time ({sched.get('watchdog_time')}) tiene que "
+            f"ser posterior a schedule.fallback_decision_time "
+            f"({sched.get('fallback_decision_time')}): la vigilancia comprueba "
+            f"en qué estado ha quedado el sistema DESPUÉS de las escrituras "
+            f"del día, y antes de esa hora estaría mirando las de ayer",
         )
 
     retry = sched.get("garmin_retry") or {}

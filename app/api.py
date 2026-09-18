@@ -469,6 +469,26 @@ def health(
     avisada por una avería total -precisamente porque el código viejo rechaza el
     YAML nuevo, así que no volvería a levantarse-.
     """
+    return estado_de_salud(
+        cfg, s,
+        sched=getattr(request.app.state, "scheduler", None),
+        sched_error=getattr(request.app.state, "scheduler_error", None),
+    )
+
+
+def estado_de_salud(cfg, s: Session, *, sched, sched_error=None) -> dict[str, Any]:
+    """El mismo diccionario que sirve `/api/health`, sin depender de HTTP.
+
+    Se saca del endpoint para que el trabajo de vigilancia de las 09:45 mire
+    EXACTAMENTE lo que mira la pantalla. La alternativa era que el trabajo se
+    hiciera sus propias comprobaciones, y entonces habría dos opiniones sobre la
+    salud del sistema que podrían discrepar: el Telegram diciendo que todo va
+    bien y la pantalla diciendo que no, sin forma de saber cuál miente.
+
+    Es el mismo argumento que `_problemas_de_salud` ya hacía un nivel más
+    abajo -«no vuelve a preguntar nada, lee lo ya calculado»- aplicado un
+    escalón más arriba.
+    """
     salida = {
         "config_hash": cfg.hash,
         "timezone": cfg.timezone,
@@ -483,7 +503,7 @@ def health(
         # sana: sirve la PWA, contesta 200, y no decide nunca. Se dice cuántos
         # trabajos hay y cuándo toca cada uno, porque "arrancado" tampoco basta:
         # un planificador vivo con cero trabajos falla exactamente igual.
-        "scheduler": _estado_planificador(request),
+        "scheduler": _estado_planificador(sched, sched_error),
         "clock": _estado_del_reloj(cfg),
         "config_file": _estado_del_config(cfg),
         # Y qué código. `config_file` dice si el YAML del disco es el que
@@ -869,9 +889,16 @@ def _iso_offset(delta: timedelta | None) -> str | None:
     return f"{signo}{horas:02d}:{resto // 60:02d}"
 
 
-def _estado_planificador(request: Request) -> dict[str, Any]:
-    sched = getattr(request.app.state, "scheduler", None)
-    error = getattr(request.app.state, "scheduler_error", None)
+def _estado_planificador(sched: Any, error: str | None = None) -> dict[str, Any]:
+    """Recibe el planificador, no la petición.
+
+    Lo pedía entero -`request`- para sacarle dos atributos, y eso lo ataba a
+    haber una petición HTTP delante. El trabajo de vigilancia corre DENTRO del
+    planificador y no tiene ninguna: con la firma vieja habría tenido que
+    fabricar una petición falsa o saltarse este bloque, y saltárselo es peor de
+    lo que parece -`_problemas_de_salud` lee un `scheduler` vacío como «no está
+    corriendo» y habría avisado de una avería inventada cada día-.
+    """
     if sched is None:
         return {
             "running": False,

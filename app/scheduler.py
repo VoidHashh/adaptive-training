@@ -806,6 +806,112 @@ NOMBRES_LEGIBLES = {
 }
 
 
+def mensaje_de_vigilancia(problemas: list[str]) -> str:
+    """Lo que ya dice la pantalla, en un mensaje.
+
+    Las frases NO se reescriben aquí: salen de `_problemas_de_salud`, que es la
+    misma función que llena el bloque `problemas` de `/api/health` y la banda
+    roja de la pantalla de check-in. Redactarlas otra vez daría dos textos para
+    el mismo fallo, y el día que discreparan habría que averiguar cuál de los
+    dos mira bien.
+    """
+    lineas = [
+        "⚠️ <b>Hay algo que mirar en el sistema.</b>",
+        "",
+    ]
+    lineas += [f"• {escapar_html(p)}" for p in problemas]
+    lineas += [
+        "",
+        "<i>Esto no lo ha provocado un fallo de hoy: es el estado en el que "
+        "está el sistema ahora mismo. Seguirá avisando cada mañana hasta que "
+        "se arregle.</i>",
+    ]
+    return "\n".join(lineas)
+
+
+def job_vigilancia(
+    cfg: Any,
+    *,
+    sched: Any = None,
+    telegram_client: Any = None,
+    dry_run: bool = False,
+) -> list[str]:
+    """Mira la salud del sistema una vez al día y avisa SOLO si hay algo.
+
+    POR QUÉ HACE FALTA
+    ------------------
+    Hasta ahora Telegram avisaba de cosas que PASAN: la decisión del día, un
+    trabajo que falla, un trabajo que no se ejecutó. Nada avisaba de cosas que
+    ESTÁN: una escritura de Hevy a medias, una credencial que falta, el
+    `config.yaml` del disco distinto del cargado, el reloj desajustado. Esas
+    cuatro salían en `/api/health` y en la banda de la pantalla de check-in, o
+    sea que solo se veían mirando, y el encargo era justo el contrario:
+    enterarse sin mirar.
+
+    La que lo hizo urgente es la escritura a medias. Con `dry_run` puesto no
+    podía ocurrir; desde el 18 de septiembre de 2026 el sistema escribe en Hevy
+    de verdad, así que ya hay un estado en el que una rutina se queda a medias
+    y nadie se entera hasta abrir la aplicación.
+
+    LO QUE ESTE TRABAJO NO PUEDE VIGILAR, y conviene tenerlo escrito
+    ---------------------------------------------------------------
+    A sí mismo. Corre dentro del planificador, así que si el planificador no
+    arranca este trabajo tampoco, y el aviso que diría «el planificador no está
+    corriendo» no sale. No es un descuido que se pueda arreglar desde aquí: un
+    vigilante que vive dentro de lo vigilado nunca informa de su propia muerte.
+    Lo que cubre ese hueco es otra cosa: `auditar_arranque`, que al levantarse
+    mira qué citas se perdieron mientras no estaba, y el healthcheck de Docker.
+    Por eso el bloque del planificador se sigue calculando aquí -se le pasa el
+    `sched` de verdad- en vez de saltárselo: saltárselo haría que
+    `_problemas_de_salud` leyera un planificador vacío y avisara todos los días
+    de una avería inventada.
+
+    AVISA TODOS LOS DÍAS MIENTRAS DURE, y es deliberado. Lo tentador es mandar
+    el aviso una vez y callar hasta que cambie el estado, para no dar la lata.
+    Pero las cuatro señales que mira son estados que hay que ARREGLAR A MANO, y
+    un aviso que se manda una vez y no se repite es un aviso que se lee el día
+    que uno está ocupado y no vuelve nunca. La lata es la función.
+    """
+    from app.api import _problemas_de_salud, estado_de_salud
+
+    with session_scope() as s:
+        estado = estado_de_salud(cfg, s, sched=sched)
+        problemas = _problemas_de_salud(estado)
+
+    if not problemas:
+        log.info("vigilancia: sin nada que mirar")
+        return []
+
+    for p in problemas:
+        log.warning("vigilancia: %s", p)
+
+    if telegram_client is None:
+        # Ni se lanza ni se calla: queda escrito. Reventar aquí mandaría un
+        # Telegram de error por el mismo canal que no está, que es lo que ya
+        # razona `job_aviso_percepcion`.
+        log.error(
+            "vigilancia: %d problema(s) y no hay cliente de Telegram para "
+            "contarlo", len(problemas),
+        )
+        return problemas
+
+    try:
+        r = telegram_client.send(mensaje_de_vigilancia(problemas), dry_run=dry_run)
+    except Exception:  # noqa: BLE001
+        log.exception("no se pudo mandar el aviso de vigilancia")
+        return problemas
+
+    # Igual que en `_avisador` y en la auditoría de arranque: `send` no lanza
+    # cuando Telegram dice que no, devuelve un resultado diciéndolo, y tirarlo
+    # deja el aviso de avería sin rastro en ninguna parte.
+    if r is not None and not getattr(r, "sent", False):
+        log.error(
+            "el aviso de vigilancia NO se ha enviado: %s",
+            getattr(r, "error", None) or getattr(r, "reason", ""),
+        )
+    return problemas
+
+
 def mensaje_de_arranque(
     encontrados: list[tuple[str, list[datetime], bool]], tz: ZoneInfo
 ) -> str:
@@ -947,6 +1053,19 @@ def build_scheduler(
             "dry_run": dry_run,
         },
         id="perception_notice", name="Contar las disociaciones de ayer",
+    )
+    # La vigilancia, DESPUÉS de la decisión de respaldo y del aviso. A esa hora
+    # ya han pasado las dos cosas que pueden dejar el sistema en un estado que
+    # haya que mirar -la escritura en Hevy de las 06:30 con check-in y la de las
+    # 09:00 sin él-, así que si alguna se quedó a medias el aviso sale el mismo
+    # día y no al siguiente. Antes de las nueve miraría el estado de ayer.
+    sched.add_job(
+        job_vigilancia, cron("watchdog_time", "09:45", "watchdog"),
+        args=[cfg],
+        kwargs={
+            "sched": sched, "telegram_client": telegram_client, "dry_run": dry_run,
+        },
+        id="watchdog", name="Mirar si hay algo que arreglar",
     )
     # El cuarto trabajo no tiene hora: tiene un retraso. Ver
     # `job_backfill_wellness` para por qué se dispara al arrancar y no a una
