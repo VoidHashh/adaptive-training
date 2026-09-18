@@ -22,7 +22,7 @@ existe en Garmin Connect y hacerlo otra vez peor no ayuda a nadie.
 
 ## Estado
 
-Implementada. Una portada y seis vistas, ocho endpoints, todos **solo de
+Implementada. Una portada y siete vistas, nueve endpoints, todos **solo de
 lectura** bajo `/api/metrics/`:
 
 | Vista | Endpoint | Módulo |
@@ -35,6 +35,7 @@ lectura** bajo `/api/metrics/`:
 | 4. Auditoría | `/api/metrics/auditoria` | `analysis/auditoria.py` |
 | 5. Percepción | `/api/metrics/percepcion` | `analysis/rendimiento.py` |
 | 6. Umbral de la bici | `/api/metrics/umbral` | `analysis/umbral.py` |
+| 7. Calibración | `/api/metrics/calibracion` | `analysis/calibracion.py` |
 
 El front es `static/metricas.html` + `static/metricas.js`, que no escribe a mano
 ni un deslizador ni una regla: todo lo que se puede elegir se rellena de lo que
@@ -227,6 +228,128 @@ Ninguno devuelve un cero de relleno; los dos devuelven el motivo escrito.
   devolvería una cadena vacía. Un hueco sin motivo en mitad de la pantalla es
   justo el fallo silencioso que este panel persigue, y ningún test de los que
   comprueban que no se pinta `undefined` lo vería.
+
+### 7. Calibración
+
+La única vista que no mira al cuerpo: mira a las **previsualizaciones**, o sea a
+las veces que se pulsó PREVISUALIZAR, se leyó lo que el motor iba a decidir y se
+dijo si se compartía o no. El objetivo escrito cuando se pidió ese botón no era
+llevar la cuenta de quién gana, era **calibrar**: que las respuestas de la mañana
+y las decisiones del motor converjan con el tiempo hasta que lo que dice el
+sistema coincida con lo que uno sabe de sí mismo.
+
+Un marcador no hace converger nada. Lo que lo hace es saber **en qué sitio
+concreto** se discrepa, y ese sitio es una regla con su umbral. De ahí que sean
+tres medidas y no una, porque son tres preguntas distintas y ninguna sustituye a
+otra:
+
+- **(a) Cuántas veces, y hacia dónde.** Sin la dirección, «discrepo el 30 %»
+  junta a dos personas opuestas: la que siempre quiere entrenar más de lo que le
+  dicen y la que siempre quiere menos.
+- **(b) Quién acertó**, medido contra cómo salió la sesión. Es la única de las
+  tres que no se puede contestar con la tabla de previsualizaciones sola, y la
+  única que se calla hasta tener muestra.
+- **(c) Si el desacuerdo se agolpa en un umbral.** Es la que sirve para
+  **arreglar** algo: doce desacuerdos repartidos entre nueve reglas no dicen qué
+  tocar; nueve de doce el día que disparó `fatiga_alta` sí.
+
+**Los desacuerdos viven en su propia tabla**, `previews`, y no en `decision`. Una
+previsualización es una simulación pedida a mano y puede haber tres el mismo día;
+metidas en la corriente de decisiones contaminarían los percentiles de todas las
+demás vistas, que cuentan una decisión por día. Por eso esta vista es la única que
+lee `previews`, y por eso `vista_calibracion` **solo lee**: la tabla es el
+registro de lo que se pensó cada mañana, y una pantalla que al abrirse escribiera
+en ella estaría cambiando el dato por mirarlo.
+
+#### El porcentaje va sobre las opinadas, no sobre el total
+
+`disagreed` tiene **tres** estados y no dos, y el tercero no es un hueco: mirar la
+tarjeta y cerrar el móvil sin decir nada es lo que más pasa. Meter esas en el
+denominador haría bajar el porcentaje cada vez que se mira y no se contesta, y el
+número acabaría midiendo con qué frecuencia se pulsa un botón. Los dos
+denominadores viajan igual, porque el segundo dice otra cosa que hace falta
+saber: si se opina una de cada veinte veces, el porcentaje de arriba describe a
+las que opinan, no a las mañanas.
+
+La **dirección** sale de comparar la dureza pedida con la propuesta
+(`DUREZA`, en `engine/session_builder.py`), nunca del motivo escrito a mano: una
+medida que dependiera de si uno tecleó «me encuentro bien» o «estoy fresco» no
+sería una medida. Y sin anulación no se inventa dirección — «dije que no y no pedí
+nada distinto» es una respuesta entera, y repartirla entre las otras dos es como
+se fabrican las tendencias que no existen. Las **forzadas en rojo** van sueltas
+por ser un subconjunto de «más dura», no una cuarta casilla: sumarlas daría un
+total mayor que el número de desacuerdos.
+
+En (c), cada grupo publica **los dos porcentajes** porque uno solo miente en el
+caso normal. Una regla que dispara todos los días se lleva el «cuánto pesa» por
+ser la más frecuente aunque se discrepe de ella menos que de ninguna; una que ha
+disparado dos veces y se discrepó las dos tiene un 100 % en el «con qué
+frecuencia» y no es donde hay que mirar. El sitio que señalan es el grupo que pesa
+mucho **y** en el que se discrepa mucho, y eso solo se ve con los dos delante.
+
+#### El juez no es independiente, y la etiqueta viaja con el veredicto
+
+La medida (b) compara los desacuerdos contra `session_performance`, y dentro de
+ese índice va `comp_rpe`: el esfuerzo percibido que uno mismo apunta a la mañana
+siguiente. O sea que la nota que va a decidir si uno tenía razón la pone, en
+parte, uno mismo.
+
+Eso no la invalida —es la única medida del resultado que hay— pero sí tiene que
+ir con la etiqueta puesta, y por eso `ETIQUETA_JUEZ` viaja en el payload y se
+pinta junto al veredicto. Un veredicto presentado como neutral estaría fingiendo
+una independencia que no tiene, y el día que dijera «casi siempre tenías razón»
+no habría forma de distinguir entre acertar y ser indulgente al puntuarse.
+
+De ahí salen tres decisiones más:
+
+- **`MINIMO_JUICIOS = 5`, más alto que el `N_MINIMO_EXPUESTOS = 3` de impacto.**
+  Allí el desenlace lo mide el reloj; aquí lo mide en parte el propio usuario. Un
+  juez que no es independiente pide más muestra antes de dejarle hablar, no menos.
+- **Solo juzgan los desacuerdos que se ejecutaron.** «Pedí otra sesión y se hizo
+  la del motor igual» no dice quién tenía razón: la sesión que salió es la del
+  motor, así que el resultado dice lo mismo que cualquier otro día. Y hace falta
+  un **grupo de contraste** —los días medidos en que no se llevó la contraria—,
+  porque «los días que discrepas salen en el percentil 62» no significa nada sin
+  saber en qué percentil sale un día cualquiera.
+- **El veredicto dice hacia dónde salieron las sesiones, no «tenías razón».** La
+  distancia entre esas dos frases es exactamente lo que el `comp_rpe` de dentro
+  del índice no permite recorrer.
+
+#### La vista no se esconde; lo único que se calla es el veredicto
+
+Con la tabla vacía se pinta entera, con el motivo en cada casilla, igual que las
+otras siete. Los recuentos salen desde el primer día y la lista de casos sale con
+un caso —son hechos, y un hecho no necesita muestra para poder mirarse—. Lo que
+se calla es la **frase que compara**, y mientras se calla dice cuánto falta: «van
+2 de los 5 que hacen falta», no «faltan datos». Esconder la vista entera
+convertiría la falta de muestra en una pantalla que no existe, y entonces no
+habría forma de saber si es que no hay datos o si es que la funcionalidad no se
+hizo.
+
+Cada caso que no juzga dice **por qué** no juzga, y con motivos separados: «no
+llegaste a enviarlo», «no pediste otra sesión», «pediste una y se ejecutó otra»,
+«esa sesión todavía no tiene resultado medido». Son cuatro cosas distintas que
+arreglar, y un «no se puede» único las taparía las cuatro.
+
+#### El veredicto no lleva un solo número dentro
+
+Decía «... salieron mejor que las demás: percentil 62 frente a 55», y eso es justo
+lo que la **regla 2** prohíbe: es la frase que se lee al abrir la pantalla, y los
+percentiles van detrás de «ver detalle». Las dos medianas viajan igual
+—`mediana_discrepando` y `mediana_el_resto` van al lado— y la pantalla las pinta
+abajo, plegadas. No se pierde el número: se pierde de la primera línea, que es
+donde molestaba. **Esconder no es borrar**, y el test que lo fija tiene que
+afirmar las dos mitades: sin la primera nada impide volver a meter el número en
+la frase, y sin la segunda la forma más fácil de aprobar la primera es dejar de
+calcular las medianas.
+
+Esta vista tampoco lleva `cobertura` ni `metodo`, y ninguna de las dos ausencias
+es un olvido. `cobertura` cuenta qué falta de cuatro fuentes —check-ins, Garmin,
+bici y fuerza— y ésta mira una sola tabla: enseñar aquí «sin datos de Garmin»
+sería afirmar un vacío que esta pantalla no ha mirado. `metodo` ofrece elegir
+entre Pearson y Spearman, y aquí no se correlaciona nada: se cuenta, se agrupa y
+se comparan dos medianas. El sitio donde se decide qué creerse no es un
+desplegable, es la etiqueta del juez.
 
 ## El encabezado de cada vista (`analysis/encabezados.py`)
 

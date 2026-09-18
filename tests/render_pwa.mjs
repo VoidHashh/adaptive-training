@@ -1,11 +1,11 @@
 /*
- * Pinta las seis vistas de la PWA en Node, contra payloads de verdad, y busca
+ * Pinta las ocho vistas de la PWA en Node, contra payloads de verdad, y busca
  * lo que un renderizador hace cuando lee una clave que el backend no manda.
  *
  * Lo arranca `tests/test_pwa.py::test_los_renderizadores_no_leen_ni_una_clave_
- * que_el_backend_no_mande`, que antes le escribe las siete respuestas de
+ * que_el_backend_no_mande`, que antes le escribe las nueve respuestas de
  * `/api/metrics/*` en el JSON que se le pasa por argumento. Aquí no se toca la
- * base ni la red: entra un JSON, salen las seis pantallas.
+ * base ni la red: entra un JSON, salen las ocho pantallas.
  *
  * POR QUÉ ESTO Y NO UN `node --check`
  * -----------------------------------
@@ -98,6 +98,7 @@ const RUTAS = {
   auditoria: "/api/metrics/auditoria",
   percepcion: "/api/metrics/percepcion",
   umbral: "/api/metrics/umbral",
+  calibracion: "/api/metrics/calibracion",
 };
 
 const contexto = {
@@ -152,7 +153,7 @@ for (const f of ["static/comun.js", "static/graficos.js", "static/metricas.js"])
 
 const VISTAS = [
   "portada", "concordancia", "desfase", "impacto", "auditoria", "percepcion",
-  "umbral",
+  "umbral", "calibracion",
 ];
 
 /* Lo que delata una clave mal adivinada que SÍ acaba impresa.

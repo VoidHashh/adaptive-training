@@ -1615,6 +1615,33 @@ def metrics_umbral(
     return poner("umbral", vista_umbral(s, cfg, dias=dias, metodo=_metodo(metodo)))
 
 
+@app.get("/api/metrics/calibracion")
+def metrics_calibracion(
+    dias: int = Query(180, ge=7, le=730),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Vista 7: dónde y hacia dónde no compartes lo que decide el motor.
+
+    SOLO LEE, y aquí eso es más fuerte que en las demás. Esta vista se calcula
+    sobre `previews`, que es el registro de lo que se pensó cada mañana: una
+    pantalla que al abrirse escribiera ahí estaría cambiando el dato por mirarlo.
+    Abrir las métricas no mueve ninguna de las tres medidas.
+
+    No lleva `metodo` -no se correlaciona nada, se cuenta y se comparan dos
+    medianas- y es la ÚNICA de las siete que no lleva `cfg`. Las demás llaman a
+    `comprobar_series(cfg)` para que un deslizador del `config.yaml` que no esté
+    en `series.DEFINICIONES` no se caiga de las métricas en silencio; aquí no hay
+    ni un deslizador que se mire. Lo que se agrupa son reglas y colores, que
+    salen de la decisión guardada, no del catálogo de señales. Pedir `cfg` para
+    no usarlo sería la clave decorativa de siempre: un parámetro que parece que
+    valida algo y no valida nada.
+    """
+    from app.analysis.calibracion import vista_calibracion
+    from app.analysis.encabezados import poner
+
+    return poner("calibracion", vista_calibracion(s, dias=dias))
+
+
 @app.post("/api/probar/telegram")
 def probar_telegram_endpoint(
     texto: str | None = None,

@@ -108,8 +108,13 @@ def test_el_documento_declara_su_estado_y_es_el_de_verdad():
     )
     estado = texto.split("## Estado", 1)
     assert len(estado) == 2, "el documento tiene que declarar su estado"
+    # El recuento se le pregunta al router y no se escribe aquí. Decía "cinco
+    # vistas y seis endpoints" y para cuando se leyó ya eran nueve: un mensaje de
+    # fallo que envejece es la misma avería que este fichero entero persigue, solo
+    # que escondida en el único sitio que nadie mira mientras la suite está verde.
     assert estado[1].lstrip().lower().startswith("implementada"), (
-        "cinco vistas y seis endpoints sirviendo: el estado es implementada"
+        f"{len(_rutas_del_codigo())} endpoints sirviendo bajo {PREFIJO}: "
+        f"el estado es implementada"
     )
 
 

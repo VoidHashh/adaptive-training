@@ -147,33 +147,41 @@ async function pedir(ruta, parametros = {}) {
 // La navegación
 // ---------------------------------------------------------------------------
 
-/* Las ocho pantallas, en el orden en que tienen sentido.
+/* Las nueve pantallas, en el orden en que tienen sentido.
  *
  * El check-in va primero porque es lo que se abre a las siete de la mañana. La
  * portada va justo detrás porque es la respuesta a la pregunta que se hace al
  * salir de él -«¿y entonces cómo voy?»- y porque es la única que no obliga a
  * elegir nada para enseñar algo.
  *
- * Las seis de detalle van después, en el orden en que se leen: primero si lo
+ * Las siete de detalle van después, en el orden en que se leen: primero si lo
  * que noto coincide con el reloj, luego si coincide con retraso, luego qué le
  * hace cada cosa al cuerpo, luego A PARTIR DE CUÁNTO se lo hace, luego qué ha
- * hecho el motor con todo eso, y al final lo que dicen los números frente a lo
- * que parecía.
+ * hecho el motor con todo eso, luego lo que dicen los números frente a lo que
+ * parecía, y al final dónde el motor y yo no estamos de acuerdo.
  *
  * El umbral va pegado a Impacto y no al final porque son la misma pregunta en
  * dos mitades: Impacto dice que la carga y la HRV van juntas, y el umbral dice
  * la cifra. Separadas por dos pantallas, la segunda se lee como otro tema.
  *
+ * LA CALIBRACIÓN VA LA ÚLTIMA y no junto a Auditoría, que es la vecina obvia.
+ * Auditoría cuenta qué hizo el motor; Percepción, cómo salieron las sesiones.
+ * La calibración resta las dos cosas -dónde no comparto lo que decidió, y cómo
+ * salió cuando le llevé la contraria-, así que leída antes que ellas son tres
+ * porcentajes sin nada contra lo que contrastarlos.
+ *
  * LAS ETIQUETAS CORTAS NO SON EL NOMBRE TÉCNICO DE LA VISTA. En una barra de
- * ocho botones en un móvil caben ocho caracteres, y «Concordancia» ahí no dice
+ * nueve botones en un móvil caben ocho caracteres, y «Concordancia» ahí no dice
  * nada que ayude a decidir si tocarlo. Dicen QUÉ SE VA A VER: «Coincide»,
  * «Retraso», «Efecto», «Motor», «Real». El nombre largo y técnico sigue entero
  * en el título de la pantalla, que es donde hay sitio para explicarlo.
  *
- * «Umbral» se sale de esa regla y es la excepción que la confirma: no es la
- * palabra del código, es la suya. Así lo llamó él -«el umbral de 150»- antes de
- * que existiera la vista, y traducirlo a «Cuánto» sería quitarle el nombre que
- * ya tiene en su cabeza para ponerle uno más llano que nadie ha usado nunca.
+ * «Umbral» y «Calibra» se salen de esa regla y son las excepciones que la
+ * confirman: no son la palabra del código, son la suya. «El umbral de 150» lo
+ * dijo él antes de que existiera la vista, y del botón de previsualizar dijo
+ * literalmente «el objetivo no es forzar el resultado que me apetece, es
+ * CALIBRAR». Traducir eso a algo más llano sería quitarle el nombre que ya
+ * tiene en la cabeza para ponerle uno que no ha usado nunca.
  */
 const PANTALLAS = [
   { href: "/", etiqueta: "Check-in", corta: "Hoy" },
@@ -184,6 +192,7 @@ const PANTALLAS = [
   { href: "/metricas.html#umbral", etiqueta: "El umbral de la bici", corta: "Umbral" },
   { href: "/metricas.html#auditoria", etiqueta: "Auditoría", corta: "Motor" },
   { href: "/metricas.html#percepcion", etiqueta: "Percepción", corta: "Real" },
+  { href: "/metricas.html#calibracion", etiqueta: "Calibración", corta: "Calibra" },
 ];
 
 /* La barra de abajo, pintada desde `PANTALLAS` y no escrita a mano en los dos
@@ -243,14 +252,22 @@ const ORIGENES = {
  * completa cuando le falta una pata entera.
  *
  * `cob` a `null` NO es lo mismo que un `cob` con las cuatro fuentes vacías, y
- * por eso se trata aparte en vez de caer en el mismo camino. La vista de
- * percepción no calcula cobertura -trabaja sobre `session_performance`, que ya
- * es el resultado de cruzar las fuentes-, así que pintarle "sin ningún dato de
- * check-ins, Garmin, bici ni fuerza" sería afirmar un vacío que nadie ha
- * mirado. Se dice lo único que se sabe: la ventana, y que esta vista no reporta
- * cobertura.
+ * por eso se trata aparte en vez de caer en el mismo camino. Hay dos vistas que
+ * no calculan cobertura -percepción trabaja sobre `session_performance`, que ya
+ * es el resultado de cruzar las fuentes, y calibración sobre `previews`, que la
+ * escribe el propio botón-, así que pintarles "sin ningún dato de check-ins,
+ * Garmin, bici ni fuerza" sería afirmar un vacío que nadie ha mirado. Se dice lo
+ * único que se sabe: la ventana, y que esta vista no reporta cobertura.
+ *
+ * EL PORQUÉ LO PONE QUIEN LLAMA, y no estaba así: la frase vivía aquí dentro y
+ * decía «trabaja sobre las sesiones ya cruzadas», que es verdad de percepción y
+ * mentira de calibración. Una segunda vista con `cob` a `null` habría heredado
+ * en silencio la explicación de la primera -bien escrita, en su sitio, y
+ * hablando de una tabla que esa vista no mira-. El defecto de aquí abajo dice
+ * solo lo que `null` garantiza por sí mismo; lo que cambia de una vista a otra
+ * lo trae el tercer argumento.
  */
-function pintarCobertura(cob, ventana) {
+function pintarCobertura(cob, ventana, porQue = "") {
   // «Ventana pedida» es el nombre del parámetro, no el nombre de la cosa. Lo que
   // esta línea dice es qué trozo de calendario está mirando la pantalla.
   const cabecera =
@@ -260,8 +277,8 @@ function pintarCobertura(cob, ventana) {
   if (cob === null || cob === undefined) {
     return (
       `<section class="cobertura">${cabecera}` +
-      `<p class="ficha">Esta vista no mira las fuentes una a una: trabaja sobre ` +
-      `las sesiones ya cruzadas, y cada una lleva dentro de qué pudo juzgarse.</p>` +
+      `<p class="ficha">Esta vista no mira las fuentes una a una` +
+      `${porQue ? `: ${escapar(porQue)}` : "."}</p>` +
       `</section>`
     );
   }

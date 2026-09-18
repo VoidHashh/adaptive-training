@@ -1,5 +1,5 @@
 /*
- * Las cinco vistas de métricas.
+ * Las ocho vistas de métricas.
  *
  * QUÉ HACE ESTE ARCHIVO Y QUÉ NO HACE
  * -----------------------------------
@@ -15,7 +15,7 @@
  *
  * NINGUNA VISTA SE ESCONDE
  * ------------------------
- * Con la base vacía se pintan las cinco, enteras, con el motivo en cada casilla.
+ * Con la base vacía se pintan las ocho, enteras, con el motivo en cada casilla.
  * No hay "esto lo verás más adelante": eso convierte la falta de datos en una
  * decisión de producto invisible, y la falta de datos es justo lo que hay que
  * poder ver -cuántos días faltan y de qué-.
@@ -37,6 +37,7 @@ const RUTAS = {
   auditoria: "/api/metrics/auditoria",
   percepcion: "/api/metrics/percepcion",
   umbral: "/api/metrics/umbral",
+  calibracion: "/api/metrics/calibracion",
 };
 
 /* LOS TÍTULOS SON LO QUE SE VE, NO CÓMO SE LLAMA LA VISTA POR DENTRO.
@@ -96,6 +97,16 @@ const VISTAS = {
     titulo: "Cuánta bici te pasa factura",
     subtitulo: "Tus salidas partidas por carga, contra la HRV del día siguiente",
     pintar: pintarUmbral,
+  },
+  // El título no dice «calibración» y el botón de abajo sí, y las dos cosas son
+  // correctas. Abajo hace falta una palabra corta y suya; aquí hay sitio para
+  // la pregunta que trae a esta pantalla, que no es «cómo va mi calibración»
+  // sino «dónde no me fío». Y el subtítulo dice lo que NO es, porque es lo
+  // primero que hay que saber de esta vista: no es una nota al motor.
+  calibracion: {
+    titulo: "Dónde el motor y tú no estáis de acuerdo",
+    subtitulo: "Hacia qué lado tiras, en qué regla se concentra y cómo salió",
+    pintar: pintarCalibracion,
   },
 };
 
@@ -2027,7 +2038,9 @@ async function pintarPercepcion(dias) {
 
   if (d.ultima) partes.push(tarjetaSesion(d.ultima, "La última sesión juzgada"));
 
-  partes.push(pintarCobertura(null, d.ventana));
+  partes.push(pintarCobertura(null, d.ventana,
+    "trabaja sobre las sesiones ya cruzadas, y cada una lleva dentro de qué " +
+    "pudo juzgarse"));
 
   partes.push(bloqueLasPiezas(d.componentes));
 
@@ -2634,6 +2647,249 @@ function pieGrafica(g) {
       ? `<p class="explica">La raya de puntos es el corte. Los palos que la ` +
         `pasan van en naranja; los que no, apagados.</p>`
       : "")
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Calibración: dónde el motor y tú no estáis de acuerdo
+// ---------------------------------------------------------------------------
+
+/* LA ÚNICA VISTA QUE MIDE AL USUARIO Y AL MOTOR A LA VEZ, y por eso la única
+ * donde pintar de más es mentir.
+ *
+ * Las otras siete miran datos: la HRV bajó tanto, la sesión salió en tal
+ * percentil. Ésta mira OPINIONES -tus síes y tus noes al previsualizar- y las
+ * cruza con resultados. Eso trae dos trampas propias que se resuelven aquí y no
+ * en el dibujo:
+ *
+ *   - NINGÚN COLOR SIGNIFICA «BIEN» O «MAL». Discrepar mucho no es un defecto
+ *     tuyo ni del motor; es el dato. Pintar «más dura» en rojo y «más suave» en
+ *     verde metería un juicio que no hay y que nadie ha calculado. Los colores
+ *     del semáforo sí se usan, y solo donde el color ES el dato -el agolpamiento
+ *     por luz-, porque ese significado lo pone el servidor.
+ *   - EL VEREDICTO SE CALLA Y SE DICE QUE SE CALLA. Es lo único de esta pantalla
+ *     que necesita muestra. Cuando no la hay se pinta el bloque igual, con el
+ *     contador de cuánto falta: un bloque escondido hasta el quinto caso se lee
+ *     como una vista a medio hacer.
+ *
+ * Y la etiqueta del juez se pinta SIEMPRE, con casos o sin ellos, porque es lo
+ * que dice cómo leer el bloque entero. Enseñarla solo cuando hay veredicto la
+ * convertiría en una nota al pie del resultado en vez de en la advertencia que
+ * es. */
+async function pintarCalibracion(dias) {
+  const d = await pedir(RUTAS.calibracion, { dias });
+
+  const partes = [
+    encabezadoVista(d.encabezado),
+    // `null` a propósito, y no `d.cobertura`: esta vista NO manda cobertura, y
+    // pedírsela era leer una clave que el payload no trae. Las demás miran
+    // cuatro fuentes y saber de cuál falta qué es media lectura; ésta mira una
+    // sola tabla, la de previsualizaciones, y su cobertura es el recuento que va
+    // justo debajo. Enseñar aquí "sin datos de Garmin" sería afirmar un vacío
+    // que esta pantalla no ha mirado.
+    pintarCobertura(null, d.ventana,
+      "mira una sola tabla, la de las previsualizaciones que has pedido tú; " +
+      "cuántas hay y en cuántas dijiste algo va justo aquí debajo"),
+    bloqueCuantoDiscrepas(d.cuantas),
+    bloqueHaciaDonde(d.direcciones),
+    bloqueDondeSeAgolpa(d.donde),
+    bloqueQuienAcerto(d.quien_acerto),
+  ];
+
+  $("vista").innerHTML = partes.join("");
+}
+
+/* Cuántas veces, sobre las opinadas.
+ *
+ * El anillo tiene TRES trozos y no dos, y el tercero -«sin opinar»- es el que
+ * hace que el porcentaje se entienda. La cifra de arriba sale sobre las
+ * opinadas; el anillo enseña cuántas quedaron fuera de ese denominador. Con dos
+ * trozos, «30 %» y un anillo lleno dirían que se han mirado todas. */
+function bloqueCuantoDiscrepas(c) {
+  if (!c || c.na || !c.opinadas) {
+    return bloqueDeVistazo("Cuántas veces no lo compartes", "", "",
+      bloqueNa((c && c.na) || null));
+  }
+
+  const g = quesito({
+    trozos: [
+      { etiqueta: plural(c.discrepadas, "no lo comparto", "no lo comparto"),
+        n: c.discrepadas, color: NARANJA },
+      { etiqueta: "de acuerdo", n: c.conformes, color: AZUL },
+      { etiqueta: "sin opinar", n: c.sin_opinar, color: TENUE },
+    ],
+    total: c.total,
+    unidadTotal: plural(c.total, "previsualización", "previsualizaciones"),
+  });
+
+  const frase =
+    `De las ${cuenta(c.opinadas, "vez", "veces")} que dijiste algo, no ` +
+    `compartiste lo que decidía el motor en ${entero(c.discrepadas)}: ` +
+    `${pct(c.pct, 1)}.`;
+
+  return bloqueDeVistazo("Cuántas veces no lo compartes", g, frase,
+    `<p class="explica">El porcentaje va sobre las ${entero(c.opinadas)} en ` +
+    `las que dijiste algo, NO sobre las ${entero(c.total)} que miraste. Mirar ` +
+    `una previsualización y cerrarla sin contestar no es estar de acuerdo, y ` +
+    `contarlo como tal bajaría el porcentaje cuanto menos contestaras.</p>` +
+    `<table class="tabla"><tbody>` +
+    `<tr><td>No lo comparto</td><td>${entero(c.discrepadas)}</td></tr>` +
+    `<tr><td>De acuerdo</td><td>${entero(c.conformes)}</td></tr>` +
+    `<tr><td>Sin opinar</td><td>${entero(c.sin_opinar)}</td></tr>` +
+    `<tr><td><b>Previsualizaciones</b></td><td><b>${entero(c.total)}</b></td></tr>` +
+    `</tbody></table>`);
+}
+
+/* Hacia qué lado. Tres barras tumbadas y las forzadas en rojo aparte.
+ *
+ * `positivoEsBueno: false` NO está eligiendo que discrepar sea malo: es lo que
+ * apaga el coloreado por signo de `barrasTumbadas`. Aquí todas las barras son
+ * cuentas positivas de la misma cosa y pintarlas de dos colores según nada
+ * sería el juicio que esta vista no hace.
+ *
+ * Las forzadas en rojo van en una línea aparte y NUNCA como cuarta barra: son
+ * un subconjunto de «más dura», así que sumadas darían más que el total y
+ * parecería que se ha perdido la cuenta. El servidor manda esa advertencia
+ * escrita en `que_es` y se pinta tal cual. */
+function bloqueHaciaDonde(dir) {
+  if (!dir || dir.na || !dir.n) {
+    return bloqueDeVistazo("Hacia qué lado tiras", "", "",
+      bloqueNa((dir && dir.na) || null));
+  }
+
+  const g = barrasTumbadas({
+    valores: dir.celdas.map((c) => c.n),
+    rotulos: dir.celdas.map((c) => entero(c.n)),
+    // La corta encima de la barra y la larga en la tabla del detalle: las dos
+    // las manda el servidor. «Dijiste que no lo compartías, sin pedir otra
+    // sesión» encima de una barra de 340 píxeles se sale por el lado derecho, y
+    // un SVG no recorta: dibuja fuera del `viewBox` y desaparece.
+    etiquetas: dir.celdas.map((c) => c.corta),
+    pie: plural(dir.n, "desacuerdo", "desacuerdos"),
+    positivoEsBueno: false,
+  });
+
+  return bloqueDeVistazo("Hacia qué lado tiras", g, dir.lectura || "",
+    `<table class="tabla"><thead><tr><th>Cuando no lo compartes</th>` +
+    `<th>Veces</th><th>De los desacuerdos</th></tr></thead><tbody>` +
+    dir.celdas.map((c) => (
+      `<tr><td>${escapar(c.etiqueta)}</td><td>${entero(c.n)}</td>` +
+      `<td>${pct(c.pct, 1)}</td></tr>`
+    )).join("") +
+    `</tbody></table>` +
+    `<p class="ficha">De las que pedían más dura, ` +
+    `${cuenta(dir.forzadas_en_rojo, "fue", "fueron")} con el semáforo en rojo, ` +
+    `confirmando a mano.</p>` +
+    `<p class="explica">${escapar(dir.que_es)}</p>`);
+}
+
+/* Dónde se agolpa. La tabla lleva LOS DOS porcentajes y ninguno viaja solo.
+ *
+ * Es la única tabla de la pantalla con dos columnas de porcentaje, y la
+ * explicación de por qué va encima y no en una nota al pie: leída una sola de
+ * las dos columnas, esta tabla señala el sitio equivocado en los dos casos
+ * normales -la regla que dispara todos los días, y la que disparó dos veces-.
+ * El texto lo escribe el servidor en `que_es`. */
+function bloqueDondeSeAgolpa(w) {
+  if (!w || w.na || !w.por_regla.length) {
+    return bloqueDeVistazo("En qué regla se concentra", "", "",
+      bloqueNa((w && w.na) || null));
+  }
+
+  const g = barrasTumbadas({
+    valores: w.por_regla.map((g) => g.discrepadas),
+    rotulos: w.por_regla.map((g) => entero(g.discrepadas)),
+    etiquetas: w.por_regla.map((g) => g.clave),
+    pie: plural(w.n, "desacuerdo", "desacuerdos"),
+    positivoEsBueno: false,
+  });
+
+  return bloqueDeVistazo("En qué regla se concentra", g, w.lectura || "",
+    `<p class="explica">${escapar(w.que_es)}</p>` +
+    `<p class="explica">Las dos columnas de porcentaje contestan preguntas ` +
+    `distintas y hay que leerlas juntas. <b>Del total</b> es cuánto pesa esa ` +
+    `regla dentro de todo lo que discrepas; <b>cuando aparece</b> es con qué ` +
+    `frecuencia discrepas los días que esa regla decide. Una regla que dispara ` +
+    `a diario se lleva la primera columna aunque sea con la que más de acuerdo ` +
+    `estás.</p>` +
+    tablaAgolpe("Regla que decidió el día", w.por_regla) +
+    `<h3>Por color del día</h3>` +
+    tablaAgolpe("Semáforo", w.por_luz, NOMBRE_LUZ_PWA));
+}
+
+function tablaAgolpe(cabecera, grupos, nombres = null) {
+  return (
+    `<table class="tabla"><thead><tr><th>${escapar(cabecera)}</th>` +
+    `<th>Discrepadas</th><th>Opinadas</th><th>Del total</th>` +
+    `<th>Cuando aparece</th></tr></thead><tbody>` +
+    grupos.map((g) => (
+      `<tr><td>${escapar((nombres && nombres[g.clave]) || g.clave)}</td>` +
+      `<td>${entero(g.discrepadas)}</td><td>${entero(g.opinadas)}</td>` +
+      `<td>${pct(g.pct_de_los_desacuerdos, 1)}</td>` +
+      `<td>${pct(g.pct_cuando_aparece, 1)}</td></tr>`
+    )).join("") +
+    `</tbody></table>`
+  );
+}
+
+/* Quién acertó. El bloque que se calla, y que dice que se calla.
+ *
+ * Tres cosas se pintan pase lo que pase: la etiqueta del juez, el contador de
+ * cuánto falta y la lista de casos con su motivo. Lo único que desaparece
+ * cuando no hay muestra es la FRASE que compara, y en su sitio va el `na` del
+ * servidor, que dice cuántos van de los que hacen falta.
+ *
+ * La etiqueta va ARRIBA, antes de las medianas. Debajo se leería como una
+ * matización de un resultado ya leído; encima es la instrucción de cómo leerlo. */
+function bloqueQuienAcerto(q) {
+  if (!q) return "";
+
+  const medianas =
+    q.mediana_discrepando === null || q.mediana_discrepando === undefined ||
+    q.mediana_el_resto === null || q.mediana_el_resto === undefined
+      ? ""
+      : `<p class="medias">Llevándole la contraria, percentil ` +
+        `<b>${num(q.mediana_discrepando, 1)}</b> en ` +
+        `${cuenta(q.n, "sesión", "sesiones")}. El resto de los días medidos, ` +
+        `<b>${num(q.mediana_el_resto, 1)}</b> en ` +
+        `${cuenta(q.n_el_resto, "sesión", "sesiones")}.</p>`;
+
+  const detalle =
+    `<p class="aviso">${escapar(q.etiqueta_del_juez)}</p>` +
+    `<p class="ficha">${cuenta(q.n, "caso juzgable", "casos juzgables")} de ` +
+    `los ${entero(q.hacen_falta)} que hacen falta para comparar.</p>` +
+    medianas +
+    listaCasos(q.casos);
+
+  return bloqueDeVistazo("Cómo salió cuando le llevaste la contraria", "",
+    q.veredicto || "", q.na ? bloqueNa(q.na) + detalle : detalle);
+}
+
+/* Cada desacuerdo con su motivo de por qué no juzga, cuando no juzga.
+ *
+ * Los cuatro motivos -no se envió, no pediste otra cosa, se ejecutó otra, sin
+ * resultado medido- vienen escritos del servidor y cada uno señala algo
+ * distinto que arreglar. Resumirlos aquí a «no evaluable» juntaría cuatro
+ * problemas en una palabra. */
+function listaCasos(casos) {
+  if (!casos || !casos.length) {
+    return `<p class="ficha">Ni un desacuerdo en la ventana.</p>`;
+  }
+  return (
+    `<h3>Los desacuerdos, uno a uno</h3>` +
+    `<table class="tabla"><thead><tr><th>Día</th><th>Propuesta</th>` +
+    `<th>Pediste</th><th>Resultado</th></tr></thead><tbody>` +
+    casos.map((c) => (
+      `<tr><td>${escapar(fechaCorta(c.fecha))}` +
+      `${c.forzada_en_rojo ? ` <span class="sub">— forzada en rojo</span>` : ""}` +
+      `</td><td>${escapar(c.propuesta || "—")}</td>` +
+      `<td>${escapar(c.pediste || "—")}</td>` +
+      (c.na
+        ? `<td class="motivo">${escapar(c.na)}</td>`
+        : `<td>percentil ${num(c.rendimiento_pct, 1)}</td>`) +
+      `</tr>`
+    )).join("") +
+    `</tbody></table>`
   );
 }
 

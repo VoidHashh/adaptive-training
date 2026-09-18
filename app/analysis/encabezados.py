@@ -259,6 +259,50 @@ def de_umbral(v: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def de_calibracion(v: dict[str, Any]) -> dict[str, Any]:
+    """La moneda es la previsualización EN LA QUE SE DIJO ALGO, no el desacuerdo.
+
+    Contar desacuerdos daría un encabezado que empeora cuanto mejor va la cosa:
+    un sistema perfectamente calibrado tendría cero, y el encabezado diría
+    «Todavía no» para siempre con la vista funcionando. Lo que esta vista
+    necesita para trabajar no son desacuerdos, son OPINIONES -síes y noes-, y ése
+    es el número que dice si puede contestar.
+
+    El denominador son todas las previsualizaciones de la ventana, así que el
+    estado baja a `parcial` cuando se mira mucho y se opina poco. Es exactamente
+    lo que hay que saber antes de leer un porcentaje calculado sobre las
+    opinadas.
+    """
+    if "cuantas" not in v:
+        raise KeyError(
+            "el encabezado de calibración esperaba 'cuantas' en el payload y no "
+            "está; sin él diría 'Todavía no' con la vista llena"
+        )
+    c = v["cuantas"] or {}
+    e = _encabezado(
+        pregunta=(
+            "Cuando no compartes lo que decide el motor, ¿hacia qué lado tiras y "
+            "en qué regla se concentra?"
+        ),
+        vivos=int(c.get("opinadas") or 0),
+        posibles=int(c.get("total") or 0),
+        unidad=(
+            "previsualización en la que dijiste algo",
+            "previsualizaciones en las que dijiste algo",
+        ),
+        falta="previsualizar y decir si compartes lo que enseña la tarjeta",
+    )
+    # Cuántos desacuerdos pueden juzgarse contra el resultado de la sesión, que
+    # es lo único de esta vista que se calla hasta tener muestra. Va en el
+    # encabezado para que se sepa CUÁNTO FALTA sin tener que bajar hasta el
+    # bloque que está en silencio: un bloque callado sin contador al lado se lee
+    # como un bloque roto.
+    q = v.get("quien_acerto") or {}
+    e["juicios"] = int(q.get("n") or 0)
+    e["juicios_hacen_falta"] = int(q.get("hacen_falta") or 0)
+    return e
+
+
 def de_percepcion(v: dict[str, Any]) -> dict[str, Any]:
     if "contador" not in v:
         raise KeyError(
@@ -293,6 +337,7 @@ POR_VISTA = {
     "auditoria": de_auditoria,
     "percepcion": de_percepcion,
     "umbral": de_umbral,
+    "calibracion": de_calibracion,
 }
 
 

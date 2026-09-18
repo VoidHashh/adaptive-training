@@ -48,12 +48,14 @@ from sqlalchemy.pool import StaticPool
 from app.analysis.series import Cobertura
 from app.api import app, get_config
 from app.db import get_session
+from app.engine.session_builder import FULL, RECOVERY, REDUCED
 from app.models import (
     Activity,
     Base,
     Checkin,
     DailyMetrics,
     Decision,
+    Preview,
     RuleState,
     SessionPerformance,
     WorkoutLog,
@@ -362,6 +364,31 @@ HUELLAS_DEL_ARMAZON = {
     # existe para prometer «esto todavía no ha escrito nada» incumple la otra
     # mitad de la promesa, que era hacer algo.
     "v17": "ab1a09f2ab556a81577ede60f26f72d571ceee251b5f97a97d6f75427937fa09",
+    # v18: la octava vista, calibración. Toca `comun.js` -la barra de abajo pasa
+    # de ocho botones a nueve, y `pintarCobertura` gana el tercer argumento- y
+    # `metricas.js` -la vista entera, más el sitio donde percepción pasa a decir
+    # su propia frase de cobertura-.
+    #
+    # El móvil viejo ENTERO falla como en la v10 y por lo mismo: la barra es la
+    # de antes, sin «Calibra», así que a la pantalla no se llega. Molesto y
+    # honrado; desde el teléfono es indistinguible de que no se haya hecho.
+    #
+    # Lo GRAVE es otra vez el móvil A MEDIAS, y esta vez el que se trae
+    # `metricas.js` nuevo y se queda con el `comun.js` de antes. A la vista sí se
+    # llega -el enrutador es `location.hash`, y `#calibracion` está en un
+    # marcador o se teclea-, y el `pintarCobertura` viejo solo acepta dos
+    # argumentos: el tercero se cae sin un error y sin un aviso, y la pantalla
+    # imprime la frase que ese `pintarCobertura` llevaba cosida dentro, «trabaja
+    # sobre las sesiones ya cruzadas, y cada una lleva dentro de qué pudo
+    # juzgarse». Es verdad de percepción y mentira de calibración, que no mira ni
+    # una sesión cruzada: mira la tabla de previsualizaciones.
+    #
+    # O sea el fallo de la v16 repetido -no falta nada, SOBRA UNA MENTIRA- y con
+    # el agravante de que la frase está bien escrita, en su sitio y en su tipo de
+    # letra, justo debajo del encabezado de una vista que existe para calibrar.
+    # Es exactamente el defecto que se acaba de quitar de `comun.js` al sacarle
+    # la frase de dentro, servido por un caché en vez de por el código.
+    "v18": "8f10be6a94d4940fcdf720ac5eec7bbdc3ffdd509ef454c806417237ba6f2893",
 }
 
 
@@ -820,6 +847,104 @@ _LAS_DOS_PREGUNTAS = [
 ]
 
 
+# El semáforo de cada día, en un solo sitio.
+#
+# Lo leen DOS bucles -el de las decisiones y el de las previsualizaciones- y
+# tienen que coincidir: una previsualización es la foto de la decisión de ese
+# día, así que si aquí sale ámbar y allí rojo, la vista de calibración agrupa por
+# un color que nunca existió y la tabla sale bien formada y falsa.
+_LUCES = ["green", "green", "amber", "green", "red"]
+
+# Qué sesión propone cada color cuando nadie lleva la contraria. Es el reparto
+# corriente del `config.yaml`, y hace falta escrito porque de él sale el `kind`
+# que `_sesion_ejecutada` va a leer.
+_SESION_POR_LUZ = {"green": FULL, "amber": REDUCED, "red": RECOVERY}
+
+
+# LAS PREVISUALIZACIONES, ESCRITAS A MANO Y NO POR MÓDULOS.
+#
+# El resto del sembrado va con `i % 7` y senos porque ahí solo hace falta que
+# haya filas. Aquí no: cada una de estas nueve líneas existe para llevar a
+# `pintarCalibracion` por una rama distinta, y con un módulo no se sabe cuál de
+# ellas se está perdiendo cuando cambie el número de días.
+#
+# Lo que hay que conseguir, y por qué cada cosa:
+#
+#   - los TRES estados de `disagreed` con filas dentro. El anillo de «cuántas
+#     veces» tiene tres trozos y el tercero -«sin opinar»- es el que hace que el
+#     porcentaje se entienda; sembrado solo con síes y noes, el trozo que da
+#     sentido a los otros dos no se pinta nunca.
+#   - las TRES direcciones con al menos una cada una, porque una casilla a cero
+#     manda `pct` a `None` y eso es otra rama.
+#   - CINCO juzgables -pediste otra sesión, se ejecutó la que pediste y esa
+#     sesión tiene resultado medido-, que es `MINIMO_JUICIOS`. Con cuatro, el
+#     bloque de «quién acertó» se pinta entero por la rama del contador de lo que
+#     falta y el veredicto no se llega a leer.
+#   - los CUATRO motivos de `_na_del_caso` representados, uno por línea, porque
+#     la lista de casos los pinta por separado a propósito: «no lo enviaste», «no
+#     pediste nada», «se ejecutó otra cosa» y «no hay resultado» son cuatro cosas
+#     distintas que arreglar.
+#
+# Los días no son libres. Una previsualización juzgable necesita que ese día
+# tenga decisión (`i % 11 != 5`) Y sesión medida (`i % 7 in (1, 4)` o
+# `i % 3 == 0`), así que los índices están elegidos contra esas dos condiciones y
+# no valen otros cualesquiera.
+_PREVIAS = [
+    # Dos el mismo día, que es el caso que justifica la tabla entera: se miró,
+    # no se dijo nada, se cambió una respuesta y se volvió a mirar. La segunda NO
+    # tapa a la primera.
+    {"dia": 12, "seq": 1, "opina": None, "propuesta": REDUCED},
+    {"dia": 12, "seq": 2, "opina": True, "propuesta": REDUCED, "pedida": FULL,
+     "ejecutada": True},
+    # Ámbar y pidiendo más: el grueso de los desacuerdos juzgables.
+    {"dia": 22, "opina": True, "propuesta": REDUCED, "pedida": FULL, "ejecutada": True},
+    {"dia": 32, "opina": True, "propuesta": REDUCED, "pedida": FULL, "ejecutada": True},
+    {"dia": 42, "opina": True, "propuesta": REDUCED, "pedida": FULL, "ejecutada": True},
+    # La forzada en rojo, que va contada aparte y NUNCA como cuarta dirección.
+    {"dia": 4, "opina": True, "propuesta": RECOVERY, "pedida": REDUCED,
+     "forzada": True, "ejecutada": True},
+    # Hacia el otro lado, para que «más suave» no salga a cero.
+    {"dia": 6, "opina": True, "propuesta": FULL, "pedida": REDUCED, "ejecutada": True},
+    # Los cuatro motivos por los que un desacuerdo no juzga nada:
+    #   (1) se miró y no se envió -no hay sesión que juzgar-;
+    {"dia": 8, "opina": True, "propuesta": FULL, "pedida": REDUCED, "enviada": False},
+    #   (2) se dijo que no y no se pidió otra sesión -salió la del motor-;
+    {"dia": 18, "opina": True, "propuesta": FULL},
+    {"dia": 25, "opina": True, "propuesta": FULL},
+    #   (3) se pidió una y acabó ejecutándose la propuesta;
+    {"dia": 39, "opina": True, "propuesta": RECOVERY, "pedida": REDUCED},
+    #   (4) se ejecutó lo pedido y esa sesión no tiene resultado medido. El día
+    #       2 no cae ni en fuerza ni en bici, que es justo lo que hace falta.
+    {"dia": 2, "opina": True, "propuesta": REDUCED, "pedida": FULL, "ejecutada": True},
+    # Conformes y miradas sin decir nada, que son la mayoría en la vida real.
+    {"dia": 1, "opina": False, "propuesta": FULL},
+    # El día 5 no tiene decisión -`i % 11 == 5`-, así que ésta se quedó en
+    # previsualización: `decision_id` a nulo y ninguna sesión detrás.
+    {"dia": 5, "opina": False, "propuesta": FULL, "enviada": False},
+    {"dia": 7, "opina": False, "propuesta": REDUCED},
+    {"dia": 13, "opina": False, "propuesta": FULL},
+    {"dia": 20, "opina": False, "propuesta": FULL},
+    {"dia": 3, "opina": None, "propuesta": FULL},
+    {"dia": 10, "opina": None, "propuesta": FULL},
+    {"dia": 16, "opina": None, "propuesta": FULL},
+]
+
+
+def _anulacion_ejecutada(i: int) -> str | None:
+    """La sesión que de verdad se guardó ese día, cuando se pidió otra y se hizo.
+
+    Existe para que el `kind` de la decisión y el `override_session_type` de la
+    previsualización no se escriban por separado. `_sesion_ejecutada` compara
+    justo esos dos, así que si se sembraran a mano en dos sitios, un despiste
+    dejaría los seis casos juzgables en cero y el bloque de «quién acertó» se
+    pintaría entero por la rama del contador sin que nada fallara.
+    """
+    for p in _PREVIAS:
+        if p["dia"] == i and p.get("ejecutada"):
+            return p["pedida"]
+    return None
+
+
 def _sembrar(ses) -> None:
     """Una base con las cuatro fuentes y los dos tipos de exposición dentro.
 
@@ -834,7 +959,12 @@ def _sembrar(ses) -> None:
     se comprueba ningún resultado estadístico: eso es cosa de los tests de
     `app/analysis/`. Lo único que hace falta es que las correlaciones se puedan
     calcular y que las casillas salgan con contenido.
+
+    Las previsualizaciones son la excepción y van escritas a mano en `_PREVIAS`,
+    por el motivo que allí se explica: cada una lleva a una rama distinta y un
+    módulo no dice cuál se pierde.
     """
+    decisiones: dict[date, Decision] = {}
     for i in range(DIAS):
         d = HOY - timedelta(days=i)
         apetece, voy = _LAS_DOS_PREGUNTAS[i % len(_LAS_DOS_PREGUNTAS)]
@@ -937,7 +1067,7 @@ def _sembrar(ses) -> None:
         # El semáforo. Un día de cada once sin fila, para que la vista tenga que
         # pintar también el "ese día no hubo decisión" y no solo colores.
         if i % 11 != 5:
-            luz = ["green", "green", "amber", "green", "red"][i % 5]
+            luz = _LUCES[i % 5]
             prog = {
                 "routine": "empuje",
                 "gate_open": i % 4 != 2,
@@ -955,25 +1085,44 @@ def _sembrar(ses) -> None:
                     }
                 ],
             }
-            ses.add(
-                Decision(
-                    date=d,
-                    light=luz,
-                    trigger_rule="hrv_baja" if luz != "green" else None,
-                    fired_rules_json=json.dumps(["hrv_baja"] if luz != "green" else []),
-                    skipped_rules_json=json.dumps([]),
-                    inputs_snapshot_json=json.dumps(
-                        {"fatigue": 3 + (i % 5), "mood": 4 + (i % 4)}
-                    ),
-                    # Dos hashes distintos: la vista tiene que poder pintar la
-                    # recalibración, que es una fila con forma propia.
-                    config_hash="aaaa1111" if i < DIAS // 2 else "bbbb2222",
-                    source="checkin",
-                    is_current=True,
-                    planned_session_json=json.dumps({"routine": "empuje"}),
-                    progression_json=json.dumps(prog),
-                )
+            # LA SESIÓN PLANIFICADA, CON SU `kind` DENTRO.
+            #
+            # Aquí ponía solo `{"routine": "empuje"}`, y `PlannedSession.to_dict`
+            # escribe las dos claves. La de menos era justo la que
+            # `_sesion_ejecutada` lee para saber qué dureza salió de verdad ese
+            # día: sin ella devuelve `None` para todas las decisiones sembradas,
+            # ningún desacuerdo puede juzgarse nunca y el bloque de «quién
+            # acertó» se pinta siempre por la rama de «van 0 de los 5 que hacen
+            # falta». O sea que el arnés habría aprobado media vista sin verla.
+            #
+            # Y el `kind` no es el del color a secas: si ese día se pidió otra
+            # sesión y se ejecutó, lo guardado es lo que se pidió. Es lo que
+            # separa «discrepé y se hizo lo mío» de «discrepé y salió lo del
+            # motor igual», que son los dos casos que la vista NO puede juntar.
+            dec = Decision(
+                date=d,
+                light=luz,
+                trigger_rule="hrv_baja" if luz != "green" else None,
+                fired_rules_json=json.dumps(["hrv_baja"] if luz != "green" else []),
+                skipped_rules_json=json.dumps([]),
+                inputs_snapshot_json=json.dumps(
+                    {"fatigue": 3 + (i % 5), "mood": 4 + (i % 4)}
+                ),
+                # Dos hashes distintos: la vista tiene que poder pintar la
+                # recalibración, que es una fila con forma propia.
+                config_hash="aaaa1111" if i < DIAS // 2 else "bbbb2222",
+                source="checkin",
+                is_current=True,
+                planned_session_json=json.dumps(
+                    {
+                        "routine": "empuje",
+                        "kind": _anulacion_ejecutada(i) or _SESION_POR_LUZ[luz],
+                    }
+                ),
+                progression_json=json.dumps(prog),
             )
+            ses.add(dec)
+            decisiones[d] = dec
 
         # Sesiones ya juzgadas, que es sobre lo que trabaja la vista 5. Una de
         # cada once disociada, que es la frecuencia que se pidió.
@@ -1008,6 +1157,47 @@ def _sembrar(ses) -> None:
                 )
             )
 
+    # LAS PREVISUALIZACIONES, EN UNA SEGUNDA PASADA Y NO DENTRO DEL BUCLE.
+    #
+    # Hace falta el `id` de la decisión de ese día, y el `id` no existe hasta que
+    # SQLAlchemy manda el INSERT. El `flush` lo fuerza sin cerrar la transacción.
+    #
+    # `decision_id` nulo no es un descuido: es «lo miré y no llegué a enviarlo»,
+    # que es uno de los usos previstos del botón y el primer motivo por el que un
+    # desacuerdo no juzga nada.
+    ses.flush()
+    for p in _PREVIAS:
+        d = HOY - timedelta(days=p["dia"])
+        luz = _LUCES[p["dia"] % 5]
+        dec = decisiones.get(d) if p.get("enviada", True) else None
+        pedida = p.get("pedida")
+        ses.add(
+            Preview(
+                date=d,
+                seq=p.get("seq", 1),
+                answers_json=json.dumps({"fatigue": 3 + (p["dia"] % 5)}),
+                light=luz,
+                session_type=p["propuesta"],
+                # La foto de la decisión que se previsualizó. De aquí saca la
+                # vista la regla con la que agrupa, y por eso el `trigger_rule`
+                # se calcula igual que en el bucle de arriba en vez de copiarse.
+                decision_json=json.dumps(
+                    {
+                        "light": luz,
+                        "trigger_rule": "hrv_baja" if luz != "green" else None,
+                    }
+                ),
+                disagreed=p["opina"],
+                disagreement_reason=(
+                    "me encuentro mejor de lo que dice" if p["opina"] else None
+                ),
+                override_session_type=pedida,
+                override_routine="empuje" if pedida else None,
+                forced_on_red=p.get("forzada", False),
+                decision_id=dec.id if dec is not None else None,
+            )
+        )
+
     # Una regla retirada y otra viva: la vista de auditoría pinta la lista de
     # activaciones de cada una, con su `desde`, su `hasta` y su motivo.
     ses.add(
@@ -1034,7 +1224,7 @@ def _sembrar(ses) -> None:
 
 
 def _payloads(cliente) -> dict[str, object]:
-    """Las ocho respuestas de verdad, tal cual las recibe el móvil."""
+    """Las nueve respuestas de verdad, tal cual las recibe el móvil."""
     rutas = {
         "portada": ("/api/metrics/portada", {}),
         "concordancia": ("/api/metrics/concordancia", {}),
@@ -1043,6 +1233,7 @@ def _payloads(cliente) -> dict[str, object]:
         "auditoria": ("/api/metrics/auditoria", {}),
         "percepcion": ("/api/metrics/percepcion", {}),
         "umbral": ("/api/metrics/umbral", {}),
+        "calibracion": ("/api/metrics/calibracion", {}),
     }
     salida = {}
     for nombre, (url, extra) in rutas.items():
@@ -1167,6 +1358,65 @@ def _payloads(cliente) -> dict[str, object]:
     assert not u["grafica"]["na"], (
         f"la gráfica del umbral no se dibuja ({u['grafica']['na']!r}), así que "
         f"no se leen ni `puntos`, ni `salidas`, ni `altura_corte`."
+    )
+
+    # LA CALIBRACIÓN, CON EL VEREDICTO DICHO Y NO CALLADO.
+    #
+    # Es la vista más fácil de aprobar sin haberla mirado, porque es la única que
+    # se calla a propósito: sin previsualizaciones sembradas, los cuatro bloques
+    # salen los cuatro con su motivo escrito -«todavía no has dicho ni que sí ni
+    # que no», «van 0 de los 5 que hacen falta»-, la pantalla se pinta entera,
+    # no hay un solo `undefined`, y el arnés diría «ok calibracion 9000 bytes»
+    # sin haber leído ni una de las claves que esta vista existe para pintar.
+    #
+    # Cada `assert` de aquí abajo es una rama que se perdería en silencio.
+    c = salida["calibracion"]
+    assert not c["cuantas"]["na"], (
+        f"el recuento de calibración viene por la rama de «no hay bastante» "
+        f"({c['cuantas']['na']!r}): el sembrado no deja ni una previsualización "
+        f"opinada, y sin denominador no se pinta ni el anillo ni el porcentaje."
+    )
+    for clave in ("discrepadas", "conformes", "sin_opinar"):
+        assert c["cuantas"][clave], (
+            f"`{clave}` sale a cero. Los tres trozos del anillo tienen que "
+            f"tener filas: el de «sin opinar» es el que explica que el "
+            f"porcentaje vaya sobre las opinadas y no sobre las miradas, y a "
+            f"cero se pinta un anillo lleno que dice lo contrario."
+        )
+    vacias = [d["clave"] for d in c["direcciones"]["celdas"] if not d["n"]]
+    assert not vacias, (
+        f"direcciones a cero: {vacias}. Las tres tienen que tener desacuerdos "
+        f"dentro, porque una casilla vacía manda `pct` a `None` y es otra rama."
+    )
+    assert c["direcciones"]["lectura"], (
+        "la lectura de las direcciones se calla: hacen falta tres desacuerdos "
+        "para que hable, y sin ella la pantalla enseña tres barras sin frase."
+    )
+    assert c["direcciones"]["forzadas_en_rojo"], (
+        "ninguna forzada en rojo. Es la línea que va aparte de las tres barras "
+        "-subir de dureza con el semáforo en rojo- y a cero no se comprueba que "
+        "se pinte fuera del recuento en vez de como cuarta casilla."
+    )
+    assert c["donde"]["lectura"], (
+        "los desacuerdos no se agolpan en ninguna regla del sembrado, así que "
+        "la frase que dice DÓNDE mirar no se escribe. Suele ser un empate en "
+        "cabeza: hacen falta más desacuerdos en una regla que en la siguiente."
+    )
+    assert c["quien_acerto"]["veredicto"] and not c["quien_acerto"]["na"], (
+        f"el veredicto se calla ({c['quien_acerto']['na']!r}). Van "
+        f"{c['quien_acerto']['n']} juzgables de los "
+        f"{c['quien_acerto']['hacen_falta']} que hacen falta: un desacuerdo solo "
+        f"juzga si pediste otra sesión, se ejecutó la que pediste y esa sesión "
+        f"tiene resultado medido. Sin veredicto no se leen ni las dos medianas."
+    )
+    juzgan = [x for x in c["quien_acerto"]["casos"] if not x["na"]]
+    no_juzgan = {x["na"] for x in c["quien_acerto"]["casos"] if x["na"]}
+    assert juzgan and len(no_juzgan) >= 4, (
+        f"la lista de casos no trae las dos clases de fila: {len(juzgan)} que "
+        f"juzgan y {len(no_juzgan)} motivos distintos de los que no. Se pintan "
+        f"diferente -percentil o motivo- y los cuatro motivos son cuatro cosas "
+        f"distintas que arreglar, así que juntarlos en la muestra deja media "
+        f"lista sin mirar."
     )
     return salida
 
