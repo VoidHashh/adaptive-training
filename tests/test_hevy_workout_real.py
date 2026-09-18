@@ -138,19 +138,74 @@ def test_el_fixture_tiene_calentamiento_y_trabajo(entreno):
 # ---------------------------------------------------------------------------
 
 
+def _los_que_estaban(entreno: dict, plan) -> tuple[set[str], set[str]]:
+    """Parte el plan en los que EXISTÍAN cuando se grabó y los de después.
+
+    EL FIXTURE ES UNA FOTO Y EL PLAN ESTÁ VIVO. La grabación es el Día 3 del
+    2026-09-10 con once ejercicios; el 18-09-2026 la rutina pasó a quince, y
+    esos cuatro no pueden estar en un entreno de ocho días antes. Comparar la
+    foto contra el plan de hoy y exigir que casen todos convierte este fichero
+    en algo que se pone rojo cada vez que se toca la rutina, que es una razón
+    excelente para que alguien acabe borrándolo.
+
+    La salida NO es relajar la exigencia a «los que casen, que casen». Eso sí
+    mataría el test: un fallo de contrato haría que no casara ninguno, el
+    conjunto de «los que estaban» saldría vacío y todo aprobaría en vacío, que
+    es exactamente el agujero contra el que avisa `_parejas`.
+
+    Lo que se hace es separar por una razón COMPROBABLE y no por una lista
+    escrita a mano: un ejercicio del plan «estaba» si su `template_id` aparece
+    en la grabación. Con eso, los dos modos de fallo siguen cazándose:
+
+      - si el contrato se mueve -Hevy renombra `exercise_template_id`- ningún
+        id casa, `estaban` sale vacío y salta la guarda de abajo;
+      - si el emparejado se rompe para un ejercicio cuyo id SÍ está en la
+        grabación, ese cae en `estaban` y su test falla como antes.
+
+    Lo único que deja de ser un fallo es lo que nunca lo fue: que un ejercicio
+    añadido después no aparezca en un entreno anterior.
+    """
+    ids_grabados = {
+        str(ex.get("exercise_template_id") or "").upper()
+        for ex in entreno.get("exercises") or []
+    }
+    estaban, posteriores = set(), set()
+    for e in plan.exercises:
+        destino = estaban if str(e.get("template_id") or "").upper() in ids_grabados else posteriores
+        destino.add(str(e["key"]))
+
+    assert len(estaban) >= len(ids_grabados), (
+        f"solo {len(estaban)} ejercicio(s) del plan tienen un `template_id` que "
+        f"esté en la grabación, y la grabación trae {len(ids_grabados)}. O se han "
+        f"quitado ejercicios de la rutina, o el campo del id ha cambiado de "
+        f"nombre y este fichero estaba a punto de aprobar en vacío."
+    )
+    return estaban, posteriores
+
+
 def test_todos_los_ejercicios_del_plan_casan_con_el_entreno_real(entreno, plan):
     """EL TEST. Ninguna clave del plan puede quedarse sin emparejar.
 
     Un `reales=None` no lanza nada: el ejercicio cuenta como no hecho, la racha
     no avanza y la carga se queda quieta. El fallo no se ve por ningún sitio, ni
     en el log ni en el mensaje de la mañana. Por eso se comprueba que casan
-    TODOS y no que casa alguno.
+    TODOS los que pudieron hacerse, y no que casa alguno.
     """
+    estaban, posteriores = _los_que_estaban(entreno, plan)
     parejas = _parejas(entreno, plan)
+
     sin_casar = sorted(k for k, (_obj, reales) in parejas.items() if not reales)
-    assert not sin_casar, (
-        f"{len(sin_casar)} ejercicio(s) del plan no encuentran sus series en el "
-        f"entreno real: {sin_casar}. La progresión de esos se para sin avisar."
+    assert not (set(sin_casar) & estaban), (
+        f"ejercicio(s) del plan que SÍ están en el entreno real y no encuentran "
+        f"sus series: {sorted(set(sin_casar) & estaban)}. La progresión de esos "
+        f"se para sin avisar."
+    )
+    # Y al revés: lo que no casa tiene que ser exactamente lo añadido después.
+    # Sin esto, un ejercicio que dejara de casar por cualquier otro motivo se
+    # colaría con la excusa de ser nuevo.
+    assert set(sin_casar) <= posteriores, (
+        f"no casan {sorted(set(sin_casar) - posteriores)} y no son de los "
+        f"añadidos después de la grabación"
     )
 
 
@@ -160,13 +215,16 @@ def test_el_emparejamiento_va_por_template_id_y_no_por_el_nombre(entreno, plan):
     Cambiar un nombre en `config.yaml` -tildes, mayúsculas, un paréntesis- no
     puede parar la progresión de ese ejercicio.
     """
+    estaban, _ = _los_que_estaban(entreno, plan)
     tocado = json.loads(json.dumps(entreno))
     for ex in tocado["exercises"]:
         ex["title"] = "OTRO NOMBRE QUE NO COINCIDE CON NADA"
 
     parejas = _parejas(tocado, plan)
-    sin_casar = sorted(k for k, (_o, r) in parejas.items() if not r)
-    assert not sin_casar, f"se estaba emparejando por el nombre: {sin_casar}"
+    sin_casar = {k for k, (_o, r) in parejas.items() if not r}
+    assert not (sin_casar & estaban), (
+        f"se estaba emparejando por el nombre: {sorted(sin_casar & estaban)}"
+    )
 
 
 def test_si_el_id_cambia_de_nombre_de_campo_se_nota(entreno, plan):

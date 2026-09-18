@@ -1071,9 +1071,20 @@ progression:
     #   routine_order   -> el orden en que están escritos en la rutina
     #
     # `waiting_longest` importa más de lo que parece: con `routine_order`, en
-    # una rutina de 11 ejercicios como el Día 3 los últimos (curl predicador,
-    # extensión de tríceps) no llegarían a subir NUNCA, porque los de arriba
-    # agotan el cupo cada sesión. Turnándose, todos acaban pasando.
+    # una rutina larga como el Día 3 los últimos no llegarían a subir NUNCA,
+    # porque los de arriba agotan el cupo cada sesión. Turnándose, todos acaban
+    # pasando.
+    #
+    # El 18-09-2026 el Día 3 pasó de 11 ejercicios a 15, y con eso las dos colas
+    # quedan así: VOLUMEN 6 candidatos (4 de core + el rumano y la extensión de
+    # espalda, que están en modo `sets` y una serie más cuenta como volumen)
+    # para un cupo de 2; CARGA 9 candidatos para un cupo de 3. O sea tres
+    # sesiones de Día 3 para dar una vuelta completa a cada cola, donde antes
+    # eran dos. Nada se rompe -para eso está `waiting_longest`-, pero cada
+    # ejercicio concreto tarda una sesión más en volver a tocarle el turno, y
+    # eso es una decisión, no un efecto secundario: si se quiere la cadencia de
+    # antes hay que subir los cupos, sabiendo que eso es lo que este bloque
+    # existe para no hacer a la ligera.
     queue_policy: waiting_longest
 
   # ---------------------------------------------------------------------------
@@ -1162,10 +1173,11 @@ progression:
 # Y además nunca se elimina: el día que vienes tocado, calentar importa más, no
 # menos.
 #
-# ESTADO REAL (leído de la API el 07-09-2026): las series de calentamiento
-# están MARCADAS en Hevy. El campo `type` devuelve `warmup` en 18 series y
-# `normal` en las otras 114. Las 18 son exactamente las primeras series de los
-# 18 ejercicios de 4 series (5 en Día 1, 6 en Día 2, 7 en Día 3).
+# ESTADO REAL (releído de la API el 18-09-2026): las series de calentamiento
+# están MARCADAS en Hevy. Son las primeras series de los 20 ejercicios de 4
+# series: 5 en Día 1, 6 en Día 2 y 9 en Día 3. Eran 18 hasta que el Día 3 ganó
+# cuatro ejercicios ese día, de los cuales dos -el peso muerto rumano y el
+# jalón de brazos rectos- traen su calentamiento marcado desde la app.
 #
 # Es decir: hoy manda la API y la heurística no llega a ejecutarse nunca. Se
 # mantiene como plan B por dos motivos concretos, no por simetría:
@@ -2234,6 +2246,106 @@ routines:
           - {reps: 12, weight_kg: 12.5}
           - {reps: 12, weight_kg: 15}
           - {reps: 12, weight_kg: 17.5}
+
+      # -----------------------------------------------------------------
+      # Los cuatro que se añadieron en Hevy el 18-09-2026. Van AQUÍ y en este
+      # orden porque es el que tienen en la app: el PUT reescribe la rutina
+      # entera desde este fichero, así que un orden distinto aquí te reordena
+      # la rutina allí sin avisar.
+      #
+      # LOS CUATRO ESTÁN SIN PESO EN HEVY (weight_kg: null en las 14 series).
+      # No se inventa ninguno: `_can_raise_load` solo sube carga si alguna
+      # serie efectiva tiene peso > 0, y mientras no lo tengan la progresión de
+      # CARGA queda bloqueada con `needs_data` y un aviso que dice «apunta el
+      # peso real en Hevy y se activa sola». La de reps y la de series sí
+      # corren desde el primer día. Se dejan sin `weight_kg` en vez de con un
+      # 0: un 0 es una afirmación sobre la carga y esto es la ausencia de dato.
+      # -----------------------------------------------------------------
+
+      - key: peso_muerto_rumano
+        template_id: "0B9B92BA"
+        # NOMENCLATURA: en Hevy figura como "Romanian Deadlift (Smith Machine)"
+        # por el mismo motivo que `peso_muerto_smith` -el catálogo no tiene la
+        # Technogym-. Es la máquina de peso muerto guiada, a rango corto.
+        #
+        # SU template_id ESTÁ en `safety.forbidden_in_hiit.template_ids` y su
+        # nombre casa además con el patrón /peso muerto|deadlift/. Las dos cosas
+        # son correctas y ninguna lo bloquea aquí: esa guarda solo recorre las
+        # rutinas referenciadas desde `hiit.blocks`, y Día 3 no es una de ellas
+        # (además `hiit.never_routines` lo excluye). Prohibido con prisa y bajo
+        # fatiga; admisible guiado, vigilado y en un día de fuerza.
+        name: "Peso muerto rumano (máquina guiada)"
+        increment_kg: 5
+        apply_to: all_sets
+        clean_sessions_required: 2      # cadena posterior
+        # Mismo modo y mismo techo que `peso_muerto_smith`, y por lo mismo: en
+        # cadena posterior una serie más es más segura que 5 kg más, y aquí el
+        # volumen tampoco es gratis. `max_sets: 4` y no 5.
+        progression_type: sets
+        max_sets: 4
+        then: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10}
+          - {reps: 12}
+          - {reps: 12}
+          - {reps: 12}
+
+      - key: extension_espalda
+        template_id: "091737FA"
+        # En Hevy: "Back Extension (Weighted Hyperextension)". Banco romano.
+        name: "Extensión de espalda (banco romano)"
+        increment_kg: 2.5
+        apply_to: all_sets
+        clean_sessions_required: 2      # cadena posterior
+        # `sets` y no `volume`, aunque hoy vaya sin peso. `volume` es el modo de
+        # las planchas y el core: tope en 30 reps y ningún camino hacia la
+        # carga. Aquí el peso va a llegar -"sin peso de momento"-, y con `sets`
+        # el ejercicio progresa mientras tanto por series y pasa a carga solo
+        # cuando haya un número que leer.
+        progression_type: sets
+        max_sets: 4
+        then: double
+        rep_range: [10, 12]
+        sets:
+          - {reps: 10}
+          - {reps: 10}
+          - {reps: 10}
+
+      - key: prensa_una_pierna
+        template_id: "3FD83744"
+        # En Hevy: "Single Leg Press (Machine)".
+        name: "Prensa a una pierna"
+        # 5 kg como la prensa horizontal: es la misma máquina y el mismo salto
+        # de disco. Que sea unilateral no hace el incremento más pequeño, hace
+        # que el mismo incremento pese el doble por pierna; si resulta mucho, lo
+        # que se baja es esto y no el rango.
+        increment_kg: 5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {reps: 12}
+          - {reps: 12}
+          - {reps: 12}
+
+      - key: jalon_brazos_rectos
+        template_id: "9273BA17"
+        # En Hevy: "Rope Straight Arm Pulldown".
+        name: "Jalón con cuerda de brazos rectos"
+        increment_kg: 2.5
+        apply_to: top_set
+        # Accesorio de aislamiento, como los otros tres que ya lo llevan en este
+        # día (vuelos posteriores, curl predicador, extensión de tríceps). En un
+        # ámbar se cae.
+        expendable_in_amber: true
+        progression_type: double
+        rep_range: [10, 12]
+        sets:
+          - {type: warmup, reps: 10}
+          - {reps: 12}
+          - {reps: 12}
+          - {reps: 12}
 
       - key: perro_de_caza
         template_id: "BD0AD077"
