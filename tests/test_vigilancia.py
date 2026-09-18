@@ -31,6 +31,7 @@ planificador cuando el propio aviso falla.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -103,7 +104,12 @@ class PlanificadorFalso:
     @no_es_doble("un trabajo de APScheduler visto por los dos campos que se leen")
     class _Trabajo:
         id = "watchdog"
-        next_run_time = None
+        # Una fecha de verdad y no `None`. Con `None` este doble se saltaba el
+        # `.isoformat()` de `_estado_planificador`, o sea la única línea de ese
+        # bloque que puede reventar, y se descubrió corriendo el trabajo a mano
+        # contra un planificador real: un `Job` sin arrancar no tiene
+        # `next_run_time`, y el doble tampoco lo tenía por otro motivo.
+        next_run_time = datetime(2026, 9, 19, 9, 45, tzinfo=timezone.utc)
 
     def get_jobs(self):
         return [self._Trabajo()]
