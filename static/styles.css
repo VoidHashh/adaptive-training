@@ -380,15 +380,34 @@ textarea {
 
 /* --- resultado ---------------------------------------------------------- */
 
-.resultado {
+/* LA CAJA LA COMPARTEN EL RESULTADO Y LA PREVISUALIZACIÓN, y el motivo de que
+ * vayan en el mismo selector en vez de en dos bloques parecidos es que ya
+ * divergieron una vez y salió caro.
+ *
+ * `pintarPrevisualizacion` escribía `class="previsualizacion semaforo-green"` y
+ * no existía ninguna regla `.previsualizacion`. `.semaforo-green` SÍ la
+ * alcanzaba, así que la clase se aplicaba, el selector casaba y no se veía
+ * nada: `border-color` sobre un elemento sin borde no pinta, y el
+ * `<span class="punto">` se quedaba en `width: auto`, o sea de tamaño cero. El
+ * semáforo de la previsualización era literalmente invisible mientras todo lo
+ * demás decía que estaba bien.
+ *
+ * Juntas en un selector, olvidarse de una es imposible: no hay dónde. */
+.resultado,
+.previsualizacion {
   margin-top: 1.5rem;
   padding: 1rem;
   border-radius: 0.65rem;
   background: var(--caja);
   border: 1px solid var(--borde);
 }
-.resultado h2 { margin: 0 0 0.4rem; display: flex; align-items: center; gap: 0.55rem; }
-.resultado .punto { width: 0.85rem; height: 0.85rem; border-radius: 50%; background: var(--tenue); }
+/* El del resultado es un `h2` y el de la previsualización un `h3` -debajo de
+ * ella va el `h2` de «todavía no se ha escrito nada», que manda más-, así que
+ * el semáforo se peina por los dos sitios. */
+.resultado h2,
+.previsualizacion h3 { margin: 0 0 0.4rem; display: flex; align-items: center; gap: 0.55rem; }
+.resultado .punto,
+.previsualizacion .punto { width: 0.85rem; height: 0.85rem; border-radius: 50%; background: var(--tenue); }
 .semaforo-green .punto { background: var(--verde); }
 .semaforo-amber .punto { background: var(--ambar); }
 .semaforo-red   .punto { background: var(--rojo); }
@@ -396,19 +415,106 @@ textarea {
 .semaforo-amber { border-color: var(--ambar); }
 .semaforo-red   { border-color: var(--rojo); }
 
-.resultado.mal { border-color: var(--rojo); }
-.resultado .sesion { margin: 0 0 0.8rem; font-size: 1.05rem; }
+.resultado.mal,
+.previsualizacion.mal { border-color: var(--rojo); }
+.resultado .sesion,
+.previsualizacion .sesion { margin: 0 0 0.8rem; font-size: 1.05rem; }
 
-.resultado dl {
+.resultado dl,
+.previsualizacion dl {
   display: grid; grid-template-columns: auto 1fr;
   gap: 0.25rem 0.9rem; margin: 0; font-size: 0.92rem;
 }
-.resultado dt { color: var(--tenue); }
-.resultado dd { margin: 0; }
+.resultado dt,
+.previsualizacion dt { color: var(--tenue); }
+.resultado dd,
+.previsualizacion dd { margin: 0; }
 
 .problemas { margin-top: 0.9rem; border-top: 1px solid var(--borde); padding-top: 0.7rem; }
 .problemas h3 { margin: 0 0 0.35rem; font-size: 0.92rem; color: var(--ambar); }
 .problemas ul { margin: 0; padding-left: 1.1rem; font-size: 0.9rem; }
+
+/* --- previsualizar ------------------------------------------------------- */
+
+/* EL BOTÓN NO TENÍA NI UNA REGLA, y estuvo así desde que se escribió.
+ *
+ * Medido en el navegador contra el contenedor: 92 × 20 píxeles, fondo
+ * `rgb(240,240,240)`, texto negro, letra de 13,3. O sea el `<button>` que
+ * dibuja el navegador cuando nadie le ha dicho nada, en una pantalla oscura
+ * donde `#enviar`, justo debajo, mide 544 × 57 y es azul. No estaba oculto ni
+ * desactivado ni tapado: se pintaba, y no se veía. Se buscó en el caché, en el
+ * service worker, en la imagen y en el proxy antes que aquí, porque todo lo
+ * demás decía que el botón estaba. Y estaba.
+ *
+ * SECUNDARIO PERO DEL MISMO TAMAÑO, que es la decisión de diseño. Ancho
+ * completo y con el mismo objetivo táctil que el de enviar -esto se pulsa medio
+ * dormido y con una mano-, pero en color de caja y con el texto sin engordar:
+ * tiene que leerse como EL PASO DE ANTES, no como la otra opción. El azul es de
+ * uno solo de los dos botones porque solo uno de los dos hace algo que no se
+ * puede deshacer. */
+#previsualizar {
+  width: 100%;
+  padding: 0.85rem;
+  margin: 0 0 0.6rem;
+  border: 1px solid var(--borde);
+  border-radius: 0.6rem;
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  cursor: pointer;
+}
+#previsualizar:disabled { color: var(--tenue); cursor: default; }
+
+/* LO QUE NO SE HA TOCADO. Primero de la tarjeta, y lo único que contesta la
+ * pregunta que trae aquí a cualquiera: «¿esto ya ha escrito algo?». Lleva raya
+ * debajo porque lo que sigue -el semáforo- es otra cosa, y sin separación las
+ * dos se leen como una sola lista. */
+.lo-tocado {
+  margin: 0.6rem 0 0;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--borde);
+}
+
+/* Las reglas que no se pudieron mirar. Plegadas y en gris: la mayoría de los
+ * días esto está vacío o dice algo que ya se sabe. */
+.sin-datos { margin: 0.8rem 0 0; font-size: 0.9rem; }
+.sin-datos summary { cursor: pointer; color: var(--tenue); padding: 0.3rem 0; }
+.sin-datos ul { margin: 0.3rem 0 0; padding-left: 1.1rem; color: var(--tenue); }
+
+/* EL DESACUERDO. Separado por una raya del veredicto que discute, porque es lo
+ * único de esta tarjeta que escribe en la base de datos y conviene que no se
+ * lea como una parte más de lo que el sistema dice. */
+.desacuerdo {
+  margin-top: 0.9rem;
+  border-top: 1px solid var(--borde);
+  padding-top: 0.8rem;
+}
+.abrir-desacuerdo,
+.guardar-desacuerdo {
+  padding: 0.6rem 0.9rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.guardar-desacuerdo:disabled { color: var(--tenue); cursor: default; }
+.desacuerdo .motivo { display: block; margin: 0 0 0.6rem; }
+.desacuerdo .motivo span { display: block; margin-bottom: 0.3rem; color: var(--tenue); font-size: 0.9rem; }
+.texto-desacuerdo {
+  width: 100%;
+  padding: 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+}
+.desacuerdo .nota { margin: 0.6rem 0 0; color: var(--tenue); font-size: 0.87rem; }
 
 pre {
   white-space: pre-wrap;

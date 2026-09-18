@@ -419,6 +419,26 @@ HUELLAS_DEL_ARMAZON = {
     # sin ella, hasta el siguiente arranque después de la siguiente subida-. Esta
     # lista pasa de ser una bitácora a ser el mecanismo.
     "v19": "132753ca626dcc2a9ea9c335e67aefd12a8d09240339a9b9fb229e25a3fcfcdc",
+    # v20: el botón de previsualizar y su tarjeta, que llevaban desde el
+    # commit `67962aa` sin una sola línea de CSS. Toca `styles.css` y nada más.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE, y por una vez es LA MISMA avería
+    # que ya tiene. Un teléfono que se quede con el `styles.css` de antes sigue
+    # viendo el botón de 92 × 20 píxeles en gris claro sobre fondo oscuro, que
+    # es exactamente lo que se ve hoy. No aparece nada roto que antes
+    # funcionara: sencillamente no llega el arreglo. Es el único caso de esta
+    # lista donde no subir el número no empeora nada, y aun así hay que
+    # subirlo, porque desde la v19 es el ÚNICO camino por el que entra un
+    # archivo nuevo y sin él no llega tampoco al que sí tiene cobertura.
+    #
+    # LO QUE HAY QUE SABER DE ESTA HUELLA es que es la primera que se calcula
+    # sobre un `styles.css` que algún test abre. Hasta hoy este número se movía
+    # cuando cambiaba la hoja de estilos -está en `ARMAZON`, entra en el
+    # cálculo- y nadie había mirado nunca su contenido: la huella sabía decir
+    # «esto ha cambiado» y no «esto está completo». Lo segundo lo dice ahora
+    # `tests/test_estilos.py`, y es lo que faltaba para que un botón no pudiera
+    # volver a nacer invisible.
+    "v20": "7bad666e85b7b6d605a7a72dd092d629024e874c84ea108e701fb96d40aee455",
 }
 
 
