@@ -266,8 +266,33 @@ const ORIGENES = {
  * hablando de una tabla que esa vista no mira-. El defecto de aquí abajo dice
  * solo lo que `null` garantiza por sí mismo; lo que cambia de una vista a otra
  * lo trae el tercer argumento.
+ *
+ * Y AHORA REVIENTA SI FALTA, en vez de escribir media frase. Tenía `porQue = ""`
+ * por defecto, o sea que olvidarlo dejaba «Esta vista no mira las fuentes una a
+ * una.» y punto: una frase correcta, bien puntuada, que no dice de qué va esta
+ * pantalla y que nadie va a leer como un fallo. El caché lo puede provocar
+ * incluso sin olvido -un `metricas.js` nuevo llamando a un `comun.js` de antes
+ * del tercer argumento-, y ese es justo el modo de fallo que la v18 tuvo que
+ * apuntar en `HUELLAS_DEL_ARMAZON`. Mejor la pantalla rota y visible: un `throw`
+ * aquí deja el hueco vacío y el error en la consola, que es lo que se puede
+ * contar por teléfono.
  */
-function pintarCobertura(cob, ventana, porQue = "") {
+function pintarCobertura(cob, ventana, porQue) {
+  // La exigencia va SOLO por el camino que lo usa, y no a secas para todo el
+  // mundo. Las seis vistas que sí calculan cobertura llaman con dos argumentos y
+  // nunca leen el tercero: pedírselo sería obligarlas a inventar una explicación
+  // de por qué no explican nada, o a escribir un `""` de adorno en seis sitios
+  // para contentar a una guarda. Un argumento obligatorio que la función no lee
+  // es el patrón decorativo de siempre, y encima dejaría la guarda disparándose
+  // donde no hay nada que arreglar.
+  if ((cob === null || cob === undefined) && porQue === undefined) {
+    throw new Error(
+      "pintarCobertura: una vista sin cobertura tiene que decir POR QUÉ no la " +
+      "mira. Sin el tercer argumento se imprimiría una frase genérica que no " +
+      "se corresponde con lo que esta pantalla ha mirado.",
+    );
+  }
+
   // «Ventana pedida» es el nombre del parámetro, no el nombre de la cosa. Lo que
   // esta línea dice es qué trozo de calendario está mirando la pantalla.
   const cabecera =

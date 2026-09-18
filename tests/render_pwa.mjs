@@ -521,6 +521,62 @@ if (!sinHuecos || !sinHuecos.includes("<h2")) {
   fallos++;
 }
 
+/* LA VISTA SIN COBERTURA QUE NO DICE POR QUÉ.
+ *
+ * `pintarCobertura` tenía `porQue = ""` por defecto: una vista que llamara sin
+ * el tercer argumento y sin cobertura imprimía «Esta vista no mira las fuentes
+ * una a una.» y se quedaba tan ancha. Frase correcta, bien puntuada, y que no
+ * dice de qué va la pantalla; nadie la lee como un fallo. Ahora revienta.
+ *
+ * Esto NO lo cubre el bucle de las vistas de arriba, y por el motivo de
+ * siempre: el bucle solo puede pillar el olvido en las dos vistas que hoy pasan
+ * el tercer argumento, y justamente esas lo pasan. La rama que importa es la de
+ * la vista que se añada mañana, que aquí no existe todavía. Se llama a la
+ * función directamente porque lo que se vigila es la exigencia, no el montaje.
+ *
+ * Y se comprueba la otra mitad -que con dos argumentos NO reviente- porque sin
+ * ella la forma más fácil de poner esto verde es exigir el tercer argumento
+ * siempre, y entonces las seis vistas que sí calculan cobertura tendrían que
+ * escribir un `""` de adorno para contentar a una guarda. */
+const VENTANA_DE_PRUEBA = { desde: "2026-01-01", hasta: "2026-01-31", dias: 31 };
+let revento = false;
+try {
+  vm.runInContext("pintarCobertura", contexto)(null, VENTANA_DE_PRUEBA);
+} catch (e) {
+  revento = true;
+}
+if (!revento) {
+  console.log(
+    `FALLO comun.js: \`pintarCobertura(null, ventana)\` sin tercer argumento ` +
+    `no revienta. Vuelve a imprimir una frase genérica en una pantalla que no ` +
+    `ha mirado ninguna fuente, y esa frase se lee igual de bien siendo falsa.`,
+  );
+  fallos++;
+}
+
+let conCobertura = null;
+try {
+  conCobertura = vm.runInContext("pintarCobertura", contexto)(
+    { checkins: { desde: "2026-01-02", hasta: "2026-01-30" } },
+    VENTANA_DE_PRUEBA,
+  );
+} catch (e) {
+  console.log(
+    `FALLO comun.js: \`pintarCobertura\` revienta con DOS argumentos y ` +
+    `cobertura de verdad (${e.message}). La exigencia del tercero se ha ` +
+    `escapado a las seis vistas que sí miran las fuentes, y ahí no hay nada ` +
+    `que explicar: tendrían que pasar un \`""\` de adorno.`,
+  );
+  fallos++;
+}
+if (conCobertura !== null && !conCobertura.includes("cobertura")) {
+  console.log(
+    `FALLO comun.js: \`pintarCobertura\` con cobertura no pinta la sección ` +
+    `(${JSON.stringify(conCobertura)}).`,
+  );
+  fallos++;
+}
+
 if (inventadas.size) {
   console.log(`\nCLAVES QUE EL PAYLOAD NO TRAE (${inventadas.size}):`);
   for (const k of [...inventadas].sort()) console.log(`  ${k}`);

@@ -389,6 +389,36 @@ HUELLAS_DEL_ARMAZON = {
     # Es exactamente el defecto que se acaba de quitar de `comun.js` al sacarle
     # la frase de dentro, servido por un caché en vez de por el código.
     "v18": "8f10be6a94d4940fcdf720ac5eec7bbdc3ffdd509ef454c806417237ba6f2893",
+    # v19: el service worker deja de escribir el armazón al vuelo. Toca `sw.js`
+    # -que NO está en el armazón y por tanto no mueve esta huella- y `comun.js`
+    # -el `throw` de `pintarCobertura`-, que sí la mueve. O sea que el número
+    # tendría que subir de todas formas, pero conviene decir que si el cambio
+    # hubiera sido sólo el del service worker esta huella no se habría movido y
+    # esta línea no haría falta: `sw.js` se pide por su cuenta y el navegador lo
+    # revisa él solo, sin pasar por ningún caché nuestro. Es el único archivo de
+    # la PWA que llega siempre.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE, y es de las pocas veces. Un teléfono
+    # con el `comun.js` de la v18 y el `metricas.js` de ahora no imprime ninguna
+    # mentira: la vista de calibración pasa su tercer argumento, el
+    # `pintarCobertura` de antes lo ignora sin reventar y sale «Esta vista no
+    # mira las fuentes una a una.» a secas. Es una frase corta y verdadera a la
+    # que le falta el porqué. Molesta y no engaña.
+    #
+    # LO QUE HAY QUE ENTENDER DE ESTA SUBIDA es que es la ÚLTIMA que se juega
+    # bajo la regla vieja. El teléfono que está ahí fuera lleva el service worker
+    # de la v18 activo, y ese todavía va a la red primero y hace `put` archivo a
+    # archivo: la instalación del v19 se produce, por tanto, en el mismo mundo
+    # que fabricaba el móvil a medias. Lo que arregla este cambio no es esta
+    # actualización sino todas las siguientes. Decirlo aquí para que nadie lea el
+    # commit y dé por cerrada una ventana que sigue abierta un arranque más.
+    #
+    # Y desde aquí el número deja de ser un seguro contra un caso raro: el
+    # armazón ya no se reescribe con lo que llegue por red, así que no subirlo no
+    # deja atrás al móvil que estuvo sin cobertura -deja atrás a todos, con red o
+    # sin ella, hasta el siguiente arranque después de la siguiente subida-. Esta
+    # lista pasa de ser una bitácora a ser el mecanismo.
+    "v19": "132753ca626dcc2a9ea9c335e67aefd12a8d09240339a9b9fb229e25a3fcfcdc",
 }
 
 
@@ -398,11 +428,18 @@ def test_la_version_del_service_worker_sube_cuando_cambia_el_armazon():
     `sw.js` lleva escrito desde siempre que la versión sube cada vez que cambia
     el armazón, y entre medias `metricas.js` cambió dos veces con la versión
     clavada en "v5". Nadie lo vio, y no por descuido: el `fetch` del service
-    worker va a la red primero, así que con cobertura el archivo nuevo llega
-    igual y la pantalla se ve bien. Lo que la versión protege es el móvil que
-    estuvo sin red -se queda con el `armazon-v5` entero, `activate` no lo borra
-    porque el nombre no ha cambiado, y abre un `metricas.js` viejo contra una
-    API nueva-. Ese caso no aparece mirando la pantalla ningún día.
+    worker iba entonces a la red primero, así que con cobertura el archivo nuevo
+    llegaba igual y la pantalla se veía bien. Lo que la versión protegía era el
+    móvil que estuvo sin red -se queda con el `armazon-v5` entero, `activate` no
+    lo borra porque el nombre no ha cambiado, y abre un `metricas.js` viejo
+    contra una API nueva-. Ese caso no aparece mirando la pantalla ningún día.
+
+    DESDE LA v19 YA NO ES UN CASO RARO. El armazón se sirve del caché de su
+    versión y no se reescribe al vuelo, o sea que subir el número es el único
+    camino por el que entra un archivo nuevo: dejarlo clavado ya no deja atrás
+    al móvil que estuvo sin cobertura, los deja atrás a todos. Este test pasa de
+    cubrir un hueco a sostener el mecanismo entero, y sigue valiendo igual
+    porque lo que compara es lo mismo.
 
     Así que se ata aquí: la huella del contenido, al lado del número.
     """
@@ -589,6 +626,249 @@ def test_el_ultimo_recurso_del_service_worker_solo_vale_para_paginas():
 
 
 # ---------------------------------------------------------------------------
+# El service worker, ejecutado
+# ---------------------------------------------------------------------------
+#
+# Todo lo de aquí arriba lee `sw.js` como texto, y contra lo que hay que
+# demostrar ahora el texto no llega. La afirmación es «una petición del armazón
+# no escribe en el caché», y el `caches.put` sigue en el archivo -tiene que
+# seguir, porque el camino de lo que NO es armazón lo conserva-. Lo que cambió
+# no es si la llamada existe, es por qué rama se pasa, y una rama no se lee con
+# una expresión regular.
+
+
+def _correr_sw(tmp_path, guion: dict) -> dict:
+    """Despacha los eventos del service worker de verdad y devuelve qué pasó."""
+    fichero = tmp_path / "guion_sw.json"
+    fichero.write_text(json.dumps(guion, ensure_ascii=False), encoding="utf-8")
+    r = subprocess.run(
+        ["node", "tests/sw_pwa.mjs", str(fichero)],
+        cwd=RAIZ, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=120,
+    )
+    assert r.returncode == 0, f"el arnés no terminó:\n{r.stdout}\n{r.stderr}"
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_pedir_el_armazon_no_escribe_en_el_cache(tmp_path):
+    """EL TEST DE ESTE BLOQUE. El armazón se lee del caché y no lo reescribe.
+
+    El `fetch` iba a la red primero y guardaba cada respuesta buena con un `put`
+    suelto. `CACHE` es el del service worker ACTIVO, que durante una
+    actualización es todavía el viejo, así que un móvil con el SW anterior
+    conectándose contra el contenedor nuevo escribía el JavaScript nuevo DENTRO
+    del caché viejo. Con eso, `armazon-v18` dejaba de contener la v18: contenía
+    una mezcla, y la mezcla no se distingue de lo correcto mirando la pantalla.
+
+    Se despacha el evento y se mira quién tocó el caché. Un
+    `assert "caches.put" not in SW` no serviría: el `put` sigue en el archivo a
+    propósito, y lo que se quiere afirmar es por qué rama se pasa.
+    """
+    salida = _correr_sw(tmp_path, {
+        "peticiones": [
+            {"url": "/metricas.js"},
+            {"url": "/comun.js"},
+            {"url": "/", "mode": "navigate"},
+            {"url": "/icons/icon-192.png"},
+        ],
+    })
+
+    for p in salida["peticiones"]:
+        assert p["interceptada"], f"`{p['url']}` tenía que contestarla el caché"
+        assert p["escrituras"] == [], (
+            f"pedir `{p['url']}` ha escrito en el caché: {p['escrituras']}. El "
+            f"armazón se llena una vez, en `install`, y no se retoca pieza a "
+            f"pieza: un `put` aquí mete la generación de ahora en el caché de la "
+            f"versión de antes."
+        )
+        assert p["fue_a_la_red"] == [], (
+            f"`{p['url']}` estaba en el caché y aun así se ha ido a la red"
+        )
+
+    # Y el número de un vistazo: fuera de `install`, ni una escritura.
+    assert salida["escrituras_fuera_de_install"] == [], (
+        f"el caché se ha tocado fuera de la instalación: "
+        f"{salida['escrituras_fuera_de_install']}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_el_armazon_no_mezcla_dos_generaciones_en_el_mismo_cache(tmp_path):
+    """El fallo entero, montado: caché viejo, red nueva y cobertura intermitente.
+
+    Es el escenario de verdad de una actualización. El caché tiene la generación
+    de antes; el contenedor ya sirve la de después; y la red va y viene, que es
+    como va una red desde un móvil.
+
+    Con el `put` al vuelo pasaba esto: `metricas.js` salía de la red, NUEVO, y se
+    escribía en el caché viejo. `comun.js` se pedía con la red caída, y el
+    `catch` lo sacaba del mismo caché, VIEJO. Dos generaciones en la misma
+    pantalla, sin un error en la consola, y con el agravante de que la pantalla
+    se pinta: no se ve rota, se ve rara.
+
+    Lo que se exige es que las dos salgan de la MISMA generación. No que salgan
+    nuevas -eso es lo que se ha renunciado a propósito, y está escrito en la
+    cabecera del `fetch`-: que sean coherentes entre sí.
+    """
+    salida = _correr_sw(tmp_path, {
+        # La instalación no corre: se simula el SW viejo ya activo, que es quien
+        # tiene el problema. Un `install` aquí llenaría el caché de nuevo y
+        # borraría el escenario.
+        "instalar": False,
+        "activar": False,
+        # El nombre es el de la versión ANTERIOR a propósito, y por eso no se
+        # queda obsoleto al subir `VERSION`: lo que representa es «el caché que
+        # ya estaba», no el de ahora. Si el `put` volviera, escribiría en el de
+        # ahora -en `CACHE`- y `escrituras` lo cazaría igual.
+        "precargado": {
+            "armazon-de-la-version-anterior": {
+                "/metricas.js": "vieja",
+                "/comun.js": "vieja",
+            },
+        },
+        "marca_red": "nueva",
+        "red": {"/comun.js": "fallo"},
+        "peticiones": [{"url": "/metricas.js"}, {"url": "/comun.js"}],
+    })
+
+    marcas = {p["url"]: (p["resultado"] or {}).get("marca") for p in salida["peticiones"]}
+    assert len(set(marcas.values())) == 1, (
+        f"la pantalla se ha montado con dos generaciones a la vez: {marcas}. Es "
+        f"el fallo que el `put` al vuelo fabricaba, y no da ningún error: la "
+        f"pantalla se pinta entera y a medias."
+    )
+    assert salida["escrituras"] == [], (
+        f"la respuesta de la red se ha metido en el caché de la versión de "
+        f"antes: {salida['escrituras']}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_instalacion_llena_el_cache_de_una_vez_y_entera(tmp_path):
+    """La otra mitad: si no se escribe al vuelo, `install` tiene que entrar todo.
+
+    Sin esta, la de arriba se aprueba sola con un service worker que no cachee
+    nada -cero escrituras es cero escrituras-. Aquí se exige lo contrario: que
+    `install` deje dentro el armazón ENTERO, que es de dónde sale ahora todo lo
+    que se sirve.
+    """
+    salida = _correr_sw(tmp_path, {"peticiones": []})
+    # `/` es un alias de `/index.html` y el doble los guarda por su ruta, así que
+    # se comparan las claves de `ARMAZON` tal cual.
+    assert set(salida["instalacion"]["cacheado"]) == set(salida["armazon"]), (
+        "`install` no ha dejado el armazón entero en el caché de su versión"
+    )
+    assert salida["instalacion"]["skip_waiting"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_una_sola_ruta_caida_deja_el_cache_sin_estrenar(tmp_path):
+    """`addAll` es atómico, y de eso depende que no quepan dos generaciones.
+
+    Si `install` guardara las que van saliendo, un corte de red a mitad dejaría
+    medio caché de la versión nueva y el resto por llenar, que es exactamente la
+    mezcla que este cambio existe para impedir, solo que por el otro lado.
+
+    No se comprueba que `addAll` esté escrito -eso es texto- sino que una ruta
+    caída deja el caché VACÍO. Es la propiedad, no la llamada.
+    """
+    salida = _correr_sw(tmp_path, {
+        "red": {"/metricas.js": "fallo"},
+        "peticiones": [],
+    })
+    assert salida["instalacion"]["cacheado"] == [], (
+        f"una ruta del armazón se cayó y el caché se ha quedado a medias: "
+        f"{salida['instalacion']['cacheado']}. Medio armazón de una versión es "
+        f"la mezcla de generaciones otra vez."
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_el_service_worker_no_se_mete_en_las_peticiones_de_la_api(tmp_path):
+    """Lo de siempre, ahora despachado en vez de leído.
+
+    `test_el_service_worker_no_cachea_nada_de_la_api` mira que exista el corte;
+    esto mira que el corte CORTE. Son dos cosas distintas: el `return` podría
+    seguir escrito debajo de un `respondWith` puesto encima, y la lectura no lo
+    vería.
+    """
+    salida = _correr_sw(tmp_path, {
+        "peticiones": [
+            {"url": "/api/checkin/today"},
+            {"url": "/api/decision"},
+            {"url": "/api/metrics/calibracion"},
+        ],
+    })
+    for p in salida["peticiones"]:
+        assert not p["interceptada"], (
+            f"el service worker se ha metido en `{p['url']}`. Servir un "
+            f"`/api/checkin/today` de ayer abre el formulario diciendo «ya está "
+            f"hecho» un día en que no lo está."
+        )
+    assert salida["escrituras_fuera_de_install"] == []
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_lo_que_no_es_armazon_sigue_yendo_a_la_red_primero(tmp_path):
+    """El control, y no sobra: el cambio es del armazón, no del `fetch` entero.
+
+    Un service worker que dejara de escribir en el caché del todo aprobaría los
+    tests de arriba y perdería la copia sin cobertura de lo que no está en
+    `ARMAZON`. Aquí el `put` tiene que seguir ocurriendo.
+    """
+    salida = _correr_sw(tmp_path, {
+        "peticiones": [{"url": "/algo-que-no-esta-en-el-armazon.txt"}],
+    })
+    p = salida["peticiones"][0]
+    assert p["interceptada"]
+    assert p["fue_a_la_red"] == ["/algo-que-no-esta-en-el-armazon.txt"]
+    assert [e["tipo"] for e in p["escrituras"]] == ["put"], (
+        "lo que no está en `ARMAZON` tiene que seguir guardándose al vuelo: no "
+        "lo precarga `install`, así que sin esto no tiene copia ninguna"
+    )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_sin_red_y_sin_cache_solo_las_navegaciones_reciben_la_portada(tmp_path):
+    """El último recurso, despachado. Un `<script src>` prefiere fallar.
+
+    Devolverle `/index.html` a quien pedía un script le da el HTML del check-in
+    con `Content-Type: text/html`: el navegador se niega a ejecutarlo y la
+    pantalla sale en blanco sin un solo error legible desde el móvil.
+    """
+    salida = _correr_sw(tmp_path, {
+        # `install` no corre y el armazón se pone a mano: así la red puede estar
+        # caída para TODO, que es el escenario -el móvil que ya tiene la
+        # aplicación instalada y se queda sin cobertura-. Con `install` corriendo
+        # habría que darle red para llenar el caché y entonces ya no estaría
+        # caída. El nombre del caché da igual a propósito: `caches.match` busca en
+        # todos, como el de verdad.
+        # `activate` tampoco, y no es un detalle del arnés: `activate` borra todo
+        # caché que no se llame como el de esta versión, así que correrlo aquí se
+        # llevaría por delante el armazón que se acaba de poner. Lo que se está
+        # simulando es un service worker YA activo abriendo la aplicación sin
+        # cobertura, que es cuando el último recurso sirve para algo.
+        "instalar": False,
+        "activar": False,
+        "precargado": {"armazon-ya-instalado": {"/index.html": "instalada"}},
+        "red_por_defecto": "fallo",
+        "peticiones": [
+            {"url": "/pagina-que-no-existe", "mode": "navigate"},
+            {"url": "/script-que-no-existe.js", "mode": "no-cors"},
+        ],
+    })
+    pagina, script = salida["peticiones"]
+    assert pagina["resultado"]["marca"] == "instalada", (
+        f"una navegación sin red tenía que caer en `/index.html`; salió "
+        f"{pagina['resultado']}"
+    )
+    assert script["resultado"]["marca"] == "error-de-red", (
+        "a un script que no está se le contesta con un error, no con una página"
+    )
+
+
+# ---------------------------------------------------------------------------
 # El contrato de la cobertura
 # ---------------------------------------------------------------------------
 
@@ -771,11 +1051,20 @@ def test_todo_el_armazon_obliga_al_navegador_a_preguntar_antes_de_reusar(cliente
     caducidad heurística y reutiliza la respuesta SIN preguntar. No hay 304, no
     hay petición, no hay nada que mirar.
 
-    Y encima va el service worker, que es lo que lo vuelve grave. Su `fetch` dice
-    «primero la red» en el código y en el comentario, pero `fetch()` pasa por el
-    caché HTTP; con la heurística delante, «primero la red» es «primero lo
-    viejo», y además guarda lo viejo en `CacheStorage`. La pantalla sale entera,
-    bien pintada y de antes de ayer.
+    Y encima va el service worker, que es lo que lo vuelve grave. Su `fetch`
+    decía «primero la red» en el código y en el comentario, pero `fetch()` pasa
+    por el caché HTTP; con la heurística delante, «primero la red» era «primero
+    lo viejo», y además guardaba lo viejo en `CacheStorage`. La pantalla salía
+    entera, bien pintada y de antes de ayer.
+
+    DESDE LA v19 EL ARMAZÓN YA NO SE PIDE POR RED EN CADA ARRANQUE, y eso no
+    quita esta cabecera: la vuelve más importante y le deja un solo momento. El
+    armazón se busca en la red exactamente una vez por versión, dentro del
+    `addAll` de `install`; si esa única petición la contesta el caché HTTP con la
+    heurística, lo viejo no se sirve una vez, se queda GRABADO en el caché con
+    nombre nuevo y ahí sigue hasta la siguiente subida de `VERSION`. Antes la
+    heurística costaba una pantalla vieja un arranque; ahora cuesta una
+    generación entera mal etiquetada.
 
     `/sw.js` llevaba su `Cache-Control` puesto a mano desde hacía meses, con el
     motivo escrito al lado. Los otros doce ficheros del armazón, no: el
