@@ -55,6 +55,17 @@ const NARANJA = "#e08a3c";
 const TENUE = "#5b6472";
 const REJILLA = "#2b313b";
 
+/* Dos tonos más que SOLO usan los gráficos de un vistazo del final del archivo.
+ *
+ * `TENUE` sirve para una raya de rejilla y se queda corto para un rótulo que hay
+ * que leer: en el móvil, a las seis de la mañana y con brillo bajo, `#5b6472`
+ * sobre el fondo oscuro es una mancha. Los ejes del panel nuevo se leen o no
+ * sirven de nada -esa es la regla 3-, así que llevan un gris que contrasta.
+ * `TEXTO` es el del cuerpo de la página, para lo que va al mismo nivel que la
+ * prosa: las etiquetas de debajo de cada barra y la leyenda del quesito. */
+const ROTULO = "#9aa4b2";
+const TEXTO = "#e7eaef";
+
 function colorSigno(r) {
   if (r === null || r === undefined) return TENUE;
   return r >= 0 ? AZUL : NARANJA;
@@ -365,7 +376,14 @@ function barrasSemanales(semanas, nombres, alto = 64) {
  * quiere decir que ese día fue mejor que el 40 % de sus días, que en una racha
  * mala puede ser una sesión excelente.
  */
-function reglaPercentiles(percepcionPct, rendimientoPct, ancho = 300, alto = 62) {
+/* Los dos rótulos de los extremos van en su PROPIO renglón, y por eso la regla
+ * mide setenta y seis y no sesenta y dos. «esperabas» cuelga del círculo, que
+ * se mueve por toda la barra, y un día en que la percepción cae abajo del todo
+ * el círculo se pone encima del cero: las dos palabras compartían línea y salía
+ * «peoresperabas». No es un caso raro -la vista existe justo para las mañanas
+ * en que uno se veía fatal- y con la regla mirada de lejos parecía una palabra
+ * más larga, no dos pisadas. */
+function reglaPercentiles(percepcionPct, rendimientoPct, ancho = 300, alto = 76) {
   const izq = 6, der = 6;
   const w = ancho - izq - der;
   const x = (p) => izq + (Math.max(0, Math.min(100, Number(p))) / 100) * w;
@@ -393,7 +411,7 @@ function reglaPercentiles(percepcionPct, rendimientoPct, ancho = 300, alto = 62)
     piezas.push(
       `<circle cx="${x(percepcionPct)}" cy="${yReg}" r="6" fill="none" ` +
       `stroke="${TENUE}" stroke-width="2"/>` +
-      `<text x="${x(percepcionPct)}" y="${yReg + 22}" fill="${TENUE}" ` +
+      `<text x="${x(percepcionPct)}" y="${yReg + 20}" fill="${TENUE}" ` +
       `font-size="10" text-anchor="middle">esperabas</text>`,
     );
   }
@@ -409,100 +427,6 @@ function reglaPercentiles(percepcionPct, rendimientoPct, ancho = 300, alto = 62)
     `<svg class="g-regla" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
     `role="img" aria-label="percentil esperado frente a percentil hecho">` +
     piezas.join("") + `</svg>`
-  );
-}
-
-// ---------------------------------------------------------------------------
-// El percentil de una señal, en la portada
-// ---------------------------------------------------------------------------
-
-/* Dónde cae la última semana dentro del histórico propio, de 0 a 100.
- *
- * POR QUÉ EXISTE. La portada era la única vista del panel que no dibujaba nada:
- * medido el 2026-09-17 sobre los datos de verdad, cero SVG contra mil cincuenta
- * palabras, mientras desfase pintaba cincuenta curvas e impacto ochenta y seis
- * barras. Y es la segunda pantalla de la barra de abajo, la puerta, la que se
- * abre a diario. Quien entra por ahí y ve prosa concluye que el panel de
- * gráficas no existe, y no se equivoca del todo: el sitio donde primero haría
- * falta era justo el que no lo tenía.
- *
- * El material ya llegaba. Cada señal trae su `percentil`, y se escribía en la
- * ficha pequeña de debajo, en castellano, una frase por línea. La frase es
- * buena y se queda. Lo que no se puede hacer con diez frases seguidas es
- * COMPARARLAS: «por encima del 10 %», «del 92 %», «del 66 %», «del 41 %», «del
- * 4 %» obliga a ir recordando cinco números para darse cuenta de que tres de
- * ellos apuntan al mismo sitio. Puestas una debajo de otra como barras, tres
- * marcas pegadas al borde izquierdo y una al derecho se ven de un vistazo, sin
- * leer. Eso es lo único que añade este dibujo, y por eso no sustituye a nada.
- *
- * AQUÍ EL COLOR SÍ VA POR «BUENO O MALO», contra lo que dice la cabecera de este
- * archivo. Se escribe en vez de colarlo. Aquella regla existe porque en una
- * correlación el mismo color significaría cosas contrarias según la fila -una r
- * positiva con la HRV es buena y con la lumbar es mala- y la pantalla no tiene
- * forma de saber cuál es cuál. En la portada sí la tiene: el servidor manda
- * `valencia` YA DECIDIDA por señal, y la manda precisamente porque un percentil
- * 92 de HRV y un percentil 92 de frecuencia en reposo son lo contrario. El color
- * no está traduciendo el número aquí; repite lo que el servidor decidió, que es
- * lo mismo que la prosa de al lado lleva haciendo desde siempre con
- * `CLASE_VALENCIA`. La regla de la cabecera sigue en pie donde se escribió.
- *
- * LOS EXTREMOS SE ROTULAN «más bajo» y «más alto», NO «peor» y «mejor». Es el
- * cuidado que `reglaPercentiles` tiene aquí arriba, y aquí hace más falta que
- * allí, porque allí las dos marcas miden lo mismo y aquí la mitad de las líneas
- * van al revés: rotular el 100 de «mejor» pondría la palabra debajo de la marca
- * de una frecuencia en reposo disparada.
- *
- * El 50 va DIBUJADO, por lo mismo que `barraR` dibuja el cero. Sin esa línea un
- * percentil 41 y un percentil 66 son dos marcas a media altura que se parecen, y
- * el punto de «normal» deja de tener sitio en el dibujo.
- *
- * Y el `aria-label` lleva LA FRASE ENTERA y no el número suelto. Es literalmente
- * la pega que se le puso a `barraR` al arreglar el ranking -un `aria-label` que
- * dice «correlación -0,38» y se calla el veredicto-; repetirla aquí a los dos
- * días sería no haber entendido la propia corrección.
- *
- * Sin percentil no se pinta. No es un hueco mudo de los que persigue `bloqueNa`:
- * las líneas que no tienen percentil porque falta el dato ya traen su `na`
- * escrito y ni llegan aquí, y las que no lo tienen porque no va -«1 salida esta
- * semana»- no tienen un percentil que callar. Una barra vacía en esas dos diría
- * que falta algo que no falta.
- */
-const COLOR_VALENCIA = { mejor: AZUL, peor: NARANJA };
-
-function barraPercentil(l, ancho = 260, alto = 26) {
-  if (!l || l.percentil === null || l.percentil === undefined) return "";
-
-  const izq = 6, der = 6;
-  const w = ancho - izq - der;
-  const p = Math.max(0, Math.min(100, Number(l.percentil)));
-  // Redondeado a dos decimales porque si no un 41 sale «107.67999999999999» en
-  // el atributo. Es un píxel, no un número que se lea: la frontera del cálculo
-  // que describe la cabecera de este archivo pasa justo por aquí.
-  const x = Math.round((izq + (p / 100) * w) * 100) / 100;
-  const yB = 11;
-  const color = COLOR_VALENCIA[l.valencia] || TENUE;
-
-  // El texto del lector de pantalla se compone con lo que mandó el servidor
-  // -etiqueta, lectura y percentil-, sin reescribirlo: la frase que oye alguien
-  // que no ve la barra tiene que ser la misma que lee quien sí la ve.
-  const lectura = l.lectura ? `, ${l.lectura}` : "";
-  const rotulo =
-    `${l.etiqueta || "señal"}: por encima del ${entero(l.percentil)} % ` +
-    `de tus días${lectura}`;
-
-  return (
-    `<svg class="g-percentil" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
-    `height="${alto}" role="img" aria-label="${escapar(rotulo)}">` +
-    `<rect x="${izq}" y="${yB - 3}" width="${w}" height="6" rx="3" ` +
-    `fill="${REJILLA}"/>` +
-    `<line x1="${izq + w / 2}" y1="${yB - 7}" x2="${izq + w / 2}" ` +
-    `y2="${yB + 7}" stroke="${TENUE}" stroke-width="1"/>` +
-    `<circle cx="${x}" cy="${yB}" r="5" fill="${color}"/>` +
-    `<text x="${izq}" y="${alto - 2}" fill="${TENUE}" font-size="9">` +
-    `más bajo</text>` +
-    `<text x="${ancho - der}" y="${alto - 2}" fill="${TENUE}" font-size="9" ` +
-    `text-anchor="end">más alto</text>` +
-    `</svg>`
   );
 }
 
@@ -650,114 +574,20 @@ function hrvConSalidas(g, ancho = 320, alto = 160) {
   );
 }
 
-// ---------------------------------------------------------------------------
-// La curva de recuperación
-// ---------------------------------------------------------------------------
-
-/* Cuánto se movió la HRV el día +1, +2, +3 y +4 de una salida.
+/* AQUÍ ESTABA `barrasRecuperacion`, y se ha ido entera.
  *
- * El cero va dibujado, etiquetado y ES LA REFERENCIA: aquí no se mide una HRV,
- * se mide un cambio respecto de la noche anterior a la salida. Una barra hacia
- * abajo es "peor que antes de salir" y una hacia arriba es "mejor". Sin la línea
- * del cero rotulada, la altura de una barra no significa nada.
+ * Dibujaba la curva del día +1 al +4 con un bigote entre cuartiles colgando de
+ * cada barra, y era buena: lo que enseñaba de verdad era que el día +3 tiene un
+ * recorrido tan ancho que su media es casi una anécdota. Pero un bigote entre
+ * cuartiles ES la mitad central, y la mitad central está nombrada por su nombre
+ * en la regla 2 como algo que no puede salir en la vista principal. La curva la
+ * pinta ahora `barrasDeVistazo` con cuatro barras y nada más; los cuartiles
+ * siguen enteros dentro de «ver detalle», en la tabla por día.
  *
- * Cada barra lleva su BIGOTE entre cuartiles, y ésa es la pieza que impide la
- * lectura fácil. Cuatro medias solas dibujan una curva de recuperación preciosa;
- * con los bigotes se ve que el día +1 baja seis milisegundos de media con
- * salidas que fueron de −7,5 a −5, y que el día +3 tiene un recorrido tan ancho
- * que su media es casi una anécdota. Las dos cosas son el mismo dato y solo una
- * de las dos se puede presumir.
- *
- * Y NO HAY BARRA HUECA aquí, que en el resto del panel significa "no aguanta la
- * corrección". Estas medias no llevan contraste ninguno -el servidor manda
- * `significativa: null` a propósito- y pintarlas huecas diría que suspendieron un
- * examen al que no se presentaron.
- */
-function barrasRecuperacion(curva, ancho = 300, alto = 130) {
-  const dias = (curva && curva.por_dia) || [];
-  if (!dias.length) return "";
-  const escala = Number(curva.escala);
-  if (!escala || !isFinite(escala)) return "";
-
-  const arr = 10, aba = 26;
-  const h = alto - arr - aba;
-  const yCero = arr + h / 2;
-  const izq = 22, der = 6;
-  const w = ancho - izq - der;
-  const paso = w / dias.length;
-  const anchoBarra = Math.min(paso * 0.5, 26);
-  // Media caja para la escala entera: una barra de `escala` llega justo al
-  // borde, y ninguna se sale.
-  const y = (v) => yCero - (Number(v) / escala) * (h / 2);
-
-  const piezas = [
-    `<line x1="${izq - 6}" y1="${yCero}" x2="${ancho - der}" y2="${yCero}" ` +
-    `stroke="${TENUE}" stroke-width="1"/>`,
-    `<text x="0" y="${yCero - 4}" fill="${TENUE}" font-size="9">igual</text>`,
-    `<text x="0" y="${yCero + 11}" fill="${TENUE}" font-size="9">que</text>`,
-    `<text x="0" y="${yCero + 21}" fill="${TENUE}" font-size="9">antes</text>`,
-  ];
-
-  dias.forEach((d, i) => {
-    const cx = izq + paso * i + paso / 2;
-    piezas.push(
-      `<text x="${cx.toFixed(1)}" y="${alto - 12}" fill="${TENUE}" ` +
-      `font-size="10" text-anchor="middle">+${escapar(d.dia)}</text>`,
-    );
-
-    if (d.media === null || d.media === undefined) {
-      // El día sin media se dice con palabras, no con una barra de altura cero
-      // -que se leería como "ese día no se movió"-.
-      piezas.push(
-        `<text x="${cx.toFixed(1)}" y="${(yCero + 4).toFixed(1)}" ` +
-        `fill="${TENUE}" font-size="9" text-anchor="middle">·` +
-        `<title>${escapar(d.na || "sin media")}</title></text>`,
-      );
-      return;
-    }
-
-    const yV = y(d.media);
-    const color = colorSigno(d.media);
-    piezas.push(
-      `<rect x="${(cx - anchoBarra / 2).toFixed(1)}" ` +
-      `y="${Math.min(yV, yCero).toFixed(1)}" width="${anchoBarra.toFixed(1)}" ` +
-      `height="${Math.max(Math.abs(yV - yCero), 1).toFixed(1)}" ` +
-      `fill="${color}" rx="1.5"><title>${escapar(
-        `día +${d.dia}: ${d.frase}` +
-        (d.p25 !== null && d.p25 !== undefined
-          ? ` · la mitad central entre ${d.p25} y ${d.p75}`
-          : "") +
-        ` · ${d.n}`,
-      )}</title></rect>`,
-    );
-
-    if (d.p25 === null || d.p25 === undefined) return;
-    const yA = y(d.p75), yB = y(d.p25);
-    const ala = Math.min(anchoBarra * 0.3, 6);
-    piezas.push(
-      `<line x1="${cx.toFixed(1)}" y1="${yA.toFixed(1)}" x2="${cx.toFixed(1)}" ` +
-      `y2="${yB.toFixed(1)}" stroke="${TENUE}" stroke-width="1.2"/>` +
-      `<line x1="${(cx - ala).toFixed(1)}" y1="${yA.toFixed(1)}" ` +
-      `x2="${(cx + ala).toFixed(1)}" y2="${yA.toFixed(1)}" stroke="${TENUE}" ` +
-      `stroke-width="1.2"/>` +
-      `<line x1="${(cx - ala).toFixed(1)}" y1="${yB.toFixed(1)}" ` +
-      `x2="${(cx + ala).toFixed(1)}" y2="${yB.toFixed(1)}" stroke="${TENUE}" ` +
-      `stroke-width="1.2"/>`,
-    );
-  });
-
-  piezas.push(
-    `<text x="${ancho - der}" y="${alto - 1}" fill="${TENUE}" font-size="9" ` +
-    `text-anchor="end">días después de la salida</text>`,
-  );
-
-  return (
-    `<svg class="g-recuperacion" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
-    `role="img" aria-label="cuánto cambia la HRV cada día después de una ` +
-    `salida, con el recorrido de la mitad central">` +
-    piezas.join("") + `</svg>`
-  );
-}
+ * Se borra en vez de dejarse por si acaso porque una función de ciento diez
+ * líneas que no llama nadie no es una reserva, es una segunda versión del
+ * gráfico esperando a que alguien la vuelva a enchufar sin acordarse de por qué
+ * se apagó. */
 
 // ---------------------------------------------------------------------------
 // Serie temporal
@@ -806,5 +636,552 @@ function serieTemporal(puntos, rango, campo = "valor", ancho = 300, alto = 46) {
     `height="${alto}" role="img" aria-label="la señal a lo largo de la ventana">` +
     `<path d="${camino}" fill="none" stroke="${AZUL}" stroke-width="1.5" ` +
     `stroke-linejoin="round" stroke-linecap="round"/></svg>`
+  );
+}
+
+// ===========================================================================
+// LOS GRÁFICOS DE UN VISTAZO
+// ===========================================================================
+
+/*
+ * Barras, línea y quesito. Los tres salen de la maqueta que se aprobó el
+ * 2026-09-15 y que vive en `docs/maquetas/panel_umbral.py`; esto es esa maqueta
+ * traída al código que se sirve de verdad, no una reinterpretación.
+ *
+ * QUÉ TIENEN DE DISTINTO LOS DE ARRIBA
+ * ------------------------------------
+ * `barraR`, `curvaDesfase` y `reglaPercentiles` están bien hechos y contestan
+ * preguntas reales, pero contestan preguntas de quien ya sabe qué es una
+ * correlación: una barra de -1 a 1 no se lee, se interpreta. Los de aquí abajo
+ * tienen un requisito distinto y más duro -«que se entienda sin leer nada»-, y
+ * de ahí salen tres diferencias concretas:
+ *
+ *   - EJES CON NÚMEROS Y UNIDAD. Los de arriba no tienen eje: la escala va
+ *     implícita en «de -1 a 1». Aquí la escala se dibuja, con la unidad puesta,
+ *     porque nadie sabe de memoria si 7 ms es mucho.
+ *   - EL VALOR, ENCIMA DE LA BARRA. Un eje se lee si uno se para a leerlo; el
+ *     número sobre la barra entra sin querer. Esa es la diferencia entre un
+ *     panel para estudiar y uno para mirar.
+ *   - 340 PÍXELES DE ANCHO, TODOS IGUAL. Regla 5. El ancho no está elegido por
+ *     bonito: es el que cabe en vertical en el móvil más estrecho que se usa
+ *     aquí. Y que midan todos lo mismo importa más que el número, porque el que
+ *     se sale un poco es el que obliga a deslizar la pantalla entera.
+ *
+ * LA FRONTERA DEL CÁLCULO, OTRA VEZ, PORQUE AQUÍ SE ESTRECHA
+ * ----------------------------------------------------------
+ * La cabecera del archivo dice que ningún número que se lee sale de una cuenta
+ * hecha aquí. Estas funciones lo cumplen de la forma incómoda: los valores de
+ * las barras se reciben YA ESCRITOS, en `rotulos`, y lo que llega en `valores`
+ * solo decide la altura. Es más trabajo para quien llama y se hace igual,
+ * porque el servidor redondea sus frases sin pasar por `toFixed` -«baja 0,2 ms»
+ * sobre una media de 0,15- y cualquier redondeo hecho aquí acertaría en unos
+ * casos y fallaría en otros. Entonces la barra y su detalle dirían números
+ * distintos del mismo dato, que es la peor avería posible en una pantalla cuyo
+ * argumento es que se entiende sola.
+ *
+ * La ÚNICA excepción son las marcas del eje, que sí se calculan aquí. Y es una
+ * excepción de verdad, no una grieta: una marca de eje no es una medida, es una
+ * propiedad de la regla con la que se mide. No existe en el payload porque no
+ * hay nada que el servidor pueda decir al respecto sin saber cuántos píxeles de
+ * alto tiene el dibujo.
+ */
+
+/* Un paso de rejilla que caiga en números que alguien diría en voz alta.
+ *
+ * Sin esto, cuatro líneas repartidas sobre un recorrido de 7,3 caen en 1,825 y
+ * el eje se rotula «0 · 1,8 · 3,7 · 5,5». Son números correctos que nadie usa
+ * para medir nada, y obligan a leer el eje en vez de mirarlo. */
+function pasoBonito(recorrido, quiero = 5) {
+  const bruto = recorrido / Math.max(quiero, 1);
+  if (!(bruto > 0)) return 1;
+  // La magnitud a base de multiplicar y dividir por diez, y no con `Math.pow`.
+  // No es esquivar a `test_la_pwa_no_calcula_estadistica`: es que la guarda
+  // tiene razón también aquí. Una potencia en este archivo es una línea que
+  // mañana sirve para elevar un dato al cuadrado, y lo único que hace falta en
+  // esta función es «el uno seguido de ceros que cabe debajo».
+  let mag = 1;
+  while (mag * 10 <= bruto) mag *= 10;
+  while (mag > bruto) mag /= 10;
+  for (const m of [1, 2, 2.5, 5, 10]) {
+    if (bruto <= m * mag) return m * mag;
+  }
+  return 10 * mag;
+}
+
+/* El menos de verdad, para lo que se escribe AQUÍ.
+ *
+ * `num()` de comun.js sale de `toFixed`, que usa el guion del teclado. En una
+ * ficha técnica da igual; en una cifra grande encima de una barra, el guion se
+ * confunde con un resto de la rejilla y «−7,0» se lee «7,0», o sea el valor con
+ * el signo cambiado en el único número que la pantalla quiere que entre solo.
+ *
+ * No se toca `num()`: sus cifras van dentro de frases y de fichas, y cambiarle
+ * el signo a todo el panel desde aquí sería arreglar un gráfico moviendo el
+ * suelo de las otras seis vistas.
+ *
+ * Y UN MENOS DELANTE DE UN CERO SE CAE. «Cualquier salida» baja el cansancio
+ * 0,04 puntos, y con un decimal `toFixed` escupe «-0,0»: encima de una barra
+ * eso no es un número, es un número roto. El menos promete una dirección y el
+ * cero dice que no hay ninguna, así que quien lo mira se para a averiguar cuál
+ * de las dos cosas le están contando. Redondear a más decimales no vale -sería
+ * poner «−0,04» al lado de un «−0,2» y fingir una precisión que la resta de dos
+ * medias no tiene-, y esconder la barra tampoco: la fila tiene su dato y el
+ * dato es que ahí no se mueve nada. Así que se queda «0,0», que es exactamente
+ * lo que pasa, y el color de la barra ya lleva el sentido. */
+function conMenos(s) {
+  const t = String(s);
+  return /^-0[,.]?0*$/.test(t) ? t.slice(1) : t.replace(/^-/, "−");
+}
+
+/* La escala vertical y su rejilla, compartidas por las barras y por la línea.
+ *
+ * Están juntas a propósito. Cuando cada gráfico se dibujaba su propio eje, los
+ * dos de la misma pantalla acababan con distinto número de marcas y con la
+ * unidad en sitios distintos, y dos ejes que no se parecen se comparan mal
+ * aunque los dos estén bien. */
+function escalaY(valores, arr, alto, margen = 0.18) {
+  const vs = valores.filter((v) => v !== null && v !== undefined && !Number.isNaN(v));
+  let lo = Math.min(...vs);
+  let hi = Math.max(...vs);
+  const aire = (hi - lo) * margen || 1;
+  lo -= aire;
+  hi += aire;
+  return { lo, hi, y: (v) => arr + (1 - (v - lo) / (hi - lo)) * alto };
+}
+
+/* Los decimales del eje los manda el PASO, no una cifra fija.
+ *
+ * Estaba clavado a cero decimales, y con eso el eje de «cuánto dura lo de salir
+ * corto» -que va de 0 a −0,2 puntos de cansancio- salía rotulado «0 · −0 · −0»:
+ * tres marcas distintas con el mismo rótulo, y dos de ellas diciendo menos cero.
+ * Un eje así no es que se lea mal, es que miente sobre dónde está cada raya.
+ *
+ * Con el paso ya calculado la cuenta es la que haría cualquiera a mano: si las
+ * rayas van de una en una no hacen falta decimales, si van de una décima hace
+ * falta uno. Se corta en dos porque más allá de las centésimas ningún número de
+ * este panel significa nada -son restas de medias de unas decenas de días- y un
+ * eje con tres decimales solo añade tinta. */
+function decimalesDelPaso(paso) {
+  if (paso >= 1) return 0;
+  if (paso >= 0.1) return 1;
+  return 2;
+}
+
+function rejillaY(esc, izq, derX, cuantas, conCero) {
+  const paso = pasoBonito(esc.hi - esc.lo, cuantas);
+  const dec = decimalesDelPaso(paso);
+  let t = paso * Math.round(esc.lo / paso);
+  let p = "";
+  while (t <= esc.hi + 1e-9) {
+    if (t >= esc.lo) {
+      const yy = esc.y(t).toFixed(1);
+      const cero = conCero && Math.abs(t) < 1e-9;
+      p +=
+        `<line x1="${izq}" y1="${yy}" x2="${derX}" y2="${yy}" ` +
+        `stroke="${cero ? ROTULO : REJILLA}" stroke-width="${cero ? 1.4 : 1}"/>` +
+        `<text x="${izq - 6}" y="${(esc.y(t) + 4).toFixed(1)}" fill="${ROTULO}" ` +
+        `font-size="12" text-anchor="end">` +
+        `${escapar(conMenos(num(t, dec)))}</text>`;
+    }
+    t += paso;
+  }
+  return p;
+}
+
+/* BARRAS VERTICALES ALREDEDOR DEL CERO. El escalón, visto de golpe.
+ *
+ * Es el gráfico que se pidió por su nombre dos veces: «la caída de HRV por
+ * tramo de carga, cuatro barras, se ve el escalón solo» y «la recuperación día
+ * a día tras una salida dura, día +1, +2, +3, +4».
+ *
+ * El cero va DIBUJADO y más grueso que la rejilla. Sin esa raya, una barra
+ * corta hacia abajo y una corta hacia arriba se parecen demasiado y son lo
+ * contrario; con ella, el lado de la barra ya cuenta la historia antes de leer
+ * nada, que es todo el encargo.
+ *
+ * `valores` da la altura y puede traer `null` -un tramo sin bastantes salidas-.
+ * Un `null` deja su etiqueta puesta y no dibuja barra: un cero en su sitio
+ * diría «ahí no pasó nada» cuando lo que pasa es que ahí no se ha mirado, y esa
+ * es la confusión que el panel entero lleva un año evitando en todas partes.
+ */
+function barrasDeVistazo({ valores, rotulos, etiquetas, pie, unidad = "", ancho = 340, alto = 236 }) {
+  const vs = valores.filter((v) => v !== null && v !== undefined);
+  if (!vs.length) return "";
+
+  const izq = 36, der = 10, arr = 24, aba = 70;
+  const w = ancho - izq - der, h = alto - arr - aba;
+  const esc = escalaY([...vs, 0], arr, h);
+
+  let p = rejillaY(esc, izq, ancho - der, 4, true);
+
+  const pasoX = w / valores.length;
+  const anchoBarra = Math.min(pasoX * 0.56, 46);
+
+  valores.forEach((v, i) => {
+    const cx = izq + pasoX * i + pasoX / 2;
+    for (const [j, linea] of (etiquetas[i] || []).entries()) {
+      p +=
+        `<text x="${cx.toFixed(1)}" y="${alto - 44 + j * 16}" fill="${TEXTO}" ` +
+        `font-size="13" text-anchor="middle">${escapar(linea)}</text>`;
+    }
+    if (v === null || v === undefined) return;
+    const color = v >= 0 ? AZUL : NARANJA;
+    const y0 = esc.y(0), y1 = esc.y(v);
+    p +=
+      `<rect x="${(cx - anchoBarra / 2).toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" ` +
+      `width="${anchoBarra.toFixed(1)}" height="${Math.max(Math.abs(y1 - y0), 1.5).toFixed(1)}" ` +
+      `fill="${color}" rx="3"/>`;
+    // El número, FUERA de la barra. Dentro se pierde en cuanto la barra es
+    // corta, y las barras cortas son justo las que hay que poder comparar.
+    const ty = v >= 0 ? y1 - 8 : y1 + 17;
+    p +=
+      `<text x="${cx.toFixed(1)}" y="${ty.toFixed(1)}" fill="${color}" ` +
+      `font-size="15" font-weight="700" text-anchor="middle">` +
+      `${escapar(conMenos(rotulos[i]))}</text>`;
+  });
+
+  if (unidad) {
+    p += `<text x="${izq - 34}" y="${arr - 8}" fill="${ROTULO}" font-size="12">${escapar(unidad)}</text>`;
+  }
+  if (pie) {
+    // Centrado y en su propia línea: pegado a la derecha se metía debajo de la
+    // última etiqueta y las dos se leían como una sola frase sin sentido.
+    p +=
+      `<text x="${(izq + w / 2).toFixed(1)}" y="${alto - 6}" fill="${ROTULO}" ` +
+      `font-size="12.5" text-anchor="middle">${escapar(pie)}</text>`;
+  }
+
+  return (
+    `<svg class="g-vistazo" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `role="img" aria-label="${escapar(pie || "barras")}">${p}</svg>`
+  );
+}
+
+/* LA LÍNEA Y TU MEDIA. Nada más.
+ *
+ * Pedido así de explícito: «mi HRV de los últimos meses, sin banda de
+ * percentiles ni mitad central, solo la línea y mi media». Las tres cosas que
+ * se quitan -la banda de cuartiles, los palos de las salidas y la raya del
+ * corte- estaban las tres en la vista de umbral, y las tres obligaban a una
+ * leyenda. Un gráfico que necesita leyenda ya perdió, porque la leyenda es el
+ * párrafo de la regla 4 escrito en pequeño.
+ *
+ * `media` llega del servidor y su rótulo también: aquí no se promedia nada.
+ */
+function lineaConMedia({ puntos, media, rotuloMedia, unidad = "", ancho = 340, alto = 210 }) {
+  const ps = (puntos || []).filter((p) => p.valor !== null && p.valor !== undefined);
+  if (ps.length < 2 || media === null || media === undefined) return "";
+
+  const izq = 34, der = 10, arr = 22, aba = 34;
+  const w = ancho - izq - der, h = alto - arr - aba;
+
+  // Orden de días, no calendario exacto: solo hace falta repartir los puntos a
+  // lo largo del eje, y `new Date` sobre una fecha suelta baja un día en España.
+  const dnum = (iso) => {
+    const [a, m, d] = String(iso).split("-").map(Number);
+    return a * 372 + (m - 1) * 31 + d;
+  };
+  const t0 = dnum(ps[0].fecha);
+  const span = dnum(ps[ps.length - 1].fecha) - t0 || 1;
+  const x = (iso) => izq + ((dnum(iso) - t0) / span) * w;
+
+  const esc = escalaY([...ps.map((p) => p.valor), media], arr, h, 0.15);
+  let p = rejillaY(esc, izq, ancho - der, 5, false);
+
+  // Los meses, abajo, en español corto. Una etiqueta por mes: una por semana
+  // llena el eje de texto y ya no se ve la línea, que es lo que se mira.
+  const visto = new Set();
+  for (const pt of ps) {
+    const [a, m] = String(pt.fecha).split("-");
+    if (visto.has(`${a}-${m}`)) continue;
+    visto.add(`${a}-${m}`);
+    const xx = x(pt.fecha);
+    if (xx < izq + 4 || xx > ancho - der - 4) continue;
+    p +=
+      `<line x1="${xx.toFixed(1)}" y1="${arr + h}" x2="${xx.toFixed(1)}" ` +
+      `y2="${arr + h + 4}" stroke="${REJILLA}" stroke-width="1"/>` +
+      `<text x="${xx.toFixed(1)}" y="${alto - 14}" fill="${ROTULO}" ` +
+      `font-size="12" text-anchor="middle">${MESES[Number(m) - 1]}</text>`;
+  }
+
+  let camino = "";
+  ps.forEach((pt, i) => {
+    camino += `${i ? "L" : "M"}${x(pt.fecha).toFixed(1)},${esc.y(pt.valor).toFixed(1)}`;
+  });
+  p +=
+    `<path d="${camino}" fill="none" stroke="${AZUL}" stroke-width="2.4" ` +
+    `stroke-linejoin="round" stroke-linecap="round"/>`;
+
+  // La media, rotulada DENTRO del dibujo. Fuera, a la derecha, hacía falta un
+  // margen de 46 píxeles que se le quitaban a la línea, y aun así el rótulo se
+  // salía por el borde en una pantalla estrecha.
+  const ym = esc.y(media);
+  const texto = rotuloMedia || `tu media, ${conMenos(num(media, 0))}${unidad ? " " + unidad : ""}`;
+  p +=
+    `<line x1="${izq}" y1="${ym.toFixed(1)}" x2="${ancho - der}" y2="${ym.toFixed(1)}" ` +
+    `stroke="${ROTULO}" stroke-width="1.4" stroke-dasharray="5 4"/>` +
+    `<rect x="${ancho - der - 110}" y="${(ym - 21).toFixed(1)}" width="110" ` +
+    `height="17" rx="3" fill="#1c2027"/>` +
+    `<text x="${ancho - der - 4}" y="${(ym - 8).toFixed(1)}" fill="${ROTULO}" ` +
+    `font-size="12.5" text-anchor="end">${escapar(texto)}</text>`;
+  // La unidad, ENCIMA de la rejilla y no a la altura de la primera marca. Con
+  // `arr + 2` caía en la misma línea que el número de arriba del eje y salía
+  // «ms61» pegado, que se lee como una cifra rarísima en vez de como una unidad
+  // y un 61. Es el mismo sitio que ocupa en `barrasDeVistazo`, que es donde
+  // tenía que haber estado desde el principio.
+  if (unidad) {
+    p += `<text x="${izq - 32}" y="${arr - 8}" fill="${ROTULO}" font-size="12">${escapar(unidad)}</text>`;
+  }
+
+  return (
+    `<svg class="g-vistazo" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `role="img" aria-label="${escapar(texto)}">${p}</svg>`
+  );
+}
+
+/* EL QUESITO, que en realidad es un anillo.
+ *
+ * También pedido por su nombre: «quesito o barras: mis salidas por tipo, o
+ * cuántos días verde/ámbar/rojo llevo». Anillo y no tarta porque el agujero
+ * deja sitio para el total, y el total es el denominador: «3 de cada 10» sin
+ * saber si son 40 salidas o 4 no dice nada.
+ *
+ * La leyenda va FUERA, a la derecha. Dentro, en un móvil en vertical, o los
+ * rótulos se salen del círculo o hay que encogerlos hasta que no se lean, y un
+ * quesito que hay que descifrar es lo contrario de lo que se ha pedido.
+ *
+ * Los trozos llegan con su color puesto por quien llama. Aquí no se decide
+ * ningún color por «bueno o malo»: eso lo prohíbe la cabecera de este archivo y
+ * lo prohíbe por un motivo -el mismo verde tendría que significar cosas
+ * contrarias según la vista-. El semáforo de días SÍ tiene colores con
+ * significado, pero ese significado lo pone el servidor, no el dibujo.
+ */
+function quesito({ trozos, total, unidadTotal = "", ancho = 340, alto = 190 }) {
+  const ts = (trozos || []).filter((t) => t.n > 0);
+  if (!ts.length || !total) return "";
+
+  const cx = 78, cy = 92, r = 56, grueso = 28;
+  let p = "";
+  let ang = -Math.PI / 2;
+
+  for (const t of ts) {
+    const barrido = (2 * Math.PI * t.n) / total;
+    const x0 = cx + r * Math.cos(ang), y0 = cy + r * Math.sin(ang);
+    ang += barrido;
+    const x1 = cx + r * Math.cos(ang), y1 = cy + r * Math.sin(ang);
+    // Un trozo que da la vuelta entera tiene x0 == x1 y el arco se dibuja de
+    // longitud cero: el anillo desaparece justo cuando el reparto es "todo de
+    // un tipo", que es un resultado real y perfectamente posible.
+    if (ts.length === 1) {
+      p +=
+        `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" ` +
+        `stroke="${t.color}" stroke-width="${grueso}"/>`;
+      break;
+    }
+    p +=
+      `<path d="M${x0.toFixed(1)},${y0.toFixed(1)} A${r},${r} 0 ` +
+      `${barrido > Math.PI ? 1 : 0} 1 ${x1.toFixed(1)},${y1.toFixed(1)}" ` +
+      `fill="none" stroke="${t.color}" stroke-width="${grueso}"/>`;
+  }
+
+  /* EL AGUJERO ES REDONDO Y EL RÓTULO ES RECTO, y por ahí se salía.
+   *
+   * El hueco tiene 42 puntos de radio, o sea 84 de ancho justo en el centro y
+   * menos según se baja. «días» cabe; «sesiones juzgadas», que es el
+   * denominador de la vista de percepción, mide el doble y se metía debajo del
+   * anillo: las dos puntas de la palabra quedaban tapadas por el color. Y el
+   * denominador es medio dato -«3 de cada 10» sin saber de qué son los diez no
+   * dice nada-, así que taparlo es peor que no ponerlo.
+   *
+   * Se parte por el primer espacio y va en dos renglones más pequeños. No es una
+   * medida del ancho real del texto -para eso haría falta medir la fuente, que
+   * en un SVG hecho a mano no se puede-, pero las unidades de este panel son
+   * todas de una o dos palabras y con dos renglones caben todas con holgura.
+   */
+  const corte = unidadTotal.indexOf(" ");
+  const lineas = unidadTotal.length <= 9 || corte < 0
+    ? [unidadTotal]
+    : [unidadTotal.slice(0, corte), unidadTotal.slice(corte + 1)];
+
+  p +=
+    `<text x="${cx}" y="${cy - 2}" fill="${TEXTO}" font-size="28" ` +
+    `font-weight="700" text-anchor="middle">${escapar(entero(total))}</text>`;
+  lineas.filter(Boolean).forEach((linea, i) => {
+    p +=
+      `<text x="${cx}" y="${cy + 16 + i * 14}" fill="${ROTULO}" font-size="11.5" ` +
+      `text-anchor="middle">${escapar(linea)}</text>`;
+  });
+
+  // La leyenda se reparte en vertical según cuántos trozos haya. Con dos cabe
+  // holgada; con tres -el semáforo- hay que apretar, y apretar es mejor que
+  // dejar que el tercero se salga por abajo del viewBox y no se vea.
+  const salto = ts.length >= 3 ? 40 : 54;
+  let yy = cy - ((ts.length - 1) * salto) / 2 + 6;
+  for (const t of ts) {
+    p +=
+      `<rect x="150" y="${yy - 13}" width="14" height="14" rx="3" fill="${t.color}"/>` +
+      `<text x="172" y="${yy}" fill="${TEXTO}" font-size="16">` +
+      `${escapar(entero(t.n))} ${escapar(t.etiqueta)}</text>`;
+    if (t.sub) {
+      p +=
+        `<text x="172" y="${yy + 19}" fill="${ROTULO}" font-size="12.5">` +
+        `${escapar(t.sub)}</text>`;
+    }
+    yy += salto;
+  }
+
+  const rotulo = ts.map((t) => `${t.n} ${t.etiqueta}`).join(", ");
+  return (
+    `<svg class="g-vistazo" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `role="img" aria-label="${escapar(`de ${total}: ${rotulo}`)}">${p}</svg>`
+  );
+}
+
+/* BARRAS TUMBADAS. Las mismas barras de arriba, pero cuando hay que rotular
+ * DOCE cosas y los rótulos son «Salida larga (tu cuarto superior)».
+ *
+ * POR QUÉ NO VALEN LAS VERTICALES. `barrasDeVistazo` reparte el ancho entre las
+ * barras: con cuatro tramos salen a ochenta píxeles y la etiqueta cabe en dos
+ * líneas cortas. Con doce exposiciones salen a veinticuatro, que no es una
+ * barra, es una raya, y la etiqueta debajo habría que girarla. Un rótulo girado
+ * es texto que hay que leer con la cabeza torcida: la regla 5 -legible en el
+ * móvil, en vertical, sin zoom- se incumple antes de empezar.
+ *
+ * Tumbadas, el ancho lo gasta el VALOR y el alto lo gasta la lista. Crecer hacia
+ * abajo en un móvil es gratis -se llama desplazarse-, y crecer hacia los lados
+ * no lo es.
+ *
+ * LA ETIQUETA VA ENCIMA DE SU BARRA, no a la izquierda en una columna. Una
+ * columna de etiquetas se come la mitad del ancho, y esa mitad es justo la que
+ * hace que dos barras parecidas se distingan. Encima, cada fila ocupa dos
+ * renglones y ninguna palabra se corta.
+ *
+ * El cero va dibujado por lo mismo que en las verticales, y aquí más: casi todo
+ * lo que se mide aquí baja, y sin la raya once barras hacia la izquierda se leen
+ * como una lista de longitudes sin signo.
+ *
+ * Los `rotulos` vienen HECHOS del que llama, igual que en el resto de esta
+ * sección: la frontera del cálculo de la cabecera de este archivo no se cruza
+ * por ahorrarse un `num()`.
+ */
+function barrasTumbadas({
+  valores, rotulos, etiquetas, pie, positivoEsBueno = true, alReves = null,
+  ancho = 340, altoFila = 44,
+}) {
+  const vs = valores.filter((v) => v !== null && v !== undefined);
+  if (!vs.length) return "";
+
+  const arr = 10, aba = pie ? 26 : 8;
+  const alto = arr + valores.length * altoFila + aba;
+  // El hueco de los dos extremos es para el NÚMERO de la punta. Sin reservarlo,
+  // la barra más larga llega al borde y su cifra se sale del `viewBox`: el
+  // navegador no la recorta, la dibuja fuera y desaparece. Justo la cifra de la
+  // barra más importante.
+  const hueco = 46, izq = 6, der = 6;
+  const x0 = izq + hueco, x1 = ancho - der - hueco;
+  const lo = Math.min(0, ...vs), hi = Math.max(0, ...vs);
+  const x = (v) => x0 + ((v - lo) / (hi - lo || 1)) * (x1 - x0);
+
+  // LA LÍNEA DEL CERO VA A TROZOS, uno por barra, y no de arriba abajo de una
+  // pieza. El rótulo de cada fila empieza en el margen izquierdo y el cero cae a
+  // cincuenta puntos de ahí, así que una línea entera tachaba por la mitad todo
+  // nombre que pasara de esa anchura: `cansancio_alto` salía con una raya
+  // vertical clavada en medio y parecía texto tachado. Cortada a la altura de
+  // las barras se sigue leyendo como una sola línea -los huecos son de diez
+  // puntos- y ningún rótulo la cruza.
+  const xCero = x(0).toFixed(1);
+  let p = "";
+
+  valores.forEach((v, i) => {
+    const yFila = arr + i * altoFila;
+    p +=
+      `<line x1="${xCero}" y1="${yFila + 18}" x2="${xCero}" ` +
+      `y2="${yFila + 36}" stroke="${ROTULO}" stroke-width="1.4"/>` +
+      `<text x="${izq}" y="${yFila + 13}" fill="${TEXTO}" font-size="13">` +
+      `${escapar(etiquetas[i] || "")}</text>`;
+    if (v === null || v === undefined) return;
+    // `positivoEsBueno` lo pasa quien llama con el `sentido` que mandó el
+    // servidor, y no se deduce aquí del signo: subir dos puntos de cansancio y
+    // subir dos milisegundos de variabilidad son lo contrario, y el gráfico no
+    // tiene forma de saber cuál está mirando. La cabecera de este archivo dice
+    // que el color no traduce el número; esto lo cumple repitiendo una decisión
+    // ya tomada, igual que la prosa de al lado.
+    //
+    // `alReves` es lo mismo cuando la decisión NO es la misma para todas las
+    // barras. En concordancia cada pareja lleva su propio signo esperado -el
+    // cansancio tiene que bajar la variabilidad y el sueño tiene que subirla-,
+    // así que un único `positivoEsBueno` pintaría media lista al revés. Cada
+    // casilla trae el `al_reves` que calculó el servidor, con TRES estados: va
+    // por donde debía, va al contrario, o el número es tan pequeño que su signo
+    // es una moneda al aire. El tercero se pinta gris y no azul; un gris es
+    // "esto no dice nada", que es exactamente lo que `null` significa ahí.
+    const color = alReves
+      ? (alReves[i] === false ? AZUL : alReves[i] === true ? NARANJA : TENUE)
+      : (v >= 0) === positivoEsBueno ? AZUL : NARANJA;
+    const xv = x(v);
+    p +=
+      `<rect x="${Math.min(x(0), xv).toFixed(1)}" y="${yFila + 20}" ` +
+      `width="${Math.max(Math.abs(xv - x(0)), 1.5).toFixed(1)}" height="14" ` +
+      `fill="${color}" rx="3"/>` +
+      `<text x="${(v >= 0 ? xv + 6 : xv - 6).toFixed(1)}" y="${yFila + 32}" ` +
+      `fill="${color}" font-size="14" font-weight="700" ` +
+      `text-anchor="${v >= 0 ? "start" : "end"}">` +
+      `${escapar(conMenos(rotulos[i]))}</text>`;
+  });
+
+  if (pie) {
+    p +=
+      `<text x="${(ancho / 2).toFixed(1)}" y="${alto - 8}" fill="${ROTULO}" ` +
+      `font-size="12.5" text-anchor="middle">${escapar(pie)}</text>`;
+  }
+
+  return (
+    `<svg class="g-vistazo" viewBox="0 0 ${ancho} ${alto}" width="100%" ` +
+    `role="img" aria-label="${escapar(pie || "barras")}">${p}</svg>`
+  );
+}
+
+/* EL BLOQUE: gráfico grande, UNA frase debajo, y el detalle plegado.
+ *
+ * Es la regla 1 y la regla 2 convertidas en una sola función, y está aquí para
+ * que no se puedan cumplir a medias. Mientras cada vista montaba su `<h2>`, su
+ * SVG y su prosa por su cuenta, «el gráfico primero y grande» era una
+ * costumbre: se cumplía donde alguien se acordó. Ahora el orden lo decide esta
+ * función y no hay forma de colar un párrafo entre el título y el dibujo sin
+ * escribir a mano un bloque que se vea distinto del resto.
+ *
+ * `detalle` es opcional y va SIEMPRE plegado. No lleva `abierto = true` por
+ * ningún lado: un detalle que se abre solo es la vista principal otra vez.
+ */
+/* La mayúscula y el punto de la frase de debajo del gráfico.
+ *
+ * Las `lectura` del servidor están escritas para ir ENGANCHADAS a algo -«cuando
+ * no coinciden es casi siempre porque entrenaste sin que te apeteciera (19 de
+ * 28)»- porque llevan desde siempre colgando de un título con dos puntos. Aquí
+ * son la única línea de texto del bloque y van solas, así que sin esto la
+ * portada abría una frase en minúscula y la cerraba sin punto, y eso en una
+ * pantalla que se mira de un vistazo se lee como un texto cortado a medias.
+ *
+ * Se hace en el molde y no en cada llamada por lo mismo que el orden: la regla
+ * «el texto, debajo y en una frase» no puede depender de que quien escriba el
+ * bloque siguiente se acuerde. Y se hace aquí y no en el servidor porque la
+ * misma `lectura` se sigue usando enganchada dentro de «ver detalle»: cambiarla
+ * en origen arreglaría un sitio y rompería el otro. */
+function comoFrase(s) {
+  const t = String(s || "").trim();
+  if (!t) return "";
+  const i = t.search(/[\p{L}\p{N}]/u);
+  const con = i < 0 ? t : t.slice(0, i) + t[i].toUpperCase() + t.slice(i + 1);
+  return /[.!?…:;]$/.test(con) ? con : `${con}.`;
+}
+
+function bloqueDeVistazo(titulo, svg, frase, detalle) {
+  return (
+    `<section class="bloque-vistazo">` +
+    `<h2>${escapar(titulo)}</h2>` +
+    `<div class="lienzo">${svg}</div>` +
+    (frase ? `<p class="frase-vistazo">${escapar(comoFrase(frase))}</p>` : "") +
+    (detalle ? plegable("ver detalle", detalle) : "") +
+    `</section>`
   );
 }

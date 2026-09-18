@@ -298,52 +298,129 @@ function correccionNoPintada(html) {
   return null;
 }
 
-/* EL PERCENTIL DE LA PORTADA, DIBUJADO Y NO SOLO CONTADO.
+
+/* LA REGLA 2, MECANIZADA.
  *
- * La portada es la puerta del panel y era la única vista que no pintaba ni un
- * SVG: mil palabras y cero dibujos, mientras desfase pintaba cincuenta curvas.
- * Ahora cada señal con percentil lleva su barra. Esta guarda está para que no
- * vuelva a quedarse sin ellas por el camino, que es lo fácil: el percentil
- * SEGUIRÍA estando escrito en la ficha de debajo, la pantalla seguiría siendo
- * correcta palabra por palabra, y nadie vería que falta nada.
+ * Literal, del encargo del 2026-09-15 y repetida el 17: «Nada de p corregida,
+ * correlación, percentiles ni mitad central en la vista principal. Todo eso
+ * detrás de "ver detalle"».
  *
- * Se comprueban dos cosas distintas y las dos hacen falta:
+ * Esta guarda existe porque la regla ya se perdió una vez. Se dio por
+ * cumplida mirando pantallas a ojo, y a ojo una pantalla siempre parece
+ * razonable: cada número tiene su motivo, cada ficha explica algo, y ninguno
+ * se ve de más hasta que se cuentan todos juntos. Contados, la vista de
+ * impacto traía setenta y un «p corregida» y tres mil seiscientas palabras
+ * antes de tocar nada.
  *
- *   1. Que la barra ESTÉ, una por línea con percentil. Que se pinte.
- *   2. Que su `aria-label` lleve la frase entera y no el número suelto. Eso no
- *      es cosmética de accesibilidad: es la pega exacta que se le puso a
- *      `barraR` al arreglar el podio del ranking -«correlación −0,38» y se
- *      calla el veredicto-, y una barra nueva que la repita a los dos días
- *      convierte la corrección de entonces en una anécdota.
+ * QUÉ SE MIRA, EXACTAMENTE
+ * Lo que se ve al abrir la pantalla en el móvil sin tocar nada: el HTML menos
+ * lo que hay dentro de un `<details>`. Se recorta el `<details>` entero y no
+ * solo su `<summary>` porque lo que la regla permite esconder es el bloque
+ * plegado; comprobar contra el HTML completo daría por incumplida una vista
+ * que cumple, y una guarda que no se puede satisfacer acaba desactivada.
  *
- * Contra el PAYLOAD y no contra números escritos aquí, igual que las otras dos:
- * cambiar la ventana o el sembrado no obliga a tocar este archivo, y en cambio
- * dejar de dibujar sí se ve.
+ * Y se quita el SVG antes de buscar: dentro van coordenadas y `aria-label`,
+ * que no son prosa de la vista principal. El rótulo accesible de un gráfico
+ * SÍ tiene que decir lo que el gráfico dice -eso lo vigila `barraR`-, pero no
+ * es el párrafo que la regla 2 persigue.
  */
-function percentilSinDibujar(html) {
-  const b = payloads.portada?.como_voy;
-  if (!b || !(b.lineas || []).length) return null;
-  const entero = vm.runInContext("entero", contexto);
-  // Escapado con el `escapar` del propio renderizador y no a mano: el rótulo va
-  // dentro de un atributo, y una etiqueta con comillas o con un `&` saldría
-  // distinta de como se busca aquí. Eso daría un rojo por un fallo que no es.
-  const escapar = vm.runInContext("escapar", contexto);
-  for (const l of b.lineas) {
-    if (l.na) continue;
-    if (l.percentil === null || l.percentil === undefined) continue;
-    // La barra de ESTA línea, no "alguna barra en la pantalla": buscar la clase
-    // suelta daría por bueno pintar una sola y perder las otras cuatro.
-    const rotulo = escapar(
-      `${l.etiqueta}: por encima del ${entero(l.percentil)} % de tus días`,
-    );
-    if (!html.includes(rotulo)) {
-      return (
-        `"${l.etiqueta}" llega con percentil ${l.percentil} y la portada no ` +
-        `dibuja su barra con la frase entera dentro (se buscaba "${rotulo}")`
-      );
-    }
+const PROHIBIDO_EN_LA_PRINCIPAL = [
+  ["p corregida", /p\s+corregida/gi],
+  ["percentil", /percentil/gi],
+  ["mitad central", /mitad\s+central/gi],
+  ["correlación", /correlaci[oó]n/gi],
+  ["de rangos / Spearman", /spearman|de\s+rangos/gi],
+  ["significativ*", /significativ/gi],
+  ["p = …", /\bp\s*=\s*[\d−-]/gi],
+  ["r = …", /\br\s*=\s*[\d−-]/gi],
+  ["n = …", /\bn\s*=\s*\d/gi],
+  ["IC 95 / intervalo de confianza", /IC\s*95|intervalo\s+de\s+confianza/gi],
+];
+
+/* LOS `<details>` SE ANIDAN, y con un `.replace` suelto eso se cuenta mal.
+ *
+ * `<details[\s\S]*?<\/details>` es perezoso, así que en un plegable que lleva
+ * plegables dentro -"Todas las sesiones de la ventana", con un "ver detalle"
+ * por sesión- empareja el `<details>` de fuera con el PRIMER `</details>` de
+ * dentro. Todo lo que viene después, que en el móvil está escondido, se le
+ * cuenta a la vista principal.
+ *
+ * El error cae del lado estricto -acusa de enseñar algo que no se ve-, que para
+ * un descuido es el lado bueno, pero sigue siendo un número falso: una vista
+ * puede ponerse roja por una palabra que nadie va a leer, y de ahí a aflojar la
+ * lista de prohibidas hay un paso.
+ *
+ * Se recortan de dentro afuera. El bucle quita los `<details>` que no contienen
+ * ningún otro; los de fuera se quedan entonces sin anidados y les toca en la
+ * vuelta siguiente. Se para cuando una pasada no quita nada, así que un HTML con
+ * un `<details>` sin cerrar termina igual en vez de dar vueltas para siempre.
+ */
+function sinPlegables(html) {
+  const soloUno = /<details\b[^>]*>(?:(?!<details\b)[\s\S])*?<\/details>/gi;
+  let antes = html;
+  for (;;) {
+    const despues = antes.replace(soloUno, " ");
+    if (despues === antes) return despues;
+    antes = despues;
   }
-  return null;
+}
+
+function textoDeLaPrincipal(html) {
+  return sinPlegables(html)
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function reglaDosIncumplida(v, html) {
+  const texto = textoDeLaPrincipal(html);
+  const enc = PROHIBIDO_EN_LA_PRINCIPAL
+    .map(([n, re]) => [n, (texto.match(re) || []).length])
+    .filter(([, c]) => c > 0);
+  if (!enc.length) return null;
+  return (
+    `la vista principal enseña ${enc.map(([n, c]) => `${n}×${c}`).join(", ")}. ` +
+    `La regla 2 manda eso detrás de «ver detalle», no en la pantalla que se ` +
+    `abre. Se envuelve con \`plegable()\`, que ya existe en comun.js.`
+  );
+}
+
+/* LA MITAD QUE IMPIDE EL ATAJO.
+ *
+ * La regla era ESCONDER lo estadístico, no tirarlo: «Si lo quieres conservar,
+ * que esté escondido detrás de un "ver detalle"». Borrarlo pasaría la guarda
+ * de arriba con sobresaliente y perdería el dato -y el dato es lo que se abre
+ * cuando la frase de encima no basta, que es justo por lo que se calcula-.
+ *
+ * Así que cada vista que HOY calcula una de esas cosas tiene que seguir
+ * ofreciéndola, plegada. La lista es la medición del 2026-09-17 sobre el panel
+ * vivo, no una aspiración: desfase y auditoría no salen porque no traían ni un
+ * término, y meterlas aquí sería inventarles una obligación que nunca tuvieron.
+ */
+const DETALLE_OBLIGADO = {
+  portada: [["correlación", /correlaci[oó]n/i]],
+  concordancia: [["p corregida", /p\s+corregida/i], ["correlación", /correlaci[oó]n/i]],
+  impacto: [["p corregida", /p\s+corregida/i], ["correlación", /correlaci[oó]n/i]],
+  percepcion: [["percentil", /percentil/i]],
+  umbral: [["p corregida", /p\s+corregida/i], ["mitad central", /mitad\s+central/i]],
+};
+
+function detalleTirado(v, html) {
+  const texto = html
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ");
+  const faltan = (DETALLE_OBLIGADO[v] || [])
+    .filter(([, re]) => !re.test(texto))
+    .map(([n]) => n);
+  if (!faltan.length) return null;
+  return (
+    `ya no queda ni rastro de ${faltan.join(", ")} en toda la vista. La regla ` +
+    `2 era esconder eso detrás de «ver detalle», no borrarlo: el detalle es lo ` +
+    `que se abre cuando la frase de arriba no basta.`
+  );
 }
 
 let fallos = 0;
@@ -393,9 +470,15 @@ for (const v of VISTAS) {
     fallos++;
     continue;
   }
-  const sinDibujo = v === "portada" ? percentilSinDibujar(html) : null;
-  if (sinDibujo) {
-    console.log(`FALLO ${v}: ${sinDibujo}`);
+  const contraRegla2 = reglaDosIncumplida(v, html);
+  if (contraRegla2) {
+    console.log(`FALLO ${v}: ${contraRegla2}`);
+    fallos++;
+    continue;
+  }
+  const tirado = detalleTirado(v, html);
+  if (tirado) {
+    console.log(`FALLO ${v}: ${tirado}`);
     fallos++;
     continue;
   }

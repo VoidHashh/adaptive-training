@@ -262,7 +262,13 @@ async function pintarPortada(dias) {
   // sería un estado resumen de tres cosas que no comparten moneda.
   const partes = [pintarCobertura(d.cobertura, d.ventana)];
 
+  // El semáforo va PRIMERO y es lo único de la portada que es un gráfico. Antes
+  // iba de tercera línea del segundo bloque, escrito, entre las sesiones de
+  // fuerza y las salidas de bici: el resumen de la semana entera colocado como
+  // un recuento más.
+  partes.push(bloqueSemaforo(d.que_ha_cambiado));
   partes.push(bloqueComoVoy(d.como_voy));
+  partes.push(bloqueApetecia(d.como_voy));
   partes.push(bloqueQueHaCambiado(d.que_ha_cambiado));
   partes.push(bloqueLoQueSeSabe(d.lo_que_se_sabe));
   partes.push(bloqueLoQueFalta(d.lo_que_no_se_puede_saber));
@@ -408,13 +414,13 @@ function bloqueComoVoy(b) {
         `<div class="linea-portada sin-dato">` +
         `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
         `<div class="lectura-portada">${escapar(l.na)}</div>` +
-        // La tabla va TAMBIÉN aquí, y no es simetría por simetría: el `na` de
-        // esta línea dice que la última SEMANA no se puede situar dentro del
-        // histórico, y la tabla no habla de la semana, habla de la ventana
-        // entera. El servidor la manda por las tres salidas a propósito -está
-        // escrito en el docstring de `_linea_de_serie`- y este `return` la
-        // tiraba. Se veía una portada perfecta a la que le faltaba lo pedido.
-        tablaDiscordancia(l.tabla) +
+        // La tabla ya NO se pinta aquí, y el motivo por el que se pintaba sigue
+        // valiendo: el `na` de esta línea dice que la última SEMANA no se puede
+        // situar dentro del histórico, y la tabla no habla de la semana, habla
+        // de la ventana entera, así que desaparecer con la línea sería perderla
+        // por un motivo que no es suyo. Lo que ha cambiado es que ahora la
+        // recoge `bloqueApetecia`, que la busca por `l.tabla` sin mirar si la
+        // línea tiene `na`: se sigue viendo, y se ve como un bloque entero.
         `</div>`
       );
     }
@@ -425,43 +431,178 @@ function bloqueComoVoy(b) {
     if (l.media !== null && l.media !== undefined) {
       detalle.push(`${num(l.media)}${l.unidad ? ` ${escapar(l.unidad)}` : ""}`);
     }
-    /* «Percentil 68 de lo tuyo» decía la verdad y hacía falta saber qué es un
-     * percentil para leerla; y es la PRIMERA pantalla, la que se mira a las
-     * siete de la mañana sin haberse despertado del todo. «Por encima del 68 %
-     * de tus días» es lo mismo, palabra por palabra, sin tener que saber nada.
-     *
-     * Lo que NO se ha tocado es contra qué se compara: sigue siendo el histórico
-     * propio y no una tabla de valores normales, que es la decisión que se tomó
-     * para todo el proyecto. La frase lo dice más claro que antes -«tus días»-,
-     * no menos. */
-    if (l.percentil !== null && l.percentil !== undefined) {
-      detalle.push(`por encima del ${entero(l.percentil)} % de tus días`);
-    }
     if (l.n_reciente) detalle.push(`medido en ${cuenta(l.n_reciente, "día", "días")}`);
 
     return (
       `<div class="linea-portada">` +
       `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
       `<div class="lectura-portada ${clase}">${escapar(l.lectura)}</div>` +
-      // La barra va ENTRE la lectura y la ficha, y las dos cosas importan. Entre
-      // la lectura porque el dibujo apoya al veredicto y no al revés; y encima
-      // de la ficha porque la ficha ES su lectura -«por encima del 10 % de tus
-      // días»- y la regla de `graficos.js` es que ningún dibujo se pinta solo.
-      // Pegadas, se leen como una; separadas serían un adorno y un número.
-      barraPercentil(l) +
       (detalle.length
         ? `<div class="ficha-portada">${escapar(detalle.join(" · "))}</div>`
         : "") +
       // Once de las doce líneas no la traen, y la que la trae no se entiende sin
       // ella. Va DENTRO de la línea y no al final del bloque para que se lea
       // pegada a su número y no como una tabla suelta al pie de la portada.
-      tablaDiscordancia(l.tabla) +
       `</div>`
     );
   }).join("");
 
-  return cabeceraBloque(b) + `<article class="tarjeta portada">${filas}</article>`;
+  // EL QUESITO DE LOS TRES VEREDICTOS, Y LAS OCHO LÍNEAS DEBAJO DEL TRIÁNGULO.
+  //
+  // Las líneas no sobran ni están mal escritas -"por debajo de lo tuyo" se lee
+  // sin traducir-, pero son ocho, y ocho veredictos seguidos hay que sumarlos
+  // con la cabeza para contestar lo único que se le pregunta a este bloque: ¿voy
+  // bien esta semana o no? Esa suma la hace el servidor en `resumen` y la enseña
+  // el quesito de un vistazo.
+  //
+  // Bici y fuerza no están en el quesito -no comparan con nada- pero SÍ siguen
+  // en la lista de dentro, que es donde se leen: "3 salidas esta semana, la
+  // última hoy" es una frase completa que no necesita ningún veredicto.
+  const r = b.resumen;
+  const svg = quesito({
+    trozos: [
+      { etiqueta: "mejor", sub: "de lo tuyo", n: r.mejor, color: AZUL },
+      { etiqueta: "como siempre", n: r.normal, color: TENUE },
+      { etiqueta: "peor", sub: "de lo tuyo", n: r.peor, color: NARANJA },
+    ],
+    total: r.senales,
+    unidadTotal: plural(r.senales, "señal", "señales"),
+  });
+  const detalle = `<article class="tarjeta portada">${filas}</article>`;
+  if (!svg) return cabeceraBloque(b) + detalle;
+
+  // La frase nombra el lado que más pesa. Si empatan lo dice: un empate es la
+  // respuesta correcta a una semana que no tira para ningún lado, y forzar un
+  // ganador sería inventarse una tendencia de una diferencia de cero.
+  const frase = r.peor > r.mejor
+    ? `De ${cuenta(r.senales, "señal", "señales")}, ${entero(r.peor)} ` +
+      `${plural(r.peor, "va", "van")} peor de lo tuyo esta semana y ` +
+      `${entero(r.mejor)} mejor.`
+    : r.mejor > r.peor
+      ? `De ${cuenta(r.senales, "señal", "señales")}, ${entero(r.mejor)} ` +
+        `${plural(r.mejor, "va", "van")} mejor de lo tuyo esta semana y ` +
+        `${entero(r.peor)} peor.`
+      : `De ${cuenta(r.senales, "señal", "señales")}, ${entero(r.normal)} ` +
+        `${plural(r.normal, "está", "están")} en tu rango de siempre.`;
+
+  return bloqueDeVistazo(b.titulo, svg, frase, detalle);
 }
+
+/* LAS CUATRO CASILLAS DE «¿TE APETECÍA?» CONTRA «¿FUISTE?», EN UN QUESITO.
+ *
+ * Esto vivía dentro de la línea de discordancia de «Cómo voy», como una tabla de
+ * cuatro filas con su título, su lectura y su ficha: noventa palabras metidas
+ * entre dos veredictos de una línea. Y tenía que estar a la vista, por el motivo
+ * que sigue escrito en `tablaDiscordancia`: el número solo -«el 30 % de los días
+ * no coincidieron»- junta dos cosas opuestas y los dos repartos extremos dan el
+ * mismo 30 % describiendo a dos personas distintas.
+ *
+ * El gráfico resuelve las dos cosas a la vez: el reparto que la tabla contaba
+ * con números se VE, y la tabla se va al detalle sin dejar ningún porcentaje
+ * huérfano arriba.
+ *
+ * Y son BARRAS y no un quesito, aunque cuatro casillas excluyentes que suman los
+ * días con las dos contestadas sean exactamente una tarta. El motivo es el
+ * rótulo: la leyenda del quesito va a la derecha del anillo, con menos de la
+ * mitad del ancho, y «No te apetecía y no entrenaste» se sale del dibujo. En las
+ * barras tumbadas la etiqueta va ENCIMA de su barra y tiene el ancho entero. Un
+ * quesito con los rótulos cortados no es más visual que una tabla: es una tabla
+ * ilegible con un círculo al lado.
+ *
+ * Sale de «Cómo voy» y se pone al lado porque ya no es una línea de ese bloque:
+ * es una pregunta entera, con su título, que el servidor manda dentro de la
+ * línea de discordancia por dónde se calcula, no por dónde se lee.
+ */
+function bloqueApetecia(b) {
+  const l = (b && b.lineas || []).find((x) => x.tabla);
+  if (!l) return "";
+  const t = l.tabla;
+  if (t.na) {
+    return (
+      `<section class="bloque-vistazo"><h2>${escapar(t.titulo)}</h2>` +
+      bloqueNa(t.na) + `<p class="ficha">${escapar(t.ficha)}</p></section>`
+    );
+  }
+
+  // El color separa lo que coincidió de lo que no, y eso lo decide el servidor
+  // en `discordante`: la misma regla que pinta la fila de la tabla, no una copia
+  // hecha aquí comparando `apetece` con `voy`. Va por `alReves` porque es
+  // justamente eso -azul lo que cuadra, naranja lo que no- casilla a casilla.
+  const svg = barrasTumbadas({
+    valores: t.celdas.map((c) => c.n),
+    rotulos: t.celdas.map((c) => entero(c.n)),
+    etiquetas: t.celdas.map((c) => c.etiqueta),
+    alReves: t.celdas.map((c) => c.discordante),
+    pie: `días, de ${entero(t.n)} con las dos contestadas`,
+  });
+  if (!svg) return "";
+
+  return bloqueDeVistazo(
+    t.titulo, svg,
+    t.lectura || `De ${cuenta(t.n, "día", "días")} con las dos contestadas, ` +
+      `${entero(t.discordantes)} no ${plural(t.discordantes, "coincidió", "coincidieron")}.`,
+    tablaDiscordancia(t),
+  );
+}
+
+/* EL SEMÁFORO DE LA SEMANA, en un quesito, y lo primero de todo.
+ *
+ * Es el único número de este proyecto que resume lo que el sistema DECIDIÓ, y
+ * no lo que midió: cuántos días te dijo verde, cuántos ámbar y cuántos rojo. Y
+ * estaba escrito en una línea de texto -«3 verdes, 1 ámbar esta semana»- metida
+ * entre «Sesiones de fuerza» y «Salidas de bici», o sea con el mismo peso
+ * visual que un recuento de entrenos.
+ *
+ * El quesito es el gráfico que pidió para esto, por su nombre. Y tiene una
+ * ventaja sobre la frase que no es de estilo: el trozo enseña la PROPORCIÓN. «3
+ * verdes y 1 ámbar» y «6 verdes y 2 ámbares» son la misma frase con otros
+ * números y el mismo dibujo, que es exactamente lo que hay que ver.
+ *
+ * El total del agujero lo manda el servidor en `dias_con_decision`. Sumar aquí
+ * los tres colores habría sido más corto y habría metido en el navegador el
+ * primer número calculado de la portada.
+ *
+ * Si no hay ni un día con decisión no se pinta nada: un anillo vacío con un
+ * cero en medio no dice «esta semana no hubo decisiones», dice «el gráfico está
+ * roto». Eso lo cuenta `bloqueQueHaCambiado` con palabras, que es donde se
+ * cuenta.
+ */
+function bloqueSemaforo(b) {
+  const l = (b && b.lineas || []).find((x) => x.clave === "semaforo");
+  if (!l || !l.esta_semana || !l.dias_con_decision) return "";
+  const s = l.esta_semana;
+  const a = l.semana_anterior || {};
+
+  const svg = quesito({
+    trozos: [
+      { etiqueta: plural(s.green, "verde", "verdes"), n: s.green, color: COLOR_LUZ.green },
+      { etiqueta: plural(s.amber, "ámbar", "ámbares"), n: s.amber, color: COLOR_LUZ.amber },
+      { etiqueta: plural(s.red, "rojo", "rojos"), n: s.red, color: COLOR_LUZ.red },
+    ],
+    total: l.dias_con_decision,
+    unidadTotal: plural(l.dias_con_decision, "día decidido", "días decididos"),
+  });
+  if (!svg) return "";
+
+  return bloqueDeVistazo(
+    "El semáforo de esta semana",
+    svg,
+    l.lectura,
+    `<table class="tabla"><thead><tr><th>Color</th><th>Esta semana</th>` +
+    `<th>La anterior</th></tr></thead><tbody>` +
+    ["green", "amber", "red"].map((c) => (
+      `<tr><td>${escapar(NOMBRE_LUZ_PWA[c])}</td>` +
+      `<td>${entero(s[c] || 0)}</td><td>${entero(a[c] || 0)}</td></tr>`
+    )).join("") +
+    `</tbody></table>`,
+  );
+}
+
+// Los nombres son los mismos que los del servidor y están escritos dos veces, y
+// eso NO es un descuido: aquí solo se usan para la cabecera de una tabla del
+// detalle, donde no hay número al lado que concuerde. Las frases que sí llevan
+// número las escribe el servidor, que es quien tiene el singular y el plural.
+const NOMBRE_LUZ_PWA = { green: "verdes", amber: "ámbares", red: "rojos" };
 
 function bloqueQueHaCambiado(b) {
   if (!b) return "";
@@ -469,12 +610,19 @@ function bloqueQueHaCambiado(b) {
     return cabeceraBloque(b) + bloqueNa(b.na);
   }
 
-  const filas = b.lineas.map((l) => (
+  // El semáforo ya está dibujado arriba del todo. Repetirlo aquí escrito es la
+  // forma más fácil de que la portada vuelva a tener dos veces lo mismo, que es
+  // de donde viene la mitad de sus mil palabras.
+  const filas = b.lineas.filter((l) => l.clave !== "semaforo").map((l) => (
     `<div class="linea-portada">` +
     `<div class="etiqueta-portada">${escapar(l.etiqueta)}</div>` +
     `<div class="lectura-portada">${escapar(l.lectura)}</div>` +
     `</div>`
   )).join("");
+  // Puede quedarse sin ninguna: el semáforo es la única línea que el servidor
+  // manda siempre que haya UNA decisión, y los dos recuentos de entrenos pueden
+  // no venir. Un título con una tarjeta vacía debajo se lee como un fallo.
+  if (!filas) return "";
 
   return cabeceraBloque(b) + `<article class="tarjeta portada">${filas}</article>`;
 }
@@ -525,23 +673,30 @@ function tarjetaHallazgo(h) {
     ? `<span class="fuerza ${clase}">${escapar(h.fuerza)}</span>`
     : "";
 
+  /* LA FICHA SE PLIEGA. Lo de dentro NO se toca.
+   *
+   * Siguen `r` con su nombre de una letra, la p corregida con sus cuatro
+   * decimales, los pares comparados y el método. Y siguen por lo que estaba
+   * escrito aquí: «r» es la fuerza CON SIGNO en una escala fija, ya dicha en
+   * castellano arriba en la frase y en la marca de fuerza, y lo que hace la
+   * cifra es dejar COMPROBAR la frase. Para comprobar hace falta el número, no
+   * otra paráfrasis del número.
+   *
+   * Lo que cambia es dónde. Esta es la primera pantalla, la puerta, y llevaba
+   * cinco hallazgos con «r = −0,38 · p = 0,0002 (corregida) · 175 pares
+   * comparados · correlación de rangos» debajo de cada uno: veinte cifras
+   * técnicas en la vista que se abre a diario. Plegada, la frase se lee sola y
+   * el número está a un toque para quien quiera comprobarlo, que son dos
+   * momentos distintos y nunca el mismo.
+   *
+   * El plegable es por tarjeta y no uno al final del bloque. Uno al final
+   * obligaría a emparejar cinco fichas con cinco frases contando de arriba
+   * abajo, y una comprobación que hay que emparejar a mano ya no comprueba
+   * nada. */
   const detalle = [];
   if (f.dias_despues !== null && f.dias_despues !== undefined) {
     detalle.push(`${cuenta(f.dias_despues, "día", "días")} después`);
   }
-  /* `r` y `p` SE QUEDAN con su nombre de una letra, y es a propósito.
-   *
-   * Son los dos únicos números de toda la interfaz que no se pueden decir con
-   * palabras sin perder algo: «r» es la fuerza CON SIGNO en una escala fija de
-   * −1 a 1, y ya está dicha en castellano arriba, en la frase y en la marca de
-   * fuerza. Lo que hace aquí abajo es dejar comprobar la frase, y para eso hace
-   * falta la cifra, no otra paráfrasis de la cifra.
-   *
-   * Lo que sí se traduce es todo lo demás de la línea, porque no son números:
-   * `n` era una letra puesta en lugar de una frase corta, y `spearman` era una
-   * palabra en inglés sin traducir. Ésos no son el dato, son la etiqueta del
-   * dato, y una etiqueta que hay que descifrar enseña a saltarse la línea
-   * entera -incluidos la `r` y la `p`, que sí importan-. */
   if (f.r !== null && f.r !== undefined) detalle.push(`r = ${num(f.r)}`);
   if (f.p_corregida !== null && f.p_corregida !== undefined) {
     detalle.push(`p = ${num(f.p_corregida, 4)} (corregida)`);
@@ -549,17 +704,53 @@ function tarjetaHallazgo(h) {
   if (f.n) detalle.push(`${entero(f.n)} pares comparados`);
   if (f.metodo) detalle.push(escapar(METODOS[f.metodo] || f.metodo));
 
-  return (
-    `<article class="tarjeta hallazgo">` +
-    `<p class="grupo-hallazgo">${escapar(h.grupo.titulo)} · decide ` +
-    `${escapar(h.grupo.decision)}</p>` +
-    `<p class="frase ${clase}">${escapar(h.frase)}${marca}</p>` +
+  /* LA FRASE SOLA FUERA, Y LAS TRES PROSAS DENTRO.
+   *
+   * Cada hallazgo llevaba cuatro párrafos en la primera pantalla: la frase, el
+   * matiz de la forma de la curva, la nota de lo que confirma -que lista cinco
+   * exposiciones con sus paréntesis: cuarenta palabras- y la de lo que discrepa.
+   * Por cinco tarjetas, la mitad de la portada. La frase es el hallazgo; las
+   * otras tres son cómo se sabe y cuánto fiarse, que se leen en otro momento.
+   *
+   * PERO LA ADVERTENCIA NO DESAPARECE DE FUERA, y eso era lo que estaba escrito
+   * aquí y sigue valiendo: «enterrarlo en un plegable deja la frase sola y
+   * pareciendo más segura de lo que es». Lo que se va dentro es la REDACCIÓN
+   * larga; fuera se queda la marca corta -«lo mismo sale por otros 5 caminos»,
+   * «ojo: 2 apuntan al revés»-, que avisa en seis palabras de lo que la de
+   * cuarenta avisaba, y el texto entero está a un toque.
+   *
+   * Los dos números son la longitud de dos listas que manda el servidor. No hay
+   * más cuenta que ésa, y la hay porque la frase corta necesita decir cuántos
+   * son para no ser un «ojo» sin tamaño.
+   */
+  const dentro =
     (h.matiz ? `<p class="matiz">${escapar(h.matiz)}</p>` : "") +
     (h.nota_confirmacion
       ? `<p class="confirma">${escapar(h.nota_confirmacion)}</p>` : "") +
     (h.nota_discrepancia
       ? `<p class="discrepa">${escapar(h.nota_discrepancia)}</p>` : "") +
-    `<p class="ficha">${escapar(detalle.join(" · "))}</p>` +
+    (detalle.length ? `<p class="ficha">${escapar(detalle.join(" · "))}</p>` : "");
+
+  const confirman = (h.confirmada_por || []).length;
+  const discrepan = (h.discrepa || []).length;
+
+  return (
+    `<article class="tarjeta hallazgo">` +
+    `<p class="grupo-hallazgo">${escapar(h.grupo.titulo)} · decide ` +
+    `${escapar(h.grupo.decision)}</p>` +
+    `<p class="frase ${clase}">${escapar(h.frase)}${marca}</p>` +
+    (confirman
+      // `cuenta()` no vale aquí: pone el número delante y sale "por 5 otros
+      // caminos". El numeral va en medio -"por otros 5 caminos"- y con uno se
+      // cae entero, así que las dos formas se escriben a mano.
+      ? `<p class="confirma">Lo mismo sale por ` +
+        `${confirman === 1 ? "otro camino" : `otros ${entero(confirman)} caminos`}.</p>`
+      : "") +
+    (discrepan
+      ? `<p class="discrepa">Ojo: ${cuenta(discrepan, "señal apunta", "señales apuntan")} ` +
+        `al revés.</p>`
+      : "") +
+    (dentro ? plegable("ver detalle", dentro) : "") +
     `</article>`
   );
 }
@@ -575,35 +766,7 @@ async function pintarConcordancia(dias) {
     pintarCobertura(d.cobertura, d.ventana),
   ];
 
-  partes.push(
-    `<h2 class="grupo">Lo que notas frente al reloj</h2>` +
-    `<p class="explica">Cada pareja junta algo que contestas por la mañana con ` +
-    `algo que el reloj mide solo. La barra va de −1 a 1 con el cero marcado, y ` +
-    `<b>el signo que se espera</b> está escrito debajo: lo interesante no es que ` +
-    `la correlación sea alta, es que vaya en la dirección que debería. Estas ` +
-    `siete son preguntas hechas de antemano, así que no llevan corrección por ` +
-    `comparaciones múltiples: no hay una rejilla que rastrear, hay siete ` +
-    `hipótesis. El bloque de abajo sí la lleva, y por eso.</p>`,
-  );
-
-  for (const p of d.pares) {
-    const dir = p.signo_esperado > 0 ? "suban juntos" : "vaya uno al revés del otro";
-    partes.push(
-      `<article class="tarjeta">` +
-      `<h2>${escapar(p.titulo)}</h2>` +
-      `<p class="sub">${escapar(p.etiqueta_x)} · ${escapar(p.etiqueta_y)}</p>` +
-      barraR(p) +
-      `<p class="cifra">r = <b>${num(p.r)}</b>${p.p !== null && p.p !== undefined
-        ? ` · p = ${num(p.p, 3)}` : ""}</p>` +
-      (p.lectura
-        ? `<p class="lectura">${escapar(p.lectura)}</p>`
-        : bloqueNa(p.na)) +
-      `<p class="esperado">Se espera que ${dir}.</p>` +
-      ficha(p) +
-      (p.aviso && p.lectura ? `<p class="na">${escapar(p.aviso)}</p>` : "") +
-      `</article>`,
-    );
-  }
+  partes.push(bloqueLoQueNotas(d.pares, d.resumen_pares));
 
   partes.push(seccionInternas(d));
 
@@ -648,6 +811,79 @@ async function pintarConcordancia(dias) {
   $("vista").innerHTML = partes.join("");
 }
 
+/* LAS SIETE HIPÓTESIS, EN SIETE BARRAS. La pregunta de la vista, de un vistazo.
+ *
+ * Esta vista abría con un párrafo de ocho líneas explicando qué es una barra de
+ * −1 a 1 y por qué estas siete no llevan corrección, y después SIETE tarjetas
+ * con su «r = −0.31 · p = 0.004» cada una. Para contestar «¿lo que noto se
+ * parece a lo que mide el reloj?» había que leer siete veces y sumar de cabeza.
+ *
+ * Las siete barras juntas contestan eso solo: azul es que va por donde debía,
+ * naranja que va al contrario, gris que no hay señal. La forma de la lista es la
+ * respuesta antes de leer un número.
+ *
+ * LO DE DENTRO NO SE BORRA. La r, la p, el método, los días emparejados y el
+ * aviso de muestra corta siguen enteros, con su tarjeta cada uno, detrás de «ver
+ * detalle». La regla 2 dice que eso no puede estar en la pantalla que se abre;
+ * no dice que sobre, y aquí hay una guarda -`DETALLE_OBLIGADO` en
+ * `tests/render_pwa.mjs`- que falla si alguien decide que la forma barata de
+ * pasar la regla es tirarlo.
+ */
+function bloqueLoQueNotas(pares, resumen) {
+  const svg = barrasTumbadas({
+    valores: pares.map((p) => p.r),
+    rotulos: pares.map((p) => num(p.r)),
+    etiquetas: pares.map((p) => p.titulo),
+    alReves: pares.map((p) => p.al_reves),
+    pie: "cada pareja, de −1 a +1",
+  });
+
+  const detalle =
+    `<p class="explica">Cada pareja junta algo que contestas por la mañana con ` +
+    `algo que el reloj mide solo. La barra va de −1 a 1 con el cero marcado, y ` +
+    `<b>el signo que se espera</b> está escrito debajo: lo interesante no es que ` +
+    `la correlación sea alta, es que vaya en la dirección que debería. Estas ` +
+    `siete son preguntas hechas de antemano, así que no llevan corrección por ` +
+    `comparaciones múltiples: no hay una rejilla que rastrear, hay siete ` +
+    `hipótesis. El bloque de abajo sí la lleva, y por eso.</p>` +
+    pares.map((p) => (
+      `<article class="tarjeta">` +
+      `<h3>${escapar(p.titulo)}</h3>` +
+      `<p class="sub">${escapar(p.etiqueta_x)} · ${escapar(p.etiqueta_y)}</p>` +
+      barraR(p) +
+      `<p class="cifra">r = <b>${num(p.r)}</b>${p.p !== null && p.p !== undefined
+        ? ` · p = ${num(p.p, 3)}` : ""}</p>` +
+      (p.lectura
+        ? `<p class="lectura">${escapar(p.lectura)}</p>`
+        : bloqueNa(p.na)) +
+      `<p class="esperado">Se espera que ` +
+      `${p.signo_esperado > 0 ? "suban juntos" : "vaya uno al revés del otro"}.</p>` +
+      ficha(p) +
+      (p.aviso && p.lectura ? `<p class="na">${escapar(p.aviso)}</p>` : "") +
+      `</article>`
+    )).join("");
+
+  const r = resumen;
+  const frase = r.calculadas
+    ? `De ${cuenta(r.calculadas, "pareja con número", "parejas con número")}, ` +
+      `${entero(r.como_se_esperaba)} ${plural(r.como_se_esperaba, "va", "van")} ` +
+      `por donde debía y ${entero(r.al_reves)} al contrario` +
+      `${r.sin_signo_claro
+        ? `; ${plural(r.sin_signo_claro, "la otra se queda", "las otras se quedan")} ` +
+          `en nada` : ""}.`
+    : `Todavía no hay días suficientes para calcular ni una de las ` +
+      `${entero(r.parejas)} parejas.`;
+
+  if (!svg) {
+    return (
+      `<article class="tarjeta"><h2>Lo que notas frente al reloj</h2>` +
+      bloqueNa(frase) + plegable("ver detalle", detalle) + `</article>`
+    );
+  }
+
+  return bloqueDeVistazo("Lo que notas frente al reloj", svg, frase, detalle);
+}
+
 /* El reloj cruzado consigo mismo: las diez parejas de las cinco métricas.
  *
  * Van partidas en dos grupos y las independientes primero, aunque el payload las
@@ -662,12 +898,27 @@ async function pintarConcordancia(dias) {
  * leería como que el reloj es coherentísimo. Partido, se ve DÓNDE está esa
  * coherencia, que es la diferencia entre una tabla y una respuesta.
  *
- * Ninguna se esconde ni se pliega: las ocho están enteras, con su aviso dentro.
+ * ESA PARTICIÓN SIGUE MANDANDO, y ahora manda en el dibujo. Las barras van en
+ * dos tandas -primero las independientes, después las que comparten origen- con
+ * su pie diciendo cuál es cuál, así que el reparto se ve sin leer los títulos.
+ * Un solo gráfico con las diez ordenadas por tamaño volvería a la lista de la
+ * que se sale creyendo que el reloj es coherentísimo.
+ *
+ * Y ninguna tarjeta se borra: las diez siguen enteras, con su r, su p corregida
+ * y su aviso de origen compartido dentro, detrás de «ver detalle».
  */
 function seccionInternas(d) {
   const r = d.resumen_internas;
   const indep = d.internas.filter((c) => c.mismo_origen === null);
   const compartidas = d.internas.filter((c) => c.mismo_origen !== null);
+
+  const barras = (lista, pie) => barrasTumbadas({
+    valores: lista.map((c) => c.r),
+    rotulos: lista.map((c) => num(c.r)),
+    etiquetas: lista.map((c) => c.titulo),
+    alReves: lista.map((c) => c.al_reves),
+    pie,
+  });
 
   const contador =
     `<p class="explica"><b>${entero(r.significativas)} de ${entero(r.calculadas)}</b> ` +
@@ -690,8 +941,7 @@ function seccionInternas(d) {
       : bloqueNa("no hay ni una pareja en este grupo"))
   );
 
-  return (
-    `<h2 class="grupo">El reloj consigo mismo</h2>` +
+  const detalle =
     `<p class="explica">${escapar(d.aviso_internas)}</p>` +
     contador +
     grupo(
@@ -706,8 +956,40 @@ function seccionInternas(d) {
       "Que salgan altas era de esperar: parte de la relación la pone Garmin al " +
       "construir el número. Lo que informa aquí es una que salga baja o al revés.",
       compartidas,
-    )
-  );
+    );
+
+  const svg =
+    barras(indep, "las que el reloj mide por separado") +
+    barras(compartidas, "las que el reloj calcula una a partir de la otra");
+
+  if (!svg) {
+    return (
+      `<article class="tarjeta"><h2>El reloj consigo mismo</h2>` +
+      bloqueNa("todavía no hay días suficientes para cruzar ni una pareja") +
+      plegable("ver detalle", detalle) + `</article>`
+    );
+  }
+
+  // La frase se queda en las INDEPENDIENTES a propósito. Es la única cifra del
+  // bloque que puede estar diciendo algo del cuerpo: las otras ocho salen altas
+  // porque Garmin construye un número con el otro, y ponerlas en la frase de
+  // debajo del gráfico sería dar por hecha justo la conclusión que este bloque
+  // existe para dejar mirar.
+  //
+  // El cero se dice «ninguna» y no «0». Es la única cifra del panel que se
+  // escribe con letra, y no por adorno: «0 aguantan la prueba» obliga a parar
+  // medio segundo a decidir si ese cero es un resultado o un dato que falta, y
+  // aquí es un resultado -se han mirado las dos y no ha salido ninguna-. Con el
+  // resto de números no pasa, porque van dentro del gráfico y la barra ya dice
+  // si hay algo o no.
+  const sig = r.independientes.significativas;
+  const frase =
+    `De las ${entero(r.independientes.parejas)} parejas que el reloj mide por ` +
+    `separado, ${sig ? entero(sig) : "ninguna"} ` +
+    `${plural(sig, "aguanta", "aguantan")} la prueba; ` +
+    `las otras ${entero(r.comparten_origen.parejas)} las calcula una con la otra.`;
+
+  return bloqueDeVistazo("El reloj consigo mismo", svg, frase, detalle);
 }
 
 function tarjetaInterna(c) {
@@ -747,18 +1029,40 @@ async function pintarDesfase(dias) {
     pintarCobertura(d.cobertura, d.ventana),
   ];
 
-  partes.push(`<p class="explica">${escapar(d.convenio)}</p>`);
+  partes.push(bloqueDondePican(d));
 
-  // Primero las parejas con pico, y dentro de esas las de pico distinto de cero:
-  // son la respuesta a la pregunta de esta vista. Las que no se pudieron calcular
-  // van al final, pero VAN: quitarlas dejaría una pantalla donde todo cuadra.
+  $("vista").innerHTML = partes.join("");
+}
+
+/* EL MONTÓN DE PICOS, EN SIETE BARRAS.
+ *
+ * Esta vista tenía cincuenta tarjetas iguales en la pantalla principal, cada una
+ * con su curva, su «Pico en ±3 días» y su línea de lectura: mil seiscientas
+ * palabras para contestar una pregunta de sí o no. La pregunta es si lo que
+ * notas va por delante del reloj o por detrás, y la contesta el sitio donde se
+ * amontonan los picos, no ninguna pareja suelta.
+ *
+ * Así que el histograma va arriba y grande -una barra por retardo, del -3 al
+ * +3-, y las cincuenta tarjetas siguen enteras detrás del triángulo. Ninguna se
+ * borra, incluidas las que no pican: el bloque de «Sin pico todavía» se va con
+ * su párrafo dentro, porque el motivo de que estén ahí no cambia por plegarlas.
+ *
+ * Las alturas y los tres totales de la frase vienen de `reparto_desfases`. Aquí
+ * no se cuenta nada; el único reparto que se hace en esta función es separar las
+ * tarjetas en dos listas para el detalle, y esas listas no producen ninguna
+ * cifra que se lea.
+ */
+function bloqueDondePican(d) {
+  const r = d.reparto_desfases;
+  const rango = d.rango_desfase;
+
   const conPico = d.rejilla.filter((f) => f.mejor_desfase !== null && f.mejor_desfase !== undefined);
   const sinPico = d.rejilla.filter((f) => f.mejor_desfase === null || f.mejor_desfase === undefined);
   conPico.sort((a, b) => Math.abs(b.mejor_desfase) - Math.abs(a.mejor_desfase));
 
   const tarjeta = (f) => (
     `<article class="tarjeta">` +
-    `<h2>${escapar(f.etiqueta_x)} · ${escapar(f.etiqueta_y)}</h2>` +
+    `<h3>${escapar(f.etiqueta_x)} · ${escapar(f.etiqueta_y)}</h3>` +
     curvaDesfase(f.por_desfase, f.mejor_desfase) +
     (f.mejor_desfase !== null && f.mejor_desfase !== undefined
       ? `<p class="cifra">Pico en <b>${f.mejor_desfase > 0 ? "+" : ""}` +
@@ -769,20 +1073,83 @@ async function pintarDesfase(dias) {
     `</article>`
   );
 
+  // Los dos números de los encabezados salen de `r` y no de `conPico.length`.
+  //
+  // El `filter` de arriba puede quedarse: parte la lista en dos para pintarlas
+  // en dos grupos, y eso es ordenar, no medir. Pero el número entre paréntesis
+  // SE LEE, y una cifra que se lee no sale de una cuenta hecha en el móvil: el
+  // servidor ya manda `con_pico` y `sin_pico` contados con su mismo criterio, y
+  // contarlos otra vez aquí sería tener dos definiciones de «pareja con pico»
+  // -la del encabezado y la de la frase de fuera- esperando a no coincidir.
+  let detalle = `<p class="explica">${escapar(d.convenio)}</p>`;
   if (conPico.length) {
-    partes.push(`<h2 class="grupo">Con pico calculado (${conPico.length})</h2>`);
-    partes.push(conPico.map(tarjeta).join(""));
+    detalle += `<h3 class="grupo">Con pico calculado (${entero(r.con_pico)})</h3>`;
+    detalle += conPico.map(tarjeta).join("");
   }
   if (sinPico.length) {
-    partes.push(
-      `<h2 class="grupo">Sin pico todavía (${sinPico.length})</h2>` +
+    detalle +=
+      `<h3 class="grupo">Sin pico todavía (${entero(r.sin_pico)})</h3>` +
       `<p class="explica">Siguen aquí a propósito. Una pantalla que solo enseña ` +
-      `las parejas que salieron parece decir más de lo que sabe.</p>`,
-    );
-    partes.push(sinPico.map(tarjeta).join(""));
+      `las parejas que salieron parece decir más de lo que sabe.</p>` +
+      sinPico.map(tarjeta).join("");
   }
 
-  $("vista").innerHTML = partes.join("");
+  // EL EJE: siete números y una sola línea de palabras debajo, en el pie.
+  //
+  // La tentación era poner «3 días antes» debajo de cada barra, que explica el
+  // convenio de signos sin que haya que recordarlo. No cabe: siete barras en 340
+  // puntos de ancho dan cuarenta por barra, y «días después» ocupa sesenta, así
+  // que los rótulos se pisan unos a otros. Un eje ilegible incumple la regla 3
+  // más de lo que la cumple la palabra.
+  //
+  // Así que los números van solos -con su signo, que es lo que la regla 3 pide-
+  // y la dirección se dice UNA vez en el pie, que tiene el ancho entero.
+  const retardos = [];
+  for (let k = rango[0]; k <= rango[1]; k++) retardos.push(k);
+  const svg = barrasDeVistazo({
+    valores: retardos.map((k) => r.por_desfase[String(k)]),
+    rotulos: retardos.map((k) => entero(r.por_desfase[String(k)])),
+    etiquetas: retardos.map((k) => [k > 0 ? `+${k}` : conMenos(String(k))]),
+    pie: "← notas después · días · notas antes →",
+    unidad: "parejas",
+  });
+
+  // La frase compara los dos lados del cero y nombra el que gana, sin decir por
+  // cuánto: «21 contra 14» invita a restar y a creerse la resta. Si van igualadas
+  // lo dice y ya está, que es la respuesta honesta a una pantalla que todavía no
+  // ha visto bastantes días.
+  //
+  // LAS QUE PICAN EN EL CERO SE NOMBRAN, aunque no ayuden a decidir. La frase
+  // decía «de 50 con pico, 31 después y 10 antes» y quien sumara encontraba
+  // nueve parejas que no estaban en ninguna de las dos cifras. Esas nueve son
+  // la barra más alta del centro del dibujo, así que el número que falta está
+  // ahí pintado a tamaño grande: una frase que no lo menciona no es escueta,
+  // es una frase a la que le falta el sumando que el lector tiene delante.
+  const deLas = cuenta(r.con_pico, "pareja con pico", "parejas con pico");
+  const aLaVez = r.a_la_vez ? ` y ${entero(r.a_la_vez)} a la vez` : "";
+  const frase = !r.con_pico
+    ? `Ninguna de las ${entero(r.parejas)} parejas tiene todavía días suficientes ` +
+      `para saber dónde pica.`
+    : r.se_adelanta > r.va_detras
+      ? `De ${deLas}, ${entero(r.se_adelanta)} ` +
+        `${plural(r.se_adelanta, "pica", "pican")} antes que el reloj, ` +
+        `${entero(r.va_detras)} después${aLaVez}: lo que notas se adelanta.`
+      : r.va_detras > r.se_adelanta
+        ? `De ${deLas}, ${entero(r.va_detras)} ` +
+          `${plural(r.va_detras, "pica", "pican")} después que el reloj, ` +
+          `${entero(r.se_adelanta)} antes${aLaVez}: lo que notas va por detrás.`
+        : `De ${deLas}, van ${entero(r.se_adelanta)} por delante, ` +
+          `${entero(r.va_detras)} por detrás${aLaVez}: de momento no tira para ` +
+          `ningún lado.`;
+
+  if (!svg) {
+    return (
+      `<section class="bloque-vistazo"><h2>Lo que notas y lo que marca el reloj</h2>` +
+      `<p class="frase-vistazo">${escapar(frase)}</p>` +
+      plegable("ver detalle", detalle) + `</section>`
+    );
+  }
+  return bloqueDeVistazo("Lo que notas y lo que marca el reloj", svg, frase, detalle);
 }
 
 function tablaDesfases(porDesfase) {
@@ -837,8 +1204,23 @@ async function pintarImpacto(dias) {
     encabezadoVista(d.encabezado),
     pintarCobertura(d.cobertura, d.ventana),
   ];
-  partes.push(`<p class="aviso ojo"><strong>Ojo con leer esto como una causa.</strong>` +
-    `${escapar(d.advertencia)}</p>`);
+  /* El aviso de la causa se queda ARRIBA y se queda CORTO.
+   *
+   * La versión larga -la que manda el servidor en `advertencia`, con el ejemplo
+   * del peso muerto y la lumbar- baja al detalle del primer bloque. No por la
+   * regla 2, aunque también la incumpla al escribir «correlacionado»: por la 4.
+   * Son seis líneas de párrafo encima del gráfico, y lo que se pidió es que
+   * debajo del gráfico haya UNA frase; encima no puede haber seis.
+   *
+   * Lo que no se puede hacer es quitarlo del todo. Esta vista ordena cosas que
+   * el usuario hace y les pone al lado cuánto le baja la HRV: sin el aviso, la
+   * lectura natural es «el día 1 me sienta mal», y eso es exactamente lo que los
+   * datos no pueden decir. El aviso corto dice lo mismo en una línea. */
+  partes.push(
+    `<p class="aviso ojo"><strong>Esto dice por dónde mirar, no quién tiene ` +
+    `la culpa.</strong> Lo que entrenas va junto el mismo día y esta vista no ` +
+    `puede separarlo.</p>`,
+  );
 
   /* Las vacías NO se quitan del desplegable: se marcan y se van al final.
    *
@@ -866,9 +1248,12 @@ async function pintarImpacto(dias) {
       ? `<optgroup label="Sin datos todavía">${vacias.map(opcion).join("")}</optgroup>`
       : "") +
     `</select>` +
-    `<p class="explica">El número entre paréntesis es cuántas relaciones se han ` +
-    `podido calcular con esa respuesta. Las de abajo salen igual aunque no tengan ` +
-    `nada: el sistema sabe mirarlas y todavía no hay con qué.</p>` +
+    // Una línea y no tres. Decía lo mismo en tres frases -qué es el paréntesis,
+    // por qué salen las vacías, que el sistema sabe mirarlas- encima del gráfico
+    // y antes de él. La regla 1 pone el texto DEBAJO y en una frase; un
+    // desplegable necesita su pie, pero le basta con uno.
+    `<p class="explica">Entre paréntesis, cuántas cosas se han podido cruzar ` +
+    `con ella.</p>` +
     `</div>`,
   );
 
@@ -884,20 +1269,6 @@ async function pintarImpacto(dias) {
   }
 
   const filas = d.rejilla.filter((f) => f.respuesta.clave === elegido.respuesta);
-  const familias = {};
-  for (const f of filas) (familias[f.exposicion.familia] ||= []).push(f);
-
-  const NOMBRE_FAMILIA = {
-    bici: "Salidas de bici",
-    rutina: "Rutinas de fuerza",
-    fuerza: "Volumen y series",
-    ejercicio: "Ejercicios sueltos",
-  };
-
-  for (const [familia, lista] of Object.entries(familias)) {
-    partes.push(`<h2 class="grupo">${escapar(NOMBRE_FAMILIA[familia] || familia)}</h2>`);
-    partes.push(lista.map(tarjetaImpacto).join(""));
-  }
 
   /* EL RANKING SIGUE AL DESPLEGABLE, y antes no lo seguía: estaba clavado a
    * `lower_discomfort`, que es uno de los deslizadores del check-in y hoy no
@@ -909,11 +1280,12 @@ async function pintarImpacto(dias) {
    * Va en serie y no en paralelo con la otra llamada a propósito: cuál es la
    * respuesta que se va a pintar lo decide el servidor en la primera, y pedir el
    * ranking antes de saberlo es lo que obligaba a clavarlo a mano. */
-  if (elegido.respuesta) {
-    partes.push(seccionRanking(await pedir(RUTAS.ranking, {
-      dias, respuesta: elegido.respuesta,
-    })));
-  }
+  const rank = elegido.respuesta
+    ? await pedir(RUTAS.ranking, { dias, respuesta: elegido.respuesta })
+    : null;
+
+  partes.push(bloqueQueTeHaceCadaCosa(d, filas));
+  partes.push(bloqueCuantoDura(d, filas, rank));
 
   $("vista").innerHTML = partes.join("");
 
@@ -921,6 +1293,178 @@ async function pintarImpacto(dias) {
     elegido.respuesta = ev.target.value;
     cargar();
   });
+}
+
+const NOMBRE_FAMILIA = {
+  bici: "Salidas de bici",
+  rutina: "Rutinas de fuerza",
+  fuerza: "Volumen y series",
+  ejercicio: "Ejercicios sueltos",
+};
+
+/* La rejilla entera, agrupada, para el detalle. Es lo que ANTES era la vista.
+ *
+ * No se ha borrado ni una tarjeta: siguen la r, las medias de los dos grupos, la
+ * p corregida y el veredicto de la corrección, palabra por palabra. Lo único que
+ * ha cambiado es que hay que tocar «ver detalle» para verlas.
+ *
+ * Y esa es la diferencia que importa. Borrarlas habría sido la forma barata de
+ * cumplir la regla 2 -sin números raros no hay números raros que esconder- y
+ * habría tirado lo único que distingue a este panel de una app de fitness. Lo
+ * que se pidió fue «si lo quieres conservar, que esté escondido detrás de un ver
+ * detalle», que es conservarlo. */
+function tarjetasPorFamilia(filas) {
+  const familias = {};
+  for (const f of filas) (familias[f.exposicion.familia] ||= []).push(f);
+  return Object.entries(familias).map(([fam, lista]) => (
+    `<h3 class="grupo">${escapar(NOMBRE_FAMILIA[fam] || fam)}</h3>` +
+    lista.map(tarjetaImpacto).join("")
+  )).join("");
+}
+
+function casillaDe(f, k) {
+  return (f.por_dia || []).find((c) => c.dias_despues === k) || null;
+}
+
+/* LAS FILAS QUE TIENEN ALGO NORMAL QUE ENSEÑAR, ordenadas por cuánto se nota.
+ *
+ * Una exposición `binaria` -salí o no salí- parte los días en dos grupos y el
+ * servidor manda la media de cada uno y su `diferencia`. Esa resta está en la
+ * unidad de la respuesta -milisegundos de HRV, puntos de cansancio- y se lee
+ * sola: «los días después de una salida larga tu HRV es nueve milisegundos más
+ * baja». Eso es un número normal y va al gráfico.
+ *
+ * Una exposición `continua` -los kilos que moviste- no tiene dos grupos, y lo
+ * único que el servidor puede decir de ella es una correlación. Una correlación
+ * no es un número normal: hay que saber qué es para leerla, y la regla 2 la
+ * manda al detalle. Así que las continuas NO entran en el gráfico. No se
+ * esconden -van enteras en «ver detalle», con su `lectura` en castellano-, pero
+ * no se les inventa una barra: dibujar una r de −0,38 al lado de una diferencia
+ * de −9,2 ms pondría en el mismo eje dos cosas que no se miden igual, que es
+ * peor que no dibujarla.
+ *
+ * Se exige `suficiente` además de `diferencia`: hay filas con dos días medidos
+ * cuya resta de medias sale «2,0» y no significa nada. Dibujarla la pondría
+ * arriba del todo, porque con dos datos cualquier diferencia es enorme. */
+function loQueSeNota(d, filas) {
+  const k = d.retardos[0];
+  return filas
+    // El filtro por `tipo` va PRIMERO y no da igual el orden. Una casilla de
+    // exposición continua no trae la clave `diferencia`: no la trae a `null`,
+    // no la trae. Preguntarle por ella da `undefined` -en JavaScript leer lo que
+    // no existe no falla- y el `filter` de abajo la descartaría igual, con lo
+    // que el resultado sería correcto por casualidad. Lo caza el `Proxy` de
+    // `tests/render_pwa.mjs`, que apunta las lecturas de claves ausentes
+    // precisamente porque el síntoma no se ve.
+    .filter((f) => f.exposicion.tipo === "binaria")
+    .map((f) => ({ f, c: casillaDe(f, k) }))
+    .filter(({ c }) => (
+      c && c.suficiente && c.diferencia !== null && c.diferencia !== undefined
+    ))
+    .sort((a, b) => Math.abs(b.c.diferencia) - Math.abs(a.c.diferencia));
+}
+
+function unidadDe(resp) {
+  return resp.sufijo || (resp.unidad && resp.unidad !== "1-5" ? resp.unidad : "");
+}
+
+/* PRIMER BLOQUE: una barra por cosa que haces, en la unidad de la respuesta.
+ *
+ * Tumbadas y ordenadas por cuánto se notan, con el cero dibujado. Lo que se ve
+ * sin leer es que las cinco de arriba son de bici y apuntan todas al mismo lado,
+ * y eso antes había que sacarlo comparando dieciséis tarjetas con tres
+ * correlaciones cada una. */
+function bloqueQueTeHaceCadaCosa(d, filas) {
+  if (!filas.length) return "";
+  const resp = filas[0].respuesta;
+  const k = d.retardos[0];
+  const suf = unidadDe(resp);
+  const titulo = `Qué le hace cada cosa a ${resp.en_frase || resp.etiqueta}`;
+  const detalle =
+    `<p class="explica">${escapar(d.advertencia)}</p>` + tarjetasPorFamilia(filas);
+
+  const lista = loQueSeNota(d, filas);
+  if (!lista.length) {
+    return (
+      `<section class="bloque-vistazo"><h2>${escapar(titulo)}</h2>` +
+      bloqueNa(
+        `ninguna de las ${filas.length} cosas que se cruzan con ` +
+        `${resp.en_frase || resp.etiqueta} parte los días en dos grupos con ` +
+        `bastantes días en cada uno, que es lo que hace falta para poder decir ` +
+        `«tantos ${suf || "puntos"} de diferencia». Lo que sí hay está abajo`,
+      ) +
+      plegable("ver detalle", detalle) +
+      `</section>`
+    );
+  }
+
+  const peor = lista[0];
+  const dif = peor.c.diferencia;
+  // El valor absoluto es para poder escribir «baja 9,2» en vez de «cambia −9,2»,
+  // que es la misma cifra dicha como se dice en voz alta. La palabra y el signo
+  // salen del mismo sitio, así que no pueden contradecirse.
+  const frase =
+    `Lo que más se nota es «${peor.f.exposicion.etiqueta}»: ` +
+    `${resp.en_frase || resp.etiqueta} ${dif < 0 ? "baja" : "sube"} ` +
+    `${num(Math.abs(dif), 1)}${suf ? ` ${suf}` : ""} ` +
+    `${k === 1 ? "al día siguiente" : `${k} días después`}.`;
+
+  return bloqueDeVistazo(
+    titulo,
+    barrasTumbadas({
+      valores: lista.map(({ c }) => c.diferencia),
+      rotulos: lista.map(({ c }) => num(c.diferencia, 1)),
+      etiquetas: lista.map(({ f }) => f.exposicion.etiqueta),
+      pie: `${suf ? `${suf} · ` : ""}${k === 1 ? "al día siguiente" : `a los ${k} días`}`,
+      positivoEsBueno: resp.sentido !== "alto_peor",
+    }),
+    frase,
+    detalle,
+  );
+}
+
+/* SEGUNDO BLOQUE: y eso, ¿cuánto dura?
+ *
+ * La misma resta de la de arriba del todo, pero a uno, dos y tres días. Es la
+ * pregunta que la vista tenía contestada desde siempre -el servidor calcula los
+ * tres retardos- y que no se podía leer: estaba repartida en tres cajitas
+ * dentro de cada tarjeta, cada una con su r y su p, y para ver si subía o
+ * bajaba había que ir apuntando números.
+ *
+ * La frase de debajo es la `lectura` del servidor tal cual. No se recompone
+ * aquí: es la misma que lleva escribiendo esta vista desde el principio, y ya
+ * dice «al día +2 ya está como siempre» en castellano. */
+function bloqueCuantoDura(d, filas, rank) {
+  const lista = loQueSeNota(d, filas);
+  if (!lista.length) return rank ? seccionRanking(rank) : "";
+  const { f } = lista[0];
+  const resp = f.respuesta;
+  const suf = unidadDe(resp);
+
+  const casillas = d.retardos.map((k) => casillaDe(f, k));
+  const valores = casillas.map((c) => (
+    c && c.suficiente && c.diferencia !== null && c.diferencia !== undefined
+      ? c.diferencia
+      : null
+  ));
+  if (!valores.some((v) => v !== null)) return rank ? seccionRanking(rank) : "";
+
+  return bloqueDeVistazo(
+    `Cuánto dura lo de «${f.exposicion.etiqueta}»`,
+    barrasDeVistazo({
+      valores,
+      rotulos: valores.map((v) => (v === null ? "" : num(v, 1))),
+      etiquetas: d.retardos.map((k) => [`+${entero(k)}`, plural(k, "día", "días")]),
+      pie: `${suf ? `${suf} · ` : ""}días después`,
+      unidad: suf,
+    }),
+    f.lectura ? `${f.exposicion.etiqueta}: ${f.lectura}.` : "",
+    // El ranking de los 38 ejercicios entero, con su resumen de la corrección,
+    // cuelga de aquí: es la misma pregunta -cuánto dura y en qué se nota- mirada
+    // ejercicio a ejercicio, y era el otro sitio de esta vista donde había una
+    // tabla de correlaciones en la pantalla principal.
+    rank ? seccionRanking(rank) : "",
+  );
 }
 
 /* Las dos formas de exposición NO se pintan igual, y no es una preferencia.
@@ -1131,25 +1675,35 @@ async function pintarAuditoria(dias) {
     pintarCobertura(d.cobertura, d.ventana),
   ];
 
-  partes.push(
-    `<article class="tarjeta">` +
-    `<h2>El reparto de luces</h2>` +
-    `<div class="luces">` +
-    `<span class="luz green">${entero(g.green)} ${escapar(nombre("green"))}</span>` +
-    `<span class="luz amber">${entero(g.amber)} ${escapar(nombre("amber"))}</span>` +
-    `<span class="luz red">${entero(g.red)} ${escapar(nombre("red"))}</span>` +
-    `<span class="luz nada">${entero(g.sin_decision)} sin decisión</span>` +
-    `</div>` +
-    // El porcentaje va DEBAJO de las fichas y con su denominador pegado, no
-    // suelto y en grande. Las fichas de arriba dicen "0 verde · 1 ámbar · 0
-    // rojo · 179 sin decisión"; este mismo reparto en tanto por ciento es
-    // "100,0 % ámbar", que leído solo significa "todos los días han sido
-    // ámbar" y es falso: son todos los días CON DECISIÓN, que aquí es uno.
-    // Los días sin decisión no entran en el denominador a propósito -lo
-    // explica `distribucion()` en `auditoria.py`- y por eso hay que decir
-    // cuántos se quedaron fuera; si no, el 100 % se lee sobre la ventana
-    // entera. Un porcentaje sin su denominador al lado no es un dato
-    // incompleto: es un dato distinto.
+  // EL REPARTO DE LUCES, DE UN VISTAZO Y EN UN QUESITO.
+  //
+  // Las cuatro fichas de colores -"65 verde · 22 ámbar · 22 rojo · 11 sin
+  // decisión"- eran cuatro números que hay que comparar mentalmente. Un quesito
+  // los compara solo, que es literalmente lo que se pidió: «quesitos, donde de
+  // un vistazo vea lo que pasa».
+  //
+  // El trozo de "sin decisión" ENTRA en el quesito, y por eso el total es la
+  // ventana entera y no `g.n`. Sacarlo dejaría un gráfico donde el motor decide
+  // todos los días; los once días que no decidió son parte de lo que hay que
+  // auditar, igual que los huecos con borde del calendario. La línea de
+  // porcentajes, que va sobre `g.n` y no sobre la ventana, se queda en el
+  // detalle con su denominador pegado -sin él, "59,6 % verde" se lee sobre 120
+  // días y son 109-.
+  const quesitoLuces = quesito({
+    trozos: [
+      // Los colores son los de `COLOR_LUZ`, los mismos que pinta el calendario
+      // de debajo. Un verde distinto en el quesito y en el calendario de la
+      // misma pantalla haría dudar de si son el mismo verde.
+      { etiqueta: nombre("green"), n: g.green, color: COLOR_LUZ.green },
+      { etiqueta: nombre("amber"), n: g.amber, color: COLOR_LUZ.amber },
+      { etiqueta: nombre("red"), n: g.red, color: COLOR_LUZ.red },
+      { etiqueta: "sin decisión", n: g.sin_decision, color: TENUE },
+    ],
+    total: g.n + g.sin_decision,
+    unidadTotal: plural(g.n + g.sin_decision, "día", "días"),
+  });
+
+  const detalleLuces =
     (g.porcentaje
       ? `<p class="ficha">${escapar(
           `Sobre ${cuenta(g.n, "día", "días")} con decisión` +
@@ -1165,13 +1719,34 @@ async function pintarAuditoria(dias) {
           "no hay ni un día con decisión guardada en esta ventana, así que no " +
           "hay reparto que enseñar: no es un cero, es que no hay denominador",
         )) +
-    `<div class="desliza">${calendario(d.dias)}</div>` +
-    `<p class="ficha">Un cuadro por día. Los días sin decisión son los huecos ` +
-    `con borde: están a la vista porque son parte de lo que hay que auditar.</p>` +
     `<div class="desliza">${barrasSemanales(d.distribucion.por_semana, d.nombres_luz)}</div>` +
-    `<p class="ficha">Una barra por semana, sobre los siete días enteros.</p>` +
-    `</article>`,
-  );
+    `<p class="ficha">Una barra por semana, sobre los siete días enteros.</p>`;
+
+  partes.push(quesitoLuces
+    ? bloqueDeVistazo(
+        "El color de tus días", quesitoLuces,
+        `De ${cuenta(g.n + g.sin_decision, "día", "días")}, ${entero(g.green)} ` +
+        `${plural(g.green, "salió", "salieron")} ${nombre("green")}, ` +
+        `${entero(g.amber)} ${nombre("amber")} y ${entero(g.red)} ${nombre("red")}` +
+        `${g.sin_decision
+          ? `; ${entero(g.sin_decision)} ${plural(g.sin_decision, "se quedó", "se quedaron")} sin decidir`
+          : ""}.`,
+        detalleLuces,
+      )
+    : `<section class="bloque-vistazo"><h2>El color de tus días</h2>` +
+      detalleLuces + `</section>`);
+
+  // EL CALENDARIO SE QUEDA FUERA, Y NO POR COSTUMBRE. El quesito dice cuántos
+  // días de cada color y el calendario dice CUÁNDO, que es otra pregunta: una
+  // racha de cuatro rojos seguidos y cuatro rojos repartidos por el trimestre
+  // dan el mismo quesito y no significan lo mismo. Y se entiende sin leer -es la
+  // regla 4-: cuadros de colores en fila, uno por día.
+  partes.push(bloqueDeVistazo(
+    "Cuándo salió cada color",
+    `<div class="desliza">${calendario(d.dias)}</div>`,
+    "Un cuadro por día; los huecos con borde son los días que el motor no pudo decidir.",
+    null,
+  ));
 
   // Las reglas. Las que nunca dispararon van primero y no al final: son las que
   // hay que mirar, y la distinción entre "se evaluó y no saltó" y "no se pudo
@@ -1188,8 +1763,7 @@ async function pintarAuditoria(dias) {
     (a, b) => (orden[a.estado] ?? 9) - (orden[b.estado] ?? 9),
   );
 
-  partes.push(`<h2 class="grupo">Las ${reglas.length} reglas</h2>`);
-  partes.push(reglas.map((r) => (
+  const fichasRegla = reglas.map((r) => (
     `<article class="tarjeta fina estado-${escapar(r.estado)}">` +
     // Sin luz, sin insignia. Una regla retirada del `config.yaml` -`resaca_finde`
     // ahora mismo- no tiene color declarado, y esto pintaba la pastilla igual:
@@ -1214,9 +1788,58 @@ async function pintarAuditoria(dias) {
         )}</p>`
       : "") +
     `</article>`
-  )).join(""));
+  )).join("");
 
-  partes.push(seccionLista(
+  // QUÉ REGLA MANDÓ, EN BARRAS. Es la segunda mitad de la pregunta del
+  // encabezado -"¿y qué regla lo decide?"- y hasta ahora se contestaba leyendo
+  // diez fichas seguidas, cada una con cuatro contadores en una línea.
+  //
+  // La barra es `veces_determinante` -los días en que ESA regla puso el color-
+  // y no `veces_disparada`, que cuenta también los días en que saltó y mandó
+  // otra más grave. La pregunta es quién decide, y quien decide es una sola por
+  // día. Las que están a cero se pintan igual, con su barra en nada: una regla
+  // declarada que no manda nunca es el hallazgo de esta vista, no un hueco.
+  //
+  // EL GRÁFICO VA DE MAYOR A MENOR Y LAS FICHAS NO, y la diferencia es a
+  // propósito. Las fichas contestan "¿qué regla tengo que mirar?" y por eso
+  // abren con las que nunca se evaluaron. El gráfico contesta otra cosa -"¿quién
+  // manda aquí?"- y con el orden de las fichas abría con ocho renglones a cero
+  // y escondía la única barra en el noveno: de un vistazo parecía un gráfico
+  // roto. De mayor a menor se ve en el primer renglón que manda una sola y que
+  // detrás no hay nada, que es justo lo que pasa.
+  const porMando = [...reglas].sort(
+    (a, b) => b.veces_determinante - a.veces_determinante,
+  );
+  const svgReglas = barrasTumbadas({
+    valores: porMando.map((r) => r.veces_determinante),
+    rotulos: porMando.map((r) => entero(r.veces_determinante)),
+    etiquetas: porMando.map((r) => r.nombre),
+    pie: "días en que cada regla puso el color",
+  });
+  const nunca = d.nunca_dispararon.length;
+  partes.push(bloqueDeVistazo(
+    "Qué regla decide el color",
+    svgReglas,
+    nunca
+      ? `De ${cuenta(reglas.length, "regla", "reglas")}, ` +
+        `${entero(nunca)} no ${plural(nunca, "ha disparado", "han disparado")} ` +
+        `ni un día en esta ventana.`
+      : `Las ${entero(reglas.length)} reglas han disparado alguna vez en esta ventana.`,
+    fichasRegla,
+  ));
+
+  // LAS CUATRO LISTAS DE ABAJO SE PLIEGAN ENTERAS, sin gráfico y sin frase.
+  //
+  // Son registros, no medidas: cuándo se activó una regla especial, qué día
+  // cambió el `config.yaml`, qué días se cerró cada puerta, cuánto progresó cada
+  // ficha. Inventarles un gráfico de un vistazo sería peor que no ponerlo -un
+  // dibujo de "Recalibraciones (1)" no informa de nada-, y dejarlas fuera eran
+  // las mil palabras que hacían de esta vista un informe.
+  //
+  // La única que sí tiene una pregunta detrás es la de las puertas, y esa lleva
+  // su gráfico justo debajo con los tres números que manda el servidor.
+  const registro = [];
+  registro.push(seccionLista(
     "Reglas especiales", d.reglas_especiales,
     (e) => (
       `<h3>${escapar(e.nombre)}${e.declarada ? "" : " <span class=\"retirada\">retirada</span>"}</h3>` +
@@ -1247,7 +1870,7 @@ async function pintarAuditoria(dias) {
    * que el hash permite afirmar. Los dos hashes van enteros y a la vista: son la
    * costura por la que hay que leer con cuidado los contadores de las reglas, y
    * una costura que no se puede señalar con el dedo no sirve de nada. */
-  partes.push(seccionLista(
+  registro.push(seccionLista(
     "Recalibraciones", d.recalibraciones,
     (x) => (
       `<h3>${fechaCorta(x.fecha)}</h3>` +
@@ -1276,7 +1899,7 @@ async function pintarAuditoria(dias) {
     );
   };
 
-  partes.push(seccionLista(
+  const listaPuertas = seccionLista(
     "Puertas cerradas", d.puertas_cerradas,
     (x) => (
       // `x.luz` es la clave del motor -"amber"-, no el nombre. Esta insignia
@@ -1292,9 +1915,41 @@ async function pintarAuditoria(dias) {
       puerta(x.reps_permitidas, x.motivo_reps, "No se sumaron repeticiones")
     ),
     d.lecturas.puertas_cerradas,
+  );
+
+  // CUANDO EL MOTOR FRENA, ¿QUÉ FRENA? Tres barras y se acabó. Los tres números
+  // vienen de `resumen_puertas` y NO suman los días de la lista: un mismo día
+  // puede llevar dos puertas cerradas, así que la frase dice sobre cuántos días
+  // van en vez de dejar que se sumen a ojo.
+  const rp = d.resumen_puertas;
+  const puertas = [
+    ["subir la carga", rp.carga],
+    ["añadir una serie", rp.series],
+    ["sumar repeticiones", rp.reps],
+  ];
+  const svgPuertas = barrasTumbadas({
+    valores: puertas.map((p) => p[1]),
+    rotulos: puertas.map((p) => entero(p[1])),
+    etiquetas: ["No subir la carga", "No añadir serie", "No sumar repeticiones"],
+    pie: `días con esa puerta cerrada, de ${entero(rp.dias)}`,
+    positivoEsBueno: false,
+  });
+  // La frase nombra la puerta MÁS cerrada. No es una cuenta: es escoger el
+  // máximo de tres cifras que ya vienen hechas, igual que la frase de las piezas
+  // de percepción escoge la más alta de las seis medias.
+  let masCerrada = puertas[0];
+  for (const p of puertas) if (p[1] > masCerrada[1]) masCerrada = p;
+  partes.push(bloqueDeVistazo(
+    "Cuándo el motor te frenó",
+    svgPuertas,
+    rp.dias
+      ? `En ${cuenta(rp.dias, "día", "días")} el motor cerró alguna puerta; la ` +
+        `que más, la de ${masCerrada[0]}, ${cuenta(masCerrada[1], "vez", "veces")}.`
+      : `El motor no cerró ninguna puerta en esta ventana.`,
+    listaPuertas,
   ));
 
-  partes.push(seccionLista(
+  registro.push(seccionLista(
     "Progresión de cada ficha", d.progresion,
     (p) => (
       `<h3>${escapar(p.ejercicio)} <span class="sub">${escapar(p.rutina)}</span></h3>` +
@@ -1305,6 +1960,8 @@ async function pintarAuditoria(dias) {
     ),
     d.lecturas.progresion,
   ));
+
+  partes.push(plegable("El registro entero, tal cual", registro.join("")));
 
   $("vista").innerHTML = partes.join("");
 }
@@ -1354,80 +2011,25 @@ async function pintarPercepcion(dias) {
     `</section>`,
   );
 
+  partes.push(bloqueComoSalieron(d));
+
+  // EL MENSAJE DE TELEGRAM, PLEGADO. No es una decisión de espacio: es que ese
+  // texto se escribió para leerse en el móvil una mañana concreta y va entero,
+  // con sus dos percentiles dentro. Traerlo tal cual a la vista principal es
+  // meter cuatro líneas de prosa entre el quesito y la última sesión, que es la
+  // regla 4 al revés. Va literal y sin tocar -es un registro de lo que se
+  // mandó, no un resumen- pero detrás del triángulo.
   if (d.mensaje) {
-    partes.push(`<article class="tarjeta mensaje"><h2>Lo último que se te mandó</h2>` +
-      `<pre>${escapar(d.mensaje)}</pre></article>`);
+    partes.push(plegable(
+      "Lo último que se te mandó", `<pre>${escapar(d.mensaje)}</pre>`,
+    ));
   }
 
   if (d.ultima) partes.push(tarjetaSesion(d.ultima, "La última sesión juzgada"));
 
   partes.push(pintarCobertura(null, d.ventana));
 
-  const c = d.contador;
-  partes.push(
-    `<article class="tarjeta">` +
-    `<h2>En esta ventana</h2>` +
-    (c.de
-      ? `<p class="cifra"><b>${entero(c.veces)}</b> de ${entero(c.de)} sesiones ` +
-        `juzgadas${c.pct !== null && c.pct !== undefined ? ` · ${pct(c.pct)}` : ""}</p>`
-      : bloqueNa(c.na)) +
-    `<p class="ficha">${entero(c.total_sesiones)} sesiones registradas · ` +
-    `${entero(c.sin_juicio)} sin poder juzgar · ${entero(d.alineadas)} alineadas</p>` +
-    `<p class="ficha">${escapar(c.nota)}</p>` +
-    (Object.keys(c.motivos || {}).length
-      ? plegable("Por qué no se pudieron juzgar", `<ul class="motivos">` +
-        Object.entries(c.motivos).map(([m, n]) => (
-          `<li><b>${entero(n)}</b> — ${escapar(m)}</li>`
-        )).join("") + `</ul>`)
-      : "") +
-    `</article>`,
-  );
-
-  // La dirección contraria, contada y SIN destacar. Va en su sitio, con su
-  // número, porque un marcador que solo apunta los aciertos es un cartel.
-  const k = d.contraria;
-  partes.push(
-    `<article class="tarjeta fina">` +
-    `<h3>La otra dirección</h3>` +
-    (k.de
-      ? `<p class="cifra">${entero(k.veces)} de ${entero(k.de)}` +
-        `${k.pct !== null && k.pct !== undefined ? ` · ${pct(k.pct)}` : ""}</p>`
-      : bloqueNa(k.na)) +
-    `<p class="ficha">${escapar(k.que_es)}</p>` +
-    `</article>`,
-  );
-
-  partes.push(
-    `<article class="tarjeta fina"><h3>Por tipo de sesión</h3>` +
-    `<table class="tabla"><thead><tr><th></th><th>Sesiones</th><th>Juzgadas</th>` +
-    `<th>Veces</th></tr></thead><tbody>` +
-    Object.entries(d.por_tipo).map(([tipo, v]) => (
-      `<tr><td>${tipo === "strength" ? "Fuerza" : "Bici"}</td>` +
-      `<td>${entero(v.sesiones)}</td><td>${entero(v.juzgadas)}</td>` +
-      `<td>${entero(v.veces)}</td></tr>`
-    )).join("") +
-    `</tbody></table></article>`,
-  );
-
-  partes.push(
-    `<article class="tarjeta fina"><h3>Las piezas del índice, por separado</h3>` +
-    `<p class="explica">Un 70 de media no dice de dónde sale. Esto sí: enseña si ` +
-    `lo sostiene el cumplimiento mientras la progresión lleva meses plana.</p>` +
-    // La etiqueta la manda el servidor. Si algún día faltara se ve la clave, que
-    // es fea pero cierta; lo que no se hace es tener aquí una segunda lista de
-    // nombres que se quede vieja sin que nada lo diga.
-    Object.entries(d.componentes).map(([nombre, v]) => (
-      `<div class="componente">` +
-      `<div class="linea"><label>${escapar(v.etiqueta || nombre)}` +
-      `${v.entra_en_el_indice ? "" : ' <span class="sub">(no entra en el índice)</span>'}` +
-      `</label><output class="valor">${num(v.media, 1)}</output></div>` +
-      (v.media === null || v.media === undefined ? bloqueNa(v.na) : "") +
-      // Y aquí `n` son SESIONES. Tercer significado de la misma letra en la
-      // misma pantalla; por eso ninguna de las tres la lleva ya.
-      `<p class="ficha">media de ${cuenta(v.n, "sesión", "sesiones")}</p></div>`
-    )).join("") +
-    `</article>`,
-  );
+  partes.push(bloqueLasPiezas(d.componentes));
 
   partes.push(listaSesiones(
     "Los días en que pasó", d.disociaciones,
@@ -1448,6 +2050,154 @@ async function pintarPercepcion(dias) {
   ));
 
   $("vista").innerHTML = partes.join("");
+}
+
+/* EL REPARTO DE LA VENTANA, EN UN QUESITO. Las tres cosas que pueden pasar.
+ *
+ * Esta vista tenía el número de las disociaciones en una tarjeta, el de la
+ * dirección contraria en otra más abajo y las alineadas escondidas en una línea
+ * de ficha, de modo que para saber si «5 de 40» era mucho o poco había que
+ * juntar tres sitios con la cabeza. Son las tres ramas del MISMO reparto y la
+ * pregunta de la vista es cuál pesa más: eso es exactamente un quesito.
+ *
+ * LOS TRES TROZOS SUMAN EL TOTAL Y NO SE SUMAN AQUÍ. `contador.de` son las
+ * sesiones juzgadas y el servidor las parte en `contador.veces`, `contraria.veces`
+ * y `alineadas` (rendimiento.py: `alineadas = juzgadas - peores - mejores`). El
+ * quesito recibe los tres números y el total ya hechos; si algún día el backend
+ * cambiara el criterio, el dibujo cambiaría con él en vez de quedarse pintando
+ * una resta vieja.
+ *
+ * Y si no hay denominador NO se dibuja un quesito vacío: se enseña el motivo. Un
+ * anillo de cero grados y un anillo con todo alineado se parecerían demasiado, y
+ * son «aún no se puede contar» frente a «la mañana acierta siempre».
+ */
+function bloqueComoSalieron(d) {
+  const c = d.contador, k = d.contraria;
+
+  const detalle =
+    `<p class="ficha">${entero(c.total_sesiones)} sesiones registradas · ` +
+    `${entero(c.sin_juicio)} sin poder juzgar · ${entero(d.alineadas)} alineadas</p>` +
+    `<p class="ficha">${escapar(c.nota)}</p>` +
+    (k.de
+      ? `<p class="ficha">la otra dirección: ${entero(k.veces)} de ${entero(k.de)}` +
+        `${k.pct !== null && k.pct !== undefined ? ` · ${pct(k.pct)}` : ""} — ` +
+        `${escapar(k.que_es)}</p>`
+      : bloqueNa(k.na)) +
+    `<table class="tabla"><thead><tr><th>Tipo</th><th>Sesiones</th>` +
+    `<th>Juzgadas</th><th>Veces</th></tr></thead><tbody>` +
+    Object.entries(d.por_tipo).map(([tipo, v]) => (
+      `<tr><td>${tipo === "strength" ? "Fuerza" : "Bici"}</td>` +
+      `<td>${entero(v.sesiones)}</td><td>${entero(v.juzgadas)}</td>` +
+      `<td>${entero(v.veces)}</td></tr>`
+    )).join("") +
+    `</tbody></table>` +
+    (Object.keys(c.motivos || {}).length
+      ? `<h3>Por qué no se pudieron juzgar</h3><ul class="motivos">` +
+        Object.entries(c.motivos).map(([m, n]) => (
+          `<li><b>${entero(n)}</b> — ${escapar(m)}</li>`
+        )).join("") + `</ul>`
+      : "");
+
+  const svg = quesito({
+    trozos: [
+      {
+        etiqueta: "te veías peor", sub: "y estuviste mejor",
+        n: c.veces, color: AZUL,
+      },
+      {
+        etiqueta: "te veías mejor", sub: "y estuviste peor",
+        n: k.veces, color: NARANJA,
+      },
+      {
+        etiqueta: "coincidió", sub: "sin hueco claro",
+        n: d.alineadas, color: TENUE,
+      },
+    ],
+    total: c.de,
+    unidadTotal: plural(c.de || 0, "sesión juzgada", "sesiones juzgadas"),
+  });
+
+  if (!svg) {
+    return (
+      `<article class="tarjeta"><h2>Cómo salieron las sesiones</h2>` +
+      bloqueNa(c.na) + plegable("ver detalle", detalle) + `</article>`
+    );
+  }
+
+  return bloqueDeVistazo(
+    "Cómo salieron las sesiones",
+    svg,
+    `De ${cuenta(c.de, "sesión juzgada", "sesiones juzgadas")}, en ` +
+    `${entero(c.veces)} te veías peor de lo que luego estuviste` +
+    `${c.pct !== null && c.pct !== undefined ? ` (${pct(c.pct)})` : ""}.`,
+    detalle,
+  );
+}
+
+/* LAS PIEZAS DEL ÍNDICE, EN BARRAS. Para ver cuál lo sostiene y cuál está plana.
+ *
+ * Era una lista de seis `<label>` con su número a la derecha, que es una tabla
+ * disfrazada: para saber cuál tira del índice había que comparar seis cifras
+ * leyéndolas. Tumbadas, la más larga se ve antes de leer ninguna.
+ *
+ * Van TUMBADAS y no verticales por la regla 5: los rótulos que manda el servidor
+ * son «Corazón, frente a tus salidas de siempre», y seis de esos debajo de seis
+ * barras de cincuenta píxeles en un móvil en vertical no se leen sin girar la
+ * cabeza.
+ *
+ * Una pieza sin media deja su rótulo puesto y no dibuja barra -no dibuja un
+ * cero-, y su motivo va en el detalle. Un cero ahí diría «esa pieza salió
+ * fatal» cuando lo que pasa es que ninguna sesión de la ventana la trae.
+ */
+function bloqueLasPiezas(componentes) {
+  const entradas = Object.entries(componentes || {});
+  if (!entradas.length) return "";
+
+  const svg = barrasTumbadas({
+    valores: entradas.map(([, v]) => v.media),
+    rotulos: entradas.map(([, v]) => num(v.media, 0)),
+    // La etiqueta la manda el servidor. Si algún día faltara se ve la clave, que
+    // es fea pero cierta; lo que no se hace es tener aquí una segunda lista de
+    // nombres que se quede vieja sin que nada lo diga.
+    etiquetas: entradas.map(([nombre, v]) => (
+      (v.etiqueta || nombre) + (v.entra_en_el_indice ? "" : " (fuera del índice)")
+    )),
+    pie: "media de cada pieza en la ventana, de 0 a 100",
+  });
+
+  const detalle = entradas.map(([nombre, v]) => (
+    `<p class="ficha"><b>${escapar(v.etiqueta || nombre)}</b> — ` +
+    (v.media === null || v.media === undefined
+      ? escapar(v.na)
+      // Y aquí `n` son SESIONES. Tercer significado de la misma letra en la
+      // misma pantalla; por eso ninguna de las tres la lleva ya.
+      : `${num(v.media, 1)} de media de ${cuenta(v.n, "sesión", "sesiones")}`) +
+    `${v.entra_en_el_indice ? "" : " · no entra en el índice"}</p>`
+  )).join("");
+
+  if (!svg) {
+    return (
+      `<article class="tarjeta"><h2>Las piezas del índice</h2>` +
+      bloqueNa("ninguna pieza tiene media en esta ventana") +
+      plegable("ver detalle", detalle) + `</article>`
+    );
+  }
+
+  const conMedia = entradas.filter(
+    ([, v]) => v.media !== null && v.media !== undefined,
+  );
+  // La frase nombra la pieza MÁS ALTA, que es la que sostiene el índice. No es
+  // un cálculo: es elegir el máximo de una lista que ya viene hecha.
+  let alta = conMedia[0];
+  for (const e of conMedia) if (e[1].media > alta[1].media) alta = e;
+
+  return bloqueDeVistazo(
+    "Las piezas del índice",
+    svg,
+    `La que más sostiene el índice es «${alta[1].etiqueta || alta[0]}», ` +
+    `con ${num(alta[1].media, 0)} de media.`,
+    detalle,
+  );
 }
 
 function listaSesiones(titulo, lista, motivoVacio) {
@@ -1473,14 +2223,25 @@ function tarjetaSesion(s, titulo) {
     `${s.rutina ? ` · ${escapar(s.rutina)}` : ""}</span></h3>` +
     (titulo ? `<p class="sub">${fechaCorta(s.fecha)}</p>` : "") +
     reglaPercentiles(s.percepcion_pct, s.rendimiento_pct) +
+    // LA FRASE DE FUERA NO DICE «PERCENTIL» Y NO ES UN EUFEMISMO. Decía «hiciste
+    // 31 puntos de percentil por encima de lo que esperabas», que para saber si
+    // 31 es mucho obliga a saber qué es un percentil. Lo que la tarjeta tiene que
+    // contestar de un vistazo es en qué dirección falló la mañana, y si falló por
+    // mucho; las dos cosas vienen del servidor -el signo del `gap` y el booleano
+    // `disociacion`, que es el que lleva el umbral- y ninguna se decide aquí.
+    // Los 31 puntos siguen existiendo, en el detalle, con su percentil al lado.
     (s.gap !== null && s.gap !== undefined
-      ? `<p class="cifra">Hiciste <b>${num(s.gap, 0)}</b> puntos de percentil ` +
-        `por ${Number(s.gap) >= 0 ? "encima" : "debajo"} de lo que esperabas</p>`
+      ? `<p class="cifra">Estuviste ` +
+        `<b>${Number(s.gap) >= 0 ? "mejor" : "peor"}</b> de lo que te veías` +
+        `${s.disociacion ? ", y por mucho" : ""}</p>`
       : bloqueNa(s.na)) +
-    `<p class="ficha">esperabas ${num(s.percepcion, 1)} (percentil ` +
-    `${num(s.percepcion_pct, 0)}) · hiciste ${num(s.rendimiento, 1)} (percentil ` +
-    `${num(s.rendimiento_pct, 0)}) · ${entero(s.n_base)} sesiones detrás</p>` +
-    (piezas ? `<p class="ficha">${piezas}</p>` : "") +
+    plegable("ver detalle",
+      `<p class="ficha">${num(s.gap, 0)} puntos de percentil por ` +
+      `${Number(s.gap) >= 0 ? "encima" : "debajo"} de lo que esperabas</p>` +
+      `<p class="ficha">esperabas ${num(s.percepcion, 1)} (percentil ` +
+      `${num(s.percepcion_pct, 0)}) · hiciste ${num(s.rendimiento, 1)} (percentil ` +
+      `${num(s.rendimiento_pct, 0)}) · ${entero(s.n_base)} sesiones detrás</p>` +
+      (piezas ? `<p class="ficha">${piezas}</p>` : "")) +
     `</article>`
   );
 }
@@ -1510,103 +2271,341 @@ async function pintarUmbral(dias) {
   const partes = [
     encabezadoVista(d.encabezado),
     pintarCobertura(d.cobertura, d.ventana),
-    `<p class="ficha">${escapar(d.salidas.resumen)}</p>`,
-    seccionFrontera(d),
-    seccionTramos(d.umbral),
-    plegableCandidatos(d.umbral.frontera),
-    seccionRecuperacion(d.recuperacion, d.sin_p),
-    // El convenio es la letra pequeña de TODA la pantalla -contra qué se compara
-    // cada número- y por eso va al final y una sola vez, en vez de repetido en
-    // cada tarjeta o escondido donde no se lea.
-    `<p class="aviso tenue">${escapar(d.convenio)}</p>`,
+    bloqueCuantoBaja(d),
+    bloqueCuantoTarda(d),
+    bloqueTuHrv(d),
+    bloqueComoSonTusSalidas(d),
   ];
 
   $("vista").innerHTML = partes.join("");
 }
 
-/* La ficha de un resumen del servidor: cuántas salidas hay detrás y entre qué
- * valores está la mitad central.
+/* EL ESCALÓN. Cuatro barras y se ve solo.
  *
- * El recorrido va SIEMPRE que haya media, y no es adorno. Una media de −9 ms con
- * las salidas repartidas entre −10 y −8, y una media de −9 ms con las salidas
- * repartidas entre −40 y +20, son el mismo número contando dos cosas que no se
- * parecen en nada. Sin el recorrido, la segunda se lee como la primera.
+ * `tramos` son cuartiles por carga y cada uno trae su media y su `frase` ya
+ * escrita. La barra usa `media` para la altura y `frase` para el número que se
+ * lee: `rotuloDeFrase` saca «−7,0» de «baja 7,0 ms» en vez de volver a
+ * redondear la media, porque el servidor escribe sus frases sobre el número sin
+ * redondear -«baja 0,2 ms» sobre una media de −0,15- y cualquier redondeo hecho
+ * aquí acertaría en unos tramos y fallaría en otros. Entonces la cifra de
+ * encima de la barra y la de la tabla del detalle dirían cosas distintas del
+ * mismo dato.
+ */
+function rotuloDeFrase(frase) {
+  const partes = String(frase).trim().split(/\s+/);
+  return (partes[0] === "baja" ? "−" : "+") + partes[1];
+}
+
+/* Las etiquetas del eje de abajo, en dos renglones.
  *
- * `na` y `aviso` no salen nunca juntos porque el servidor no los manda juntos: o
- * no hay número, o lo hay y puede llevar advertencia. */
-function fichaResumen(r) {
-  if (r.media === null || r.media === undefined) return bloqueNa(r.na);
+ * «de 5 a 43 de carga» es la etiqueta del servidor y es perfecta para la tabla
+ * del detalle; debajo de una barra de 70 píxeles de ancho se sale por los dos
+ * lados o hay que encogerla hasta que no se lea. Se parte en dos líneas cortas
+ * -«5 a» / «43»- y la palabra «carga» se dice UNA vez, en el pie del gráfico.
+ */
+function etiquetaTramo(t) {
+  const a = num(t.desde_carga, 0);
+  return t.ultimo ? ["más de", a] : [`${a} a`, num(t.hasta_carga, 0)];
+}
+
+function bloqueCuantoBaja(d) {
+  const u = d.umbral;
+  const f = u.frontera;
+  if (u.na || !u.tramos || !u.tramos.length) {
+    return bloqueDeVistazo("Cuánto te baja la HRV según la salida", "",
+      "", bloqueNa(u.na));
+  }
+
+  const g = barrasDeVistazo({
+    valores: u.tramos.map((t) => t.media),
+    rotulos: u.tramos.map((t) => (t.media === null ? "" : rotuloDeFrase(t.frase))),
+    etiquetas: u.tramos.map(etiquetaTramo),
+    pie: "carga de la salida",
+    unidad: "ms",
+  });
+
+  const duro = u.tramos[u.tramos.length - 1];
+  const frase = duro.media === null
+    ? ""
+    : `Solo las salidas de más de ${num(duro.desde_carga, 0)} de carga se ` +
+      `notan: la HRV ${duro.frase} a la mañana siguiente.`;
+
+  return bloqueDeVistazo("Cuánto te baja la HRV según la salida", g, frase,
+    detalleDelEscalon(d, u, f));
+}
+
+/* TODO LO QUE ERA LA VISTA PRINCIPAL, AHORA PLEGADO.
+ *
+ * Aquí dentro está lo que antes ocupaba media pantalla: la tabla de tramos, los
+ * nueve cortes que perdieron, la p corregida, la correlación continua. No se ha
+ * borrado ni una cifra -la regla era esconderlas, no tirarlas, y el detalle es
+ * justo lo que se abre cuando la frase de arriba no basta-, pero ya no es lo
+ * primero que se ve al abrir el panel en el móvil.
+ */
+function detalleDelEscalon(d, u, f) {
+  if (f.na) return bloqueNa(f.na);
+  const c = f.corte;
   return (
-    `<p class="ficha">${cuenta(r.n, "salida", "salidas")} · la mitad central ` +
-    `entre ${num(r.p25)} y ${num(r.p75)} ms</p>` +
-    (r.aviso ? `<p class="aviso">${escapar(r.aviso)}</p>` : "")
+    `<p class="lectura">${escapar(f.lectura)}</p>` +
+    `<p class="explica">Tus salidas repartidas en cuatro grupos del mismo ` +
+    `tamaño por carga, y lo que hizo la HRV la mañana de después de cada uno. ` +
+    `Esta tabla se parte en cuatro y el corte de abajo se busca en diez: son ` +
+    `dos reglas distintas y no tienen por qué caer en el mismo sitio.</p>` +
+    `<table class="tabla"><thead><tr><th>Tramo</th><th>Salidas</th>` +
+    `<th>HRV al día siguiente</th><th>Mitad central</th></tr></thead><tbody>` +
+    u.tramos.map((t) => (
+      `<tr${t.parte_la_frontera ? ' class="parte"' : ""}>` +
+      `<td>${escapar(t.etiqueta)}${t.parte_la_frontera
+        ? ` <span class="sub">— parte a caballo del corte</span>` : ""}</td>` +
+      `<td>${entero(t.n)}</td>` +
+      (t.media === null || t.media === undefined
+        ? `<td class="motivo" colspan="2">${escapar(t.na || "")}</td>`
+        : `<td>${num(t.media)} ms${t.aviso ? " *" : ""}</td>` +
+          `<td>${num(t.p25)} a ${num(t.p75)}</td>`) +
+      `</tr>`
+    )).join("") +
+    `</tbody></table>` +
+    (u.tramos.some((t) => t.aviso)
+      ? `<p class="ficha">* muy pocas salidas en ese tramo para fiarse de la ` +
+        `media. El número está, y está marcado.</p>`
+      : "") +
+    `<h3>El corte, y los que perdieron</h3>` +
+    `<p class="ficha">El corte cae exactamente en ${num(f.carga, 1)} de carga · ` +
+    `${cuenta(c.n_debajo, "salida", "salidas")} por debajo · ` +
+    `${entero(c.n_encima)} por encima</p>` +
+    `<p class="medias">Por debajo ${escapar(c.debajo.frase || "—")}, por encima ` +
+    `${escapar(c.encima.frase || "—")}. Diferencia <b>${num(c.diferencia)}</b> ms` +
+    `${c.p_corregida !== null && c.p_corregida !== undefined
+      ? ` · p corregida ${num(c.p_corregida, 3)}` : ""}` +
+    `${c.significativa === true ? " · aguanta la corrección" : ""}` +
+    `${c.significativa === false ? " · no aguanta la corrección" : ""}` +
+    ` sobre ${entero(f.miradas)} miradas.</p>` +
+    ficha(c) +
+    detalleContinua(f) +
+    tablaCandidatos(f) +
+    `<p class="aviso tenue">${escapar(d.convenio)}</p>`
   );
 }
 
-function seccionFrontera(d) {
-  const f = d.umbral.frontera;
+/* ¿ESCALÓN O CUESTA? El control que decide si el número grande significa algo.
+ *
+ * Estaba arriba y sin plegar, y con un comentario que decía por qué: «lo que
+ * distingue un umbral de una raya arbitraria es que la relación suave no
+ * explique ya lo mismo». Sigue siendo verdad y el bloque sigue entero. Lo que
+ * cambia es dónde: una barra de −1 a 1 con un «r = −0,38» al lado es exactamente
+ * la pantalla para estudiar que se pidió quitar de delante.
+ *
+ * Lo que la vista principal dice ahora sobre esto es la frase de arriba, que la
+ * escribe el servidor en `escalon` sabiendo las dos correcciones. Aquí abajo
+ * está el número por si la frase no basta, que es para lo que existe el pliegue.
+ */
+function detalleContinua(f) {
+  const k = f.continua;
+  if (!k) return "";
+  return (
+    `<h3>¿Escalón o cuesta?</h3>` +
+    `<p class="explica">Lo mismo sin partir por ningún sitio: la carga de cada ` +
+    `salida contra la HRV del día siguiente, tal cual.</p>` +
+    barraR(k) +
+    (k.r !== null && k.r !== undefined
+      ? `<p class="cifra">r = <b>${num(k.r)}</b></p>`
+      : bloqueNa(k.na)) +
+    ficha(k) +
+    (k.p_corregida !== null && k.p_corregida !== undefined
+      ? `<p class="ficha">p corregida ${num(k.p_corregida, 3)}` +
+        `${k.significativa === true ? " · aguanta la corrección" : ""}` +
+        `${k.significativa === false ? " · no aguanta la corrección" : ""}</p>`
+      : "") +
+    (f.escalon ? `<p class="lectura">${escapar(f.escalon)}</p>` : "")
+  );
+}
+
+/* Los cortes que PERDIERON, con sus números.
+ *
+ * Enseñar solo el ganador de una búsqueda entre nueve es la forma más limpia de
+ * que un empate parezca un hallazgo: si el de 116 y el de 147 separan casi lo
+ * mismo, eso se ve aquí y en ningún otro sitio. */
+function tablaCandidatos(f) {
+  const lista = f.candidatos || [];
+  if (!lista.length) return "";
+  return (
+    `<p class="explica">Cada fila es «y si el corte estuviera aquí». El ganador ` +
+    `es el que más separa las dos mitades en valor absoluto, y la corrección se ` +
+    `ha hecho sobre todos a la vez -y sobre la relación suave- para que sepa ` +
+    `cuántas veces se ha mirado.</p>` +
+    `<table class="tabla"><thead><tr><th>Corte</th><th>Debajo</th><th>Encima</th>` +
+    `<th>Diferencia</th><th>p corregida</th></tr></thead><tbody>` +
+    lista.map((c) => (
+      `<tr${f.carga !== null && c.carga === f.carga ? ' class="parte"' : ""}>` +
+      `<td>${num(c.carga, 0)}</td>` +
+      `<td>${entero(c.n_debajo)}</td>` +
+      `<td>${entero(c.n_encima)}</td>` +
+      `<td>${num(c.diferencia)}</td>` +
+      `<td>${num(c.p_corregida, 3)}` +
+      `${c.significativa === true ? " ✓" : ""}</td>` +
+      `</tr>`
+    )).join("") +
+    `</tbody></table>`
+  );
+}
+
+/* CUÁNTO TARDA EN VOLVER. Día +1, +2, +3, +4.
+ *
+ * La primera curva es la de las salidas duras -las que pasan el corte- y es la
+ * que contesta la pregunta. La segunda, con todas, va al detalle: es la misma
+ * cuenta sin el filtro, y sirve para ver que el efecto no sale igual mirando
+ * cualquier salida.
+ */
+function bloqueCuantoTarda(d) {
+  const curvas = (d.recuperacion && d.recuperacion.curvas) || [];
+  const dura = curvas[0];
+  if (!dura || dura.na) {
+    return bloqueDeVistazo("Cuánto tarda en volver", "", "",
+      bloqueNa((dura && dura.na) || "no hay curva de recuperación"));
+  }
+  const dias = dura.por_dia || [];
+
+  const g = barrasDeVistazo({
+    valores: dias.map((p) => p.media),
+    rotulos: dias.map((p) => (p.media === null ? "" : rotuloDeFrase(p.frase))),
+    etiquetas: dias.map((p) => [`+${entero(p.dia)}`]),
+    pie: "días después de la salida",
+    unidad: "ms",
+  });
+
+  const primero = dias[0];
+  const frase =
+    primero && primero.media !== null && dura.vuelve_el_dia !== null &&
+    dura.vuelve_el_dia !== undefined
+      ? `Una noche: al día siguiente la HRV ${primero.frase} y el día ` +
+        `+${entero(dura.vuelve_el_dia)} ya ha vuelto.`
+      : (dura.lectura || "");
+
+  const detalle =
+    `<p class="lectura">${escapar(dura.lectura || "")}</p>` +
+    (dura.aviso ? `<p class="aviso">${escapar(dura.aviso)}</p>` : "") +
+    `<p class="ficha">${cuenta(dura.n_salidas, "salida aislada", "salidas aisladas")}` +
+    `${dura.desde_carga !== null && dura.desde_carga !== undefined
+      ? ` de ${num(dura.desde_carga, 0)} de carga para arriba` : ""}</p>` +
+    curvas.map((c) => (
+      `<h3>${escapar(c.titulo)}</h3>` +
+      (c.na ? bloqueNa(c.na) : tablaPorDia(c.por_dia || []))
+    )).join("") +
+    `<p class="explica">${escapar(d.recuperacion.nota)}</p>` +
+    `<p class="aviso tenue">${escapar(d.sin_p)}</p>`;
+
+  return bloqueDeVistazo("Cuánto tarda en volver", g, frase, detalle);
+}
+
+function tablaPorDia(dias) {
+  return (
+    `<table class="tabla"><thead><tr><th>Día</th><th>HRV</th>` +
+    `<th>Salidas</th><th>Mitad central</th></tr></thead><tbody>` +
+    dias.map((p) => (
+      `<tr><td>+${entero(p.dia)}</td>` +
+      (p.media === null || p.media === undefined
+        ? `<td class="motivo" colspan="3">${escapar(p.na || "")}</td>`
+        : `<td>${num(p.media)} ms</td><td>${entero(p.n)}</td>` +
+          `<td>${num(p.p25)} a ${num(p.p75)}</td>`) +
+      `</tr>`
+    )).join("") +
+    `</tbody></table>`
+  );
+}
+
+/* TU HRV, LA LÍNEA Y TU MEDIA. Y nada más encima.
+ *
+ * Lo que se quita respecto de `hrvConSalidas`, que sigue existiendo y sigue
+ * siendo correcto: la banda de la mitad central, los palos de las salidas y la
+ * raya del corte. Los tres estaban bien calculados y los tres obligaban a un
+ * pie de foto de cuatro renglones explicando qué es cada trazo. Ese pie es el
+ * párrafo de la regla 4 escrito en letra pequeña.
+ *
+ * La banda no se pierde: está en el detalle, en palabras, que es donde se puede
+ * decir «la mitad de tus noches caen entre 43 y 54» en vez de dibujar una
+ * franja gris que hay que descifrar.
+ */
+function bloqueTuHrv(d) {
   const g = d.grafica;
-
-  // El dibujo se pinta HAYA O NO HAYA corte. Sin corte no lleva la raya naranja
-  // ni los palos de dos colores, y sigue contando lo mismo que contaría un
-  // cuaderno: cuándo saliste y qué hizo la HRV. Esconderlo porque el análisis no
-  // ha encontrado nada dejaría la pantalla sin lo único que no depende de que el
-  // análisis encuentre algo.
-  const dibujo =
-    `<article class="tarjeta">` +
-    (g.na ? bloqueNa(g.na) : hrvConSalidas(g) + pieGrafica(g)) +
-    `</article>`;
-
-  const titulo = `<h2 class="grupo">A partir de cuánta bici se nota</h2>`;
-
-  if (f.na) {
-    return (
-      titulo +
-      `<article class="tarjeta">${bloqueNa(f.na)}</article>` +
-      dibujo +
-      bloqueContinua(f)
-    );
+  if (g.na) {
+    return bloqueDeVistazo("Tu HRV en esta ventana", "", "", bloqueNa(g.na));
   }
 
-  const c = f.corte;
-  return (
-    titulo +
-    // Grande, como el contador de percepción, porque es el número que se venía a
-    // buscar. Y redondeado a entero igual que lo redondea la frase del servidor:
-    // pintar aquí «150,8» debajo de una lectura que dice «de 151 para arriba»
-    // sería enseñar dos umbrales distintos en dos renglones seguidos. El valor
-    // sin redondear está en la ficha, que es donde se mira cuando importa.
-    `<section class="contador">` +
-    `<p class="enorme">${num(f.carga, 0)}</p>` +
-    `<p class="pie">de carga de entreno en una salida</p>` +
-    `<p class="ficha">el corte cae exactamente en ${num(f.carga, 1)} · ` +
-    `${cuenta(c.n_debajo, "salida", "salidas")} por debajo · ` +
-    `${entero(c.n_encima)} por encima</p>` +
-    `</section>` +
-    `<article class="tarjeta">` +
-    `<p class="lectura">${escapar(f.lectura)}</p>` +
-    `<div class="retardo">` +
-    `<div class="linea"><label>Por debajo de ${num(f.carga, 0)}</label>` +
-    `<output class="valor">${num(c.debajo.media)}</output></div>` +
-    fichaResumen(c.debajo) +
-    `</div>` +
-    `<div class="retardo">` +
-    `<div class="linea"><label>De ${num(f.carga, 0)} para arriba</label>` +
-    `<output class="valor">${num(c.encima.media)}</output></div>` +
-    fichaResumen(c.encima) +
-    `</div>` +
-    (c.diferencia !== null && c.diferencia !== undefined
-      ? `<p class="medias">Diferencia: <b>${num(c.diferencia)}</b> ms` +
-        `${c.p_corregida !== null && c.p_corregida !== undefined
-          ? ` · p corregida ${num(c.p_corregida, 3)}` : ""}` +
-        `${c.significativa === true ? " · aguanta la corrección" : ""}` +
-        `${c.significativa === false ? " · no aguanta la corrección" : ""}</p>`
+  const dibujo = lineaConMedia({
+    // La línea es la media móvil, no las medidas sueltas: una noche de HRV se
+    // mueve lo que le da la gana y el dibujo en crudo es una sierra donde no se
+    // ve ninguna tendencia. Las medidas sueltas siguen en `rango`, en el detalle.
+    puntos: (g.puntos || []).map((p) => ({ fecha: p.fecha, valor: p.suave })),
+    media: g.media,
+    rotuloMedia: `tu media, ${num(g.media, 0)} ms`,
+    unidad: "ms",
+  });
+
+  const frase = g.media === null || g.ahora === null || g.ahora === undefined
+    ? ""
+    : `Tu media son ${num(g.media, 0)} ms y ahora andas por ${num(g.ahora, 0)}.`;
+
+  const detalle =
+    `<p class="explica">La línea es la media de ` +
+    `${cuenta(g.suavizado, "día", "días")} sobre ` +
+    `${cuenta(g.n, "noche medida", "noches medidas")}, del ` +
+    `${fechaCorta(d.ventana.desde)} al ${fechaCorta(d.ventana.hasta)}.` +
+    `${g.rango ? ` La medida de cada noche suelta va de ${num(g.rango[0], 0)} a ` +
+      `${num(g.rango[1], 0)} ms.` : ""}</p>` +
+    (g.banda
+      ? `<p class="ficha">Tu mitad central está entre ${num(g.banda.desde, 0)} y ` +
+        `${num(g.banda.hasta, 0)} ms: la mitad de tus noches caen ahí dentro.</p>`
       : "") +
-    ficha(c) +
-    `</article>` +
-    dibujo +
-    bloqueContinua(f)
-  );
+    `<p class="aviso tenue">${escapar(d.convenio)}</p>`;
+
+  return bloqueDeVistazo("Tu HRV en esta ventana", dibujo, frase, detalle);
+}
+
+/* CÓMO SON TUS SALIDAS. El quesito, con el corte de arriba como criterio.
+ *
+ * Las dos mitades del anillo son las mismas dos mitades con las que se calculó
+ * el escalón del primer bloque, y eso importa: sin el reparto, «las de más de
+ * 176 se notan» se lee sin saber si eso son dos salidas o la mitad de ellas.
+ */
+function bloqueComoSonTusSalidas(d) {
+  const f = d.umbral.frontera;
+  if (f.na || !f.corte) {
+    return bloqueDeVistazo("Cómo son tus salidas", "", "",
+      `<p class="ficha">${escapar(d.salidas.resumen)}</p>`);
+  }
+  const c = f.corte;
+  const total = c.n_encima + c.n_debajo;
+
+  const g = quesito({
+    trozos: [
+      { etiqueta: "duras", sub: `más de ${num(f.carga, 0)} de carga`,
+        n: c.n_encima, color: NARANJA },
+      { etiqueta: "suaves", sub: `hasta ${num(f.carga, 0)}`,
+        n: c.n_debajo, color: AZUL },
+    ],
+    total,
+    unidadTotal: "salidas",
+  });
+
+  const frase = c.de_cada_diez === null || c.de_cada_diez === undefined
+    ? ""
+    : `De cada 10 salidas, ${entero(c.de_cada_diez)} son de las que te ` +
+      `cuestan una noche.`;
+
+  const detalle =
+    `<p class="ficha">${escapar(d.salidas.resumen)}</p>` +
+    `<p class="explica">De las ${entero(d.salidas.medidas)} salidas medidas, ` +
+    `${entero(d.salidas.aisladas)} están aisladas —sin otra salida en los ` +
+    `${cuenta(d.recuperacion.aislamiento, "día", "días")} de antes ni de ` +
+    `después— y son las únicas que entran en la curva de recuperación.</p>` +
+    // El dibujo antiguo, con los palos de las salidas y la raya del corte. No
+    // se tira: es lo único de esta pantalla que enseña CUÁNDO pasó cada cosa, y
+    // eso no lo cuenta ni el escalón ni el anillo. Pero necesita su leyenda de
+    // cuatro renglones para leerse, así que vive donde una leyenda no molesta.
+    hrvConSalidas(d.grafica) +
+    pieGrafica(d.grafica);
+
+  return bloqueDeVistazo("Cómo son tus salidas", g, frase, detalle);
 }
 
 /* El pie del dibujo: qué es cada cosa de las que se ven.
@@ -1635,177 +2634,6 @@ function pieGrafica(g) {
       ? `<p class="explica">La raya de puntos es el corte. Los palos que la ` +
         `pasan van en naranja; los que no, apagados.</p>`
       : "")
-  );
-}
-
-/* EL CONTROL, Y VA ARRIBA AUNQUE ESTROPEE EL HALLAZGO.
- *
- * Un corte siempre se puede encontrar: parte los días por donde sea y una de las
- * dos mitades saldrá más baja que la otra. Lo que distingue un umbral de una
- * raya arbitraria es que la relación SUAVE -cuanta más carga, peor- no explique
- * ya lo mismo. Por eso la correlación continua va aquí, con su barra, y no
- * dentro del plegable de los candidatos: es lo que dice si el número grande de
- * arriba significa algo.
- *
- * La frase la escribe el servidor en `escalon`, que es quien tiene las dos
- * correcciones de la misma tanda delante. Aquí se compararían dos booleanos y
- * saldría la misma frase hoy, y el día que cambiara la regla de corrección esta
- * pantalla seguiría diciendo lo de antes. */
-function bloqueContinua(f) {
-  const k = f.continua;
-  if (!k) return "";
-  return (
-    `<article class="tarjeta">` +
-    `<h3>¿Escalón o cuesta?</h3>` +
-    `<p class="explica">Lo mismo sin partir por ningún sitio: la carga de cada ` +
-    `salida contra la HRV del día siguiente, tal cual.</p>` +
-    barraR(k) +
-    (k.r !== null && k.r !== undefined
-      ? `<p class="cifra">r = <b>${num(k.r)}</b></p>`
-      : bloqueNa(k.na)) +
-    ficha(k) +
-    (k.p_corregida !== null && k.p_corregida !== undefined
-      ? `<p class="ficha">p corregida ${num(k.p_corregida, 3)}` +
-        `${k.significativa === true ? " · aguanta la corrección" : ""}` +
-        `${k.significativa === false ? " · no aguanta la corrección" : ""}</p>`
-      : "") +
-    (f.escalon ? `<p class="lectura">${escapar(f.escalon)}</p>` : "") +
-    `</article>`
-  );
-}
-
-/* LA TABLA DE TRAMOS SE PARTE POR CUARTILES Y EL CORTE SE BUSCA POR DECILES, y
- * eso hay que decirlo donde se ve.
- *
- * Son dos reglas distintas a propósito -lo explica la cabecera de `umbral.py`- y
- * no tienen por qué coincidir: la tabla es para ver la forma de la cosa de punta
- * a punta, y el corte es para encontrar el escalón. Pero sin avisar, la tabla
- * puede decir «de 92 a 174 la HRV sube» justo encima de una frase que dice «de
- * 151 para arriba baja 7 ms», y las dos serían verdad y parecerían reñidas.
- *
- * La marca la calcula el SERVIDOR (`parte_la_frontera`). Compararla aquí -«¿cae
- * el corte entre estos dos bordes?»- sería la misma cuenta hecha dos veces en
- * dos sitios, y el día que una de las dos cambiara de criterio sobre los bordes
- * la marca se pondría en la fila de al lado sin que nada fallara. */
-function seccionTramos(u) {
-  const titulo = `<h2 class="grupo">La forma entera, tramo a tramo</h2>`;
-  if (u.na) return titulo + bloqueNa(u.na);
-
-  const parte = u.tramos.some((t) => t.parte_la_frontera);
-
-  return (
-    titulo +
-    `<article class="tarjeta">` +
-    `<p class="explica">Tus salidas repartidas en cuatro grupos del mismo tamaño ` +
-    `por carga, y lo que hizo la HRV la mañana de después de cada uno. Esta tabla ` +
-    `se parte en cuatro y el corte de arriba se busca en diez: son dos reglas ` +
-    `distintas y no tienen por qué caer en el mismo sitio.</p>` +
-    (parte
-      ? `<p class="explica">Por eso hay una fila señalada, y por eso su media ` +
-        `puede ir en contra de lo de arriba: ese tramo tiene dentro salidas de ` +
-        `los dos lados del corte, y su media las promedia juntas. No se contradice ` +
-        `con el hallazgo, es que está contando otra cosa.</p>`
-      : "") +
-    `<table class="tabla"><thead><tr><th>Tramo</th><th>Salidas</th>` +
-    `<th>HRV al día siguiente</th><th>Mitad central</th></tr></thead><tbody>` +
-    u.tramos.map((t) => (
-      `<tr${t.parte_la_frontera ? ' class="parte"' : ""}>` +
-      `<td>${escapar(t.etiqueta)}${t.parte_la_frontera
-        ? ` <span class="sub">— parte a caballo del corte</span>` : ""}</td>` +
-      `<td>${entero(t.n)}</td>` +
-      (t.media === null || t.media === undefined
-        ? `<td class="motivo" colspan="2">${escapar(t.na || "")}</td>`
-        : `<td>${num(t.media)} ms${t.aviso ? " *" : ""}</td>` +
-          `<td>${num(t.p25)} a ${num(t.p75)}</td>`) +
-      `</tr>`
-    )).join("") +
-    `</tbody></table>` +
-    (u.tramos.some((t) => t.aviso)
-      ? `<p class="ficha">* muy pocas salidas en ese tramo para fiarse de la ` +
-        `media. El número está, y está marcado.</p>`
-      : "") +
-    (parte
-      ? ""
-      : `<p class="ficha">El corte de arriba cae justo en un borde de la tabla, ` +
-        `o fuera de ella: ningún tramo se lo lleva dentro.</p>`) +
-    `</article>`
-  );
-}
-
-/* Los cortes que PERDIERON, con sus números.
- *
- * Van plegados porque son nueve filas de estadística y no es lo que se viene a
- * mirar, pero van. Enseñar solo el ganador de una búsqueda entre nueve es la
- * forma más limpia de que un empate parezca un hallazgo: si el de 116 y el de
- * 147 separan casi lo mismo, eso se ve aquí y en ningún otro sitio. */
-function plegableCandidatos(f) {
-  const lista = f.candidatos || [];
-  if (!lista.length) return "";
-  return plegable(
-    `Los ${lista.length} cortes que se han probado`,
-    `<p class="explica">Cada fila es «y si el corte estuviera aquí». El ganador ` +
-    `es el que más separa las dos mitades en valor absoluto, y la corrección se ` +
-    `ha hecho sobre todos a la vez -y sobre la relación suave- para que sepa ` +
-    `cuántas veces se ha mirado.</p>` +
-    `<table class="tabla"><thead><tr><th>Corte</th><th>Debajo</th><th>Encima</th>` +
-    `<th>Diferencia</th><th>p corregida</th></tr></thead><tbody>` +
-    lista.map((c) => (
-      `<tr${f.carga !== null && c.carga === f.carga ? ' class="parte"' : ""}>` +
-      `<td>${num(c.carga, 0)}</td>` +
-      `<td>${entero(c.n_debajo)}</td>` +
-      `<td>${entero(c.n_encima)}</td>` +
-      `<td>${num(c.diferencia)}</td>` +
-      `<td>${num(c.p_corregida, 3)}` +
-      `${c.significativa === true ? " ✓" : ""}</td>` +
-      `</tr>`
-    )).join("") +
-    `</tbody></table>`,
-  );
-}
-
-function seccionRecuperacion(rec, sinP) {
-  const curvas = (rec && rec.curvas) || [];
-  return (
-    `<h2 class="grupo">Y cuánto dura</h2>` +
-    `<p class="explica">${escapar(rec.nota)}</p>` +
-    curvas.map(bloqueCurva).join("") +
-    `<p class="aviso tenue">${escapar(sinP)}</p>`
-  );
-}
-
-function bloqueCurva(c) {
-  const dias = c.por_dia || [];
-  return (
-    `<article class="tarjeta">` +
-    `<h3>${escapar(c.titulo)}</h3>` +
-    (c.na
-      ? bloqueNa(c.na)
-      : barrasRecuperacion(c) +
-        (c.lectura ? `<p class="lectura">${escapar(c.lectura)}</p>` : "") +
-        // El día en que vuelve va aparte de la lectura aunque la lectura ya lo
-        // diga: es el número que se busca, y en la frase está en medio.
-        (c.vuelve_el_dia !== null && c.vuelve_el_dia !== undefined
-          ? `<p class="cifra">De vuelta el día <b>+${entero(c.vuelve_el_dia)}</b></p>`
-          : "") +
-        `<table class="tabla"><thead><tr><th>Día</th><th>HRV</th>` +
-        `<th>Salidas</th><th>Mitad central</th></tr></thead><tbody>` +
-        dias.map((d) => (
-          `<tr><td>+${entero(d.dia)}</td>` +
-          (d.media === null || d.media === undefined
-            ? `<td class="motivo" colspan="3">${escapar(d.na || "")}</td>`
-            : `<td>${num(d.media)} ms</td><td>${entero(d.n)}</td>` +
-              `<td>${num(d.p25)} a ${num(d.p75)}</td>`) +
-          `</tr>`
-        )).join("") +
-        `</tbody></table>`) +
-    `<p class="ficha">${cuenta(c.n_salidas, "salida aislada", "salidas aisladas")}` +
-    `${c.desde_carga !== null && c.desde_carga !== undefined
-      ? ` de ${num(c.desde_carga, 0)} de carga para arriba` : ""}</p>` +
-    // El aviso de la curva ENTERA, no el de cada barra. Las cuatro barras salen
-    // de las mismas salidas: son una foto de cuatro salidas mirada cuatro veces,
-    // no cuatro medidas independientes.
-    (c.aviso ? `<p class="aviso">${escapar(c.aviso)}</p>` : "") +
-    `</article>`
   );
 }
 

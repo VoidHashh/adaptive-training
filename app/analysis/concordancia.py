@@ -366,6 +366,14 @@ def vista_concordancia(
                 "titulo": par.titulo,
                 "signo_esperado": par.signo_esperado,
                 "lectura": _lectura(par, res),
+                # El mismo `_al_reves` que las internas, y por el mismo motivo
+                # que allí: es la única definición de "va por donde no debería".
+                # Lo pide el gráfico de la vista, que pinta las siete barras de
+                # azul o de naranja según esto. Deducirlo en el móvil comparando
+                # el signo de `r` con `signo_esperado` daría otro criterio -sin
+                # el umbral de 0.1- y la pantalla tendría dos: una barra naranja
+                # al lado de una frase que dice que no contradice nada.
+                "al_reves": _al_reves(par, res),
                 **res.como_dict(),
             }
         )
@@ -420,9 +428,29 @@ def vista_concordancia(
         "pares": salida_pares,
         "aviso_internas": AVISO_INTERNAS,
         "internas": salida_internas,
-        # Contado aquí porque la PWA no cuenta: son sumas triviales, pero el día
-        # que una deje de serlo ya estaría escrita en JavaScript.
+        # Los dos recuentos se hacen aquí porque la PWA no cuenta: son sumas
+        # triviales, pero el día que una deje de serlo ya estaría escrita en
+        # JavaScript.
         #
+        # El de las siete declaradas es el más nuevo de los dos. No lo tenían
+        # porque la vista las pintaba una a una y el lector sumaba con la vista;
+        # ahora arriba hay un gráfico de siete barras y debajo UNA frase, y esa
+        # frase necesita los números hechos.
+        "resumen_pares": {
+            "parejas": len(salida_pares),
+            "calculadas": sum(1 for p in salida_pares if p["r"] is not None),
+            # Los tres estados de `_al_reves`, contados por separado y sin
+            # restar: `False` es "va por donde debía", `True` es "va al
+            # contrario" y `None` es "no hay número, o lo hay y es tan pequeño
+            # que su signo es una moneda al aire". Un recuento de dos casillas
+            # obligaría a meter el tercero en alguna de las otras dos, y las dos
+            # opciones mienten.
+            "como_se_esperaba": sum(1 for p in salida_pares if p["al_reves"] is False),
+            "al_reves": sum(1 for p in salida_pares if p["al_reves"] is True),
+            "sin_signo_claro": sum(
+                1 for p in salida_pares if p["al_reves"] is None and p["r"] is not None
+            ),
+        },
         # El reparto entre "comparten origen" e "independientes" es lo que
         # convierte este bloque en una lectura en vez de una tabla. Con las diez
         # juntas, "ocho de diez significativas" suena a que el reloj es
@@ -521,6 +549,26 @@ def vista_desfase(
                 }
             )
 
+    # DÓNDE PICAN LAS CINCUENTA, CONTADO AQUÍ.
+    #
+    # La vista contesta una sola pregunta -¿la percepción se adelanta al reloj o
+    # va por detrás?- y la contesta con la forma del montón: si la masa de picos
+    # cae a la derecha del cero, se adelanta. Eso es un histograma de siete
+    # barras, y para dibujarlo hace falta contar cuántas casillas pican en cada
+    # retardo.
+    #
+    # El recuento se hace aquí y no en el móvil por lo mismo que `dias_con_decision`
+    # y `resumen_pares`: la PWA no calcula ninguna cifra que luego se lea, y un
+    # `.filter().length` sobre la rejilla es una cifra que se lee. Además el
+    # criterio de "esta casilla pica en -2" tiene que ser UNO: si el móvil lo
+    # dedujera por su cuenta acabaría habiendo dos definiciones de pico, la de la
+    # barra y la de la tarjeta de debajo, y el día que no coincidan nadie lo verá.
+    #
+    # `sin_pico` no se esconde ni se suma a los ceros. Una pareja sin bastantes
+    # días no es una pareja que vaya a la vez: es una que no se ha podido mirar,
+    # y meterla en la barra del cero engordaría justo la respuesta más cómoda.
+    picos = [f["mejor_desfase"] for f in rejilla]
+    reparto = {str(d): sum(1 for p in picos if p == d) for d in rango}
     return {
         "vista": "desfase",
         "metodo": metodo,
@@ -535,5 +583,14 @@ def vista_desfase(
             "desfase positivo = la percepción se adelanta al reloj; "
             "negativo = va por detrás"
         ),
+        "reparto_desfases": {
+            "parejas": len(rejilla),
+            "con_pico": sum(1 for p in picos if p is not None),
+            "sin_pico": sum(1 for p in picos if p is None),
+            "por_desfase": reparto,
+            "se_adelanta": sum(1 for p in picos if p is not None and p > 0),
+            "a_la_vez": sum(1 for p in picos if p == 0),
+            "va_detras": sum(1 for p in picos if p is not None and p < 0),
+        },
         "rejilla": rejilla,
     }

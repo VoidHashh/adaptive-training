@@ -412,18 +412,36 @@ def test_la_factura_de_una_salida_dura_dura_un_dia(db):
     assert "no más" in c["lectura"]
 
 
-def test_la_escala_del_dibujo_la_decide_el_servidor(db):
-    """Elegir el denominador de un dibujo es decidir cuánto parece que se mueve.
+def test_la_curva_manda_estas_claves_y_ni_una_mas(db):
+    """La lista se escribe entera a propósito, y las dos direcciones importan.
 
-    Si el navegador buscara el máximo de lo que le llega, dos curvas de la misma
-    pantalla saldrían con ejes distintos y las barras de una parecerían el doble
-    que las de la otra sin que nada lo dijera.
+    Aquí vivía `test_la_escala_del_dibujo_la_decide_el_servidor`, que defendía
+    una clave `escala` con el argumento de que elegir el denominador de un dibujo
+    es decidir cuánto parece que se mueve. El argumento era bueno mientras la
+    pantalla pintaba las dos curvas una debajo de otra; con una sola dibujada y
+    la otra convertida en tabla, ya no hay dos ejes que confundir, y la clave se
+    quedó calculándose para que nadie la leyera. Eso no lo notó ningún test: un
+    campo que sobra no rompe nada, solo miente sobre dónde se decide algo.
+
+    De ahí la forma de este test. No comprueba un valor, comprueba el CONTRATO:
+    si mañana alguien añade un campo, tiene que venir aquí a nombrarlo, y al
+    nombrarlo se le pregunta solo quién lo lee. Y si alguien quita uno que la PWA
+    sí pinta, salta aquí antes de que la pantalla se quede con un hueco mudo.
     """
     sembrar(db)
     salidas, _, _ = salidas_de(db)
     c = curva(salidas, titulo="duras", desde_carga=CORTE)
 
-    assert c["escala"] == abs(FACTURA)
+    assert set(c) == {
+        "titulo",
+        "desde_carga",
+        "n_salidas",
+        "por_dia",
+        "vuelve_el_dia",
+        "aviso",
+        "lectura",
+        "na",
+    }
 
 
 def test_la_curva_avisa_de_que_son_ocho_salidas_en_vez_de_esconderlas(db):

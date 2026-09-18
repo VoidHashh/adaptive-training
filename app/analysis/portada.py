@@ -55,7 +55,7 @@ from app.analysis import series as S
 from app.analysis.impacto import vista_impacto
 from app.analysis.preguntas import tabla_discordancia
 from app.analysis.stats import percentil_de
-from app.analysis.texto import cuantos
+from app.analysis.texto import cuantos, plural
 from app.engine.luces import LUCES as _LUCES
 from app.models import Activity, Checkin, Decision, WorkoutLog
 
@@ -671,8 +671,29 @@ def como_voy(
     lineas.append(_linea_fuerza(session, hoy=hoy))
 
     con_algo = [ln for ln in lineas if ln.get("lectura")]
+    # CUÁNTAS SEÑALES VAN MEJOR Y CUÁNTAS PEOR, contado aquí.
+    #
+    # Ocho líneas que dicen "por debajo de lo tuyo" una detrás de otra son ocho
+    # lecturas que hay que sumar con la cabeza para saber si la semana va bien o
+    # mal. Esa suma es un quesito de tres trozos, y los tres números salen de
+    # aquí porque en la PWA no se cuenta nada que luego se lea.
+    #
+    # Solo entran las líneas que COMPARAN con el histórico, que son las que
+    # tienen `nivel`. Bici y fuerza traen `valencia` "neutro" y no comparan nada
+    # -son recuentos de la semana-, así que meterlas engordaría el trozo de "como
+    # siempre" con dos señales que nunca van a decir otra cosa.
+    comparadas = [ln for ln in lineas if ln.get("nivel")]
+    resumen = {
+        "senales": len(comparadas),
+        "mejor": sum(1 for ln in comparadas if ln["valencia"] == "mejor"),
+        "peor": sum(1 for ln in comparadas if ln["valencia"] == "peor"),
+        "normal": sum(
+            1 for ln in comparadas if ln["valencia"] in ("normal", "neutro")
+        ),
+    }
     return {
         "titulo": "Cómo voy",
+        "resumen": resumen,
         "subtitulo": (
             f"Los últimos {DIAS_RECIENTES} días frente a tus últimos {dias}."
         ),
@@ -802,6 +823,17 @@ def que_ha_cambiado(session: Session, *, hoy: date) -> dict[str, Any]:
                 "lectura": _lectura_semaforo(colores_esta, colores_previa),
                 "esta_semana": colores_esta,
                 "semana_anterior": colores_previa,
+                # El total de días con decisión, sumado AQUÍ y no en el móvil.
+                #
+                # Es el número que va en el agujero del quesito de la portada, y
+                # el que marca el tamaño de cada trozo. Sumar tres enteros en el
+                # navegador no tiene ningún misterio, y ése es justamente el
+                # problema: cada vez que un número que se lee sale de una cuenta
+                # hecha en la PWA, deja de haber un test que lo respalde. La
+                # frontera está escrita en la cabecera de `static/graficos.js` y
+                # la vigila `test_la_pwa_no_calcula_estadistica`; esto es lo que
+                # cuesta respetarla, y cuesta una línea.
+                "dias_con_decision": sum(colores_esta.values()),
             }
         )
 
@@ -874,15 +906,25 @@ def _cuenta_dias(
     )
 
 
-# El PLURAL de cada color, y por eso esta tabla sigue existiendo aparte de la de
-# `app/engine/luces.py` en vez de derivarse de ella: «verde» → «verdes» pero
-# «ámbar» → «ámbares», y pegar sufijos en castellano es justo el fallo que
-# `app/analysis/texto.py` documenta entero. Las dos formas enteras, como allí.
+# El nombre de cada color EN SUS DOS FORMAS, y por eso esta tabla sigue
+# existiendo aparte de la de `app/engine/luces.py` en vez de derivarse de ella:
+# «verde» → «verdes» pero «ámbar» → «ámbares», y pegar sufijos en castellano es
+# justo el fallo que `app/analysis/texto.py` documenta entero.
+#
+# El singular hacía falta y no estaba. Con solo el plural, la primera línea de
+# la primera pantalla del panel decía «3 verdes, 1 ámbares esta semana»: la
+# frase que se lee a las siete de la mañana, mal escrita, en la puerta. Pasó
+# desapercibida porque el comentario de aquí arriba ya hablaba de plurales y
+# parecía que el problema estaba resuelto -tenía la tabla, le faltaba la mitad-.
 #
 # Lo que sí se comprueba es que hable de los mismos tres colores que el motor:
 # si mañana aparece un cuarto, esto revienta al importar y no cuatro semanas
 # después con un `KeyError` en la portada de un martes por la mañana.
-NOMBRE_LUZ = {"green": "verdes", "amber": "ámbares", "red": "rojos"}
+NOMBRE_LUZ = {
+    "green": ("verde", "verdes"),
+    "amber": ("ámbar", "ámbares"),
+    "red": ("rojo", "rojos"),
+}
 assert set(NOMBRE_LUZ) == set(_LUCES), (
     "los plurales de la portada y los colores del motor no hablan de lo mismo: "
     f"portada {sorted(NOMBRE_LUZ)}, motor {sorted(_LUCES)}"
@@ -890,7 +932,7 @@ assert set(NOMBRE_LUZ) == set(_LUCES), (
 
 
 def _lectura_semaforo(esta: dict[str, int], previa: dict[str, int]) -> str:
-    partes = [f"{n} {NOMBRE_LUZ[c]}" for c, n in esta.items() if n]
+    partes = [f"{n} {plural(n, *NOMBRE_LUZ[c])}" for c, n in esta.items() if n]
     ahora = ", ".join(partes) if partes else "ningún día con decisión"
     antes = sum(previa.values())
     if not antes:

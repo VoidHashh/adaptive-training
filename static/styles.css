@@ -829,16 +829,46 @@ svg.g-barra, svg.g-curva, svg.g-regla, svg.g-serie {
   max-width: 100%;
 }
 
-/* La barra de percentil de la portada va MÁS ESTRECHA que el resto y con menos
- * aire alrededor, y no es por ahorrar píxeles: en esa pantalla hay diez seguidas
- * y el valor está en verlas apiladas de una vez. Con el margen de los otros
- * gráficos, las cinco que tienen percentil no caben juntas en la pantalla de un
- * móvil, y lo que se pretendía comparar hay que compararlo haciendo scroll, que
- * es volver a recordar números de memoria. */
-svg.g-percentil {
+/* --- el bloque de un vistazo: gráfico grande, una frase, y el detalle ----- */
+
+/* La regla 1 -«el gráfico primero y grande»- necesita CSS o no se cumple.
+ *
+ * `barrasDeVistazo` declara un viewBox de 340 y, sin nada que lo estire, el
+ * navegador lo pinta a 340 píxeles reales: en un móvil de 390 de ancho eso deja
+ * el dibujo pequeño y centrado entre dos franjas vacías, que es exactamente lo
+ * contrario de lo que se pidió. `width: 100%` sobre el SVG es lo que convierte
+ * «cabe en el móvil» en «se ve desde el otro lado de la habitación». */
+.bloque-vistazo {
+  margin: 0 0 1.6rem;
+}
+
+.bloque-vistazo > h2 {
+  margin: 0 0 0.2rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--texto);
+}
+
+.bloque-vistazo .lienzo {
+  max-width: 30rem;
+}
+
+svg.g-vistazo {
   display: block;
-  margin: 0.3rem 0 0.1rem;
-  max-width: 22rem;
+  width: 100%;
+  height: auto;
+}
+
+/* LA FRASE. Una, debajo del gráfico, con tamaño de prosa y no de pie de foto.
+ *
+ * Del mismo color que el cuerpo a propósito: en gris y en pequeño se lee como
+ * un comentario opcional, y no lo es. Es lo único que la pantalla afirma. */
+.bloque-vistazo .frase-vistazo {
+  margin: 0.15rem 0 0.4rem;
+  font-size: 1rem;
+  line-height: 1.45;
+  color: var(--texto);
+  max-width: 34rem;
 }
 
 /* El calendario de ciento ochenta días y las veintiséis semanas no caben en el

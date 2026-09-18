@@ -794,6 +794,25 @@ def vista_auditoria(
         "reglas_especiales": reglas_especiales(session, cfg, desde, hasta),
         "recalibraciones": recalib,
         "puertas_cerradas": puertas,
+        # CUÁL DE LAS TRES PUERTAS SE CIERRA, CONTADO AQUÍ.
+        #
+        # La lista de arriba son decenas de días, uno debajo de otro, y leída
+        # entera no contesta lo único que se le pregunta: cuando el motor frena,
+        # ¿qué frena? Son tres puertas distintas -subir carga, añadir serie,
+        # sumar repeticiones- y la respuesta son tres números, que es un gráfico
+        # de tres barras.
+        #
+        # Se cuentan aquí y no en la PWA por la regla de siempre: ninguna cifra
+        # que se lea en la pantalla sale de una cuenta hecha en el móvil. Y un
+        # día puede tener DOS puertas cerradas, así que los tres números no
+        # suman los días de la lista: por eso viaja también `dias`, para que la
+        # frase de debajo del gráfico pueda decir sobre cuántos días van.
+        "resumen_puertas": {
+            "dias": len(puertas),
+            "carga": sum(1 for p in puertas if not p["puerta_abierta"]),
+            "series": sum(1 for p in puertas if not p["series_permitidas"]),
+            "reps": sum(1 for p in puertas if not p["reps_permitidas"]),
+        },
         "progresion": progresion,
         # Lo que hay que pintar DEBAJO de cada sección que salga vacía, para que
         # un cero no se lea como la respuesta cuando es la ausencia de respuesta.

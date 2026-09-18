@@ -291,6 +291,32 @@ HUELLAS_DEL_ARMAZON = {
     # solo tiene que ir recordando cinco números de memoria en vez de verlos
     # alineados. Se pierde la comparación de un vistazo, no la verdad.
     "v14": "0fa9d3dfeb8912aa9b0566a989dc142689251cf893404db8185269349a601fa5",
+    # v15: las siete vistas pasan a gráfico primero, una frase debajo y todo lo
+    # demás plegado. Es el cambio más grande que ha tenido el armazón: toca los
+    # cuatro archivos -`comun.js`, `graficos.js`, `metricas.js` y `styles.css`-
+    # y no reordena la pantalla, la sustituye. Desfase pasa de mil seiscientas
+    # setenta y siete palabras a ciento trece, auditoría de mil trescientas
+    # noventa y seis a ciento sesenta, y la portada de setecientas setenta y
+    # cinco a trescientas noventa, todo medido el 2026-09-17 sobre los datos de
+    # verdad.
+    #
+    # El móvil viejo falla de la forma GRAVE, y esta vez no por lo que le falta
+    # sino por lo que le sobra. Tres de las cinco reglas que se pidieron son
+    # sobre lo que NO puede estar en la vista principal -ni p corregida, ni
+    # correlación de rangos, ni percentiles, ni mitad central-, y un teléfono
+    # que se quede con el JavaScript de antes sigue sirviendo exactamente eso:
+    # la pantalla entera de estudiar, con sus párrafos y sus tablas de
+    # correlaciones, sin un solo error en la consola y sin nada que lo delate.
+    # Se ve perfecta y es justo la que se ha pedido retirar, o sea que el único
+    # síntoma sería que el trabajo pareciera no estar hecho.
+    #
+    # Y hay un segundo motivo para que este número tenga que moverse sí o sí:
+    # esta tanda añade claves nuevas al payload -`reparto_desfases`,
+    # `resumen_puertas`, `como_voy.resumen`, `al_reves` y `resumen_pares`-
+    # porque la PWA no cuenta ninguna cifra que luego se lea. El JavaScript de
+    # antes no conoce ninguna de las cinco y las tira a la basura en silencio,
+    # que es el fallo callado de la v8 repetido cinco veces.
+    "v15": "f04eec657e86de02f1a8070107e1a136a222417c3e2ad52c0feb9d8ce96d827f",
 }
 
 
@@ -1021,28 +1047,6 @@ def _payloads(cliente) -> dict[str, object]:
         "escriba la corrección y aprueba una pantalla que la tire a la basura."
     )
 
-    # LA PORTADA, CON ALGUNA SEÑAL QUE TRAIGA PERCENTIL.
-    #
-    # Lo mismo que arriba y por lo mismo. `percentilSinDibujar` recorre las
-    # líneas de `como_voy` y solo mira las que traen `percentil`; si el sembrado
-    # no llega a la n de referencia en ninguna, el bucle no da una vuelta, sale
-    # verde y la portada podría volver a quedarse sin un solo dibujo sin que
-    # nadie se entere -que es exactamente el estado del que viene-.
-    #
-    # No vale con pedir "alguna línea": las que llevan `na` se saltan a
-    # propósito, así que se exige una que además tenga percentil.
-    con_percentil = [
-        li
-        for li in salida["portada"]["como_voy"]["lineas"]
-        if not li["na"] and li["percentil"] is not None
-    ]
-    assert con_percentil, (
-        "la portada sembrada no trae ni una señal con percentil: o el sembrado "
-        "no llega a la n de referencia, o `_linea_de_serie` ha dejado de "
-        "calcularlo. Sin ninguna, el arnés no comprueba que la portada dibuje "
-        "nada y volvería a aprobar la pantalla de mil palabras y cero gráficos."
-    )
-
     # LA LÍNEA DE LA DISCORDANCIA, POR LA RAMA BUENA.
     #
     # La línea puede traer su tabla y salir igualmente con `na` -"solo 3 de los
@@ -1113,7 +1117,7 @@ def _payloads(cliente) -> dict[str, object]:
     assert llenas, (
         "las dos curvas de recuperación vienen con el motivo escrito: el "
         "sembrado no deja ni una salida aislada. Así no se pinta una sola barra "
-        "y no se leen ni `por_dia`, ni `escala`, ni `vuelve_el_dia`."
+        "y no se leen ni `por_dia`, ni `vuelve_el_dia`, ni la frase de cada día."
     )
     assert not u["grafica"]["na"], (
         f"la gráfica del umbral no se dibuja ({u['grafica']['na']!r}), así que "

@@ -517,6 +517,20 @@ def _corte(
     fila["diferencia"] = (
         None if arriba is None or abajo is None else round(arriba - abajo, 2)
     )
+    # «De cada 10 salidas, 3 son de las que te cuestan una noche».
+    #
+    # Es una proporción, y una proporción es un número que se lee: por eso se
+    # calcula aquí y no en el navegador. La maqueta aprobada lo hacía en el
+    # cliente con una nota al margen que decía «al backend si esto se aprueba»,
+    # y se aprobó.
+    #
+    # Va sobre diez y no en porcentaje a propósito. «El 30 % de tus salidas» es
+    # la misma cuenta dicha en el idioma que el encargo pedía quitar de la vista
+    # principal; «3 de cada 10» se entiende sin traducir nada, que era el punto.
+    total = fila["n_encima"] + fila["n_debajo"]
+    fila["de_cada_diez"] = (
+        None if not total else round(fila["n_encima"] / total * 10)
+    )
     return fila
 
 
@@ -744,19 +758,27 @@ def curva(
     vuelve, na_vuelve = _cuando_vuelve(por_dia)
     cuales = "" if desde_carga is None else f" de {desde_carga:.0f} de carga para arriba"
 
-    # La escala del dibujo se decide AQUÍ, y no en el navegador buscando el
-    # máximo de lo que le llega. Es la misma razón por la que `grafica` manda la
-    # altura de cada palo ya hecha: elegir el denominador de un dibujo es
-    # decidir cuánto parece que se mueve, y eso no es un píxel, es una lectura.
-    # Se toma el borde del recorrido y no la media porque las barras llevan
-    # bigotes: escalando con las medias, los bigotes se saldrían de la caja.
-    extremos = [
-        abs(v)
-        for d in por_dia
-        for v in (d["media"], d["p25"], d["p75"])
-        if v is not None
-    ]
-    escala = round(max(extremos), 2) if extremos else None
+    # AQUÍ SE MANDABA `escala`, el denominador del dibujo, y ya no.
+    #
+    # El argumento para calcularlo en el servidor era bueno y ha dejado de
+    # aplicar por una razón concreta: valía cuando la pantalla pintaba LAS DOS
+    # curvas -la de las salidas duras y la de todas- una debajo de otra, y dos
+    # ejes distintos hacían que las barras de una parecieran el doble que las de
+    # la otra sin que nada lo dijera. Ahora se dibuja una sola; la segunda vive
+    # en «ver detalle» y es una tabla, que no tiene eje que confundir.
+    #
+    # Y había un segundo motivo para el cálculo de aquí: se tomaba el borde del
+    # recorrido y no la media, porque las barras llevaban bigotes entre
+    # cuartiles y escalando con las medias los bigotes se salían de la caja. Los
+    # bigotes se han ido con la regla 2 -la mitad central no sale en la vista
+    # principal-, así que ya no hay nada que meter en la caja aparte de las
+    # cuatro medias, y de eso se encarga `escalaY` en el navegador igual que en
+    # los otros seis gráficos del panel.
+    #
+    # Se borra en vez de dejarlo puesto porque una clave que el servidor calcula
+    # y nadie lee es una promesa de que algo se decide aquí cuando se decide
+    # allí, y ese es exactamente el patrón decorativo que hay que cazar.
+    #
     # El aviso de la curva ENTERA va aparte del de cada barra, y no sobra. Las
     # cuatro barras salen de las MISMAS salidas, así que no son cuatro medidas
     # de cuatro salidas: son una foto de cuatro salidas mirada cuatro veces. Un
@@ -791,7 +813,6 @@ def curva(
         "desde_carga": None if desde_carga is None else round(desde_carga, 1),
         "n_salidas": len(dentro),
         "por_dia": por_dia,
-        "escala": escala,
         "vuelve_el_dia": vuelve,
         "aviso": aviso,
         "lectura": _lectura_curva(por_dia, vuelve, na_vuelve),
@@ -949,6 +970,23 @@ def grafica(
         # dejaría toda la variación aplastada en una franja de dos píxeles.
         "rango": (
             [round(min(medidos), 1), round(max(medidos), 1)] if medidos else None
+        ),
+        # TU MEDIA Y DÓNDE ANDAS AHORA. Los dos números de la frase de la línea.
+        #
+        # «Sin banda de percentiles ni mitad central, solo la línea y mi media»:
+        # la media pasa de ser un adorno del dibujo a ser la única referencia
+        # que queda, así que se calcula donde hay tests con resultado conocido.
+        # La maqueta la promediaba en el navegador con una nota que decía «al
+        # backend si esto se aprueba», y se aprobó.
+        #
+        # `media` sale de lo MEDIDO en crudo y `ahora` del último punto SUAVE, y
+        # la diferencia importa: la media de la ventana entera contra una sola
+        # noche suelta compara un mes con un día, y un día de HRV se mueve lo
+        # que le da la gana. El último suavizado es la última semana, que es lo
+        # que la frase quiere decir con «ahora andas por».
+        "media": round(fmean(medidos), 1) if medidos else None,
+        "ahora": next(
+            (suave[f] for f in reversed(dias) if suave.get(f) is not None), None
         ),
         "n": len(medidos),
         # Los DOS motivos por los que no hay línea, y el segundo no es teórico:
