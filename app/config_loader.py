@@ -2549,6 +2549,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
             "fallback_decision_time",
             "evening_summary_time",
             "perception_notice_time",
+            "recompute_time",
             "watchdog_time",
             "garmin_retry",
         },
@@ -2559,6 +2560,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "fallback_decision_time",
         "evening_summary_time",
         "perception_notice_time",
+        "recompute_time",
         "watchdog_time",
     )
     for clave in HORAS:
@@ -2613,6 +2615,21 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # 06:30 con check-in y la de respaldo de las 09:00. Puesta antes, miraría
     # lo de ayer y diría que todo está bien el día que se rompa; el aviso
     # llegaría veinticuatro horas tarde y nadie ataría una cosa con la otra.
+    # El recálculo temprano va ANTES que el fallback, y esa es su razón de ser.
+    # Puesto igual o después, no arregla nada que el fallback no arreglara ya, y
+    # el problema que existe es justo el contrario: el fallback llega cuando el
+    # entreno ya se ha hecho con la rutina que la decisión ciega escribió.
+    temprano = _min("recompute_time", "07:30")
+    if temprano is not None and decision is not None:
+        require(
+            temprano < decision,
+            f"schedule.recompute_time ({sched.get('recompute_time')}) tiene que "
+            f"ser ANTERIOR a schedule.fallback_decision_time "
+            f"({sched.get('fallback_decision_time')}): existe para rehacer la "
+            f"decisión ciega a tiempo de que sirva, y a la hora del fallback o "
+            f"después no aporta nada que el fallback no haga ya",
+        )
+
     vigilancia = _min("watchdog_time", "09:45")
     if vigilancia is not None and decision is not None:
         require(

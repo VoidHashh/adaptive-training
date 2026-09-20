@@ -67,6 +67,20 @@ class HevyCualquiera:
     pass
 
 
+@no_es_doble(
+    "no es doble de la fila `Decision` de `app/models.py`: son los cuatro "
+    "campos que `job_decision` le lee para construir el `DecisionAnulada`. "
+    "Nació de un fallo del arnés: con un `object()` pelado el trabajo "
+    "reventaba con un AttributeError, y el `except Exception` de `_job` se lo "
+    "tragaba, así que el test decía «no ha decidido» cuando lo que pasaba era "
+    "que se había roto"
+)
+class DecisionPrevia:
+    light = "amber"
+    computed_at = "2026-09-20T06:25:00"
+    source = "checkin"
+
+
 # ---------------------------------------------------------------------------
 # El ayudante, por su cuenta
 # ---------------------------------------------------------------------------
@@ -213,4 +227,133 @@ def test_el_checkin_del_movil_relee_antes_de_decidir(cfg, monkeypatch):
     )
     assert llamadas.index("entrenado") < llamadas.index("garmin"), (
         f"lo entrenado tiene que releerse antes que Garmin: {llamadas}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# El recálculo temprano
+# ---------------------------------------------------------------------------
+#
+# LA MEDIDA QUE LO JUSTIFICA, de los cinco primeros check-ins reales y con las
+# horas ya pasadas a hora local (la base sella en UTC y España va +2; leerlas
+# sin convertir hace pensar que el formulario se rellena a las 04:23):
+#
+#   15-09  06:23  faltaron hrv, hrv_ratio, rhr, rhr_delta, sleep_min
+#   16-09  07:04  faltaron hrv, hrv_ratio, rhr, rhr_delta, sleep_min
+#   18-09  06:25  faltaron hrv, hrv_ratio, sleep_min
+#   19-09  07:13  nada
+#   20-09  08:44  nada
+#
+# El reloj sube la noche entre las 07:04 y las 07:13. El formulario se rellena
+# hacia las 07:00, o sea justo antes. Tres de cinco decisiones se tomaron
+# ciegas, el mensaje lo dijo -«a esta hora el reloj todavía no había subido la
+# noche... si el dato llega luego, el día se recalcula y te aviso»- y quien
+# cumplía esa promesa era el fallback de las 09:00. Tarde: el entreno empieza
+# sobre las 08:00, así que a las nueve la sesión ya está hecha con la rutina
+# que escribió la decisión ciega.
+
+
+def _job(cfg, monkeypatch, *, checkin, faltaron, llego=None, **kw):
+    """Corre `job_decision` con el día ya sembrado y apunta si decidió.
+
+    `llego` es lo que el reloj ha subido YA, y por defecto es todo lo que
+    faltaba. No es un detalle del arnés: el trabajo no rehace la decisión por
+    el hecho de que faltara algo, sino cuando ese algo ha llegado. Se descubrió
+    escribiendo estos tests con las métricas vacías -el trabajo no decidía y
+    tenía razón-.
+    """
+    import app.scheduler as mod
+
+    decidido: list[str] = []
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    with Session(engine) as s:
+        @contextmanager
+        def scope():
+            yield s
+
+        monkeypatch.setattr(mod, "session_scope", scope)
+        monkeypatch.setattr(mod.repo, "get_checkin", lambda *a, **k: object() if checkin else None)
+        monkeypatch.setattr(mod.repo, "current_decision", lambda *a, **k: DecisionPrevia())
+        monkeypatch.setattr(mod, "_medidas_que_faltaban", lambda fila: set(faltaron))
+        monkeypatch.setattr(mod, "poner_al_dia_lo_entrenado", lambda *a, **k: [])
+        monkeypatch.setattr(
+            mod, "_fetch_garmin",
+            lambda c, d: decidido.append("garmin") or ([], []),
+        )
+        monkeypatch.setattr(
+            mod, "_lo_que_llego",
+            lambda m, d, faltan: set(faltaron) if llego is None else set(llego),
+        )
+        monkeypatch.setattr(mod, "run_daily", lambda *a, **k: decidido.append("decidio"))
+        mod.job_decision(cfg, day=HOY, **kw)
+    return decidido
+
+
+def test_el_recalculo_temprano_rehace_la_decision_ciega(cfg, monkeypatch):
+    """El caso que existe: hay check-in y se decidió sin la noche."""
+    hecho = _job(cfg, monkeypatch, checkin=True, faltaron={"hrv", "sleep_min"},
+                 solo_recomputar=True)
+    assert "decidio" in hecho, (
+        "la decisión ciega no se rehace: el mensaje promete un recálculo que "
+        "entonces no llega nunca a tiempo"
+    )
+
+
+def test_el_recalculo_temprano_no_toca_un_dia_que_se_decidio_con_todo(cfg, monkeypatch):
+    """Si no faltó nada, rehacerlo escribiría en Hevy y mandaría un Telegram
+    idénticos, y el segundo mensaje del día enseña a no leer el primero."""
+    assert _job(cfg, monkeypatch, checkin=True, faltaron=set(),
+                solo_recomputar=True) == []
+
+
+def test_el_recalculo_temprano_no_hace_de_fallback(cfg, monkeypatch):
+    """LO QUE HACE QUE PUEDA IR TAN TEMPRANO.
+
+    Un día sin check-in a las 07:30 no es un día sin check-in: es un día en que
+    todavía no se ha rellenado. Decidir ahí le quita al usuario la mañana
+    entera para contestar, que es justo para lo que el fallback espera hasta
+    las nueve. Sin esta rama, poner el trabajo temprano adelantaría el fallback
+    hora y media sin que nadie lo hubiera pedido.
+    """
+    assert _job(cfg, monkeypatch, checkin=False, faltaron=set(),
+                solo_recomputar=True) == [], (
+        "sin check-in y a las 07:30 ha decidido igual: eso es adelantar el "
+        "fallback, no recalcular"
+    )
+
+
+def test_el_fallback_de_las_nueve_si_decide_sin_checkin(cfg, monkeypatch):
+    """El contrapeso. Sin esto, la rama de arriba podría estar apagando el
+    fallback entero y los tres tests anteriores seguirían en verde."""
+    assert "decidio" in _job(cfg, monkeypatch, checkin=False, faltaron=set()), (
+        "el fallback de las 09:00 ha dejado de decidir los días sin check-in"
+    )
+
+
+def test_el_recalculo_va_antes_que_el_fallback(cfg):
+    """Su razón de ser es llegar a tiempo. A la hora del fallback, o después,
+    no aporta nada que el fallback no haga ya."""
+    from app.scheduler import build_scheduler
+
+    sched = build_scheduler(cfg, start=False)
+
+    def minutos(job_id: str) -> int:
+        campos = {f.name: str(f) for f in sched.get_job(job_id).trigger.fields}
+        return int(campos["hour"]) * 60 + int(campos["minute"])
+
+    assert minutos("recompute_early") < minutos("decision_fallback")
+
+
+def test_si_el_reloj_sigue_sin_subir_la_noche_no_se_rehace_nada(cfg, monkeypatch):
+    """Rehacer sin el dato sería escribir la misma decisión ciega otra vez.
+
+    Con otra hora, otra fila en el histórico y un segundo Telegram idéntico. El
+    trabajo no mira si FALTÓ algo, mira si ese algo ya está; lo descubrí al
+    revés, escribiendo el test de arriba con las métricas vacías y viendo que
+    no decidía. Tenía razón el código.
+    """
+    assert _job(cfg, monkeypatch, checkin=True, faltaron={"hrv", "sleep_min"},
+                llego=set(), solo_recomputar=True) == ["garmin"], (
+        "ha rehecho la decisión sin que el dato que faltaba haya llegado"
     )

@@ -1870,3 +1870,32 @@ def test_la_hora_de_la_vigilancia_tiene_que_ser_una_hora(cfg_copia):
     planificador, y sería a las seis de la mañana del día del despliegue."""
     cfg_copia.raw["schedule"]["watchdog_time"] = "y cuarto"
     assert "watchdog_time" in errores(cfg_copia.raw)
+
+
+def test_el_recalculo_temprano_no_puede_ir_despues_del_fallback(cfg_copia):
+    """Su razón de ser entera es llegar a tiempo.
+
+    Existe porque el formulario se rellena hacia las 07:00 y el reloj no sube
+    la noche hasta las 07:10: la decisión sale ciega de la HRV y del sueño, el
+    mensaje lo dice y promete recalcular. Quien cumplía esa promesa era el
+    fallback de las 09:00, y llega cuando el entreno de las 08:00 ya se ha
+    hecho con la rutina que escribió la decisión ciega.
+
+    Puesto a la hora del fallback o después, este trabajo no aporta nada que
+    el fallback no haga ya, y encima parece que sí: queda en la lista de
+    trabajos, corre todos los días y no arregla el problema para el que se
+    puso. Es la tercera regla de orden de este bloque y la tercera que se
+    comprueba; las dos primeras vivieron sin test hasta que una mutación lo
+    enseñó.
+    """
+    cfg_copia.raw["schedule"]["fallback_decision_time"] = "09:00"
+    cfg_copia.raw["schedule"]["recompute_time"] = "09:30"
+    fallo = errores(cfg_copia.raw)
+    assert "recompute_time" in fallo
+    assert "09:30" in fallo
+
+
+def test_la_hora_del_recalculo_temprano_tiene_que_ser_una_hora(cfg_copia):
+    """Como las otras cinco."""
+    cfg_copia.raw["schedule"]["recompute_time"] = "a media mañana"
+    assert "recompute_time" in errores(cfg_copia.raw)

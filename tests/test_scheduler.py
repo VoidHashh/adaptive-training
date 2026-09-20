@@ -826,8 +826,8 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_cinco_trabajos_del_dia_y_los_dos_del_arranque(cfg):
-    """Cinco con hora y dos que se disparan al arrancar.
+def test_estan_los_seis_trabajos_del_dia_y_los_dos_del_arranque(cfg):
+    """Seis con hora y dos que se disparan al arrancar.
 
     Los dos del arranque hacen cosas distintas y por eso son dos: uno recupera
     de Garmin los días de bienestar que falten, y el otro -`startup_audit`-
@@ -835,14 +835,16 @@ def test_estan_los_cinco_trabajos_del_dia_y_los_dos_del_arranque(cfg):
     `tests/test_arranque_perdido.py` para por qué el aviso de APScheduler no
     cubre ese caso.
 
-    El quinto con hora es `watchdog`, y es de otra clase que los otros cuatro:
-    aquéllos HACEN algo -leen Garmin, deciden, reconcilian, evalúan- y éste
-    solo mira. Ver `tests/test_vigilancia.py`.
+    Dos de los seis no HACEN nada por su cuenta y por eso se confunden con un
+    olvido si no se nombran: `watchdog` solo mira -ver `tests/test_vigilancia.py`-
+    y `recompute_early` solo actúa sobre la decisión que se tomó ciega de la
+    HRV y del sueño, que es el caso que se da cuando el formulario se rellena
+    antes de que el reloj suba la noche. Ver `tests/test_datos_al_dia.py`.
     """
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
-        "garmin_fetch", "decision_fallback", "reconcile", "perception_notice",
-        "watchdog", "backfill_wellness", "startup_audit",
+        "garmin_fetch", "decision_fallback", "recompute_early", "reconcile",
+        "perception_notice", "watchdog", "backfill_wellness", "startup_audit",
     }
 
 

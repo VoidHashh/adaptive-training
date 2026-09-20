@@ -175,6 +175,7 @@ def job_decision(
     client_errors: dict[str, str] | None = None,
     dry_run: bool = False,
     solo_si_falta_checkin: bool = True,
+    solo_recomputar: bool = False,
 ) -> Any:
     """Decide el día. Por defecto solo si el check-in no ha llegado, o si la
     decisión que hay se tomó sin datos del reloj y ahora sí los hay.
@@ -188,11 +189,27 @@ def job_decision(
     La excepción -ver la cabecera del módulo- es la decisión CIEGA: la que se
     tomó con reglas sin evaluar porque a esa hora Garmin no tenía la noche. Esa
     sí se vuelve a tomar, y solo cuando el dato que faltaba ha llegado.
+
+    `solo_recomputar` es esa excepción Y NADA MÁS. Sin él, este trabajo puesto
+    temprano haría de fallback a una hora en la que el fallback no debe actuar:
+    un día sin check-in a las 07:30 no es un día sin check-in, es un día en que
+    todavía no se ha rellenado, y decidir ahí le quita al usuario la mañana
+    entera para contestar. Las 09:00 esperan a propósito. Con esta bandera, un
+    día sin check-in sale sin tocar nada.
     """
     day = day or date.today()
     with session_scope() as s:
         recomputando: set[str] = set()
-        if solo_si_falta_checkin and repo.get_checkin(s, day) is not None:
+        hay_checkin = repo.get_checkin(s, day) is not None
+        if solo_recomputar and not hay_checkin:
+            # Todavía no se ha rellenado; no hay decisión ciega que arreglar y
+            # no es hora de decidir por nadie.
+            log.info(
+                "recálculo temprano de %s: aún no hay check-in, no se toca nada",
+                day,
+            )
+            return None
+        if (solo_si_falta_checkin or solo_recomputar) and hay_checkin:
             previa = repo.current_decision(s, day)
             recomputando = _medidas_que_faltaban(previa)
             if not recomputando:
@@ -1088,6 +1105,31 @@ def build_scheduler(
             "solo_si_falta_checkin": True,
         },
         id="decision_fallback", name="Decisión sin check-in",
+    )
+    # EL RECÁLCULO TEMPRANO. Medido sobre los cinco primeros check-ins reales:
+    # el formulario se rellena hacia las 07:00 y el reloj no sube la noche
+    # hasta las 07:10 más o menos (07:04 todavía sin datos, 07:13 ya con
+    # ellos). Tres de esos cinco días decidieron a ciegas de la HRV y del
+    # sueño, y el mensaje lo dijo con todas las letras y prometió recalcular.
+    #
+    # Quien cumplía esa promesa era el fallback de las 09:00, y llega tarde:
+    # el entreno empieza sobre las 08:00, así que a las nueve la sesión que se
+    # iba a corregir ya está hecha con la rutina equivocada escrita en Hevy.
+    #
+    # `solo_recomputar` es lo que hace que esto pueda ir tan temprano sin
+    # atropellar: un día sin check-in a esta hora sale sin tocar nada, y un día
+    # con check-in y sin nada que le faltara, también. Solo actúa sobre la
+    # decisión ciega, que es el caso que existe.
+    sched.add_job(
+        job_decision, cron("recompute_time", "07:30", "recompute_early"),
+        args=[cfg],
+        kwargs={
+            "hevy_client": hevy_client, "telegram_client": telegram_client,
+            "client_errors": client_errors,
+            "dry_run": dry_run, "source": "recalculo_temprano",
+            "solo_recomputar": True,
+        },
+        id="recompute_early", name="Rehacer la decisión ciega en cuanto suba el reloj",
     )
     sched.add_job(
         job_reconcile, cron("evening_summary_time", "22:30", "reconcile"),
