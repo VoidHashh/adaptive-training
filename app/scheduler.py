@@ -204,6 +204,10 @@ def job_decision(
                 day, ", ".join(sorted(recomputando)),
             )
 
+        # Lo entrenado, al día ANTES de decidir. La rotación se lee de aquí, y
+        # decidir con esto viejo propone una rutina que ya se hizo.
+        poner_al_dia_lo_entrenado(cfg, hevy_client=hevy_client, day=day)
+
         metrics, rides = (fetch or _fetch_garmin)(cfg, day)
 
         anulacion = None
@@ -804,6 +808,57 @@ NOMBRES_LEGIBLES = {
     "reconcile": "apuntar lo que entrenaste",
     "perception_notice": "revisar las sesiones de ayer",
 }
+
+
+def poner_al_dia_lo_entrenado(
+    cfg: Any, *, hevy_client: Any = None, day: date | None = None
+) -> list[Any]:
+    """Relee de Hevy lo entrenado ANTES de decidir el día. Nunca lanza.
+
+    EL FALLO QUE LO TRAE. El 20-09-2026 el sistema propuso Día 3 un domingo,
+    dos días después de haberlo hecho. No se había equivocado: la rotación se
+    lee de lo ejecutado, y el entreno del viernes estaba en Hevy y no en la
+    base. `reconcile` corre a las 22:30 y llevaba desde el 15 sin ejecutarse
+    una sola vez, porque a esa hora el ordenador estaba apagado. La decisión de
+    la mañana leía un estado de cinco días antes y lo hacía con total aplomo.
+
+    Garmin no tenía este problema: los dos caminos que deciden -el `job_decision`
+    de las 09:00 y el `_decidir` del check-in- llaman a `_fetch_garmin` como
+    primera cosa. Lo entrenado no tenía ese equivalente, y esa asimetría no
+    respondía a ninguna razón: era el orden en que se fueron escribiendo las
+    piezas.
+
+    POR QUÉ SIN CONDICIÓN Y NO «SOLO SI HACE FALTA». La tentación es mirar
+    primero si la reconciliación está al día y llamar solo entonces. Pero
+    «¿está al día?» es la misma pregunta que `ventana_de_reconciliacion` ya
+    contesta por dentro y mejor -mira `job_runs` y estira la ventana hasta la
+    última que terminó bien-, así que preguntarlo otra vez aquí sería un
+    segundo juez que puede discrepar del primero. Y es barato porque
+    `job_reconcile` es IDEMPOTENTE: un día ya contado sale con «ya estaban
+    contados; no se avanza nada otra vez». Se comprobó ejecutándolo dos veces
+    seguidas el 20-09-2026.
+
+    NUNCA LANZA, y esa es la parte que importa. Esto se cuela en el camino de
+    la decisión de la mañana, o sea en lo único que el sistema tiene que hacer
+    sí o sí. Que Hevy esté caído puede dejar la rotación desfasada un día; no
+    puede dejar la mañana sin decidir. Un fallo aquí se registra y se sigue, y
+    lo que se pierde -la lectura de lo entrenado- lo recupera la reconciliación
+    de las 22:30 o la decisión de mañana.
+    """
+    if hevy_client is None:
+        # Sin cliente no hay nada que leer, y no es una avería de este camino:
+        # `job_reconcile` ya lanza por su cuenta cuando le falta, y por ahí sale
+        # el Telegram. Aquí solo se anota para que el desfase tenga explicación.
+        log.info("no se pone al día lo entrenado: no hay cliente de Hevy")
+        return []
+    try:
+        return job_reconcile(cfg, day=day, hevy_client=hevy_client)
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "no se ha podido releer lo entrenado antes de decidir; se decide "
+            "con lo que hay en la base, que puede estar desfasado"
+        )
+        return []
 
 
 def mensaje_de_vigilancia(problemas: list[str]) -> str:

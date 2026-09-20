@@ -1290,7 +1290,20 @@ def _decidir(
     """
     from app.engine.session_builder import ConfirmacionNecesaria
     from app.runner import DecisionInterrumpida, run_daily
-    from app.scheduler import _fetch_garmin
+    from app.scheduler import _fetch_garmin, poner_al_dia_lo_entrenado
+
+    # Los clientes se construyen UNA vez y se usan en los dos sitios. Estaban
+    # más abajo, dentro del `try` de la decisión; suben aquí porque lo entrenado
+    # se pone al día antes y necesita el de Hevy. Construirlos dos veces sería
+    # abrir dos sesiones contra las mismas APIs y, peor, poder acabar con dos
+    # opiniones distintas sobre qué credenciales faltan.
+    hevy, tg, motivos = _clientes(cfg)
+
+    # Lo entrenado, al día antes de decidir, y ANTES de leer Garmin porque es
+    # lo que puede cambiar QUÉ rutina toca. Este es además el camino por el que
+    # se coló el fallo del 20-09-2026: el check-in de la mañana decidió con una
+    # rotación de cinco días antes. Ver `poner_al_dia_lo_entrenado`.
+    poner_al_dia_lo_entrenado(cfg, hevy_client=hevy, day=day)
 
     try:
         metrics, rides = _fetch_garmin(cfg, day)
@@ -1307,7 +1320,6 @@ def _decidir(
         }
 
     try:
-        hevy, tg, motivos = _clientes(cfg)
         res = run_daily(
             s, cfg, day, metrics=metrics, rides=rides,
             hevy_client=hevy, telegram_client=tg, client_errors=motivos,
