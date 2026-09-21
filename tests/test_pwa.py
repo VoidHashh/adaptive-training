@@ -451,6 +451,27 @@ HUELLAS_DEL_ARMAZON = {
     # un archivo nuevo, así que la pregunta «¿merece la pena subir la versión
     # por esto?» ya no tiene sentido. O sube, o no llega.
     "v21": "c2c08eed83f4f0ed00a1b0cdf10e87403b05084fcee05de6cb034f660ca54de9",
+    # v22: el control para elegir qué sesión voy a hacer. Toca `app.js` -el
+    # bloque, sus oyentes, la pregunta del rojo y los dos cuerpos que salen- y
+    # `styles.css`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE, y por una razón que conviene
+    # entender antes de darla por buena: un teléfono que se quede con el
+    # `app.js` de la v21 no enseña el control, así que no puede pedir nada, así
+    # que manda el mismo cuerpo que mandaba ayer y el sistema decide como
+    # decidía ayer. No aparece nada roto ni nada mentiroso: falta una
+    # capacidad, y su ausencia se ve -no hay control que pulsar-.
+    #
+    # Lo que NO es leve es el motivo por el que esto existe. El 21-09-2026 el
+    # sistema puso ámbar por `lumbar_medio`, el usuario se veía bien, y al
+    # enviar se le escribió la reducida en Hevy; tuvo que arreglarlo a mano. El
+    # motor sabía recibir la anulación desde semanas antes -`SesionPedida`,
+    # `SesionAnulada`, `ConfirmacionNecesaria`, las columnas
+    # `override_session_type` y `forced_on_red` en `previews`- y la pantalla no
+    # tenía por dónde pedirla. O sea que un móvil sin actualizar deja al
+    # usuario exactamente donde estaba ese día: teniendo que saltarse el
+    # sistema, y por tanto sin que el desacuerdo quede registrado.
+    "v22": "88a13967679f1afa7739f5978f03555f54fb43415c6ecd72984991842810e9bf",
 }
 
 
@@ -3335,7 +3356,13 @@ def test_un_desacuerdo_que_no_se_guarda_lo_dice(tmp_path):
         desacuerdo={"status": 500, "respuesta": {"detail": "la base está caída"}},
     )
 
-    texto = salida["previsualizacion"]["texto"]
+    # SU bloque, no la tarjeta entera. Leía toda la pantalla, y eso la ató a
+    # que ningún otro texto de la tarjeta usara nunca la frase «Queda
+    # apuntado»: el día que se añadió el control de qué sesión hacer, su texto
+    # de ayuda la usó para hablar de otra cosa y esta guarda empezó a fallar
+    # sin que el desacuerdo tuviera nada malo. Acotada, vigila lo suyo.
+    texto = salida["desacuerdo_texto"]
+    assert texto is not None, "no hay bloque de desacuerdo que mirar"
     assert "NO se ha guardado el desacuerdo" in texto
     assert "Queda apuntado" not in texto, (
         "la pantalla ha dicho que lo apuntó y no lo apuntó"
@@ -3781,4 +3808,263 @@ def test_la_pantalla_pinta_de_verdad_cada_aviso_que_el_servidor_sabe_marcar(tmp_
     assert "[object Object]" not in html, (
         "un aviso ha metido un objeto entero en una plantilla de texto y el "
         f"dato se ha perdido por el camino:\n{html}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Elegir qué sesión voy a hacer
+# ---------------------------------------------------------------------------
+#
+# EL CASO REAL, del 21 de septiembre de 2026. El sistema puso ÁMBAR por
+# `lumbar_medio` -lumbar en 5-, el usuario se veía bien para la sesión
+# completa, y al enviar se le escribió la REDUCIDA en Hevy. Tuvo que entrar en
+# la aplicación y arreglarlo a mano.
+#
+# Lo llamativo es que el motor sabía recibir esa anulación desde semanas antes:
+# `SesionPedida`, `SesionAnulada` con su `forzada_en_rojo`, `ConfirmacionNecesaria`
+# para subir en rojo, y las columnas `override_session_type` y `forced_on_red`
+# en `previews`. Los dos endpoints la aceptaban. Lo único que no existía era el
+# sitio desde el que pedirla.
+#
+# Y esa es exactamente la avería que `docs/cita-de-recalibracion.md` daba por
+# aceptable «a propósito»: sin el control, la medida (b) de calibración no
+# podía acumular un solo caso. No era que faltara un adorno; era que el
+# desacuerdo obligaba a saltarse el sistema, y un desacuerdo que obliga a eso
+# no queda registrado y por tanto no se puede medir nunca.
+
+
+def _pedir(tmp_path, acciones, **kw) -> dict:
+    """Previsualiza, toca el control y envía. Devuelve lo que salió por el cable."""
+    return _rellenar(
+        tmp_path,
+        _hoy(),
+        [
+            {"tipo": "deslizar", "key": "fatigue", "valor": 7},
+            {"tipo": "responder", "key": "wants_to_train", "respuesta": "no"},
+            {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+            {"tipo": "previsualizar"},
+            *acciones,
+        ],
+        **kw,
+    )
+
+
+def test_por_defecto_no_se_pide_ninguna_sesion(tmp_path):
+    """El día normal no puede parecer una anulación.
+
+    `requested_session` AUSENTE, y no puesto al tipo que el sistema propone.
+    El motor distingue «no se pidió nada» de «se pidió justo lo propuesto», y
+    solo el segundo deja rastro. Mandar siempre la clave -que es lo cómodo:
+    leer el tipo de la tarjeta y reenviarlo- convertiría cada mañana corriente
+    en una anulación, y la medida de cuántas veces se discrepa contaría todos
+    los días del año.
+    """
+    salida = _pedir(tmp_path, [{"tipo": "enviar"}])
+
+    assert "requested_session" not in salida["cuerpo"], (
+        f"sin tocar el control ya se pide una sesión: {salida['cuerpo']}"
+    )
+    assert "override_reason" not in salida["cuerpo"]
+    assert "confirm_upgrade" not in salida["cuerpo"]
+
+
+def test_pedir_la_sesion_completa_llega_al_envio(tmp_path):
+    """EL TEST. Es el fallo del 21-09-2026, de punta a punta.
+
+    Se pulsa la opción y se envía, y lo que se mira es el CUERPO del POST: es
+    lo único que decide qué se escribe en Hevy. Un arnés que comprobara
+    `estado.sesionPedida` demostraría que la variable se guarda, que es la
+    mitad que ya funcionaba.
+    """
+    salida = _pedir(
+        tmp_path,
+        [{"tipo": "pedir-sesion", "sesion": "full"}, {"tipo": "enviar"}],
+    )
+    assert salida["cuerpo"].get("requested_session") == "full", (
+        f"se pidió la completa y el envío no la lleva: {salida['cuerpo']}"
+    )
+
+
+def test_cambiar_de_eleccion_vuelve_a_previsualizar_con_lo_pedido(tmp_path):
+    """Elegir a ciegas es elegir mal.
+
+    Sin esto, el usuario marca «completa» y no ve lo que ha pedido hasta
+    DESPUÉS de enviarlo, que es justo el momento en que ya se ha escrito en
+    Hevy. Además cada mirada queda apuntada con su anulación, que es de donde
+    sale la medida de calibración.
+    """
+    salida = _pedir(tmp_path, [{"tipo": "pedir-sesion", "sesion": "recovery"}])
+
+    assert salida["veces_previsualizado"] == 2, (
+        f"cambiar la elección no ha vuelto a mirar: "
+        f"{salida['veces_previsualizado']} previsualización(es)"
+    )
+    assert salida["cuerpos_previsualizados"][0].get("requested_session") is None
+    assert salida["cuerpos_previsualizados"][1].get("requested_session") == "recovery"
+
+
+def test_el_motivo_escrito_viaja_con_la_anulacion(tmp_path):
+    """Sin el porqué, la medida dice cuántas veces y nunca por qué."""
+    salida = _pedir(
+        tmp_path,
+        [
+            {"tipo": "pedir-sesion", "sesion": "full"},
+            {"tipo": "motivo-anulacion", "texto": "  la lumbar va bien hoy  "},
+            {"tipo": "enviar"},
+        ],
+    )
+    assert salida["cuerpo"].get("override_reason") == "la lumbar va bien hoy", (
+        "el motivo no viaja, o viaja sin recortar los espacios"
+    )
+
+
+def test_un_motivo_en_blanco_no_viaja(tmp_path):
+    """Un campo que viaja vacío es un campo que el servidor tiene que limpiar,
+    y dos sitios decidiendo qué es «nada» acaban discrepando."""
+    salida = _pedir(
+        tmp_path,
+        [
+            {"tipo": "pedir-sesion", "sesion": "full"},
+            {"tipo": "motivo-anulacion", "texto": "   "},
+            {"tipo": "enviar"},
+        ],
+    )
+    assert "override_reason" not in salida["cuerpo"]
+
+
+def test_volver_a_lo_del_sistema_deja_de_pedir_nada(tmp_path):
+    """Se puede cambiar de opinión, y volver atrás tiene que borrar el rastro.
+
+    Si «lo que propone el sistema» dejara puesto el último tipo pedido, el
+    usuario que se lo piensa dos veces acabaría enviando una anulación que
+    retiró, y en Hevy se escribiría lo que decidió NO hacer.
+    """
+    salida = _pedir(
+        tmp_path,
+        [
+            {"tipo": "pedir-sesion", "sesion": "full"},
+            {"tipo": "pedir-sesion", "sesion": None},
+            {"tipo": "enviar"},
+        ],
+    )
+    assert "requested_session" not in salida["cuerpo"], (
+        f"volver al defecto no ha limpiado la petición: {salida['cuerpo']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Subir de dureza con el semáforo en ROJO
+# ---------------------------------------------------------------------------
+#
+# La única cosa que esta pantalla no hace sin preguntar. El motor no la decide
+# ni se traga la petición: lanza `ConfirmacionNecesaria` y los dos endpoints
+# devuelven un 409 con las dos sesiones puestas. Lo que se comprueba aquí es
+# que la pantalla trate ese 409 como una PREGUNTA y no como un rechazo, porque
+# las dos cosas llegan por el mismo código de estado y la diferencia es
+# enorme: un rechazo se lee como «no se ha guardado tu check-in».
+
+
+CONFIRMACION_409 = {
+    "status": 409,
+    "respuesta": {
+        "detail": {
+            "confirmacion_necesaria": True,
+            "propuesta": "recovery",
+            "pedida": "full",
+            "motivo": "la luz está en rojo y se ha pedido subir de recovery a full",
+            "ejecutado": False,
+            "checkin_guardado": False,
+            "decision_guardada": False,
+            "hevy": "sin tocar",
+            "telegram": "sin tocar",
+        }
+    },
+}
+
+
+def test_subir_en_rojo_pregunta_y_no_parece_un_rechazo(tmp_path):
+    """Un 409 con `confirmacion_necesaria` NO es «el servidor ha dicho que no».
+
+    Si cayera por el camino del error, el usuario leería que su check-in ha
+    sido rechazado -y no lo ha sido: no se ha guardado nada, y eso es otra
+    cosa- y no tendría por dónde contestar. La subida en rojo se volvería
+    imposible de pedir, que es justo lo contrario de lo que se acordó: se
+    permite, pero preguntando.
+    """
+    salida = _pedir(
+        tmp_path,
+        [{"tipo": "pedir-sesion", "sesion": "full"}],
+        previsualizaciones=[{}, CONFIRMACION_409],
+    )
+    tarjeta = (salida["previsualizacion"] or {}).get("html", "")
+    assert "ROJO" in tarjeta, f"no se está preguntando nada:\n{tarjeta[:400]}"
+    assert "confirmar-si" in tarjeta and "confirmar-no" in tarjeta, (
+        "la pregunta no ofrece las dos respuestas"
+    )
+    assert salida["veces_enviado"] == 0, "no se puede haber enviado nada todavía"
+
+
+def test_confirmar_la_subida_en_rojo_vuelve_a_pedirla_con_la_marca(tmp_path):
+    """El «sí» no se queda en el cliente: vuelve al servidor.
+
+    Y vuelve como `confirm_upgrade`, que allí se contrasta con la LUZ. Un
+    cliente que decidiera por su cuenta que esto ya está confirmado se
+    saltaría la única guarda que hay, y peor: `forzada_en_rojo` se calcula en
+    el servidor a partir de la luz precisamente para que una pantalla que
+    mandara `true` siempre no pudiera ensuciar la medida.
+    """
+    salida = _pedir(
+        tmp_path,
+        [
+            {"tipo": "pedir-sesion", "sesion": "full"},
+            {"tipo": "confirmar-rojo", "respuesta": "si"},
+        ],
+        previsualizaciones=[{}, CONFIRMACION_409, {}],
+    )
+    ultimo = salida["cuerpos_previsualizados"][-1]
+    assert ultimo.get("requested_session") == "full"
+    assert ultimo.get("confirm_upgrade") is True, (
+        f"la confirmación no ha viajado: {ultimo}"
+    )
+
+
+def test_decir_que_no_a_la_subida_en_rojo_vuelve_a_lo_propuesto(tmp_path):
+    """Poder salirse es parte de la pregunta. Una pregunta con una sola
+    respuesta posible no es una pregunta, es un trámite."""
+    salida = _pedir(
+        tmp_path,
+        [
+            {"tipo": "pedir-sesion", "sesion": "full"},
+            {"tipo": "confirmar-rojo", "respuesta": "no"},
+        ],
+        previsualizaciones=[{}, CONFIRMACION_409, {}],
+    )
+    ultimo = salida["cuerpos_previsualizados"][-1]
+    assert "requested_session" not in ultimo, (
+        f"decir que no ha dejado la petición puesta: {ultimo}"
+    )
+    assert "confirm_upgrade" not in ultimo
+
+
+def test_cambiar_de_opcion_tira_la_confirmacion_del_rojo(tmp_path):
+    """La confirmación es de UNA pregunta concreta, no un permiso abierto.
+
+    Se contestó «sí, quiero la completa aunque hoy sea rojo». Si al cambiar
+    después a «reducida» siguiera puesta, la siguiente petición viajaría ya
+    confirmada sin que nadie haya confirmado ESA, y bastaría con pasar una vez
+    por el diálogo para que el resto del día dejara de preguntar.
+    """
+    salida = _pedir(
+        tmp_path,
+        [
+            {"tipo": "pedir-sesion", "sesion": "full"},
+            {"tipo": "confirmar-rojo", "respuesta": "si"},
+            {"tipo": "pedir-sesion", "sesion": "reduced"},
+        ],
+        previsualizaciones=[{}, CONFIRMACION_409, {}, {}],
+    )
+    ultimo = salida["cuerpos_previsualizados"][-1]
+    assert ultimo.get("requested_session") == "reduced"
+    assert "confirm_upgrade" not in ultimo, (
+        f"la confirmación del rojo ha sobrevivido al cambio de opción: {ultimo}"
     )

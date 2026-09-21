@@ -591,6 +591,35 @@ for (const a of guion.acciones || []) {
     // móvil el botón no hacía absolutamente nada.
     disparar(elemento("previsualizar"), "click");
     await drenar();
+  } else if (a.tipo === "pedir-sesion") {
+    // Por el BOTÓN del control, igual que `previsualizar`: tocar
+    // `estado.sesionPedida` desde fuera probaría que el cuerpo se arma bien a
+    // partir del estado, que no es lo que hay que demostrar. Lo que hay que
+    // demostrar es que PULSAR una opción acaba cambiando lo que sale por el
+    // cable, que es la cadena entera y es donde estaba el agujero.
+    // En DOS pasos y no con `.eleccion-sesion [data-sesion=...]`: ese selector
+    // lleva un espacio, y este arnés rechaza los descendientes a gritos en vez
+    // de devolver `null` para todo. Es la misma trampa que dejó
+    // `rangos_en_preguntas` a cero durante toda su vida.
+    const bloque = elemento("previsualizacion").querySelector(".eleccion-sesion");
+    if (!bloque) throw new Error("la tarjeta no trae el control de qué sesión hacer");
+    const sel = a.sesion === null ? '[data-sesion=""]' : `[data-sesion="${a.sesion}"]`;
+    const b = bloque.querySelector(sel);
+    if (!b) throw new Error(`la tarjeta no ofrece la opción ${a.sesion}`);
+    disparar(b, "click");
+    await drenar();
+  } else if (a.tipo === "motivo-anulacion") {
+    const caja = elemento("previsualizacion").querySelector(".texto-anulacion");
+    if (!caja) throw new Error("no hay caja del motivo de la anulación");
+    caja.value = String(a.texto);
+    disparar(caja, "input");
+  } else if (a.tipo === "confirmar-rojo") {
+    const b = elemento("previsualizacion").querySelector(
+      a.respuesta === "si" ? ".confirmar-si" : ".confirmar-no",
+    );
+    if (!b) throw new Error("no se está preguntando por la subida en rojo");
+    disparar(b, "click");
+    await drenar();
   } else if (a.tipo === "abrir-desacuerdo") {
     const b = elemento("previsualizacion").querySelector(".abrir-desacuerdo");
     if (!b) throw new Error("la tarjeta no ofrece dónde declarar el desacuerdo");
@@ -751,6 +780,17 @@ console.log(JSON.stringify({
   // primera vale también aquí.
   cuerpos_previsualizados: cuerposPrevisualizados,
   veces_previsualizado: cuerposPrevisualizados.length,
+  // El texto del bloque del desacuerdo POR SEPARADO. Lo pedía una guarda que
+  // buscaba «Queda apuntado» en la tarjeta ENTERA para comprobar que un
+  // desacuerdo que no se guarda no dice que sí: al añadir el control de qué
+  // sesión hacer, su texto de ayuda usó esa misma frase para hablar de otra
+  // cosa y la guarda pasó a fallar siempre. Una guarda que lee toda la
+  // pantalla buscando una frase de un bloque se rompe con cualquier texto que
+  // se escriba en cualquier otro sitio.
+  desacuerdo_texto: (() => {
+    const b = elemento("previsualizacion").querySelector(".desacuerdo");
+    return b ? b.textContent : null;
+  })(),
   cuerpo_desacuerdo: cuerpoDesacuerdo,
   url_desacuerdo: urlDesacuerdo,
   borrador: almacen.has("checkin-borrador")

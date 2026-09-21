@@ -119,6 +119,30 @@ const estado = {
   // mismo motivo -una petición a la vez-, pero la frase del botón y lo que pasa
   // al terminar no se parecen en nada.
   previsualizando: false,
+
+  /* LA ANULACIÓN: qué sesión pido yo en vez de la que propone el sistema.
+   *
+   * `null` es «no he pedido nada», y NO es lo mismo que «he pedido justo lo
+   * que proponía». El motor distingue las dos cosas y solo la segunda deja
+   * rastro de anulación; mandar siempre el tipo propuesto llenaría la medida
+   * de anulaciones que nadie hizo y la dejaría sin poder medir nada.
+   *
+   * EL FALLO QUE LO TRAE, del 21-09-2026: el sistema puso ámbar por
+   * `lumbar_medio` con la lumbar en 5, el usuario se veía bien para la sesión
+   * completa, y al enviar se le escribió la reducida en Hevy. Tuvo que
+   * arreglarlo a mano. El motor sabía recibir la anulación desde hacía
+   * semanas -`SesionPedida`, `SesionAnulada`, `ConfirmacionNecesaria`- y la
+   * pantalla no tenía por dónde pedirla: un desacuerdo que obliga a saltarse
+   * el sistema es un desacuerdo que no queda registrado y que por tanto no se
+   * puede medir nunca.
+   */
+  sesionPedida: null,
+  motivoAnulacion: "",
+  // Solo se pone a `true` contestando que sí a la pregunta de subir en rojo, y
+  // se vuelve a `false` en cuanto cambia la elección. No es «he leído el
+  // aviso» en general: es la respuesta a una pregunta concreta de un día
+  // concreto, y arrastrarla convertiría la guarda en un trámite.
+  confirmadaEnRojo: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -630,7 +654,7 @@ async function enviar(ev) {
   revisar();
   $("enviar").textContent = "Enviando…";
 
-  const cuerpo = { ...estado.valores };
+  const cuerpo = { ...estado.valores, ...loQuePido() };
   const texto = $("comentarios").value.trim();
   if (texto) cuerpo.comments = texto;
 
@@ -653,6 +677,19 @@ async function enviar(ev) {
       `Tus respuestas siguen guardadas en el móvil: vuelve a intentarlo cuando ` +
       `tengas conexión.`,
     );
+    return terminar();
+  }
+
+  // La pregunta del rojo también llega por aquí, y hay que distinguirla de un
+  // rechazo. No es «el servidor ha dicho que no»: es «contéstame esto». Si
+  // cayera en el `resultadoMal` de abajo, el usuario leería que su check-in ha
+  // sido rechazado -y no lo ha sido, no se ha guardado nada- y la subida en
+  // rojo se volvería imposible de pedir desde el envío.
+  const pregunta = esConfirmacionEnRojo(r, datos);
+  if (pregunta) {
+    guardarBorrador();
+    pedirConfirmacionEnRojo(pregunta);
+    $("previsualizacion").scrollIntoView({ behavior: "smooth", block: "start" });
     return terminar();
   }
 
@@ -1003,6 +1040,131 @@ function porQue(d) {
  *
  * Plegada en un `<details>` porque la mayoría de los días está vacía o dice
  * algo que ya se sabe, y desplegada taparía lo que sí se viene a ver. */
+/* Lo que se añade al cuerpo de las DOS rutas cuando hay anulación.
+ *
+ * Una sola función y no dos trozos parecidos en `previsualizar()` y en
+ * `enviar()`: son el mismo hecho, y el día que se separen lo que se mira y lo
+ * que se manda dejarán de ser lo mismo sin que nada se queje. Es justo el
+ * fallo que la anulación viene a resolver, cometido al implementarla.
+ *
+ * Con `sesionPedida` a `null` devuelve un objeto VACÍO, no `{requested_session:
+ * null}`. El motor distingue «no se pidió nada» de «se pidió lo propuesto», y
+ * solo el segundo deja rastro; mandar la clave siempre convertiría cada día
+ * corriente en una anulación a efectos de las cuentas.
+ */
+function loQuePido() {
+  if (!estado.sesionPedida) return {};
+  const fuera = { requested_session: estado.sesionPedida };
+  const motivo = (estado.motivoAnulacion || "").trim();
+  if (motivo) fuera.override_reason = motivo;
+  if (estado.confirmadaEnRojo) fuera.confirm_upgrade = true;
+  return fuera;
+}
+
+/* Los cuatro tipos de sesión, en el orden en que los entiende el motor.
+ *
+ * El orden es el de `DUREZA` en `session_builder.py` -recuperación, reducida,
+ * completa- y no el alfabético ni el de "lo más probable primero": la pantalla
+ * enseña una escala, y una escala desordenada se lee mal justo el día que hay
+ * que elegir deprisa. `null` va el primero porque es el defecto.
+ */
+const TIPOS_DE_SESION = [
+  {tipo: null, label: "Lo que propone el sistema"},
+  {tipo: "recovery", label: "Recuperación"},
+  {tipo: "reduced", label: "Sesión reducida"},
+  {tipo: "full", label: "Sesión completa"},
+];
+
+const NOMBRE_DEL_TIPO = {
+  full: "sesión completa",
+  reduced: "sesión reducida",
+  recovery: "recuperación",
+};
+
+/* EL CONTROL PARA PEDIR OTRA COSA.
+ *
+ * Va DESPUÉS de «Lo que propondría» y no antes, y ese orden es la mitad de lo
+ * que hace: primero se lee qué propone el sistema y por qué, y solo después se
+ * elige. Puesto arriba se convertiría en un menú que se contesta antes de
+ * haber leído nada, y entonces lo que mide -cuántas veces y en qué umbral se
+ * discrepa- mediría sobre todo la prisa.
+ *
+ * Cambiar la elección VUELVE A PREVISUALIZAR, y eso tampoco es un adorno: sin
+ * ello el usuario elige «completa» a ciegas y solo ve lo que ha pedido después
+ * de enviarlo, que es exactamente el momento en que ya no se puede deshacer.
+ * Además cada mirada queda apuntada con su anulación, que es de donde sale la
+ * medida.
+ */
+function bloqueEleccion(d) {
+  const propuesto = (d.decision && d.decision.session && d.decision.session.kind) || null;
+  const opciones = TIPOS_DE_SESION.map((o) => {
+    const esDefecto = o.tipo === null;
+    const nombre = esDefecto && propuesto
+      ? `Lo que propone el sistema (${NOMBRE_DEL_TIPO[propuesto] || propuesto})`
+      : o.label;
+    return (
+      `<button type="button" data-sesion="${escapar(o.tipo === null ? "" : o.tipo)}">` +
+        `<span class="titulo">${escapar(nombre)}</span>` +
+        (esDefecto ? `<span class="toca">lo de siempre</span>` : "") +
+      `</button>`
+    );
+  }).join("");
+
+  return (
+    `<div class="eleccion-sesion selector">` +
+      `<h3>Qué voy a hacer</h3>` +
+      `<p class="tenue">Si eliges algo distinto, en Hevy se escribe lo tuyo. ` +
+      `Se registra qué proponía el sistema y qué elegiste.</p>` +
+      `<div class="opciones">${opciones}</div>` +
+      `<label class="motivo-anulacion">` +
+        `<span>¿Por qué? Una línea basta, y puede quedarse en blanco.</span>` +
+        `<textarea class="texto-anulacion" rows="2" ` +
+        `placeholder="Lo que tú sabes y el sistema no"></textarea>` +
+      `</label>` +
+    `</div>`
+  );
+}
+
+/* Cuelga los oyentes del control. Aparte de la plantilla por lo mismo que
+ * `pintarDesacuerdo`: un `id` escrito dentro de una plantilla no está en
+ * `index.html`, y buscar por clase DESDE LA TARJETA es lo único que garantiza
+ * que se escuche el control de ÉSTA y no el de una previsualización anterior
+ * que se quedó colgando. */
+function pintarEleccionSesion(caja) {
+  const bloque = caja.querySelector(".eleccion-sesion");
+  if (!bloque) return;
+
+  const marcar = () => {
+    for (const b of bloque.querySelectorAll("[data-sesion]")) {
+      const suyo = b.dataset.sesion || null;
+      const elegido = suyo === estado.sesionPedida;
+      b.classList.toggle("elegida", elegido);
+      b.setAttribute("aria-pressed", elegido ? "true" : "false");
+    }
+  };
+  marcar();
+
+  const texto = bloque.querySelector(".texto-anulacion");
+  texto.value = estado.motivoAnulacion || "";
+  texto.addEventListener("input", () => {
+    estado.motivoAnulacion = texto.value;
+  });
+
+  for (const b of bloque.querySelectorAll("[data-sesion]")) {
+    b.addEventListener("click", () => {
+      const pedido = b.dataset.sesion || null;
+      if (pedido === estado.sesionPedida) return;
+      estado.sesionPedida = pedido;
+      // La confirmación de rojo muere con el cambio de elección: era la
+      // respuesta a «¿seguro que quieres subir HOY?», y cambiar de opción
+      // hace que esa pregunta ya no sea la que se contestó.
+      estado.confirmadaEnRojo = false;
+      marcar();
+      previsualizar();
+    });
+  }
+}
+
 function sinDatos(d) {
   const dec = d.decision || {};
   const cojas = [];
@@ -1201,6 +1363,7 @@ function pintarPrevisualizacion(d) {
     bloqueLista("Por qué", porQue(d)) +
     sinDatos(d) +
     bloqueSesion(d) +
+    bloqueEleccion(d) +
     bloqueBici(d) +
     // El hueco del desacuerdo se pinta vacío aquí y lo rellena
     // `pintarDesacuerdo`, que necesita colgarle oyentes. Y solo si hay
@@ -1208,6 +1371,7 @@ function pintarPrevisualizacion(d) {
     // hacer su trabajo es peor que no tenerlo.
     (d.preview_id ? `<div class="desacuerdo"></div>` : "");
 
+  pintarEleccionSesion(caja);
   if (d.preview_id) pintarDesacuerdo(caja, d.preview_id);
 }
 
@@ -1222,6 +1386,57 @@ function pintarPrevisualizacion(d) {
  * feo a propósito: un `[object Object]` en el sitio del motivo es el fallo que
  * `describirPendiente` ya se encontró una vez, y un aviso sin contenido manda a
  * buscar a ciegas. */
+/* SUBIR DE DUREZA CON EL SEMÁFORO EN ROJO: la única pregunta que se hace.
+ *
+ * El motor no la contesta por su cuenta ni se traga la petición en silencio:
+ * lanza `ConfirmacionNecesaria` y las dos rutas devuelven un 409 con las dos
+ * sesiones puestas. Esta función pinta esa pregunta. El `sí` no vive en el
+ * cliente: vuelve al servidor como `confirm_upgrade`, y allí se recalcula si
+ * de verdad era una subida en rojo. Un cliente que mandara `true` siempre
+ * -porque preguntar es incómodo- no podría marcar como forzadas las
+ * anulaciones que no lo son; eso lo decide `SesionAnulada` mirando la LUZ.
+ *
+ * Se pinta en el hueco de la previsualización y no en un `confirm()` del
+ * navegador a propósito: hace falta seguir viendo qué propone el sistema y por
+ * qué mientras se decide, y un diálogo del navegador tapa justo eso.
+ */
+function pedirConfirmacionEnRojo(detalle) {
+  const caja = $("previsualizacion");
+  caja.hidden = false;
+  caja.className = "previsualizacion semaforo-red";
+  const pedida = NOMBRE_DEL_TIPO[detalle.pedida] || detalle.pedida;
+  const propuesta = NOMBRE_DEL_TIPO[detalle.propuesta] || detalle.propuesta;
+
+  caja.innerHTML =
+    `<h3><span class="punto"></span>El semáforo está en ROJO</h3>` +
+    `<p>El sistema propone <b>${escapar(propuesta)}</b> y has pedido ` +
+    `<b>${escapar(pedida)}</b>. Subir de intensidad un día rojo es la única ` +
+    `cosa que esta pantalla no hace sin preguntar.</p>` +
+    `<p class="tenue">Si sigues, queda marcado aparte: no como un desacuerdo ` +
+    `cualquiera, sino como una subida forzada en rojo. Es el dato que después ` +
+    `dice cuántas veces se subió el día que no tocaba.</p>` +
+    `<div class="confirmar-rojo">` +
+      `<button type="button" class="confirmar-si">Sí, hago ${escapar(pedida)}</button>` +
+      `<button type="button" class="confirmar-no">No, dejo lo que propone</button>` +
+    `</div>`;
+
+  caja.querySelector(".confirmar-si").addEventListener("click", () => {
+    estado.confirmadaEnRojo = true;
+    previsualizar();
+  });
+  caja.querySelector(".confirmar-no").addEventListener("click", () => {
+    estado.sesionPedida = null;
+    estado.confirmadaEnRojo = false;
+    previsualizar();
+  });
+}
+
+/* ¿Es este error la pregunta del rojo y no una avería? */
+function esConfirmacionEnRojo(r, datos) {
+  const d = datos && datos.detail !== undefined ? datos.detail : datos;
+  return r.status === 409 && d && d.confirmacion_necesaria === true ? d : null;
+}
+
 function previsualizacionMal(titulo, detalle) {
   const caja = $("previsualizacion");
   caja.hidden = false;
@@ -1253,7 +1468,7 @@ async function previsualizar() {
   // Tampoco `day`: lo mismo que hace `enviar()`. El día lo pone el reloj del
   // servidor, y que las dos rutas lo resuelvan igual es lo único que garantiza
   // que lo que se mira y lo que se manda sean del mismo día.
-  const cuerpo = { ...estado.valores };
+  const cuerpo = { ...estado.valores, ...loQuePido() };
 
   try {
     const r = await fetch(API.previsualizar, {
@@ -1262,7 +1477,10 @@ async function previsualizar() {
       body: JSON.stringify(cuerpo),
     });
     const datos = await r.json().catch(() => ({}));
-    if (!r.ok) {
+    const pregunta = esConfirmacionEnRojo(r, datos);
+    if (pregunta) {
+      pedirConfirmacionEnRojo(pregunta);
+    } else if (!r.ok) {
       previsualizacionMal(
         `No se ha podido previsualizar (${r.status})`,
         datos.detail !== undefined ? datos.detail : datos,

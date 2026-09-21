@@ -516,6 +516,55 @@ textarea {
 }
 .desacuerdo .nota { margin: 0.6rem 0 0; color: var(--tenue); font-size: 0.87rem; }
 
+/* ELEGIR QUÉ SESIÓN VOY A HACER.
+ *
+ * Reutiliza `.selector` entero -la caja, `.opciones`, los botones, `.titulo`,
+ * `.toca` y `.elegida`- y no define ni un color propio. Es deliberado: es el
+ * mismo gesto que elegir rutina, y dos controles que hacen lo mismo con dos
+ * aspectos distintos se leen como dos cosas distintas. Lo único suyo es el
+ * hueco de arriba, porque aquí va dentro de una tarjeta y no del formulario. */
+.eleccion-sesion { margin-top: 1rem; }
+.eleccion-sesion .motivo-anulacion { display: block; margin: 0.7rem 0 0; }
+.eleccion-sesion .motivo-anulacion span {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--tenue);
+  font-size: 0.9rem;
+}
+.texto-anulacion {
+  width: 100%;
+  padding: 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+}
+
+/* LA PREGUNTA DE SUBIR EN ROJO. Los dos botones del mismo tamaño y ninguno
+ * destacado: destacar uno es contestar por el usuario, y la pregunta existe
+ * precisamente porque la respuesta no la puede dar la pantalla. */
+.confirmar-rojo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+.confirmar-si,
+.confirmar-no {
+  flex: 1 1 12rem;
+  padding: 0.8rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  cursor: pointer;
+}
+.confirmar-si { border-color: var(--rojo); }
+
 pre {
   white-space: pre-wrap;
   word-break: break-word;
