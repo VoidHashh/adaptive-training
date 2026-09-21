@@ -2693,6 +2693,7 @@ async function pintarCalibracion(dias) {
     bloqueCuantoDiscrepas(d.cuantas),
     bloqueHaciaDonde(d.direcciones),
     bloqueDondeSeAgolpa(d.donde),
+    bloqueAnulaciones(d.anulaciones),
     bloqueQuienAcerto(d.quien_acerto),
   ];
 
@@ -2816,6 +2817,77 @@ function bloqueDondeSeAgolpa(w) {
     `<h3>Por color del día</h3>` +
     tablaAgolpe("Semáforo", w.por_luz, NOMBRE_LUZ_PWA));
 }
+
+/* EL CONTADOR DE ANULACIONES, por la regla que decidió el día.
+ *
+ * Es otra cosa que el bloque de arriba y por eso va aparte. Aquél cuenta
+ * DESACUERDOS -marcar «no lo veo», que es una opinión y no cambia el entreno-;
+ * éste cuenta ANULACIONES: los días en que además pediste otra sesión y el
+ * sistema escribió la tuya en Hevy. Solo las segundas dejan una sesión
+ * distinta de la propuesta, que es la única que después se puede juzgar.
+ *
+ * Y LO QUE ESTE BLOQUE DICE SOBRE TODO ES CUÁNTO FALTA. No ajusta nada, no
+ * propone nada y no aprende: cuenta. El módulo que mida quién acertó se
+ * escribirá cuando haya diez casos reales, y con este contador delante se
+ * sabrá cuándo. Mientras tanto, la única frase honrada es «van N de 10».
+ */
+function bloqueAnulaciones(a) {
+  if (!a || a.na || !a.por_regla.length) {
+    return bloqueDeVistazo("Cuántas veces has pedido otra sesión", "", "",
+      bloqueNa((a && a.na) || null));
+  }
+
+  const g = barrasTumbadas({
+    valores: a.por_regla.map((r) => r.anulaciones),
+    rotulos: a.por_regla.map((r) => entero(r.anulaciones)),
+    etiquetas: a.por_regla.map((r) => r.clave),
+    pie: plural(a.n, "anulación", "anulaciones"),
+    positivoEsBueno: false,
+  });
+
+  // La frase de arriba es la de la regla con más anulaciones, que es de la
+  // que antes se va a poder decir algo. Sale del servidor ya redactada: quien
+  // sabe cuántas van y cuántas faltan es quien las contó.
+  return bloqueDeVistazo(
+    "Cuántas veces has pedido otra sesión", g, a.por_regla[0].lectura || "",
+    `<p class="explica">${escapar(a.que_es)}</p>` +
+    `<p class="explica">Con ${escapar(entero(a.minimo))} anulaciones de una ` +
+    `misma regla se podrá mirar si su umbral está donde debería, y el sistema ` +
+    `lo propondrá para que lo apruebes o no. <b>No se ajusta solo.</b> Hasta ` +
+    `entonces esto solo cuenta, y dice cuánto falta.</p>` +
+    tablaAnulaciones(a.por_regla));
+}
+
+function tablaAnulaciones(grupos) {
+  return (
+    `<table class="tabla"><thead><tr><th>Regla que decidió el día</th>` +
+    `<th>Anulaciones</th><th>Faltan</th><th>Forzadas en rojo</th>` +
+    `<th>Qué pediste</th></tr></thead><tbody>` +
+    grupos.map((r) => {
+      const pedidas = Object.entries(r.pedidas || {})
+        .sort((a, b) => b[1] - a[1])
+        .map(([k, n]) => `${escapar(NOMBRE_SESION_PWA[k] || k)} ×${entero(n)}`)
+        .join(", ");
+      return (
+        `<tr><td>${escapar(r.clave)}</td>` +
+        `<td>${entero(r.anulaciones)}</td>` +
+        `<td>${r.faltan ? entero(r.faltan) : "—"}</td>` +
+        `<td>${r.forzadas_en_rojo ? entero(r.forzadas_en_rojo) : "—"}</td>` +
+        `<td>${pedidas}</td></tr>`
+      );
+    }).join("") +
+    `</tbody></table>`
+  );
+}
+
+/* Los tres tipos de sesión en castellano. Diccionario de clave a palabra, como
+ * `NOMBRE_LUZ_PWA`: aquí no se decide nada, se traduce. Con el valor crudo de
+ * respaldo, que se lee peor y es mejor que un hueco. */
+const NOMBRE_SESION_PWA = {
+  full: "completa",
+  reduced: "reducida",
+  recovery: "recuperación",
+};
 
 function tablaAgolpe(cabecera, grupos, nombres = null) {
   return (

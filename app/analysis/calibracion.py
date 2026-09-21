@@ -354,6 +354,102 @@ def _donde_se_agolpa(filas: list[PreviewRow]) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# El contador de anulaciones, por regla
+# ---------------------------------------------------------------------------
+
+# Cuántas anulaciones de una misma regla hacen falta antes de que tenga sentido
+# proponer tocar su umbral.
+#
+# DIEZ, y lo eligió el usuario. No sale de ninguna cuenta estadística, y es
+# mejor así: lo que hay al otro lado no es una prueba de hipótesis sino una
+# conversación -«has anulado esto ocho veces y en siete la lumbar no subió al
+# día siguiente: ¿subimos el umbral?»-, y el número es cuántos casos quiere ver
+# antes de que le pregunten. Ponerlo en 3 como los umbrales de `stats.py` sería
+# calcarle a una decisión de entrenamiento el mínimo con el que un coeficiente
+# deja de ser indefinido, que es otra cosa.
+MINIMO_ANULACIONES = 10
+
+
+def _anulaciones_por_regla(filas: list[PreviewRow]) -> dict[str, Any]:
+    """Cuántas veces se pidió otra sesión, agrupado por la regla que decidió.
+
+    ES OTRA COSA QUE `donde`, Y CONVIENE NO CONFUNDIRLAS. Aquélla cuenta los
+    DESACUERDOS -marcar «no lo veo» en la tarjeta-, que es una opinión y no
+    cambia el entreno. Ésta cuenta las ANULACIONES: los días en que además se
+    pidió otra sesión y el sistema escribió en Hevy lo que pidió el usuario.
+    Discrepar sin anular es decir que no estás de acuerdo; anular es hacer otra
+    cosa, y solo la segunda deja una sesión distinta de la que el sistema
+    propuso, que es la que después se puede juzgar.
+
+    LO QUE ESTE BLOQUE NO HACE, y es la mitad del encargo: no ajusta nada. No
+    mueve un umbral, no aprende, no propone. Cuenta y dice cuánto falta. El
+    módulo que mida quién acertó -el check-in y la HRV del día siguiente,
+    ponderados y etiquetados como imperfectos- se escribirá cuando haya diez
+    casos reales que mirar, y se escribirá sobre ellos y no sobre casos
+    imaginados. Mientras tanto esto acumula, que es exactamente lo que hace
+    falta para poder escribirlo.
+    """
+    grupos: dict[str, dict[str, Any]] = {}
+    for f in filas:
+        if not f.override_session_type:
+            continue
+        clave = _json(f.decision_json).get("trigger_rule") or SIN_REGLA
+        g = grupos.setdefault(
+            clave, {"clave": clave, "anulaciones": 0, "forzadas_en_rojo": 0, "pedidas": {}}
+        )
+        g["anulaciones"] += 1
+        if f.forced_on_red:
+            g["forzadas_en_rojo"] += 1
+        g["pedidas"][f.override_session_type] = (
+            g["pedidas"].get(f.override_session_type, 0) + 1
+        )
+
+    por_regla = []
+    for g in grupos.values():
+        faltan = max(0, MINIMO_ANULACIONES - g["anulaciones"])
+        por_regla.append({
+            **g,
+            "faltan": faltan,
+            # La frase se redacta AQUÍ y no en la pantalla, por lo mismo que en
+            # el resto de este módulo: el que sabe cuántas van y cuántas faltan
+            # es quien las ha contado, y una plantilla en el navegador que
+            # reconstruya «van N de M» acaba diciendo otra cosa el día que M
+            # cambie.
+            "lectura": (
+                f"van {g['anulaciones']} de las {MINIMO_ANULACIONES} que hacen "
+                f"falta para poder proponer nada sobre `{g['clave']}`"
+                if faltan
+                else (
+                    f"ya hay {g['anulaciones']} anulaciones de `{g['clave']}`: "
+                    f"suficientes para mirar si su umbral está donde debería"
+                )
+            ),
+        })
+    # Por anulaciones y después por nombre, igual que `_agrupar`: una tabla que
+    # se reordena sola entre dos recargas no se puede comparar consigo misma.
+    por_regla.sort(key=lambda d: (-d["anulaciones"], d["clave"]))
+
+    n = sum(g["anulaciones"] for g in grupos.values())
+    return {
+        "n": n,
+        "minimo": MINIMO_ANULACIONES,
+        "por_regla": por_regla,
+        "que_es": (
+            "una anulación es un día en que pediste otra sesión y el sistema "
+            "escribió la tuya. No es lo mismo que un desacuerdo: discrepar es "
+            "decir que no lo ves, anular es hacer otra cosa"
+        ),
+        "na": None
+        if n
+        else (
+            "todavía no has anulado ninguna sesión, así que no hay nada que "
+            "contar. Esto empieza a acumular el primer día que pidas algo "
+            "distinto de lo que propone el sistema"
+        ),
+    }
+
+
 def _lectura_agolpe(por_regla: list[dict[str, Any]], n: int) -> str | None:
     """La regla que se lleva más desacuerdos, si es que alguna destaca.
 
@@ -663,5 +759,12 @@ def vista_calibracion(
         "cuantas": _cuantas(filas),
         "direcciones": _direcciones(filas),
         "donde": _donde_se_agolpa(filas),
+        # El contador de anulaciones va SEPARADO de `donde` aunque las dos
+        # agrupen por la misma regla: aquélla cuenta opiniones y ésta cuenta
+        # entrenos cambiados. Fundirlas en una tabla con dos columnas más
+        # ahorraría una clave y haría imposible leer ninguna de las dos, porque
+        # los dos números tienen denominadores distintos y significan cosas que
+        # llevan a decisiones opuestas.
+        "anulaciones": _anulaciones_por_regla(filas),
         "quien_acerto": _quien_acerto(session, filas, desde, hasta),
     }

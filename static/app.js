@@ -1003,25 +1003,53 @@ function porQue(d) {
   const dec = d.decision || {};
   const lineas = [];
 
-  if (d.trigger_rule) {
-    let disparo = null;
-    for (const r of dec.fired_rules || []) {
-      if (r.name === d.trigger_rule) disparo = r;
-    }
+  /* LA REGLA QUE DECIDIÓ EL COLOR, LEÍDA DE UN SOLO SITIO.
+   *
+   * El servidor la manda DOS VECES: suelta en la raíz de la respuesta y otra
+   * vez dentro de `decision`. Aquí se leía solo la de la raíz, y eso no es un
+   * detalle de estilo: es un dato con dos fuentes y un sitio donde pueden
+   * discrepar. Se prefiere la de la raíz porque es la que el endpoint calcula
+   * para esta respuesta, y se cae a la de dentro cuando no está.
+   */
+  const disparadora = d.trigger_rule || dec.trigger_rule || null;
+  const saltadas = dec.fired_rules || [];
+
+  /* Y LA FRASE SE DECIDE POR LAS REGLAS, NO POR QUE LLEGUE EL CAMPO.
+   *
+   * Decía «Ninguna regla ha saltado hoy» cuando faltaba `trigger_rule`, que es
+   * OTRO HECHO del que la frase afirma. Con la regla disparadora ausente y
+   * `fired_rules` lleno -un cliente que pase solo `decision`, o el día que
+   * alguien quite el campo duplicado de la raíz por ordenar- la tarjeta
+   * imprimía «Ninguna regla ha saltado hoy» y justo debajo la regla que había
+   * saltado, con su detalle.
+   *
+   * No es una posibilidad teórica: salió al renderizar esta tarjeta a mano con
+   * el payload real guardado en `previews`, que no lleva la copia de la raíz.
+   * Y sale en el único bloque de la pantalla cuyo trabajo es explicar por qué
+   * el sistema ha decidido lo que ha decidido: el sitio donde una contradicción
+   * cuesta más cara.
+   *
+   * Atada al recuento de reglas, la frase no puede contradecir a la lista que
+   * tiene debajo, porque sale de ella.
+   */
+  if (!disparadora && !saltadas.length) {
+    lineas.push("Ninguna regla ha saltado hoy");
+  }
+
+  if (disparadora) {
+    const disparo = saltadas.find((r) => r.name === disparadora) || null;
     const det = disparo && disparo.detail && disparo.detail.length
       ? `: ${disparo.detail.join("; ")}`
       : "";
-    lineas.push(`${d.trigger_rule}${det}`);
-  } else {
-    lineas.push("Ninguna regla ha saltado hoy");
+    lineas.push(`${disparadora}${det}`);
   }
 
   // Las demás reglas que saltaron. El mensaje de la mañana solo nombra la que
   // decidió el color, y ahí está bien -es un mensaje, no un informe-; aquí se
   // está calibrando, y «han saltado tres» frente a «ha saltado una por los
   // pelos» son dos días que no se parecen en nada aunque salgan del mismo color.
-  for (const r of dec.fired_rules || []) {
-    if (r.name === d.trigger_rule) continue;
+  for (const r of saltadas) {
+    if (r.name === disparadora) continue;
     const det = r.detail && r.detail.length ? `: ${r.detail.join("; ")}` : "";
     lineas.push(`${r.name}${det}`);
   }

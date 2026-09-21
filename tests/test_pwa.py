@@ -472,6 +472,25 @@ HUELLAS_DEL_ARMAZON = {
     # usuario exactamente donde estaba ese día: teniendo que saltarse el
     # sistema, y por tanto sin que el desacuerdo quede registrado.
     "v22": "88a13967679f1afa7739f5978f03555f54fb43415c6ecd72984991842810e9bf",
+    # v23: el contador de anulaciones por regla en la vista de calibración, y
+    # el arreglo de la contradicción del bloque «Por qué». Toca `metricas.js`
+    # -el bloque nuevo y su tabla- y `app.js` -`porQue`-.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA CALLADA, y es de las pocas veces que
+    # esta lista tiene que decir eso de un cambio pequeño. Un teléfono con el
+    # `metricas.js` de la v22 abre la calibración y NO enseña el contador: el
+    # backend manda `anulaciones` y el JavaScript de antes no conoce la clave,
+    # así que la tira a la basura sin un error. La pantalla se ve entera y
+    # correcta, y lo que falta es justamente el número que contesta «¿cuánto
+    # queda para poder proponer algo?». Es el fallo callado de la v8 otra vez.
+    #
+    # Lo de `porQue` es distinto y más leve: la contradicción que arregla -«Ninguna
+    # regla ha saltado hoy» encima de la regla que saltó- NO se daba con la
+    # respuesta que manda el endpoint, que trae `trigger_rule` también en la
+    # raíz. Se daba al pintar la tarjeta desde el payload guardado en
+    # `previews`, que no la trae. O sea que un móvil sin actualizar no empeora:
+    # sigue sin poder llegar a ese caso por el camino normal.
+    "v23": "88047a36f6850846f354a46456f2e3daa602af3c37033d7ec3b73779a7df26b8",
 }
 
 
@@ -1729,6 +1748,23 @@ def _payloads(cliente) -> dict[str, object]:
     assert not vacias, (
         f"direcciones a cero: {vacias}. Las tres tienen que tener desacuerdos "
         f"dentro, porque una casilla vacía manda `pct` a `None` y es otra rama."
+    )
+    # EL CONTADOR DE ANULACIONES, POR LA RAMA QUE PINTA LA TABLA.
+    #
+    # Mismo argumento que el resto de este bloque, y aquí especialmente fácil de
+    # incumplir: si el sembrado no deja ni una anulación, la vista sale con `na`
+    # puesto, `bloqueAnulaciones` se va por la rama corta y ni la tabla ni la
+    # frase de «van N de 10» se llegan a pintar. El arnés aprobaría un bloque
+    # que no ha ejecutado.
+    assert not c["anulaciones"]["na"], (
+        f"el contador de anulaciones viene por la rama de «todavía nada» "
+        f"({c['anulaciones']['na']!r}): el sembrado no deja ni una "
+        f"previsualización con `override_session_type`."
+    )
+    assert c["anulaciones"]["por_regla"], "sin filas no hay tabla que pintar"
+    assert any(g["forzadas_en_rojo"] for g in c["anulaciones"]["por_regla"]), (
+        "ninguna anulación forzada en rojo en el sembrado: la columna que separa "
+        "la subida del día rojo del resto no se pinta nunca."
     )
     assert c["direcciones"]["lectura"], (
         "la lectura de las direcciones se calla: hacen falta tres desacuerdos "
@@ -4067,4 +4103,120 @@ def test_cambiar_de_opcion_tira_la_confirmacion_del_rojo(tmp_path):
     assert ultimo.get("requested_session") == "reduced"
     assert "confirm_upgrade" not in ultimo, (
         f"la confirmación del rojo ha sobrevivido al cambio de opción: {ultimo}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# «Por qué»: el bloque que no se puede contradecir
+# ---------------------------------------------------------------------------
+#
+# Es el único de la tarjeta cuyo trabajo entero es explicar por qué el sistema
+# ha decidido lo que ha decidido. Una contradicción aquí no es fea: es que la
+# explicación no sirve.
+#
+# LO QUE HABÍA. La frase «Ninguna regla ha saltado hoy» se imprimía cuando
+# faltaba `trigger_rule`, que es OTRO HECHO del que la frase afirma. El
+# servidor manda esa clave dos veces -suelta en la raíz de la respuesta y
+# dentro de `decision`- y aquí se leía solo la de la raíz. Con la de la raíz
+# ausente y `fired_rules` lleno, la tarjeta imprimía «Ninguna regla ha saltado
+# hoy» y justo debajo la regla que había saltado, con su detalle.
+#
+# Salió al renderizar la tarjeta a mano con el payload real guardado en
+# `previews`, que no lleva la copia de la raíz. Un dato con dos fuentes es un
+# sitio donde pueden discrepar, y éste discrepaba.
+
+
+def _por_que(tmp_path, respuesta: dict) -> list[str]:
+    """Las líneas del bloque «Por qué», pintadas de verdad."""
+    salida = _rellenar(
+        tmp_path,
+        _hoy(),
+        [
+            {"tipo": "deslizar", "key": "fatigue", "valor": 7},
+            {"tipo": "responder", "key": "wants_to_train", "respuesta": "no"},
+            {"tipo": "responder", "key": "will_train", "respuesta": "si"},
+            {"tipo": "previsualizar"},
+        ],
+        previsualizaciones=[{"respuesta": respuesta}],
+    )
+    return (salida["previsualizacion"] or {}).get("texto", "")
+
+
+_BASE = {
+    "day": "2026-09-15", "ejecutado": False, "checkin_guardado": False,
+    "decision_guardada": False, "hevy": "sin tocar", "telegram": "sin tocar",
+    "previsualizacion_guardada": True, "preview_id": 1, "seq": 1,
+    "revision": False, "light": "amber",
+}
+
+
+def test_la_frase_de_ninguna_regla_no_convive_con_una_regla_que_salto(tmp_path):
+    """EL TEST. La contradicción, reproducida por el camino que la producía.
+
+    `trigger_rule` NO va en la raíz -como en el payload que guarda `previews`-
+    y `fired_rules` sí trae la regla. Antes salían las dos frases seguidas.
+    """
+    texto = _por_que(tmp_path, {
+        **_BASE,
+        "decision": {
+            "light": "amber",
+            "trigger_rule": "lumbar_medio",
+            "fired_rules": [{"name": "lumbar_medio", "detail": ["lower_discomfort = 5 gte 5"]}],
+            "skipped_rules": [], "notes": [], "session": {"title": "Día 1", "kind": "reduced"},
+        },
+    })
+    assert "lumbar_medio" in texto, "no se nombra la regla que decidió el color"
+    assert "Ninguna regla ha saltado hoy" not in texto, (
+        "la tarjeta dice que no ha saltado ninguna regla y debajo enseña la que "
+        "saltó, con su detalle. Es el bloque que existe para explicar la "
+        "decisión contradiciéndose consigo mismo"
+    )
+
+
+def test_un_dia_sin_ninguna_regla_si_lo_dice(tmp_path):
+    """El contrapeso, y no es de adorno: la forma más fácil de poner verde el
+    test de arriba es borrar la frase, y entonces un día en que de verdad no
+    salta nada dejaría el bloque vacío sin decir que está vacío a propósito."""
+    texto = _por_que(tmp_path, {
+        **_BASE,
+        "light": "green",
+        "decision": {
+            "light": "green", "trigger_rule": None, "fired_rules": [],
+            "skipped_rules": [], "notes": [], "session": {"title": "Día 1", "kind": "full"},
+        },
+    })
+    assert "Ninguna regla ha saltado hoy" in texto
+
+
+def test_la_regla_disparadora_se_lee_tambien_de_dentro_de_la_decision(tmp_path):
+    """Un dato con dos fuentes se lee de una, con la otra de respaldo.
+
+    Si esto leyera solo la copia de la raíz, el día que alguien la quite por
+    ordenar la respuesta -es redundante, y lo redundante se limpia- la tarjeta
+    dejaría de nombrar la regla que decidió el color sin que nada reventara.
+    """
+    # DOS reglas saltadas y la disparadora la SEGUNDA de la lista. Con una
+    # sola, este test no distinguía «se nombra como la que decidió» de «sale
+    # en la lista de las que saltaron»: leyendo solo la copia de la raíz, la
+    # regla aparecía igual -por el bucle de las demás- y el test pasaba. La
+    # afirmación de verdad es sobre el ORDEN, porque lo que el bloque promete
+    # es que la primera línea es la que decidió el color.
+    texto = _por_que(tmp_path, {
+        **_BASE,
+        "decision": {
+            "light": "amber", "trigger_rule": "fatiga_alta",
+            "fired_rules": [
+                {"name": "sueno_corto", "detail": ["sleep 5.1 h < 6 h"]},
+                {"name": "fatiga_alta", "detail": ["fatigue 7 ≥ 6"]},
+            ],
+            "skipped_rules": [], "notes": [], "session": {"title": "Día 1", "kind": "reduced"},
+        },
+    })
+    assert "fatiga_alta" in texto and "fatigue 7" in texto, (
+        "sin la copia de la raíz la tarjeta ya no dice qué regla decidió el color"
+    )
+    assert texto.index("fatiga_alta") < texto.index("sueno_corto"), (
+        f"la regla que decidió el color no va la primera: se está leyendo solo "
+        f"la copia de la raíz y la disparadora cae al montón de las demás. "
+        f"{texto[:300]}"
     )

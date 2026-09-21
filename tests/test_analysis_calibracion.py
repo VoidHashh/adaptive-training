@@ -37,6 +37,7 @@ from app.analysis.calibracion import (
     ETIQUETA_JUEZ,
     MAS_DURA,
     MAS_SUAVE,
+    MINIMO_ANULACIONES,
     MINIMO_JUICIOS,
     SIN_PEDIR,
     SIN_REGLA,
@@ -694,3 +695,136 @@ def test_la_ventana_se_anuncia_con_sus_dos_extremos(db):
     assert v["ventana"]["dias"] == 30
     assert v["ventana"]["hasta"] == HOY.isoformat()
     assert v["ventana"]["desde"] == (HOY - timedelta(days=29)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# El contador de anulaciones, por regla
+# ---------------------------------------------------------------------------
+#
+# Nace del 21-09-2026, el día que el sistema puso ámbar por `lumbar_medio` y el
+# usuario tuvo que arreglar Hevy a mano. Con el control ya puesto, lo que hacía
+# falta era empezar a acumular: cuántas veces se anula cada regla y cuánto
+# queda para poder proponer nada sobre ella.
+#
+# Y LO QUE NO HACE ES LA MITAD DE LO QUE ES. No ajusta ningún umbral, no
+# aprende y no propone. El criterio fue explícito: el sistema no se ajusta solo
+# con las anulaciones; cuando haya muestra, propone y el usuario aprueba. Este
+# bloque es la parte que acumula, y su única afirmación es «van N de 10».
+
+
+def test_una_anulacion_no_es_un_desacuerdo(db):
+    """Las dos medidas cuentan cosas distintas y no pueden confundirse.
+
+    Discrepar es decir que no lo ves y no cambia el entreno. Anular es pedir
+    otra sesión, y entonces el sistema escribe la tuya en Hevy. Solo la segunda
+    deja una sesión distinta de la propuesta, que es la única que después se
+    puede juzgar. Un día se puede discrepar sin anular, y también anular sin
+    haber marcado el desacuerdo.
+    """
+    # DOS desacuerdos y UNA anulación, a propósito. Con uno de cada, las dos
+    # cuentas valen 1 y el test pasa leas el campo que leas: un contador que
+    # mirara `disagreed` en vez de `override_session_type` saldría igual de
+    # verde. Los números tienen que poder diferenciarse para que la afirmación
+    # signifique algo, y lo descubrió una mutación que nadie cazaba.
+    previsualizacion(db, 1, regla="lumbar_medio", discrepa=True)              # solo opina
+    previsualizacion(db, 2, regla="lumbar_medio", discrepa=True)              # solo opina
+    previsualizacion(db, 3, regla="lumbar_medio", pediste="full")             # solo anula
+    v = vista(db)
+
+    assert v["donde"]["n"] == 2, "el bloque de desacuerdos ha contado la anulación"
+    assert v["anulaciones"]["n"] == 1, (
+        f"el contador de anulaciones ha contado desacuerdos: dice "
+        f"{v['anulaciones']['n']} y solo se pidió otra sesión una vez"
+    )
+    assert grupo(v["anulaciones"]["por_regla"], "lumbar_medio")["anulaciones"] == 1
+
+
+def test_el_contador_dice_cuantas_faltan_para_poder_concluir(db):
+    """La única frase honrada mientras no haya muestra.
+
+    Sin el «de 10», tres anulaciones se leen como un hallazgo. Con él se leen
+    como lo que son: el principio de una cuenta.
+    """
+    for i in range(1, 4):
+        previsualizacion(db, i, regla="lumbar_medio", pediste="full")
+    g = grupo(vista(db)["anulaciones"]["por_regla"], "lumbar_medio")
+
+    assert g["anulaciones"] == 3
+    assert g["faltan"] == MINIMO_ANULACIONES - 3
+    assert "3" in g["lectura"] and str(MINIMO_ANULACIONES) in g["lectura"], (
+        f"la frase no dice cuántas van ni cuántas hacen falta: {g['lectura']!r}"
+    )
+
+
+def test_al_llegar_al_minimo_el_contador_lo_dice_y_deja_de_pedir_mas(db):
+    """El momento en que el módulo de aprendizaje tendrá con qué trabajar."""
+    for i in range(1, MINIMO_ANULACIONES + 1):
+        previsualizacion(db, i, regla="lumbar_medio", pediste="full")
+    g = grupo(vista(db)["anulaciones"]["por_regla"], "lumbar_medio")
+
+    assert g["faltan"] == 0
+    assert "suficientes" in g["lectura"], (
+        f"con la muestra completa sigue pidiendo más: {g['lectura']!r}"
+    )
+
+
+def test_sin_ninguna_anulacion_lo_dice_en_vez_de_pintar_un_cero(db):
+    """Un cero y «todavía no has anulado nada» llevan a sitios distintos: el
+    primero se lee como «nunca discrepas» y el segundo como «esto no ha
+    empezado a medir»."""
+    previsualizacion(db, 1, regla="lumbar_medio", discrepa=False)
+    a = vista(db)["anulaciones"]
+
+    assert a["n"] == 0
+    assert a["na"], "un cero sin motivo se lee como un resultado"
+    assert a["por_regla"] == []
+
+
+def test_cada_regla_lleva_su_propia_cuenta(db):
+    """El encargo nombraba una regla concreta -«has anulado lumbar_medio 8
+    veces»-, y una cuenta global no contestaría a eso: ocho anulaciones
+    repartidas entre cuatro reglas no dicen nada de ninguna."""
+    for i in range(1, 5):
+        previsualizacion(db, i, regla="lumbar_medio", pediste="full")
+    for i in range(5, 7):
+        previsualizacion(db, i, regla="fatiga_alta", pediste="recovery")
+    a = vista(db)["anulaciones"]
+
+    assert a["n"] == 6
+    assert grupo(a["por_regla"], "lumbar_medio")["anulaciones"] == 4
+    assert grupo(a["por_regla"], "fatiga_alta")["anulaciones"] == 2
+    assert a["por_regla"][0]["clave"] == "lumbar_medio", (
+        "la tabla no va ordenada por anulaciones: la regla de la que antes se "
+        "podrá decir algo no sale la primera"
+    )
+
+
+def test_la_subida_forzada_en_rojo_se_cuenta_aparte(db):
+    """No es una anulación cualquiera y por eso tiene columna propia.
+
+    Subir de dureza un día ROJO es lo único que el sistema pregunta antes de
+    hacer. Metida en el montón, la medida que esto existe para dar -cuántas
+    veces se subió el día que no tocaba- se diluiría entre los días verdes.
+    """
+    previsualizacion(db, 1, regla="lumbar_medio", pediste="full", luz="red", forzada=True)
+    previsualizacion(db, 2, regla="lumbar_medio", pediste="full")
+    g = grupo(vista(db)["anulaciones"]["por_regla"], "lumbar_medio")
+
+    assert g["anulaciones"] == 2
+    assert g["forzadas_en_rojo"] == 1
+
+
+def test_se_apunta_QUE_sesion_se_pidio_y_no_solo_que_hubo_anulacion(db):
+    """«Anulé lumbar_medio» no dice si subí o bajé, y son lo contrario.
+
+    Pedir la completa un día ámbar es no estar de acuerdo con el recorte;
+    pedir recuperación es estar MÁS preocupado que el sistema. Sin esta
+    columna, las dos entran en el mismo saco y la propuesta que salga de ahí
+    podría ir en la dirección equivocada.
+    """
+    previsualizacion(db, 1, regla="lumbar_medio", pediste="full")
+    previsualizacion(db, 2, regla="lumbar_medio", pediste="full")
+    previsualizacion(db, 3, regla="lumbar_medio", pediste="recovery")
+    g = grupo(vista(db)["anulaciones"]["por_regla"], "lumbar_medio")
+
+    assert g["pedidas"] == {"full": 2, "recovery": 1}
