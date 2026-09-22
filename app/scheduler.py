@@ -331,6 +331,7 @@ def job_reconcile(
     hevy_client: Any = None,
     dias_atras: int = 3,
     tope_dias: int = 45,
+    session: Any = None,
 ) -> list[Any]:
     """Lee de Hevy lo que se entrenó y avanza las rachas.
 
@@ -372,10 +373,31 @@ def job_reconcile(
     workouts = hevy_client.get_workouts(since=desde)
 
     salida = []
-    with session_scope() as s:
+
+    def reconciliar(s: Any) -> None:
         for i in range(ventana + 1):
             d = desde + timedelta(days=i)
             salida.append(run_reconcile(s, cfg, d, workouts=workouts))
+
+    # LA SESIÓN SE RECIBE CUANDO YA HAY UNA ABIERTA, Y ESO NO ES UN LUJO.
+    #
+    # Corriendo como trabajo del planificador nadie más está escribiendo y abrir
+    # la suya es lo correcto. Pero desde el 21-09-2026 esto se llama también
+    # ANTES DE DECIDIR, y ahí el camino del check-in ya tiene una sesión propia
+    # con el check-in recién guardado dentro. SQLite admite UN escritor: una
+    # segunda conexión pidiendo escribir sobre la misma base contesta
+    # `database is locked`, y eso es exactamente lo que pasó la primera mañana
+    # con el arreglo desplegado -22-09-2026, 06:55:49-.
+    #
+    # El `try/except` de `poner_al_dia_lo_entrenado` hizo su trabajo: la mañana
+    # se decidió igual y quedó escrito que lo entrenado podía ir desfasado. Pero
+    # lo que iba desfasado era justo lo que el arreglo venía a poner al día, así
+    # que el sistema volvió a proponer una rutina ya hecha.
+    if session is not None:
+        reconciliar(session)
+    else:
+        with session_scope() as s:
+            reconciliar(s)
     return salida
 
 
@@ -828,7 +850,11 @@ NOMBRES_LEGIBLES = {
 
 
 def poner_al_dia_lo_entrenado(
-    cfg: Any, *, hevy_client: Any = None, day: date | None = None
+    cfg: Any,
+    *,
+    hevy_client: Any = None,
+    day: date | None = None,
+    session: Any = None,
 ) -> list[Any]:
     """Relee de Hevy lo entrenado ANTES de decidir el día. Nunca lanza.
 
@@ -869,7 +895,7 @@ def poner_al_dia_lo_entrenado(
         log.info("no se pone al día lo entrenado: no hay cliente de Hevy")
         return []
     try:
-        return job_reconcile(cfg, day=day, hevy_client=hevy_client)
+        return job_reconcile(cfg, day=day, hevy_client=hevy_client, session=session)
     except Exception:  # noqa: BLE001
         log.exception(
             "no se ha podido releer lo entrenado antes de decidir; se decide "

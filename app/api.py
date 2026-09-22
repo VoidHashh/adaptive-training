@@ -1303,7 +1303,10 @@ def _decidir(
     # lo que puede cambiar QUÉ rutina toca. Este es además el camino por el que
     # se coló el fallo del 20-09-2026: el check-in de la mañana decidió con una
     # rotación de cinco días antes. Ver `poner_al_dia_lo_entrenado`.
-    poner_al_dia_lo_entrenado(cfg, hevy_client=hevy, day=day)
+    # CON LA SESIÓN DE LA PETICIÓN, no con una nueva. Aquí arriba se acaba de
+    # guardar el check-in en `s` y SQLite solo admite un escritor: abrir una
+    # segunda conexión da `database is locked`. Ver `job_reconcile`.
+    poner_al_dia_lo_entrenado(cfg, hevy_client=hevy, day=day, session=s)
 
     try:
         metrics, rides = _fetch_garmin(cfg, day)

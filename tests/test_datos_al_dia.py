@@ -357,3 +357,190 @@ def test_si_el_reloj_sigue_sin_subir_la_noche_no_se_rehace_nada(cfg, monkeypatch
                 llego=set(), solo_recomputar=True) == ["garmin"], (
         "ha rehecho la decisión sin que el dato que faltaba haya llegado"
     )
+
+
+# ---------------------------------------------------------------------------
+# Una sola conexión escribiendo
+# ---------------------------------------------------------------------------
+#
+# LA REGRESIÓN DEL 22-09-2026, que es la del 20 repetida y con otra causa. El
+# sistema volvió a proponer una rutina hecha el día antes, esta vez el Día 1.
+# El arreglo del 21 estaba desplegado y CORRIÓ -el log lo enseña ampliando la
+# ventana a siete días a las 06:55:18- y treinta segundos después:
+#
+#   06:55:49 ERROR no se ha podido releer lo entrenado antes de decidir; se
+#            decide con lo que hay en la base, que puede estar desfasado
+#   sqlite3.OperationalError: database is locked
+#
+# El `try/except` hizo su trabajo: la mañana se decidió igual y quedó escrito
+# que lo entrenado podía ir desfasado. Pero lo desfasado era justo lo que el
+# arreglo venía a poner al día, así que el síntoma volvió entero.
+#
+# LA CAUSA ES DE PLOMERÍA Y ERA MÍA. `post_checkin` guarda el check-in en la
+# sesión de la petición y llama a `_decidir` con ella todavía abierta;
+# `poner_al_dia_lo_entrenado` abría una SEGUNDA conexión con `session_scope()`.
+# SQLite admite un escritor: la segunda pide el lock, no lo consigue y revienta.
+#
+# Estos tests usan SQLite DE FICHERO y dos sesiones de verdad. Con
+# `:memory:` no valdría: cada conexión tendría su propia base y el bloqueo -que
+# es lo único que hay que reproducir- no se daría nunca.
+
+
+def _engine_de_fichero(tmp_path, monkeypatch=None):
+    """Una base en FICHERO, y `session_scope` apuntando a ella.
+
+    Las dos mitades hacen falta y la segunda se me olvidó la primera vez: sin
+    atar `session_scope` al mismo fichero, la conexión de respaldo se va a la
+    base configurada de la aplicación, escribe allí tan tranquila y el bloqueo
+    -que es TODO lo que estos tests reproducen- no llega a darse. Los tests
+    salían verdes con el código roto de ayer.
+    """
+    from contextlib import contextmanager as ctx
+    from sqlalchemy import create_engine as crear
+
+    e = crear(f"sqlite:///{tmp_path / 'app.db'}", future=True)
+    Base.metadata.create_all(e)
+
+    if monkeypatch is not None:
+        import app.scheduler as mod
+
+        @ctx
+        def otra_conexion():
+            with Session(e) as s:
+                yield s
+
+        monkeypatch.setattr(mod, "session_scope", otra_conexion)
+    return e
+
+
+def _reconcile_que_escribe(monkeypatch):
+    """Sustituye `run_reconcile` por una escritura mínima.
+
+    Lo que se prueba aquí es de qué CONEXIÓN sale el INSERT, no qué reconcilia.
+    Con la reconciliación de verdad el test necesitaría Hevy y entrenos
+    sembrados, y el bloqueo -que es lo único que importa- quedaría escondido
+    detrás de todo eso.
+    """
+    import app.scheduler as mod
+    from app.models import JobRun
+
+    def falso(s, cfg, d, **kw):
+        s.add(JobRun(job_id=f"prueba-{d}"))
+        s.flush()
+        return f"reconciliado {d}"
+
+    monkeypatch.setattr(mod, "run_reconcile", falso)
+
+
+@no_es_doble("un cliente de Hevy del que solo se llama `get_workouts`")
+class HevySinEntrenos:
+    def get_workouts(self, since=None, **kw):
+        return []
+
+
+def test_reconciliar_con_la_sesion_que_se_le_pasa_no_bloquea_la_base(tmp_path, cfg, monkeypatch):
+    """EL TEST. Con la sesión de la petición, la escritura sale por su conexión.
+
+    Es el camino del check-in: el check-in ya está dentro de esa sesión y sin
+    confirmar, así que la base tiene el lock de escritura cogido. Reconciliar
+    por ahí mismo no lo pide otra vez.
+    """
+    import app.scheduler as mod
+
+    _reconcile_que_escribe(monkeypatch)
+    engine = _engine_de_fichero(tmp_path, monkeypatch)
+
+    with Session(engine) as peticion:
+        # El check-in recién guardado y sin confirmar: esto es lo que coge el
+        # lock de escritura en SQLite y lo que hacía fallar a la segunda conexión.
+        from app.models import JobRun
+
+        peticion.add(JobRun(job_id="el-checkin-de-esta-manana"))
+        peticion.flush()
+
+        fuera = mod.job_reconcile(
+            cfg, day=HOY, hevy_client=HevySinEntrenos(), session=peticion
+        )
+
+    assert fuera, "no ha reconciliado ningún día"
+
+
+def test_sin_sesion_y_con_otra_escribiendo_es_cuando_se_bloquea(tmp_path, cfg, monkeypatch):
+    """EL CONTRAPESO, y es el que demuestra que el test de arriba prueba algo.
+
+    Sin él, `session=` podría no estar usándose para nada -abriendo igual su
+    propia conexión- y el test anterior saldría verde de todas formas, porque
+    con la base libre una segunda conexión escribe sin problema. Aquí se deja
+    el lock cogido y se llama SIN sesión: tiene que reventar, y con el mismo
+    error que salió el 22 de septiembre.
+    """
+    import app.scheduler as mod
+
+    import pytest as pt
+    from sqlalchemy.exc import OperationalError
+
+    _reconcile_que_escribe(monkeypatch)
+    engine = _engine_de_fichero(tmp_path, monkeypatch)
+
+    with Session(engine) as peticion:
+        from app.models import JobRun
+
+        peticion.add(JobRun(job_id="el-checkin-de-esta-manana"))
+        peticion.flush()
+
+        with pt.raises(OperationalError, match="database is locked"):
+            mod.job_reconcile(cfg, day=HOY, hevy_client=HevySinEntrenos())
+
+
+def test_el_checkin_le_pasa_su_propia_sesion(tmp_path, cfg, monkeypatch):
+    """Y que el camino del check-in la pase de verdad, que es lo que faltaba.
+
+    Los dos tests de arriba prueban que `job_reconcile` sabe recibir una
+    sesión. Éste prueba que `_decidir` se la da: sin esta línea, saber
+    recibirla no sirve de nada y el 22 de septiembre se repite igual.
+    """
+    import app.api as api
+    import app.scheduler as mod
+
+    recibido: dict = {}
+    monkeypatch.setattr(api, "_clientes", lambda cfg: (HevyCualquiera(), None, {}))
+    monkeypatch.setattr(
+        mod, "poner_al_dia_lo_entrenado",
+        lambda c, **kw: recibido.update(kw) or [],
+    )
+    monkeypatch.setattr(mod, "_fetch_garmin", lambda c, d: ([], []))
+
+    engine = _engine_de_fichero(tmp_path)
+    with Session(engine) as s:
+        api._decidir(s, cfg, HOY, source="checkin")
+
+    assert recibido.get("session") is s, (
+        "el check-in no le pasa su sesión: se abrirá una segunda conexión y "
+        "SQLite contestará `database is locked` con el check-in sin confirmar"
+    )
+
+
+def test_el_ayudante_reenvia_la_sesion_que_recibe(cfg, monkeypatch):
+    """El eslabón del medio, que se me quedó sin cubrir.
+
+    La cadena tiene tres: `_decidir` le da su sesión al ayudante, el ayudante
+    se la pasa a `job_reconcile`, y `job_reconcile` la usa en vez de abrir
+    otra. Los otros dos tests de este bloque llaman a `job_reconcile` DIRECTO,
+    así que se saltan éste: quitar el reenvío no ponía rojo a nadie y la
+    cadena volvía a romperse por el mismo sitio, con el mismo
+    `database is locked`.
+    """
+    import app.scheduler as mod
+
+    espia = Contador()
+    monkeypatch.setattr(mod, "job_reconcile", espia)
+    marca = object()
+
+    poner_al_dia_lo_entrenado(
+        cfg, hevy_client=HevyCualquiera(), day=HOY, session=marca
+    )
+
+    assert espia.llamadas[0].get("session") is marca, (
+        f"el ayudante no reenvía la sesión: {espia.llamadas[0]}. Sin ella "
+        f"`job_reconcile` abre una segunda conexión y SQLite la bloquea"
+    )
