@@ -1124,6 +1124,14 @@ const NOMBRE_DEL_TIPO = {
  * medida.
  */
 function bloqueEleccion(d) {
+  // Con un «no voy a entrenar» contestado, elegir el tipo de sesión no
+  // significa nada: no hay sesión que endurecer ni que rebajar. Y no es solo
+  // que sobre en pantalla: cada opción que se pulsara aquí quedaría apuntada
+  // como una ANULACIÓN, contando hacia el umbral de diez de una regla con la
+  // que el usuario ni siquiera está discutiendo. El contador mediría, en
+  // parte, los días que no se entrena.
+  if ((d.decision || {}).va_a_entrenar === false) return "";
+
   const propuesto = (d.decision && d.decision.session && d.decision.session.kind) || null;
   const opciones = TIPOS_DE_SESION.map((o) => {
     const esDefecto = o.tipo === null;
@@ -1217,9 +1225,51 @@ function sinDatos(d) {
  * SUBE hoy, `session.changes` es lo que se le ha recortado a la rutina base y
  * `session.dropped` es lo que se ha caído del todo. Juntas en un montón se
  * leerían como veinte modificaciones de la misma clase. */
+/* HOY NO ENTRENAS: LA TARJETA DEJA DE PRESCRIBIR.
+ *
+ * `message.py` lleva esto resuelto desde hace tiempo -`prescribe =
+ * va_a_entrenar is not False`, y con un «no voy» el Telegram cuenta el día en
+ * vez de darte el plan-. La tarjeta de la PWA no se enteró, así que la misma
+ * decisión salía prescribiendo por una pantalla y no por la otra.
+ *
+ * Lo que se veía el 23-09-2026 después de contestar que no: «Lo que
+ * propondría: Día 2, sesión completa», la lista de cambios sobre la rutina,
+ * «Hoy se quedan fuera: Peso muerto», los apuntes de la sesión y el control
+ * para elegir qué sesión hacer. Todo ello debajo de una nota que ya decía
+ * «hoy no entrenas». La pantalla se contradecía y encima daba instrucciones
+ * para un entreno que el usuario acababa de decir que no iba a hacer.
+ *
+ * SE COMPARA CON `=== false` Y NO CON `!`. Son tres estados y no dos: `null`
+ * es «no lo has contestado» -o un día del archivo anterior a que la pregunta
+ * existiera- y tiene que seguir prescribiendo. Escrito `if
+ * (!dec.va_a_entrenar)`, la tarjeta dejaría de proponer sesión todos los días
+ * en que no se rellena el formulario, que son la mayoría, y en silencio. Es
+ * literalmente el mismo aviso que lleva escrito `message.py` en su sitio.
+ *
+ * Y LAS DOS FRASES SON LAS SUYAS, no unas nuevas. Contestan las dos preguntas
+ * que quedan en el aire -«¿pierdo el turno?» y «¿y si cambio de idea a las
+ * siete?»- y ya están redactadas y razonadas allí. Dos pantallas contando lo
+ * mismo con palabras distintas es una de ellas envejeciendo.
+ */
+function bloqueSinEntreno(d) {
+  const dec = d.decision || {};
+  const ses = dec.session || {};
+  const cual = ses.title
+    ? `${escapar(ses.title)} sigue siendo la siguiente`
+    : "la rutina que tocaba sigue siendo la siguiente";
+  return (
+    `<h3>Hoy no entrenas</h3>` +
+    `<p class="sesion">${cual}: la rotación no se mueve hasta que se haga.</p>` +
+    `<p class="tenue">La rutina se escribe en Hevy de todas formas, por si ` +
+    `cambias de idea.</p>`
+  );
+}
+
 function bloqueSesion(d) {
   const dec = d.decision || {};
   const ses = dec.session || {};
+
+  if (dec.va_a_entrenar === false) return bloqueSinEntreno(d);
 
   const dureza = ses.kind ? (DUREZA[ses.kind] || ses.kind) : "no se sabe";
 

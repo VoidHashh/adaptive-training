@@ -491,6 +491,22 @@ HUELLAS_DEL_ARMAZON = {
     # `previews`, que no la trae. O sea que un móvil sin actualizar no empeora:
     # sigue sin poder llegar a ese caso por el camino normal.
     "v23": "88047a36f6850846f354a46456f2e3daa602af3c37033d7ec3b73779a7df26b8",
+    # v24: con un «no voy a entrenar» contestado, la tarjeta deja de prescribir.
+    # Toca `app.js` y nada más.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA GRAVE, y es del tipo que esta lista ya
+    # ha tenido que apuntar dos veces: no falta nada, SOBRA una instrucción. Un
+    # teléfono con el `app.js` de la v23 sigue enseñando «Lo que propondría»,
+    # los cambios sobre la rutina y qué ejercicio se retira, el día en que el
+    # usuario acaba de contestar que no va a entrenar. Y lo enseña debajo de una
+    # nota que dice «hoy no entrenas», así que la pantalla se contradice a sí
+    # misma con las dos afirmaciones a la vista.
+    #
+    # Encima ofrece el control de qué sesión hacer, y ahí deja de ser
+    # cosmético: una opción pulsada ese día se apunta como ANULACIÓN y cuenta
+    # hacia el umbral de diez de una regla con la que nadie está discutiendo.
+    # El móvil sin actualizar no solo enseña de más: ensucia la medida.
+    "v24": "b07fb43dc6a44b11f6f898ba989c9e5d2b55d88f5e35957a894d40f56dec6ed8",
 }
 
 
@@ -4220,3 +4236,135 @@ def test_la_regla_disparadora_se_lee_tambien_de_dentro_de_la_decision(tmp_path):
         f"la copia de la raíz y la disparadora cae al montón de las demás. "
         f"{texto[:300]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# «Hoy no entrenas»: la tarjeta deja de prescribir
+# ---------------------------------------------------------------------------
+#
+# EL 23-09-2026, después de contestar que NO iba a entrenar, la tarjeta seguía
+# diciendo «Lo que propondría: Día 2, sesión completa», la lista de cambios
+# sobre la rutina, «Hoy se quedan fuera: Peso muerto», los apuntes de la sesión
+# y el control para elegir qué sesión hacer. Todo ello debajo de una nota que
+# ya decía «hoy no entrenas»: la pantalla se contradecía y encima daba
+# instrucciones para un entreno que el usuario acababa de descartar.
+#
+# Y LO LLAMATIVO ES QUE YA ESTABA RESUELTO EN EL OTRO SITIO. `message.py` tiene
+# `prescribe = va_a_entrenar is not False` desde hace tiempo, con su razón
+# escrita: con un «no voy», el Telegram cuenta el día en vez de darte el plan.
+# La misma decisión salía prescribiendo por una pantalla y no por la otra,
+# porque son dos renderizadores y solo uno se enteró.
+
+
+def _tarjeta(tmp_path, decision: dict) -> dict:
+    """La tarjeta entera, pintada de verdad, con la decisión que se le pase."""
+    salida = _rellenar(
+        tmp_path,
+        _hoy(),
+        [
+            {"tipo": "deslizar", "key": "fatigue", "valor": 7},
+            {"tipo": "responder", "key": "wants_to_train", "respuesta": "no"},
+            {"tipo": "responder", "key": "will_train", "respuesta": "no"},
+            {"tipo": "previsualizar"},
+        ],
+        previsualizaciones=[{"respuesta": {**_BASE, "decision": decision}}],
+    )
+    return salida["previsualizacion"] or {}
+
+
+_SESION_DEL_DIA = {
+    "kind": "full",
+    "title": "Día 2",
+    "routine": "dia_2",
+    "changes": ["'retirada_peso_muerto': retirado Peso muerto (máquina guiada)"],
+    "dropped": ["Peso muerto (máquina guiada)"],
+    "notes": ["sin HIIT: el HIIT solo se añade en verde y hoy es amber"],
+    "exercises": [],
+}
+
+
+def _decision(va_a_entrenar) -> dict:
+    return {
+        "light": "amber", "trigger_rule": "hrv_baja_1d",
+        "fired_rules": [{"name": "hrv_baja_1d", "detail": ["hrv_ratio = 0.9 lt 0.9"]}],
+        "skipped_rules": [], "notes": [],
+        "va_a_entrenar": va_a_entrenar,
+        "session": _SESION_DEL_DIA,
+    }
+
+
+def test_con_un_no_voy_a_entrenar_la_tarjeta_no_prescribe(tmp_path):
+    """EL TEST. Ninguna instrucción para un entreno que se acaba de descartar."""
+    t = _tarjeta(tmp_path, _decision(False))
+    texto = t.get("texto", "")
+
+    assert "Hoy no entrenas" in texto, f"no lo dice:\n{texto[:300]}"
+    for frase in ("Lo que propondría", "Cambios sobre la rutina",
+                  "Hoy se quedan fuera", "Apuntes de la sesión"):
+        assert frase not in texto, (
+            f"la tarjeta sigue prescribiendo con «{frase}» después de contestar "
+            f"que hoy no se entrena"
+        )
+    assert "Peso muerto" not in texto, (
+        "sigue diciendo qué ejercicio se retira de una sesión que no se va a hacer"
+    )
+
+
+def test_el_dia_que_no_entrenas_contesta_las_dos_preguntas_que_quedan(tmp_path):
+    """Ocupa el sitio de la sesión, no lo deja vacío.
+
+    Un bloque que simplemente desapareciera se lee como una pantalla rota
+    -¿se ha caído algo?, ¿se ha olvidado de qué toca?- y la duda acaba en
+    abrir Hevy a comprobarlo, que es el trabajo que esto existe para ahorrar.
+    Las dos frases son las mismas que ya da el Telegram: que no se pierde el
+    turno y que la rutina está escrita por si se cambia de idea.
+    """
+    texto = _tarjeta(tmp_path, _decision(False)).get("texto", "")
+
+    assert "Día 2 sigue siendo la siguiente" in texto, (
+        "no dice que la rotación no se mueve: queda la duda de si se pierde el turno"
+    )
+    assert "por si cambias de idea" in texto, (
+        "no dice que la rutina está escrita igual: decir «no» parece una puerta cerrada"
+    )
+
+
+def test_sin_entreno_no_se_ofrece_elegir_que_sesion_hacer(tmp_path):
+    """No es solo que sobre en pantalla.
+
+    Cada opción que se pulsara ahí quedaría apuntada como una ANULACIÓN y
+    contaría hacia el umbral de diez de una regla con la que el usuario ni
+    siquiera está discutiendo. El contador acabaría midiendo, en parte, los
+    días que no se entrena.
+    """
+    html = _tarjeta(tmp_path, _decision(False)).get("html", "")
+    assert "eleccion-sesion" not in html, (
+        "se ofrece elegir el tipo de sesión un día en que no hay sesión"
+    )
+
+
+def test_sin_contestar_la_pregunta_la_tarjeta_SIGUE_proponiendo(tmp_path):
+    """EL CONTRAPESO, y es el que impide el arreglo fácil y catastrófico.
+
+    Son TRES estados y no dos. `null` es «no lo has contestado» -o un día del
+    archivo anterior a que la pregunta existiera- y tiene que seguir
+    prescribiendo como siempre. Escrito `if (!va_a_entrenar)`, la tarjeta
+    dejaría de proponer sesión todos los días en que no se rellena el
+    formulario, que son la mayoría, y lo haría en silencio.
+    """
+    texto = _tarjeta(tmp_path, _decision(None)).get("texto", "")
+
+    assert "Lo que propondría" in texto, (
+        "sin contestar la pregunta la tarjeta ha dejado de proponer: se está "
+        "tratando `null` como un «no»"
+    )
+    assert "Hoy no entrenas" not in texto
+
+
+def test_diciendo_que_si_la_tarjeta_propone_como_siempre(tmp_path):
+    """El día normal, que es el que no puede romperse al arreglar el raro."""
+    texto = _tarjeta(tmp_path, _decision(True)).get("texto", "")
+
+    assert "Lo que propondría" in texto
+    assert "Hoy se quedan fuera" in texto
+    assert "Hoy no entrenas" not in texto
