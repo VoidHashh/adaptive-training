@@ -264,7 +264,8 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     assert sched["running"] is True, "la aplicación arrancó sin planificador"
     assert set(sched["jobs"]) == {
         "garmin_fetch", "decision_fallback", "recompute_early", "reconcile",
-        "perception_notice", "watchdog", "backfill_wellness", "startup_audit",
+        "perception_notice", "watchdog",
+        "backfill_wellness", "reconcile_arranque", "startup_audit",
     }
     assert all(sched["jobs"].values()), (
         "un trabajo sin próxima ejecución está montado pero no se va a ejecutar, "

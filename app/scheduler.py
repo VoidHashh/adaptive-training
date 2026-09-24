@@ -83,6 +83,28 @@ MARGEN_S = 3600
 # se reinicia a menudo no llegaría nunca a ejecutarla.
 RETRASO_BACKFILL_S = 90
 
+# Lo que espera la reconciliación de arranque. Va DESPUÉS del backfill de
+# bienestar a propósito: los dos hablan con una API de fuera, y salir los dos a
+# la vez en el arranque es la forma de que el primero que conteste lento
+# retrase al otro.
+#
+# POR QUÉ HAY UNA RECONCILIACIÓN AL ARRANCAR, que es lo que importa. La de las
+# 22:30 no se ejecuta nunca: el ordenador está apagado a esa hora, y su marca
+# de «última vez que terminó bien» lleva clavada en el 15 de septiembre. La
+# única que corría era la que se cuela antes de decidir, y esa solo ocurre si
+# se ENVÍA el check-in.
+#
+# Con eso, la cadena entera colgaba de un hilo. El 22-09-2026 el entreno se
+# hizo a las 07:22, media hora DESPUÉS del check-in de las 06:55, así que ni
+# una reconciliación perfecta esa mañana lo habría visto. El día 23 se
+# previsualizó sin enviar y el 24 tampoco se había enviado todavía: dos días
+# sin que nadie leyera Hevy, y a la tercera mañana el sistema volvió a proponer
+# el Día 2 que ya se había hecho. Tenía razón con lo que sabía.
+#
+# El arranque es lo único que sí pasa todos los días mientras el equipo se
+# encienda por la mañana, y no depende de que se conteste ningún formulario.
+RETRASO_RECONCILIACION_S = 120
+
 # Las cinco medidas que vienen del reloj. Si una regla se saltó porque faltaba
 # alguna de estas, el problema NO es que falte la respuesta del usuario: es que
 # a esa hora Garmin no tenía la noche, y volver a preguntarle un rato después
@@ -1200,6 +1222,26 @@ def build_scheduler(
         DateTrigger(run_date=datetime.now(tz) + timedelta(seconds=RETRASO_BACKFILL_S)),
         args=[cfg], id="backfill_wellness",
         name="Recuperar días de bienestar perdidos",
+    )
+
+    # Y lo entrenado, también al arrancar. Ver `RETRASO_RECONCILIACION_S` para
+    # el porqué entero; en corto: la de las 22:30 no corre porque el equipo está
+    # apagado, y la que se cuela antes de decidir solo ocurre si se envía el
+    # check-in. Sin ésta, dos mañanas sin enviar dejan a Hevy sin leer y el
+    # sistema propone una rutina ya hecha, que es lo que pasó tres veces en
+    # cinco días.
+    #
+    # Es el MISMO trabajo que el de las 22:30 y no una variante: `job_reconcile`
+    # calcula su propia ventana mirando `job_runs`, así que al arrancar recupera
+    # exactamente lo que quedó sin apuntar, y es idempotente -un día ya contado
+    # sale con «ya estaban contados»-. Un `id` distinto porque son dos citas
+    # distintas y la auditoría de arranque las vigila por separado.
+    sched.add_job(
+        job_reconcile,
+        DateTrigger(run_date=datetime.now(tz) + timedelta(seconds=RETRASO_RECONCILIACION_S)),
+        args=[cfg], kwargs={"hevy_client": hevy_client},
+        id="reconcile_arranque",
+        name="Leer lo entrenado que quedó sin apuntar",
     )
 
     # La auditoría del arranque. Va como trabajo y no dentro de `build_scheduler`

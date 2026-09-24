@@ -826,14 +826,20 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_seis_trabajos_del_dia_y_los_dos_del_arranque(cfg):
-    """Seis con hora y dos que se disparan al arrancar.
+def test_estan_los_seis_trabajos_del_dia_y_los_tres_del_arranque(cfg):
+    """Seis con hora y TRES que se disparan al arrancar.
 
-    Los dos del arranque hacen cosas distintas y por eso son dos: uno recupera
-    de Garmin los días de bienestar que falten, y el otro -`startup_audit`-
-    mira qué trabajos DEBIERON correr mientras el sistema no estaba. Ver
+    Los tres del arranque hacen cosas distintas y por eso son tres: uno
+    recupera de Garmin los días de bienestar que falten, otro lee de Hevy lo
+    entrenado que quedó sin apuntar, y `startup_audit` mira qué trabajos
+    DEBIERON correr mientras el sistema no estaba. Ver
     `tests/test_arranque_perdido.py` para por qué el aviso de APScheduler no
     cubre ese caso.
+
+    `reconcile_arranque` es el más nuevo y el que más falta hacía: la
+    reconciliación de las 22:30 no se ejecuta porque el equipo está apagado, y
+    la que se cuela antes de decidir solo ocurre si se envía el check-in. Sin
+    ésta, dos mañanas sin enviar dejan Hevy sin leer.
 
     Dos de los seis no HACEN nada por su cuenta y por eso se confunden con un
     olvido si no se nombran: `watchdog` solo mira -ver `tests/test_vigilancia.py`-
@@ -844,7 +850,8 @@ def test_estan_los_seis_trabajos_del_dia_y_los_dos_del_arranque(cfg):
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
         "garmin_fetch", "decision_fallback", "recompute_early", "reconcile",
-        "perception_notice", "watchdog", "backfill_wellness", "startup_audit",
+        "perception_notice", "watchdog",
+        "backfill_wellness", "reconcile_arranque", "startup_audit",
     }
 
 

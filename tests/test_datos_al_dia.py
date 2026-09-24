@@ -544,3 +544,77 @@ def test_el_ayudante_reenvia_la_sesion_que_recibe(cfg, monkeypatch):
         f"el ayudante no reenvía la sesión: {espia.llamadas[0]}. Sin ella "
         f"`job_reconcile` abre una segunda conexión y SQLite la bloquea"
     )
+
+
+# ---------------------------------------------------------------------------
+# La reconciliación del arranque
+# ---------------------------------------------------------------------------
+#
+# LA TERCERA VEZ EN CINCO DÍAS que el sistema propone una rutina ya hecha, y la
+# tercera causa distinta. Las dos primeras estaban arregladas y desplegadas; el
+# 24-09-2026 volvió a pasar igual, y al mirar la secuencia se ve que ninguno de
+# los dos arreglos podía haberlo evitado:
+#
+#   martes 22, 06:55  check-in enviado
+#   martes 22, 07:22  se ENTRENA el Día 2, media hora DESPUÉS del check-in
+#   martes 22, 22:30  la reconciliación nocturna no corre: el equipo está apagado
+#   miércoles 23      se previsualiza pero NO se envía -> no hay decisión que
+#                     arrastre la reconciliación previa
+#   jueves 24         tampoco se ha enviado, y el sistema propone el Día 2
+#
+# El entreno del martes existía en Hevy desde las 07:22 y nadie lo leyó en dos
+# días. Ni siquiera una reconciliación perfecta esa mañana lo habría visto: aún
+# no había ocurrido.
+#
+# O SEA QUE LA CADENA COLGABA DE QUE SE ENVIARA EL FORMULARIO. Era la única
+# pieza que de verdad se ejecutaba, y basta con no contestar dos mañanas para
+# que el sistema decida con lo que sabía del lunes.
+#
+# El arranque es lo único que sí ocurre todos los días mientras el equipo se
+# encienda, y no depende de que nadie conteste nada.
+
+
+def test_al_arrancar_se_lee_lo_entrenado(cfg):
+    """El trabajo existe y se dispara al arrancar, no a una hora."""
+    from app.scheduler import build_scheduler
+
+    sched = build_scheduler(cfg, start=False)
+    j = sched.get_job("reconcile_arranque")
+
+    assert j is not None, (
+        "no hay reconciliación de arranque: la única que se ejecuta de verdad "
+        "vuelve a ser la que depende de que se envíe el check-in"
+    )
+    assert not getattr(j.trigger, "fields", None), (
+        "la reconciliación de arranque tiene hora fija. Entonces es otra cita "
+        "más que perder con el equipo apagado, que es el problema que viene a "
+        "resolver"
+    )
+
+
+def test_la_del_arranque_y_la_de_las_2230_son_el_mismo_trabajo(cfg):
+    """Y no una variante, que es donde empezarían a divergir.
+
+    `job_reconcile` calcula su propia ventana mirando `job_runs`, así que al
+    arrancar recupera exactamente lo que quedó sin apuntar. Una función aparte
+    «para el arranque» tendría que decidir otra vez cuánto mirar hacia atrás, y
+    dos respuestas a esa pregunta acaban siendo dos ventanas distintas.
+    """
+    from app.scheduler import build_scheduler, job_reconcile
+
+    sched = build_scheduler(cfg, start=False)
+    assert sched.get_job("reconcile_arranque").func is job_reconcile
+    assert sched.get_job("reconcile").func is job_reconcile
+
+
+def test_la_del_arranque_lleva_su_cliente_de_hevy(cfg):
+    """Sin cliente no lee nada, y `job_reconcile` lanzaría.
+
+    Es el mismo olvido que haría inútil todo lo demás: un trabajo registrado,
+    corriendo cada arranque y reventando siempre. Saltaría por Telegram -para
+    eso está `_avisador`- pero el dato seguiría sin leerse.
+    """
+    from app.scheduler import build_scheduler
+
+    sched = build_scheduler(cfg, start=False)
+    assert "hevy_client" in (sched.get_job("reconcile_arranque").kwargs or {})
