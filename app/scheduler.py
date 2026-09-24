@@ -577,7 +577,7 @@ def dias_de_wellness(cfg: Any) -> int:
     síntoma, porque el síntoma acusa a Garmin.
 
     Se pide `window_days + 1`: la ventana son los días ANTERIORES a la fecha
-    (`_baseline_for` cuenta desde `day - 1`), así que con `window_days` justos
+    (`baseline_for` cuenta desde `day - 1`), así que con `window_days` justos
     entraban solo `window_days - 1`. Con el config actual, 8 en vez de 7.
 
     El histórico largo -el que necesitan `load_2d_p90` y `load_7d_p90`- NO sale

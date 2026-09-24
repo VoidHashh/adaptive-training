@@ -202,6 +202,10 @@ def pinta_tendencia(cfg, dias: list[dict], metricas: list[DayMetrics]) -> None:
     """
     score = {m.date: m.sleep_score for m in metricas}
     minutos = {m.date: m.sleep_min for m in metricas}
+    # El detector de nivel es el unico que lee una senal del reloj y no un
+    # color, asi que sin esta serie se calla y el replay -que existe para
+    # calibrarlo- diria que nunca dispara.
+    hrv = {m.date: m.hrv for m in metricas}
 
     historico: list[DecisionDia] = []
     salidas: list[tuple[date, tuple, list[str]]] = []
@@ -211,7 +215,8 @@ def pinta_tendencia(cfg, dias: list[dict], metricas: list[DayMetrics]) -> None:
     for d in dias:
         historico.append(DecisionDia(d["dia"], d["luz"], d["trigger"]))
         t = evaluar_tendencia(
-            cfg, d["dia"], historico, sleep_score=score, sleep_min=minutos
+            cfg, d["dia"], historico,
+            sleep_score=score, sleep_min=minutos, hrv=hrv,
         )
         for a in t.avisos:
             cuenta[a.tipo] += 1

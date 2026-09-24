@@ -1835,7 +1835,7 @@ def test_la_fusion_trae_los_dias_que_solo_estan_en_un_lado():
 
 
 def test_la_fusion_sale_ordenada_por_fecha():
-    """`_baseline_for` busca por fecha en un dict, pero la serie de sueño se
+    """`baseline_for` busca por fecha en un dict, pero la serie de sueño se
     lee por tramos y un orden inestable movería la media sin que cambie un dato."""
     from app.engine.signals import DayMetrics
 

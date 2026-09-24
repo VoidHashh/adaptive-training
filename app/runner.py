@@ -205,13 +205,27 @@ def dias_de_wellness_en_memoria(cfg: Any) -> int:
       actual, 21.
     - `trend.ventana_larga_dias`. El cualificador de sueño compara la media de
       los últimos 30 días contra la de los 60 anteriores. Con el config actual,
-      90, y por eso manda.
+      90.
+    - `trend.nivel.historico_dias + baseline.window_days`. El detector de nivel
+      compara la línea base de hoy contra su distribución de los últimos 180
+      días, y la del día más antiguo de esa ventana mira los `window_days`
+      ANTERIORES a él, igual que arriba. Con el config actual, 187, y por eso
+      manda desde el 24/09/2026.
+
+    Los tres sumandos salen de su propio sitio y ninguno está escrito a mano
+    aquí: el día que se toque `historico_dias` en el YAML, la ventana de
+    wellness lo sigue sola. Escribir 187 aquí habría sido el fallo -el detector
+    se quedaría midiendo contra media distribución sin decir nada, porque media
+    distribución sigue pasando el mínimo de cobertura-.
     """
     raw = cfg.raw if hasattr(cfg, "raw") else (cfg or {})
     base = int((raw.get("baseline") or {}).get("window_days", 7))
     trend = raw.get("trend") or {}
-    larga = int(trend.get("ventana_larga_dias", 0)) if trend.get("enabled") else 0
-    return max(DIAS_DE_HISTORIA + base, larga)
+    activa = bool(trend.get("enabled"))
+    larga = int(trend.get("ventana_larga_dias", 0)) if activa else 0
+    nivel = (trend.get("nivel") or {}) if activa else {}
+    historico = int(nivel.get("historico_dias", 0))
+    return max(DIAS_DE_HISTORIA + base, larga, historico + base if historico else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -452,6 +466,7 @@ def pensar_el_dia(
         + [DecisionDia(day, decision.light, decision.trigger_rule)],
         sleep_score={m.date: m.sleep_score for m in wellness},
         sleep_min={m.date: m.sleep_min for m in wellness},
+        hrv={m.date: m.hrv for m in wellness},
     )
 
     # Qué rutina del ciclo lleva más de una vuelta sin hacerse. No cambia la

@@ -18,6 +18,24 @@ Y se prueba contra el `config.yaml` de verdad (racha≥5, motivo≥4 semanas,
 30d/90d, Δ15pp). Un config de juguete aquí sería peor que inútil: los cinco
 umbrales de `trend` son ABSOLUTOS por decisión explícita -está razonado en el
 YAML- y lo único que los sujeta es el histórico y esta batería.
+
+LA EXCEPCIÓN: `TestNivel` SÍ USA UN CONFIG DE JUGUETE, Y HAY QUE DECIR POR QUÉ
+------------------------------------------------------------------------------
+El detector de nivel (24/09/2026) se prueba con `NIVEL`, un diccionario de este
+fichero, y no con el del YAML. Dos motivos, y ninguno es comodidad:
+
+  1. Cuando se escribió, la clave `trend.nivel` TODAVÍA NO ESTÁ en el
+     `config.yaml`, y no puede estarlo hasta que se reconstruya la imagen -el
+     validador del contenedor en marcha rechaza una clave que su código no
+     conoce-. Un test contra el YAML habría sido un test contra una sección
+     ausente, o sea verde en vacío, que es el defecto que este repositorio
+     persigue.
+  2. Los umbrales del YAML son 180/30 días. Probar la mecánica con ellos
+     obligaría a sembrar 210 días de HRV por test para comprobar una cuenta que
+     no depende del tamaño de la ventana.
+
+Lo que SÍ depende del YAML -que la clave esté, y con los valores calibrados- lo
+sujeta `tests/test_config_loader.py`, que es donde vive esa pregunta.
 """
 
 from __future__ import annotations
@@ -881,8 +899,14 @@ class TestSalida:
 
         Cuatro meses de un día malo de cada tres, con el tema rotando cada
         semana: no hay racha de cinco, no hay cuatro semanas del mismo tema y el
-        mes va igual que el trimestre. Los tres detectores miran y no ven nada,
-        que es un resultado y no un hueco.
+        mes va igual que el trimestre. Los tres detectores de color miran y no
+        ven nada, que es un resultado y no un hueco.
+
+        El cuarto -`nivel`- no entra aquí y no es un olvido: se le llama sin
+        serie de HRV, así que está callado por no tener con qué. Meterlo
+        obligaría a sembrar además una serie de wellness plana, y entonces este
+        test dejaría de probar lo que prueba -que MIRAR y no ver es distinto de
+        no poder mirar- para probar dos cosas a medias.
         """
         rotacion = ["sueno_corto", "hrv_baja_1d", "carga_acumulada"]
         dec = []
@@ -962,3 +986,294 @@ class TestPureza:
         import app.engine.tendencia as modulo
         fuente = inspect.getsource(modulo)
         assert "session" not in fuente.lower().replace("decisiones", "")
+
+
+# ---------------------------------------------------------------------------
+# Detector de nivel
+# ---------------------------------------------------------------------------
+
+
+# El histórico de prueba usa 90 días -el mínimo que admite el validador- y no
+# los 180 del YAML: con 90 la serie de cada test cabe en 110 días en vez de en
+# 200, y lo que se está probando -la mecánica del percentil, la racha y los
+# huecos- no depende del tamaño de la ventana. Lo que SÍ depende de él es que
+# `config.yaml` lleve 180, y eso lo sujeta `test_config_loader.py`.
+NIVEL = {"historico_dias": 90, "reciente_dias": 20,
+         "percentil_max": 10, "dias_min": 4}
+BASE_CFG = {"window_days": 7, "min_days_required": 4, "exclude_outliers": True}
+
+
+def serie_hrv(
+    hasta: date,
+    dias: int = 110,
+    cola: int = 0,
+    centro: float = 50.0,
+    centro_cola: float = 36.0,
+    semilla: int = 7,
+) -> dict[date, float | None]:
+    """HRV día a día con dispersión, y opcionalmente una cola baja al final.
+
+    LA DISPERSIÓN NO ES DECORADO, Y ESO SE APRENDIÓ ESCRIBIENDO ESTE FICHERO
+    -----------------------------------------------------------------------
+    La primera versión oscilaba con un patrón de period 7 (-2, +2, 0, +4...).
+    Como la línea base es la media de los SIETE días anteriores, todas las
+    ventanas contenían exactamente los mismos siete desvíos y la línea base
+    salía CONSTANTE: un solo valor distinto en noventa días. Sobre eso el
+    percentil 10 y la mediana son el mismo número y el detector cantaba una
+    racha de noventa días.
+
+    De ahí salió el guarda de la distribución plana, que no estaba previsto.
+    El generador aleatorio con semilla fija es lo que garantiza que lo que se
+    prueba aquí es el detector y no un artefacto del generador.
+    """
+    import random
+
+    r = random.Random(semilla)
+    out: dict[date, float | None] = {}
+    for i in range(dias):
+        atras = dias - 1 - i
+        base = centro_cola if atras < cola else centro
+        out[hasta - timedelta(days=atras)] = round(base + r.uniform(-5, 5), 1)
+    return out
+
+
+def nivel(hasta: date, serie=None, **cambios):
+    """Llama al detector con el config de prueba, cambiando lo que se pida."""
+    from app.engine.tendencia import _detecta_nivel
+
+    return _detecta_nivel(
+        hasta,
+        serie_hrv(hasta) if serie is None else serie,
+        BASE_CFG,
+        {**NIVEL, **cambios},
+    )
+
+
+class TestNivel:
+    """El único detector que lee la señal del reloj y no el color del día.
+
+    Existe porque `hrv_ratio` divide por la media móvil de siete días y por eso
+    no puede ver una bajada lenta: el denominador persigue al numerador. La
+    cabecera del módulo lo tiene medido sobre el histórico real.
+
+    Los tests van por parejas como el resto del fichero -el caso que dispara y
+    su vecino que no-, porque un percentil mal puesto pasa los primeros.
+    """
+
+    def test_sin_seccion_de_configuracion_esta_callado(self):
+        """Y callado del todo: ni aviso ni `sin_muestra`.
+
+        No es lo mismo que falten DATOS -eso es `sin_muestra` y se dice en voz
+        alta- que falte la INSTALACIÓN. Nació así por el orden de despliegue:
+        el `config.yaml` va bind-mounted y lo lee el contenedor en marcha, cuyo
+        validador aún no conoce la clave, así que el código viaja primero y
+        tolerante. Si esto se rompe, la reconstrucción se lleva por delante el
+        arranque del contenedor.
+        """
+        from app.engine.tendencia import _detecta_nivel
+
+        aviso, sm = _detecta_nivel(LUNES, serie_hrv(LUNES, cola=14), BASE_CFG, None)
+        assert aviso is None and sm is None
+
+    def test_un_nivel_bajo_sostenido_dispara(self):
+        aviso, sm = nivel(LUNES, serie_hrv(LUNES, cola=14))
+        assert sm is None
+        assert aviso is not None and aviso.tipo == "nivel"
+        assert aviso.n == 11
+        assert "11 días seguidos" in aviso.texto
+
+    def test_sin_cola_baja_no_dispara(self):
+        aviso, sm = nivel(LUNES, serie_hrv(LUNES, cola=0))
+        assert aviso is None and sm is None
+
+    def test_la_racha_minima_se_lee_de_verdad(self):
+        """La pareja: los MISMOS datos, un día más de exigencia, y se calla.
+
+        Con `cola=4` la racha sale de exactamente 4 días. Es el caso justo de
+        al lado: si alguien dejara `dias_min` sin leer -o lo comparara con `>`
+        en vez de con `<`-, el primer assert seguiría pasando y solo fallaría
+        este.
+        """
+        datos = serie_hrv(LUNES, cola=4)
+        con_4, _ = nivel(LUNES, datos, dias_min=4)
+        con_5, _ = nivel(LUNES, datos, dias_min=5)
+        assert con_4 is not None and con_4.n == 4
+        assert con_5 is None
+
+    def test_el_percentil_se_lee_de_verdad(self):
+        """Lo mismo para `percentil_max`: con el suelo más estrecho, se calla."""
+        datos = serie_hrv(LUNES, cola=6)
+        ancho, _ = nivel(LUNES, datos, percentil_max=10, dias_min=5)
+        estrecho, _ = nivel(LUNES, datos, percentil_max=3, dias_min=5)
+        assert ancho is not None and ancho.n == 5
+        assert estrecho is None
+
+    def test_una_serie_plana_no_tiene_suelo_y_lo_dice(self):
+        """El artefacto del percentil sobre un dato sin dispersión.
+
+        Si la línea base no se mueve, su 10% más bajo y su mediana son el mismo
+        número y "estar en el 10% más bajo" lo cumple el valor normal. Sin este
+        guarda el detector canta una racha de noventa días, que es verdad
+        aritmética y mentira completa.
+        """
+        plana = {LUNES - timedelta(days=i): 50.0 for i in range(110)}
+        aviso, sm = nivel(LUNES, plana)
+        assert aviso is None
+        assert sm is not None and sm.tipo == "nivel"
+        assert "casi no se mueve" in sm.motivo
+
+    def test_poca_cobertura_se_dice_en_vez_de_callarse(self):
+        corta = serie_hrv(LUNES, dias=30, cola=14)
+        aviso, sm = nivel(LUNES, corta)
+        assert aviso is None
+        assert sm is not None and sm.tipo == "nivel"
+        assert "de 70 días de referencia con línea base" in sm.motivo
+
+    def test_sin_linea_base_hoy_se_dice(self):
+        """Hay histórico de sobra, pero la última semana está vacía."""
+        datos = serie_hrv(LUNES, cola=14)
+        for i in range(8):
+            datos.pop(LUNES - timedelta(days=i), None)
+        aviso, sm = nivel(LUNES, datos)
+        assert aviso is None
+        assert sm is not None and "hoy no hay línea base" in sm.motivo
+
+    def test_un_hueco_no_rompe_la_racha_pero_se_nombra(self):
+        """Un día sin dato no dice que la base subiera, dice que no se miró.
+
+        Mismo criterio que en `_detecta_racha`. Lo que no puede es disimularse:
+        "diez días seguidos" y "diez días con cuatro que no sabemos" no son la
+        misma afirmación.
+
+        Quitar el HRV de un día NO basta para abrir un hueco en la línea base:
+        la media aguanta con 4 de los 7 días, que es justo para lo que está el
+        `min_days_required`. Hay que dejar sin dato a cuatro días seguidos para
+        que los días que los miran se queden sin línea base, y por eso el
+        recorte es (6, 7, 8, 9) y no un día suelto. Comprobado además en las
+        ocho semillas: los huecos salen 4 en todas.
+        """
+        datos = serie_hrv(LUNES, cola=14)
+        limpio, _ = nivel(LUNES, datos)
+        assert limpio is not None and "sin dato por medio" not in limpio.texto
+
+        con_hueco = dict(datos)
+        for i in (6, 7, 8, 9):
+            con_hueco.pop(LUNES - timedelta(days=i))
+        aviso, _ = nivel(LUNES, con_hueco)
+        assert aviso is not None
+        assert "con 4 sin dato por medio" in aviso.texto
+
+    def test_los_huecos_del_final_no_se_cuentan(self):
+        """Un hueco que no lleva a ningún día contado no atraviesa nada.
+
+        Si los `pendientes` se sumaran según se encuentran, una racha de siete
+        días con cuatro días vacíos DETRÁS diría "con 4 sin dato por medio", y
+        esos cuatro no están EN medio de nada: detrás de ellos la racha ya se
+        había acabado.
+
+        EL HUECO TIENE QUE CAER DONDE EL BUCLE LO PISE
+        ----------------------------------------------
+        La primera versión de este test lo ponía en los días 20 a 45, y el
+        banco de mutaciones lo tumbó: con la racha en siete días, el bucle se
+        para en el octavo y nunca llega al día 20, así que sumar mal los huecos
+        no cambiaba nada y la mutación sobrevivía. El hueco va justo DESPUÉS
+        del último día contado -8 a 11, con la racha parando en el 4- para
+        que el bucle lo atraviese de verdad antes de pararse.
+
+        Este escenario costo encontrarlo: la primera version ponia el hueco
+        en los dias 20 a 45 y el banco de mutaciones lo tumbo dos veces, porque
+        el bucle se paraba mucho antes de llegar. Hay que barrer el espacio
+        entero -406 recortes lo distinguen- para dar con uno donde el bucle
+        ATRAVIESE el hueco y se pare justo despues. En 6 de las 8 semillas sale
+        igual; la semilla es fija y por eso el numero es exacto.
+        """
+        datos = serie_hrv(LUNES, cola=10)
+        for i in range(8, 12):
+            datos.pop(LUNES - timedelta(days=i))
+        aviso, _ = nivel(LUNES, datos)
+        assert aviso is not None and aviso.n == 4
+        assert "sin dato por medio" not in aviso.texto
+
+    def test_la_referencia_no_incluye_el_tramo_que_juzga(self):
+        """La regresión del 24/09/2026, que se vio en los datos reales.
+
+        La primera versión sacaba el percentil de los 180 días ENTEROS, con los
+        recientes dentro. Efecto medido sobre el HRV real del 17 al 22 de
+        septiembre, con la línea base cayendo de 44,8 a 42,6 sin parar: el
+        umbral bajaba con la racha -45,0 → 44,8 → 44,6 → 44,4-, los días viejos
+        se salían del decil por detrás, y la racha ENCOGÍA (4, 3, 3) mientras el
+        HRV seguía bajando. El detector construido para ver bajadas lentas se
+        callaba justo cuando la bajada se consolidaba.
+
+        Aquí se comprueba lo contrario: ante una bajada sostenida, la racha
+        tiene que CRECER cada día. Con la referencia solapada esta serie da
+        9, 10, 10, 10, 10, 11, 10 -se estanca y hasta baja-; con la disjunta da
+        10, 11, 12, 13, 14, 15, 16.
+        """
+        datos = serie_hrv(LUNES, cola=18)
+        rachas = []
+        for i in range(6, -1, -1):
+            aviso, _ = nivel(LUNES - timedelta(days=i), datos)
+            assert aviso is not None
+            rachas.append(aviso.n)
+        assert rachas == sorted(rachas) and len(set(rachas)) == len(rachas), (
+            f"la racha tiene que crecer cada día de una bajada sostenida: {rachas}"
+        )
+        assert rachas[-1] - rachas[0] >= 5
+
+    def test_la_linea_base_es_LA_MISMA_que_usa_el_semaforo(self, cfg):
+        """El motivo entero de que `signals.baseline_for` sea pública.
+
+        Si el detector se calculara su propia media, el día que alguien tocara
+        `baseline.exclude_outliers` seguiría hablando de una línea base que el
+        motor ya no usa, y la frase del mensaje sería falsa sin que nada
+        fallara. Aquí se comparan los dos números.
+        """
+        from app.engine.signals import DayMetrics, build_signals
+
+        datos = serie_hrv(LUNES, cola=14)
+        aviso, _ = nivel(LUNES, datos)
+        assert aviso is not None
+
+        metricas = [DayMetrics(date=d, hrv=v) for d, v in sorted(datos.items())]
+        sig = build_signals(
+            cfg, LUNES, metrics=metricas, rides=[], sessions=[], checkin_history=[]
+        )
+        del_motor = sig.values["hrv_baseline"]
+        assert del_motor is not None
+        # El texto imprime la línea base redondeada a entero.
+        assert f"{del_motor:.0f} frente a una mediana" in aviso.texto
+
+    def test_el_texto_dice_que_no_es_un_pronostico(self):
+        """La frase no es adorno: ver la cabecera del módulo.
+
+        Un nivel sostenido es justo lo que más se parece a un presagio cuando
+        se lee con prisa a las siete de la mañana, y esta capa tiene prohibido
+        por escrito hablar en futuro.
+        """
+        aviso, _ = nivel(LUNES, serie_hrv(LUNES, cola=14))
+        assert aviso is not None
+        assert "no lo que viene" in aviso.texto
+
+    def test_entra_en_la_capa_y_va_el_ultimo(self, cfg_copia):
+        """Integrado por `evaluar_tendencia`, no solo suelto.
+
+        Va el último porque los otros tres explican el color que el usuario
+        acaba de leer y este habla de una señal que el color no vio; en medio
+        se leería como parte de la explicación de hoy.
+        """
+        cfg_copia.raw["trend"]["nivel"] = dict(NIVEL)
+        t = evaluar_tendencia(
+            cfg_copia,
+            LUNES,
+            racha_de(LUNES, 6, "sueno_corto"),
+            hrv=serie_hrv(LUNES, cola=14),
+        )
+        assert "nivel" in tipos(t)
+        assert t.avisos[-1].tipo == "nivel"
+
+    def test_sin_la_serie_de_hrv_no_revienta(self, cfg_copia):
+        """`evaluar_tendencia` se llama sin `hrv` desde varios sitios."""
+        cfg_copia.raw["trend"]["nivel"] = dict(NIVEL)
+        t = evaluar_tendencia(cfg_copia, LUNES, racha_de(LUNES, 6, "sueno_corto"))
+        assert "nivel" not in tipos(t)

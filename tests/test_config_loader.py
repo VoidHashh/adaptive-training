@@ -1899,3 +1899,103 @@ def test_la_hora_del_recalculo_temprano_tiene_que_ser_una_hora(cfg_copia):
     """Como las otras cinco."""
     cfg_copia.raw["schedule"]["recompute_time"] = "a media mañana"
     assert "recompute_time" in errores(cfg_copia.raw)
+
+
+# ---------------------------------------------------------------------------
+# `trend.nivel`: el detector que lee la senal y no el color
+# ---------------------------------------------------------------------------
+#
+# Es la unica subseccion OPCIONAL de `trend`, y la excepcion tiene fecha y
+# motivo: nacio el 24/09/2026 y el orden de despliegue de este proyecto no
+# permite estrenarla obligatoria. `config.yaml` va bind-mounted y lo lee el
+# contenedor EN MARCHA, cuyo validador todavia no conoce la clave; y si el
+# codigo nuevo la exigiera, la imagen reconstruida no arrancaria hasta que la
+# clave estuviera. Codigo primero y tolerante, clave despues de reconstruir.
+#
+# Lo que NO es opcional es la validacion de lo que hay dentro.
+
+
+def test_trend_nivel_puede_faltar(cfg_copia):
+    """Sin la seccion el detector se calla, y eso no es un error de config."""
+    cfg_copia.raw["trend"].pop("nivel", None)
+    assert "nivel" not in errores(cfg_copia.raw)
+
+
+def test_una_clave_inventada_en_trend_nivel_no_se_ignora(cfg_copia):
+    cfg_copia.raw["trend"]["nivel"] = {
+        "historico_dias": 180, "reciente_dias": 30,
+        "percentil_max": 12, "dias_min": 4,
+        "percentil_maximo": 10,
+    }
+    err = errores(cfg_copia.raw)
+    assert "trend.nivel" in err and "percentil_maximo" in err
+
+
+def test_trend_nivel_a_medias_no_pasa(cfg_copia):
+    """Una seccion incompleta no da error por si sola: lo tiene que dar el
+    validador. Si no, el detector mide contra un percentil inventado y lo
+    cuenta cada manana como si fuera un hallazgo."""
+    cfg_copia.raw["trend"]["nivel"] = {"historico_dias": 180}
+    err = errores(cfg_copia.raw)
+    assert "percentil_max" in err and "dias_min" in err
+
+
+def test_trend_nivel_tiene_que_ser_un_mapa(cfg_copia):
+    cfg_copia.raw["trend"]["nivel"] = True
+    assert "trend.nivel" in errores(cfg_copia.raw)
+
+
+@pytest.mark.parametrize(
+    "clave,valor",
+    [
+        # Por debajo de 90 la distribucion de referencia se la come la propia
+        # mala racha: el filtro de paso alto que la capa existe para evitar.
+        ("historico_dias", 89),
+        # Fuera de 1..25 deja de ser "el suelo". Con 5 no disparaba nunca en el
+        # barrido del historico, pero eso es calibracion y no validacion.
+        ("percentil_max", 0),
+        ("percentil_max", 26),
+        # Con 1 dia esto seria una regla del semaforo, no un detector de
+        # tendencia, y ademas una que dispara el percentil_max% de los dias.
+        ("dias_min", 1),
+        # Mas corto que una racha tipica y la racha acaba dentro de su propio
+        # baremo, que es el fallo del 24/09/2026.
+        ("reciente_dias", 13),
+    ],
+)
+def test_los_limites_de_trend_nivel_se_respetan(cfg_copia, clave, valor):
+    # `reciente_dias` a 14 y no a 30 para que bajar `historico_dias` a 89 NO
+    # dispare ademas la regla de los 60 dias de referencia: con las dos saltando
+    # a la vez, el test pasaba aunque su propia regla estuviera rota. Lo cazo el
+    # banco de mutaciones del 24/09/2026.
+    cfg_copia.raw["trend"]["nivel"] = {
+        "historico_dias": 180, "reciente_dias": 14,
+        "percentil_max": 12, "dias_min": 4,
+    }
+    cfg_copia.raw["trend"]["nivel"][clave] = valor
+    # Con el prefijo entero: `clave` suelta tambien aparece en el mensaje de
+    # otras reglas, y entonces la asercion no dice lo que parece decir.
+    assert f"trend.nivel.{clave}" in errores(cfg_copia.raw)
+
+
+def test_la_referencia_no_puede_quedarse_corta(cfg_copia):
+    """La comprobacion que impide reconstruir el fallo del 24/09/2026.
+
+    El detector compara el tramo reciente CONTRA el anterior. Si entre los dos
+    numeros no queda referencia suficiente, el umbral lo acaba fijando la propia
+    mala racha y persigue la senal hacia abajo, que es exactamente el defecto
+    que este detector existe para no tener.
+    """
+    cfg_copia.raw["trend"]["nivel"] = {
+        "historico_dias": 90, "reciente_dias": 40,
+        "percentil_max": 12, "dias_min": 4,
+    }
+    err = errores(cfg_copia.raw)
+    assert "trend.nivel" in err and "60 días de referencia" in err
+
+
+def test_trend_nivel_sin_reciente_dias_no_pasa(cfg_copia):
+    cfg_copia.raw["trend"]["nivel"] = {
+        "historico_dias": 180, "percentil_max": 12, "dias_min": 4,
+    }
+    assert "reciente_dias" in errores(cfg_copia.raw)

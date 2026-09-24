@@ -1147,7 +1147,7 @@ def test_la_ventana_de_wellness_sale_del_config_y_no_de_un_7_a_pelo(cfg_copia):
 
 
 def test_se_pide_un_dia_mas_que_la_ventana(cfg):
-    """`_baseline_for` cuenta desde `day - 1`, así que con `window_days` justos
+    """`baseline_for` cuenta desde `day - 1`, así que con `window_days` justos
     entraban `window_days - 1` días y la media se calculaba sobre uno menos de
     los que dice el config."""
     from app.scheduler import dias_de_wellness

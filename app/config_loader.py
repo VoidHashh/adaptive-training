@@ -2677,7 +2677,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
 
     # --- capa de tendencia ---------------------------------------------------
     #
-    # Sin defectos, y a propósito. Estos cinco números deciden durante meses qué
+    # Sin defectos, y a propósito. Estos números deciden durante meses qué
     # se considera una mala racha, y son ABSOLUTOS -no adaptativos- por el motivo
     # largo que está escrito junto a ellos en el YAML. Un defecto en el código
     # sería justo la forma de que dejaran de coincidir con lo que dice el
@@ -2694,6 +2694,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
             "delta_pp_min",
             "motivo_semanas_min",
             "sueno",
+            "nivel",
         },
         "trend",
     )
@@ -2735,6 +2736,99 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"cualificador diría que el sueño ha empeorado todos los días en que "
             f"la media se mueva un decimal",
         )
+
+    # --- el detector de nivel -----------------------------------------------
+    #
+    # OPCIONAL, y la excepción tiene fecha y motivo. Nació el 24/09/2026 y el
+    # orden de despliegue de este proyecto no permite estrenarla obligatoria:
+    # `config.yaml` va bind-mounted y lo lee el contenedor EN MARCHA, cuyo
+    # validador todavía no conoce la clave y la rechazaría; y si el código
+    # nuevo la exigiera, la imagen reconstruida no arrancaría hasta que la
+    # clave estuviera, que es la misma pescadilla por el otro lado. Así que
+    # código primero, tolerante; clave después de reconstruir.
+    #
+    # Lo que NO es opcional es la validación: si la sección está, se valida
+    # entera. Una sección a medias aquí no da error, da un detector que mide
+    # contra un percentil inventado y lo cuenta cada mañana como si fuera un
+    # hallazgo.
+    nivel = trend.get("nivel")
+    if nivel is not None:
+        require(
+            isinstance(nivel, dict),
+            f"trend.nivel: '{nivel}' tiene que ser un mapa con historico_dias, "
+            f"reciente_dias, percentil_max y dias_min, o no estar",
+        )
+    # `require` APUNTA el error, no corta. Aquí eso importa: con `trend.nivel:
+    # true` en el YAML, seguir adelante hacía `nivel.get(...)` sobre un bool y
+    # el validador reventaba con un `AttributeError` en vez de dar el mensaje
+    # que acaba de apuntar dos líneas más arriba. Un fallo de configuración
+    # contado como error de programación, que es la peor forma de contarlo:
+    # quien lo ve no sabe que la culpa es de su YAML.
+    if isinstance(nivel, dict):
+        check_keys(
+            nivel,
+            {"historico_dias", "reciente_dias", "percentil_max", "dias_min"},
+            "trend.nivel",
+        )
+        # `historico_dias` manda la ventana de wellness que `runner` carga en
+        # memoria (ver `dias_de_wellness_en_memoria`). Por debajo de 90 el
+        # mínimo de cobertura lo cumple cualquier racha mala de mes y medio, y
+        # entonces "el suelo de tu histórico" es el suelo de la propia racha:
+        # el filtro de paso alto que esta capa existe para evitar.
+        require(
+            _es_num(nivel.get("historico_dias")) and nivel["historico_dias"] >= 90,
+            f"trend.nivel.historico_dias: '{nivel.get('historico_dias')}' tiene "
+            f"que ser un número >= 90. Con una referencia corta la distribución "
+            f"se la come la propia mala racha y el detector se calla justo "
+            f"cuando tendría que hablar",
+        )
+        # Entre 1 y 25. Por encima de 25 deja de ser "el suelo" y pasa a ser "la
+        # mitad de abajo", que le pasa a uno de cada cuatro días. Barrido sobre
+        # el histórico con la referencia disjunta: del 8 al 10 no dispara NUNCA
+        # -opción muerta-, el 11 y el 12 hablan el 3,6% de los días, y del 20
+        # en adelante el 9,5% sin añadir un episodio distinto.
+        require(
+            _es_num(nivel.get("percentil_max")) and 1 <= nivel["percentil_max"] <= 25,
+            f"trend.nivel.percentil_max: '{nivel.get('percentil_max')}' tiene "
+            f"que ser un número entre 1 y 25. Se calibra con "
+            f"`scripts/replay_semaforo.py --tendencia` contra el histórico "
+            f"ENTERO, nunca contra unas fechas concretas: ver la cabecera de "
+            f"`app/engine/tendencia.py`",
+        )
+        # Con 1 día esto sería una regla del semáforo, no un detector de
+        # tendencia, y además una que dispara el `percentil_max`% de los días
+        # por pura definición de percentil.
+        require(
+            _es_num(nivel.get("dias_min")) and nivel["dias_min"] >= 2,
+            f"trend.nivel.dias_min: '{nivel.get('dias_min')}' tiene que ser un "
+            f"número >= 2. Con 1 no distingue un nivel sostenido de una noche "
+            f"mala, que es la única razón por la que este detector existe",
+        )
+        # `reciente_dias` es el tramo que se JUZGA, y por eso queda fuera de la
+        # referencia contra la que se juzga. Mínimo 14 para que una racha normal
+        # quepa entera sin tocar su propia referencia.
+        require(
+            _es_num(nivel.get("reciente_dias")) and nivel["reciente_dias"] >= 14,
+            f"trend.nivel.reciente_dias: '{nivel.get('reciente_dias')}' tiene "
+            f"que ser un número >= 14. Es el tramo reciente que se excluye de "
+            f"la referencia; más corto que una racha típica y la racha acaba "
+            f"dentro de su propio baremo",
+        )
+        # Y la comprobación que impide reconstruir el fallo del 24/09/2026: con
+        # `reciente >= historico` la referencia se queda VACÍA y el detector
+        # pasa a decir `sin_muestra` todos los días. Con `reciente` casi igual
+        # de grande, la referencia son cuatro días y el percentil es ruido.
+        rec, hist = nivel.get("reciente_dias"), nivel.get("historico_dias")
+        if _es_num(rec) and _es_num(hist):
+            require(
+                hist - rec >= 60,
+                f"trend.nivel: entre reciente_dias ({rec}) e historico_dias "
+                f"({hist}) tienen que quedar al menos 60 días de referencia, y "
+                f"quedan {hist - rec}. El detector compara el tramo reciente "
+                f"CONTRA el anterior; si la referencia es corta, la propia mala "
+                f"racha se la come y el umbral la persigue hacia abajo, que es "
+                f"exactamente el fallo que este detector existe para no tener",
+            )
 
     # --- el lenguaje del panel ----------------------------------------------
     #

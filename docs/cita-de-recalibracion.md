@@ -230,6 +230,53 @@ Nada de esto está a medias: está terminado y sin datos que enseñar.
 
 ## 8. Lo que queda sin hacer, anotado
 
+- **La clave `trend.nivel` del `config.yaml`, DESPUÉS de reconstruir.** El
+  detector de nivel (24/09/2026) viaja en el código ya, pero **callado**: sin
+  su sección de configuración no hace nada. No se puede añadir la clave antes
+  de la reconstrucción porque el `config.yaml` va bind-mounted y lo lee el
+  contenedor **en marcha**, cuyo validador todavía no la conoce y la rechaza.
+  El orden es: reconstruir primero, añadir la clave después. Lo que hay que
+  pegar en la sección `trend`:
+
+  ```yaml
+    nivel:
+      historico_dias: 180
+      reciente_dias: 30
+      percentil_max: 12
+      dias_min: 4
+  ```
+
+  Con eso hay que hacer **dos cosas más**, y la segunda es la que impide que
+  esto se quede a medias para siempre:
+
+  1. Cambiar una línea de `tests/test_runner.py`: el test que afirma que la
+     ventana de wellness son 90 días pasa a ser 187, porque el detector
+     necesita tener delante los 180 de referencia más los 7 de la línea base
+     del más antiguo. El test lo dirá con ese número en el mensaje de fallo.
+  2. **Añadir a `tests/test_config_loader.py` un test que exija que la clave
+     esté**, y borrar el párrafo de `app/engine/tendencia.py` que explica por
+     qué todavía no lo hay. Hoy la sección es opcional de verdad: si nadie la
+     añade, el detector no habla nunca y **ningún test se pone rojo**. Ese es
+     exactamente el defecto que este repositorio persigue —una pieza que
+     certifica que no falta nada mientras falta— y de momento lo único que lo
+     sujeta es este apunte.
+
+  **Qué empieza a decir.** Una línea en el mensaje de la mañana cuando la
+  línea base de HRV lleve 4 días o más en el 12% más bajo de los 150 días
+  **anteriores a los 30 últimos** —la referencia excluye el tramo que juzga,
+  que es lo que impide que el umbral persiga a la señal hacia abajo—. Sobre el
+  histórico hablaría el 3,6% de los días, en un solo episodio. No decide nada:
+  no toca el semáforo, ni la sesión, ni las cargas.
+
+  **Por qué existe.** `hrv_ratio` divide el HRV de hoy entre la media de los 7
+  días anteriores, así que una bajada lenta se le escapa: el denominador baja
+  con el numerador. Medido del 10 al 24 de septiembre de 2026, el HRV pasó de
+  ~51 a 37, Garmin marcó su veredicto como bajo nueve días seguidos —la racha
+  más larga del registro— y `hrv_ratio` no bajó de 0,86 ni un día; el 21 y el
+  22 marcó 1,005 y 1,009, o sea «normal». El 22 el semáforo salió **verde**.
+  Los tres detectores de tendencia que ya había leen colores, y los colores no
+  se movieron, así que también se callaron.
+
 - **El control de tipo de sesión en la tarjeta de previsualización** («pedir
   completa / reducida / recuperación»). Es lo que haría alcanzable
   `override_session_type` desde el móvil, y por tanto lo que permitiría que la

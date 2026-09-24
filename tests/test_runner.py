@@ -923,9 +923,17 @@ def test_la_serie_de_sueño_de_la_tendencia_llega_al_mes_de_referencia(
     visto: dict[str, object] = {}
     real = run_daily.__globals__["evaluar_tendencia"]
 
-    def espia(config, day, serie, *, sleep_score, sleep_min):
+    # La firma va explícita y no con `**kwargs` a propósito: cuando el 24/09/2026
+    # se le añadió `hrv=` a la llamada real, este doble reventó con un TypeError
+    # y obligó a mirar. Con `**kwargs` habría seguido verde espiando una llamada
+    # que ya no era la que hace producción, que es la clase de doble que
+    # certifica lo que no ha visto.
+    def espia(config, day, serie, *, sleep_score, sleep_min, hrv):
         visto["sleep_min"] = dict(sleep_min)
-        return real(config, day, serie, sleep_score=sleep_score, sleep_min=sleep_min)
+        return real(
+            config, day, serie,
+            sleep_score=sleep_score, sleep_min=sleep_min, hrv=hrv,
+        )
 
     monkeypatch.setitem(run_daily.__globals__, "evaluar_tendencia", espia)
 
@@ -3097,3 +3105,38 @@ def test_pensar_el_dia_sin_respuestas_lee_las_que_haya_guardadas(db, cfg):
         "con un check-in rojo guardado, leerlo y no leerlo tiene que dar "
         "semáforos distintos"
     )
+
+
+def test_el_detector_de_nivel_alarga_la_ventana_de_wellness(cfg_copia):
+    """Los 180 dias de referencia hay que TENERLOS delante para medirlos.
+
+    Y no son 180 sino 187: la linea base del dia mas antiguo de la ventana mira
+    los siete ANTERIORES a el, igual que pasa con `DIAS_DE_HISTORIA`. Sin este
+    sumando el detector mediria contra media distribucion sin decir nada,
+    porque media distribucion sigue pasando el minimo de cobertura.
+    """
+    from app.runner import dias_de_wellness_en_memoria
+
+    sin = dias_de_wellness_en_memoria(cfg_copia)
+    cfg_copia.raw["trend"]["nivel"] = {
+        "historico_dias": 180, "reciente_dias": 30,
+        "percentil_max": 12, "dias_min": 4,
+    }
+    con = dias_de_wellness_en_memoria(cfg_copia)
+    assert con == 180 + cfg_copia.raw["baseline"]["window_days"]
+    assert con > sin
+
+
+def test_apagar_la_tendencia_tambien_apaga_la_ventana_del_detector_de_nivel(cfg_copia):
+    """`enabled: false` no puede dejar cargando seis meses de wellness cada
+    manana para una capa que no va a hablar."""
+    from app.engine.signals import DIAS_DE_HISTORIA
+    from app.runner import dias_de_wellness_en_memoria
+
+    cfg_copia.raw["trend"]["nivel"] = {
+        "historico_dias": 180, "reciente_dias": 30,
+        "percentil_max": 12, "dias_min": 4,
+    }
+    cfg_copia.raw["trend"]["enabled"] = False
+    esperado = DIAS_DE_HISTORIA + cfg_copia.raw["baseline"]["window_days"]
+    assert dias_de_wellness_en_memoria(cfg_copia) == esperado

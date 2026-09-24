@@ -1251,21 +1251,35 @@ def senales_producidas(config: Any) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def _baseline_for(
-    metrics: dict[date, DayMetrics],
-    attr: str,
+def baseline_for(
+    serie: dict[date, float | None],
     day: date,
     window_days: int,
     min_days: int,
     exclude_outliers: bool,
 ) -> float | None:
-    """Media móvil de los `window_days` ANTERIORES a `day`."""
+    """Media móvil de los `window_days` ANTERIORES a `day`.
+
+    PÚBLICA DESDE EL 24/09/2026, Y ESE ES EL MOTIVO DE QUE NO LLEVE GUIÓN BAJO.
+    `tendencia._detecta_nivel` reconstruye la misma línea base para cientos de
+    días y la compara contra su propia distribución. Podría haberse copiado allí
+    -son ocho líneas-, y copiarla habría sido el defecto de siempre: dos medias
+    que se llaman igual, empiezan iguales, y dejan de serlo el día que alguien
+    toque `exclude_outliers` en una sola de las dos. Entonces el detector diría
+    "tu línea base lleva seis días en su suelo" midiendo una línea base que el
+    semáforo no usa, y ninguna de las dos piezas daría error.
+
+    Que sea la MISMA función es lo que hace que la frase del mensaje sea
+    verdadera por construcción y no por coincidencia.
+
+    Toma una SERIE `{fecha: valor}` y no los `DayMetrics` con el nombre del
+    campo: la capa de tendencia no tiene objetos de wellness, tiene el HRV
+    suelto, y pedirle que fabricara un `DayMetrics` de mentira para poder llamar
+    aquí habría sido construir un doble dentro del código de producción.
+    """
     values: list[float] = []
     for i in range(1, window_days + 1):
-        m = metrics.get(day - timedelta(days=i))
-        if m is None:
-            continue
-        v = getattr(m, attr)
+        v = serie.get(day - timedelta(days=i))
         if v is not None:
             values.append(float(v))
     if len(values) < min_days:
@@ -1422,9 +1436,12 @@ def build_signals(
     ):
         base_hist: dict[date, float] = {}
         derived_hist: dict[date, float] = {}
+        serie_attr: dict[date, float | None] = {
+            d: getattr(m, attr) for d, m in by_date.items()
+        }
         for i in range(history_days):
             d = day - timedelta(days=i)
-            base = _baseline_for(by_date, attr, d, window, min_days, excl)
+            base = baseline_for(serie_attr, d, window, min_days, excl)
             if base is None:
                 continue
             base_hist[d] = base

@@ -34,14 +34,83 @@ escrito al lado, y se cambian a mano mirando el replay. El `--tendencia` de
 `scripts/replay_semaforo.py` existe para eso: sin poder falsarlos contra el
 histórico, dentro de un año serían folklore.
 
-LOS TRES DETECTORES
--------------------
+LOS CUATRO DETECTORES
+---------------------
   racha   -> N días seguidos sin un verde. Es el que avisa pronto.
   motivo  -> la misma regla manda semana tras semana. Dice QUÉ está pasando.
   ventana -> el último mes comparado con los sesenta días ANTERIORES a él, sin
              un solo día compartido. RETROSPECTIVO: confirma, no anticipa, y el
              texto lo dice con todas las letras para que no se lea como una
              alerta temprana.
+  nivel   -> la línea base de HRV comparada con su distribución de los 150 días
+             ANTERIORES al último mes, sin un solo día compartido. Los otros
+             tres leen COLORES; este lee la SEÑAL.
+
+EL DETECTOR DE NIVEL, Y POR QUÉ HIZO FALTA (24/09/2026)
+-------------------------------------------------------
+Los tres primeros detectores miran el histórico de semáforos. Eso deja un hueco
+que estaba escrito aquí mismo desde el principio, en el párrafo de los umbrales
+absolutos, y que nadie había ido a tapar: si una señal baja DESPACIO, el
+semáforo no cambia de color, y un detector que lee colores no ve nada porque no
+hay nada que ver en los colores.
+
+Medido sobre el histórico real, del 10 al 24 de septiembre de 2026: el HRV pasó
+de ~51 a 37 y Garmin marcó su propio veredicto como bajo nueve días seguidos -la
+racha más larga de todo el registro-. `hrv_ratio` no pasó de 0,86 ni un solo día
+y el 21 y el 22 marcó 1,005 y 1,009, o sea "exactamente normal". El 22, día
+séptimo de la racha, el semáforo salió VERDE. Los dos ámbares de esa semana los
+disparó el deslizador lumbar, no el reloj.
+
+No es un fallo de `hrv_ratio`: es lo que hace un cociente contra una media móvil
+de siete días. El denominador persigue al numerador, y contra una bajada lenta
+persigue bien. La línea base se fue de 51,4 a 42,2 -un 18% abajo- y el cociente
+ni se enteró, porque medir el cambio y medir el nivel son dos preguntas y solo
+se estaba haciendo la primera.
+
+`_cualifica_sueno` ya dejó dicho dónde tenía que ir esto: «Si alguna vez hace
+falta leer el NIVEL y no el cambio, será otra pieza -una comparación contra la
+distribución histórica completa-, no esta con los números estirados». Esta es
+esa pieza.
+
+CÓMO SE CALIBRÓ, QUE ES LA PARTE QUE PODÍA SALIR MAL
+-----------------------------------------------------
+El detector nació el mismo día que un análisis de tres migrañas, y esa es
+exactamente la forma de acabar con un umbral ajustado a tres fechas. No se hizo
+así, y se puede comprobar:
+
+  - El barrido fue sobre el histórico entero -192 días de HRV real-, contando
+    cuántos días hablaría cada terna. La referencia es causal: cada día se
+    compara solo con días anteriores a él. Calibrar con el futuro dentro habría
+    dado un detector que en producción no existe.
+  - El criterio de elección NO mira ninguna fecha: se barrió `percentil_max` de
+    8 a 21 y se tomó **el más estricto que no estuviera muerto**. Del 8 al 10 no
+    dispara nunca; el 11 y el 12 se comportan igual entre sí; del 13 en adelante
+    empieza a hablar antes y más días sin añadir un episodio distinto. Se toma
+    el 12 y no el 11 por margen frente al acantilado, no por lo que detecta.
+    Lo mismo con `dias_min`: 7 está muerto, 4 deja 3 días.
+  - Y el resultado que cierra el asunto: en TODO el barrido, con los catorce
+    percentiles probados, el detector no habla ni el 26/06 ni el 01/07. Es
+    ciego a los dos episodios del verano. Un umbral ajustado a ellos habría
+    acertado los dos; este falla los dos con cualquier ajuste, que es la prueba
+    de que no se ajustó a ellos.
+
+Con `historico_dias: 180`, `reciente_dias: 30`, `percentil_max: 12` y
+`dias_min: 4` habla 3 días de los 84 medibles del registro (3,6%), todos del
+mismo tramo de septiembre, y en un solo episodio.
+
+SU LÍMITE, QUE ES EL MISMO DE SIEMPRE UN PISO MÁS ARRIBA
+---------------------------------------------------------
+La referencia TAMBIÉN se desliza. Una deriva de años se le escapa igual que una
+de semanas se le escapaba a `hrv_ratio`, solo que mucho más despacio. No hay
+forma de arreglarlo sin un valor absoluto de HRV, y un valor absoluto de HRV no
+significa nada entre personas. Queda escrito para que dentro de un año nadie lo
+lea como un detector de nivel verdadero: es un detector de nivel A SEIS MESES
+VISTA.
+
+Y no habla hasta tener unos 105 días de registro, por el mínimo de cobertura
+sobre el tramo de referencia. En un sistema recién instalado está callado tres
+meses y medio, y eso es correcto: antes de eso no se sabe qué es bajo PARA ESTA
+PERSONA, que es lo único que mide.
 
 EL CUALIFICADOR DE SUEÑO
 ------------------------
@@ -91,6 +160,28 @@ anticipar episodios, ninguna señal elegida por su correlación con ellos, ning�
 umbral calibrado contra esas fechas, y ninguna frase en el mensaje con forma de
 pronóstico. Si algún día hace falta esa herramienta, será otra capa, con su
 propio nombre y su propia discusión sobre qué pasa cuando se equivoca. No esta.
+
+EL CASO LÍMITE, QUE YA HA PASADO UNA VEZ (24/09/2026)
+-----------------------------------------------------
+El detector `nivel` se escribió la tarde de un tercer episodio, mientras se
+cruzaban datos de Garmin contra las tres fechas. Ese es el escenario que este
+apartado describe, ocurriendo de verdad, y por eso conviene dejar dicho por qué
+se dejó entrar en vez de rechazarlo:
+
+  - La señal NO se eligió por correlacionar con los episodios. Se eligió porque
+    `hrv_ratio` no puede ver una bajada lenta, que es un defecto del semáforo
+    demostrable sin mencionar ninguna migraña y que ya estaba escrito en este
+    fichero antes de que existiera el tercer episodio.
+  - El umbral NO se calibró contra esas fechas: se barrió el histórico entero
+    buscando una frecuencia razonable, y el resultado es CIEGO a los dos
+    episodios del verano. Está medido más abajo.
+  - El texto no pronostica nada y lo dice con todas las letras.
+
+Si alguna de las tres cosas dejara de ser verdad -alguien afloja el percentil
+"para que hubiera avisado el día 16", alguien añade una señal porque coincide
+con un episodio-, el detector pasa a ser lo que este apartado prohíbe aunque el
+código siga compilando. Ese es el fallo que hay que vigilar aquí, y no hay test
+que lo cace: solo este párrafo.
 """
 
 from __future__ import annotations
@@ -100,7 +191,7 @@ from datetime import date, timedelta
 from typing import Any, Iterable
 
 from app.engine.luces import LUCES
-from app.engine.signals import week_start
+from app.engine.signals import baseline_for, week_start
 
 # Fracción mínima de días con decisión que hace falta para que una ventana se
 # considere medida. Por debajo, el detector no responde: contar "3 de 4 días
@@ -683,6 +774,228 @@ def _detecta_ventana(
 
 
 # ---------------------------------------------------------------------------
+# Detector de nivel
+# ---------------------------------------------------------------------------
+
+
+def _percentil_de(orden: list[float], p: float) -> float | None:
+    """El valor que deja por debajo el `p` % de `orden`, ya ordenado.
+
+    Por rango cercano y sin interpolar, que aquí no es una simplificación sino
+    lo correcto: el umbral acaba siendo SIEMPRE una línea base que el usuario
+    tuvo de verdad una mañana, y no un promedio entre dos mañanas que nunca
+    existió. Con los ~150 puntos de la referencia la diferencia numérica con un
+    percentil interpolado es de centésimas.
+    """
+    if not orden:
+        return None
+    k = max(0, min(len(orden) - 1, round(p / 100.0 * (len(orden) - 1))))
+    return orden[k]
+
+
+def _detecta_nivel(
+    day: date,
+    hrv: dict[date, float | None] | None,
+    baseline_cfg: dict[str, Any],
+    nivel_cfg: dict[str, Any] | None,
+) -> tuple[Aviso | None, SinMuestra | None]:
+    """Cuántos días seguidos lleva tu línea base de HRV en su propio suelo.
+
+    El único detector de la capa que lee la SEÑAL y no los COLORES. El motivo
+    largo está en la cabecera del módulo; el resumen es que un cociente contra
+    una media móvil de siete días no puede ver una bajada de tres semanas, y
+    los otros tres detectores leen el color, que en esa bajada no se movió.
+
+    LA LÍNEA BASE SE CALCULA CON `signals.baseline_for`, NO CON UNA COPIA
+    ---------------------------------------------------------------------
+    Es la misma función que usa el semáforo para su `hrv_baseline`. Si fueran
+    dos, el día que alguien tocara `baseline.exclude_outliers` este detector
+    seguiría hablando de una línea base que el motor ya no usa, y la frase del
+    mensaje sería falsa sin que nada fallara.
+
+    UN HUECO NO ROMPE LA RACHA, Y SE CUENTA APARTE
+    ----------------------------------------------
+    Igual que en `_detecta_racha` y por lo mismo: un día sin línea base no dice
+    que subiera, dice que no se pudo mirar. Pero los huecos van en el texto,
+    porque "seis días seguidos" y "seis días con dos que no sabemos" no son la
+    misma afirmación. Los huecos del final -los que no llevan a ningún día
+    contado- quedan `pendientes` y no se suman: si no hay nada detrás, no había
+    racha que atravesar.
+    """
+    # Sin sección de configuración el detector no existe. Esto NO es
+    # `sin_muestra`, que es para cuando faltan DATOS: aquí lo que falta es la
+    # instalación. Nació así el 24/09/2026 por el orden de despliegue -el
+    # validador de un contenedor en marcha rechaza una clave que su código no
+    # conoce, así que el código va primero y la clave después de reconstruir-.
+    #
+    # Que estar callado sin la sección sea deliberado lo sujeta
+    # `test_sin_seccion_de_configuracion_esta_callado`. LO QUE TODAVÍA NO HAY
+    # es un test que exija que `config.yaml` la tenga, y no puede haberlo hasta
+    # que la clave esté: sería rojo desde el primer día. Mientras tanto esta
+    # sección es opcional de verdad, con el riesgo que eso trae -que se quede
+    # opcional para siempre y el detector no hable nunca-, y lo único que lo
+    # evita es el apunte de `docs/cita-de-recalibracion.md`. Al añadir la clave
+    # hay que añadir ese test y borrar este párrafo.
+    if not nivel_cfg:
+        return None, None
+
+    historico = int(nivel_cfg["historico_dias"])
+    reciente = int(nivel_cfg["reciente_dias"])
+    pmax = float(nivel_cfg["percentil_max"])
+    dias_min = int(nivel_cfg["dias_min"])
+
+    serie = hrv or {}
+    window = int(baseline_cfg.get("window_days", 7))
+    min_days = int(baseline_cfg.get("min_days_required", 4))
+    excl = bool(baseline_cfg.get("exclude_outliers", True))
+
+    base: dict[date, float] = {}
+    for i in range(historico):
+        d = day - timedelta(days=i)
+        b = baseline_for(serie, d, window, min_days, excl)
+        if b is not None:
+            base[d] = b
+
+    # LA REFERENCIA NO SE SOLAPA CON LO QUE JUZGA, Y ESTO SE PAGÓ DOS VECES.
+    #
+    # La primera versión de este detector sacaba el percentil de los 180 días
+    # ENTEROS, con los recientes dentro. Contra el histórico real se vio lo que
+    # hacía (17 al 22 de septiembre de 2026, con la línea base cayendo de 44,8 a
+    # 42,6 sin parar):
+    #
+    #     día   base   umbral p10   racha
+    #     17    44,8      45,0        1
+    #     19    44,6      44,8        3
+    #     20    44,0      44,8        4   <- habla
+    #     21    43,8      44,6        3   <- se calla
+    #     22    42,6      44,4        3   <- sigue callado
+    #
+    # El umbral BAJABA con la racha, porque cada día malo nuevo entraba en su
+    # propia referencia y arrastraba el decil hacia abajo. Los días viejos de la
+    # racha se salían del decil por detrás y la racha ENCOGÍA mientras el HRV
+    # seguía bajando. O sea: el detector construido para ver bajadas lentas se
+    # callaba exactamente cuando la bajada se consolidaba.
+    #
+    # Es el mismo fallo que `_cualifica_sueno` y `_detecta_ventana` ya tenían
+    # documentado con todas las letras («LAS DOS VENTANAS NO SE SOLAPAN, Y ESO
+    # SE PAGÓ CARO POR APRENDERLO»), reconstruido desde cero en el detector de
+    # al lado. Por eso la referencia son ahora los días [reciente, histórico):
+    # ni uno compartido con el tramo que se está juzgando.
+    #
+    # El límite, escrito para que no se descubra dentro de un año: una racha más
+    # larga que `reciente_dias` SÍ empieza a meterse en su propia referencia. Con
+    # 30 días de margen y un mínimo de 4, hay sitio de sobra; con una racha de
+    # dos meses el detector volvería a apagarse solo, y eso sigue sin tener
+    # arreglo dentro de un umbral relativo.
+    referencia = sorted(
+        b for d, b in base.items() if (day - d).days >= reciente
+    )
+    dias_ref = historico - reciente
+    if len(referencia) < COBERTURA_MINIMA * dias_ref:
+        return None, SinMuestra(
+            "nivel",
+            f"{len(referencia)} de {dias_ref} días de referencia con línea base "
+            f"de HRV; hace falta la mitad para saber qué es bajo PARA TI",
+        )
+
+    hoy = base.get(day)
+    if hoy is None:
+        return None, SinMuestra(
+            "nivel",
+            f"hoy no hay línea base de HRV: hacen falta {min_days} noches con "
+            f"dato entre los {window} días anteriores y no las hay",
+        )
+
+    orden = referencia
+    umbral = _percentil_de(orden, pmax)
+    mediana = _percentil_de(orden, 50)
+
+    # UNA DISTRIBUCIÓN PLANA NO TIENE SUELO, Y EL PERCENTIL NO LO SABE.
+    #
+    # Si la línea base apenas varía, el percentil 10 y la mediana salen el
+    # MISMO número, y entonces "estar en el 10% más bajo" lo cumple el valor
+    # normal. El detector diría "llevas 180 días en tu 10% más bajo", que es
+    # verdad aritmética y mentira completa.
+    #
+    # Es el mismo artefacto que aparece en cualquier análisis por percentiles
+    # sobre un dato poco variable, y se cazó aquí antes que en producción
+    # porque el primer test que se escribió usaba un HRV constante: el detector
+    # pasó el test cantando una racha de noventa días. Un umbral relativo sobre
+    # una serie sin dispersión no mide nada, igual que `hrv_ratio` no mide nada
+    # sobre una bajada lenta. El mismo fallo, dos pisos distintos.
+    #
+    # Aquí NO hay un `if umbral is None`. `_percentil_de` solo devuelve None
+    # con la lista vacía, y a estas alturas el mínimo de cobertura ya garantiza
+    # 45 valores como poco: esa rama es inalcanzable. Escribirla "por si acaso"
+    # habría sido una guarda que no guarda nada y que, el día que de verdad
+    # llegara un None, lo convertiría en silencio. Si alguna vez pasa, el
+    # `>=` de abajo revienta con un TypeError ruidoso, que es lo que se quiere
+    # -mismo criterio que el histórico obligatorio de `build_signals`-.
+    if umbral >= mediana:
+        return None, SinMuestra(
+            "nivel",
+            f"tu línea base de HRV casi no se mueve ({len(set(orden))} valores "
+            f"distintos en {len(orden)} días): su {pmax:.0f}% más bajo y su "
+            f"mitad de abajo son el mismo número, así que no hay suelo que "
+            f"distinguir del resto",
+        )
+    # Aquí había un `if hoy > umbral: return None, None` antes de contar la
+    # racha. Lo tiró el banco de mutaciones del 24/09/2026: romperlo no ponía
+    # rojo ningún test, y el motivo es que la primera vuelta del bucle de abajo
+    # comprueba exactamente lo mismo y sale con n=0. Era la misma condición
+    # escrita dos veces, que es la forma de que un día alguien cambie una y no
+    # la otra y el detector empiece a contar rachas que no empiezan hoy.
+    n = 0
+    huecos = 0
+    pendientes = 0
+    d = day
+    while (day - d).days < historico:
+        b = base.get(d)
+        if b is None:
+            pendientes += 1
+            d -= timedelta(days=1)
+            continue
+        if b > umbral:
+            break
+        n += 1
+        huecos += pendientes
+        pendientes = 0
+        d -= timedelta(days=1)
+
+    if n < dias_min:
+        return None, None
+
+    caida = (100.0 * (mediana - hoy) / mediana) if mediana else 0.0
+    hueco_txt = f" (con {huecos} sin dato por medio)" if huecos else ""
+
+    # La última frase no es adorno. Este detector describe un nivel sostenido,
+    # y un nivel sostenido es justo lo que más se parece a un presagio cuando
+    # se lee con prisa a las siete de la mañana. Ver la cabecera del módulo.
+    # El texto nombra el tramo de comparación por lo que ES -los `dias_ref` días
+    # anteriores a los `reciente` últimos- y no por la ventana entera. Decir "de
+    # tus últimos 180 días" cuando la referencia excluye los 30 recientes sería
+    # describir mal la cuenta justo en la frase que la justifica. Mismo criterio
+    # que en `_cualifica_sueno`, por el mismo motivo y tras el mismo fallo.
+    #
+    # Y los dos números salen de la configuración, no escritos a mano: aquí
+    # ponía "al último mes", que es verdad con `reciente_dias: 30` y mentira en
+    # cuanto alguien lo cambie. Una frase que se lee cada mañana y que el YAML
+    # puede volver falsa sin que nada falle es el defecto de este repositorio
+    # en su forma más pequeña.
+    texto = (
+        f"tu línea base de HRV lleva {n} días seguidos{hueco_txt} en el "
+        f"{pmax:.0f}% más bajo de los {dias_ref} días anteriores a los "
+        f"{reciente} últimos: {hoy:.0f} frente a una mediana de "
+        f"{mediana:.0f} entonces, un "
+        f"{caida:.0f}% por debajo. Es un NIVEL, no el bajón de una noche: el "
+        f"semáforo compara cada mañana contra esa misma base, así que una "
+        f"bajada lenta le sale normal y no dispara ninguna regla. Dice dónde "
+        f"estás, no lo que viene"
+    )
+    return Aviso("nivel", texto, n, f"{dias_ref}d sin los {reciente} últimos"), None
+
+
+# ---------------------------------------------------------------------------
 # Cualificador de sueño
 # ---------------------------------------------------------------------------
 
@@ -853,8 +1166,9 @@ def evaluar_tendencia(
     *,
     sleep_score: dict[date, float | None] | None = None,
     sleep_min: dict[date, float | None] | None = None,
+    hrv: dict[date, float | None] | None = None,
 ) -> Tendencia:
-    """Los tres detectores sobre el histórico de decisiones. Función pura.
+    """Los cuatro detectores sobre el histórico. Función pura.
 
     `decisiones` incluye la de HOY: el llamante la añade en memoria en vez de
     leerla de la base, porque a las 06:30 todavía no está escrita y porque en el
@@ -904,6 +1218,12 @@ def evaluar_tendencia(
     a_ventana, sm_ventana = _detecta_ventana(
         day, por_dia, corta, larga, float(trend["delta_pp_min"])
     )
+    # El de nivel NO recibe `por_dia`: es el único que no mira ni un semáforo.
+    # Le basta la serie de HRV y la configuración de la línea base, que es la
+    # del motor y no una suya.
+    a_nivel, sm_nivel = _detecta_nivel(
+        day, hrv, (raw or {}).get("baseline") or {}, trend.get("nivel")
+    )
 
     # El cualificador se engancha al primer aviso que señale al sueño, y el orden
     # es el mismo en que se leen: si el motivo ya dice "el sueño manda por quinta
@@ -928,6 +1248,12 @@ def evaluar_tendencia(
             t.sin_muestra.append(sm)
         break
 
-    t.avisos = [a for a in (a_motivo, a_racha, a_ventana) if a is not None]
-    t.sin_muestra.extend(s for s in (sm_motivo, sm_racha, sm_ventana) if s is not None)
+    # `nivel` va el último a propósito. Los otros tres describen el semáforo,
+    # que es lo que el usuario acaba de leer más arriba en el mensaje; este
+    # habla de otra cosa -una señal que el semáforo no ha visto- y meterlo en
+    # medio lo haría pasar por una explicación del color de hoy, que no lo es.
+    t.avisos = [a for a in (a_motivo, a_racha, a_ventana, a_nivel) if a is not None]
+    t.sin_muestra.extend(
+        s for s in (sm_motivo, sm_racha, sm_ventana, sm_nivel) if s is not None
+    )
     return t
