@@ -572,6 +572,160 @@ def test_las_instrucciones_nombran_todo_lo_que_el_compose_espera_encontrar(servi
 
 
 # ---------------------------------------------------------------------------
+# El script que mueve la version, que ahora ejecuta un taller sin nadie mirando
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def repo_de_mentira(tmp_path, monkeypatch):
+    """Una copia de los cuatro ficheros de la version, y el script apuntando ahi.
+
+    Se trabaja sobre copia y no sobre el repositorio porque estos tests
+    ESCRIBEN. Un test que deja `pyproject.toml` con otra version es un test que
+    rompe la batería entera a partir del siguiente.
+    """
+    from scripts import fijar_version
+
+    for lugar in fijar_version.LUGARES:
+        destino = tmp_path / lugar.ruta
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_text(
+            (REPO_ROOT / lugar.ruta).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    monkeypatch.setattr(fijar_version, "RAIZ", tmp_path)
+    return tmp_path
+
+
+def test_fijar_la_version_la_deja_escrita_en_los_cuatro_sitios(repo_de_mentira):
+    """Lo que el taller da por hecho en cada empujon.
+
+    Sin esto, el unico sitio donde se comprobaria que el script funciona seria
+    una ejecucion de GitHub Actions, o sea despues de haber publicado.
+    """
+    from scripts import fijar_version
+
+    fijar_version.fijar("9.8.7")
+    assert {v for _, v in fijar_version.leer_versiones()} == {"9.8.7"}
+
+
+def test_un_patron_que_deja_de_casar_revienta_y_no_escribe_nada(repo_de_mentira):
+    """EL FALLO QUE ESTE SCRIPT EXISTE PARA NO TENER (25/09/2026).
+
+    Un `sed` que deja de casar no falla: no cambia nada. Si `pyproject.toml`
+    pasara a escribir `version="0.1.0"` sin espacios, el taller terminaria en
+    verde, publicaria la imagen con la etiqueta de siempre, y el Umbrel no veria
+    ninguna actualizacion que ofrecer. Desde el movil eso se parece exactamente
+    a que el arreglo esta puesto.
+
+    Se comprueba ademas que NO escribe a medias: con cuatro ficheros, reventar
+    en el tercero dejaria dos movidos y dos quietos, que es peor que no haber
+    empezado.
+    """
+    from scripts import fijar_version
+
+    # SE ROMPE EL ULTIMO DE LA LISTA, Y ESO ES LA MITAD DEL TEST.
+    #
+    # La primera version rompia `pyproject.toml`, que es el PRIMERO: reventaba
+    # antes de escribir nada, asi que la comprobacion de «no escribe a medias»
+    # pasaba igual aunque el script escribiera fichero a fichero. El banco de
+    # mutaciones lo enseno: quitarle la atomicidad no ponia rojo a nadie.
+    # Rompiendo el ultimo, un script no atomico ya ha escrito los tres de antes.
+    #
+    # Y se rompe con comillas SIMPLES, que YAML admite igual. Quitar los
+    # espacios no valia: el patron lleva `\s*` y casa igual sin ellos.
+    ultimo = fijar_version.LUGARES[-1]
+    roto = repo_de_mentira / ultimo.ruta
+    roto.write_text(
+        roto.read_text(encoding="utf-8").replace('version: "0.1.0"', "version: '0.1.0'"),
+        encoding="utf-8",
+    )
+    antes = {
+        lugar.ruta: (repo_de_mentira / lugar.ruta).read_text(encoding="utf-8")
+        for lugar in fijar_version.LUGARES
+    }
+
+    with pytest.raises(fijar_version.NoCasa) as e:
+        fijar_version.fijar("9.8.7")
+    assert ultimo.ruta in str(e.value)
+
+    for ruta, texto in antes.items():
+        assert (repo_de_mentira / ruta).read_text(encoding="utf-8") == texto, (
+            f"{ruta} se ha escrito aunque la operacion fallo: el script escribe "
+            f"a medias y deja el repositorio en una mezcla que nadie pidio"
+        )
+
+
+def test_dos_lugares_en_el_mismo_fichero_no_pasan_en_silencio(repo_de_mentira, monkeypatch):
+    """Por que `fijar` vuelve a LEER del disco en vez de fiarse de lo que escribio.
+
+    El dia que alguien anada un quinto sitio que viva en un fichero que ya esta
+    en la lista, los dos textos se calculan sobre el ORIGINAL y se escriben en
+    orden: el segundo pisa al primero y se lleva su cambio por delante. El
+    script habria «escrito» los cinco y el fichero diria la version vieja en uno
+    de ellos.
+
+    Eso no lo caza ningun patron -los dos casan perfectamente-, solo lo caza
+    preguntarle al disco como quedo. Es la diferencia entre «he escrito» y
+    «esta escrito», y el taller se fia de esto para publicar.
+    """
+    from scripts import fijar_version
+
+    compose = repo_de_mentira / "docker-compose.yml"
+    compose.write_text(
+        compose.read_text(encoding="utf-8") + "\n# version-espejo: 0.1.0\n",
+        encoding="utf-8",
+    )
+    espejo = fijar_version.Lugar(
+        "docker-compose.yml", r"(?m)^(# version-espejo: )\S+", 1, "inventado para este test"
+    )
+    monkeypatch.setattr(fijar_version, "LUGARES", fijar_version.LUGARES + (espejo,))
+
+    with pytest.raises(fijar_version.NoCasa) as e:
+        fijar_version.fijar("9.8.7")
+    assert "docker-compose.yml" in str(e.value)
+
+
+def test_una_version_que_no_es_una_version_no_llega_a_los_ficheros(repo_de_mentira):
+    """El taller la construye con `git rev-list --count`.
+
+    En un clon superficial ese comando puede no devolver un numero, y entonces
+    lo que llegaria aqui seria `0.1.` -o vacio-. Escribir eso en los cuatro
+    ficheros publica una imagen con una etiqueta absurda y deja el repositorio
+    declarando una version que no existe.
+    """
+    from scripts import fijar_version
+
+    for malo in ("0.1.", "", "latest", "v1.2.3", "1.2"):
+        with pytest.raises(ValueError):
+            fijar_version.fijar(malo)
+    assert {v for _, v in fijar_version.leer_versiones()} == {"0.1.0"}
+
+
+def test_el_script_conoce_exactamente_los_sitios_que_este_fichero_vigila():
+    """Las dos listas tienen que ser la misma, y viven en ficheros distintos.
+
+    `test_la_version_de_la_imagen_es_la_que_declara_el_proyecto` compara cuatro
+    sitios. `scripts/fijar_version.py` mueve cuatro sitios. Si alguien anade un
+    quinto a uno de los dos lados y no al otro, el resultado es el de siempre:
+    el taller mueve tres, el test exige cuatro, y quien lo arregle con prisa
+    tiene delante dos listas que no sabe que se corresponden.
+    """
+    from scripts import fijar_version
+
+    del_script = {lugar.ruta for lugar in fijar_version.LUGARES}
+    vigilados = {
+        "pyproject.toml",
+        "docker-compose.yml",
+        "umbrel/docker-compose.yml",
+        "umbrel/umbrel-app.yml",
+    }
+    assert del_script == vigilados, (
+        f"el script mueve {sorted(del_script)} y este fichero vigila "
+        f"{sorted(vigilados)}. Son la misma lista escrita dos veces"
+    )
+
+
+# ---------------------------------------------------------------------------
 # `.dockerignore`: lo que entra y lo que no puede entrar
 # ---------------------------------------------------------------------------
 

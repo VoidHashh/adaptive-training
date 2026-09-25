@@ -75,29 +75,34 @@ es la vuelta atrás. No lo borres, y no lo levantes sin apagar el Umbrel antes
 —dos planificadores sobre la misma cuenta son dos decisiones pisándose el mismo
 día y dos escrituras de la misma rutina en Hevy—.
 
-**UN CAMBIO EN EL CÓDIGO NO LLEGA SOLO.** Son cinco pasos y ninguno es
-opcional; saltarse uno no da error, da un sistema que sigue corriendo lo de
-antes mientras el repositorio dice otra cosa:
+**UN CAMBIO LLEGA CON UN `git push`, Y NADA MÁS.** Así quedó el 25/09/2026,
+después de que el Umbrel pasara horas sirviendo `f9a5a4a` con dos commits de
+código por delante sin que nada lo dijera:
 
-1. **Commit y `git push`.** La rama local es `master` y la remota `main`; está
-   puesto `push.default = upstream`, así que `git push` a secas vale.
-2. **El taller publica la imagen.** `.github/workflows/docker.yml` construye y
-   sube a `ghcr.io/voidhashh/adaptive-training` en cada empujón. Esto es lo
-   único automático de la lista.
-3. **Subir la versión, en los cuatro sitios a la vez**: `pyproject.toml`,
-   `image:` de `umbrel/docker-compose.yml`, `version:` de
-   `umbrel/umbrel-app.yml` y `image:` del compose de la raíz.
-   `tests/test_despliegue.py` se pone rojo si falta uno. **Sin subirla, el
-   Umbrel NO vuelve a descargar nada**: la etiqueta ya la tiene, sigue
-   corriendo lo instalado, y desde el móvil eso se parece exactamente a que el
-   arreglo está puesto.
-4. **Copiar `umbrel/umbrel-app.yml` y `umbrel/docker-compose.yml` al
-   repositorio de la tienda**, `VoidHashh/PlanB`, carpeta
-   `planb-adaptive-training/`. Umbrel lee de ahí, no de aquí. **Ningún test
-   avisa si no se hace**, porque el test no ve el otro repositorio.
-5. **Actualizar desde la interfaz de Umbrel.** Eso lo hace el usuario: no hay
-   acceso a Docker en esa máquina (el usuario `umbrel` no está en el grupo
+1. **`git push`.** La rama local es `master` y la remota `main`; está puesto
+   `push.default = upstream`, así que `git push` a secas vale.
+2. `.github/workflows/docker.yml` **fija la versión** (`0.1.<nº de commits>`)
+   con `scripts/fijar_version.py`, **la devuelve al repositorio** en un commit
+   suyo, y **publica la imagen** etiquetada con ella.
+3. Un taller **dentro de `VoidHashh/PlanB`** (cada diez minutos) se trae los dos
+   YAML y los deja en `planb-adaptive-training/`. Vive de ese lado porque así su
+   propio `GITHUB_TOKEN` basta: **no hay ninguna credencial que crear ni rotar.**
+4. Umbrel ve una versión nueva y **te ofrece actualizar**. Ese clic es tuyo: en
+   esa máquina no hay acceso a Docker (el usuario `umbrel` no está en el grupo
    `docker` y `sudo` pide contraseña).
+
+**CONSECUENCIA QUE MUERDE: después de cada `push` tu rama local se queda
+atrás**, porque el taller ha commiteado la versión encima. El siguiente `push`
+será rechazado. Antes de seguir trabajando, `git pull --rebase`.
+
+La versión es un contador de construcciones, no una versión semántica, y eso es
+deliberado: lo único que Umbrel necesita es que **crezca**. Por eso se calcula
+con `git rev-list --count` y por eso el taller hace `fetch-depth: 0` —en un clon
+superficial ese número es más pequeño y la versión iría hacia atrás—.
+
+**Si algún día hay que moverla a mano**, `python scripts/fijar_version.py
+0.1.200`, que escribe los cuatro y comprueba releyendo el disco. Nunca a mano
+fichero por fichero: `tests/test_despliegue.py` exige que los cuatro coincidan.
 
 **`config.yaml` es la excepción y sigue siéndolo.** Va bind-mounted en
 `${APP_DATA_DIR}/config.yaml` y se aplica al recrear el contenedor, sin imagen

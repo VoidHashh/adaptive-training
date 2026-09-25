@@ -19,15 +19,25 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+# `contents: write` porque el taller DEVUELVE al repositorio la version que
+# acaba de fijar. Sin eso los cuatro ficheros seguirian diciendo la version
+# vieja mientras la imagen sale con la nueva, que es exactamente la
+# desincronizacion que `tests/test_despliegue.py` existe para impedir.
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # `fetch-depth: 0` porque la version se calcula con `git rev-list --count`
+      # y en un clon superficial ese numero es el de los commits descargados, no
+      # el de la historia. Saldria una version MENOR que la anterior y Umbrel no
+      # ofreceria la actualizacion.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # ghcr.io exige el nombre del repositorio en minúsculas y el de aquí
       # lleva mayúsculas (`VoidHashh`). Sin esto el push falla con un 403 que
@@ -41,11 +51,47 @@ jobs:
       # `umbrel/docker-compose.yml`, con `umbrel-app.yml` y con el compose de la
       # raíz. Si se leyera de aquí serían cinco sitios en vez de cuatro, y el
       # quinto sin test.
-      - name: Version declarada por el proyecto y fecha del build
+      # LA VERSION SE FIJA AQUI Y SE DEVUELVE AL REPOSITORIO.
+      #
+      # Antes se leia de `pyproject.toml` y se movia a mano. El problema no era
+      # la molestia: era que olvidarlo no da error. La imagen se publicaba con
+      # la etiqueta de siempre, Umbrel no veia ninguna actualizacion que ofrecer
+      # y seguia corriendo lo de antes -y desde el movil eso se parece
+      # exactamente a que el arreglo esta puesto-. Paso de verdad: el Umbrel
+      # estuvo horas sirviendo `f9a5a4a` con dos commits de codigo por delante.
+      #
+      # El numero es el de commits, +1 por el que este paso esta a punto de
+      # hacer: asi el commit que declara `0.1.N` es el N-esimo. Es un contador
+      # de construcciones y no una version semantica, y eso es honesto: lo que
+      # Umbrel necesita es que CREZCA.
+      #
+      # Quien lo escribe es `scripts/fijar_version.py` y no un `sed` aqui
+      # dentro, porque un `sed` que deja de casar no falla: no cambia nada. El
+      # script afirma cuantas veces tiene que casar cada patron y vuelve a leer
+      # del disco para comprobar que quedo escrito, y `tests/test_despliegue.py`
+      # lo ejercita en cada ejecucion de la bateria.
+      - name: Fijar la version y devolverla al repositorio
         id: version
         run: |
-          v=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          set -euo pipefail
+          v="0.1.$(( $(git rev-list --count HEAD) + 1 ))"
+          python scripts/fijar_version.py "$v"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "los cuatro ficheros ya decian $v; no hay nada que devolver"
+          else
+            # `[skip ci]` es cinturon y tirantes: un push hecho con el
+            # GITHUB_TOKEN no dispara talleres por si mismo, pero si algun dia
+            # este paso usa otra credencial, sin esto seria un bucle infinito.
+            git commit -m "Version $v, fijada por el taller [skip ci]"
+            git push
+          fi
           echo "v=$v" >> "$GITHUB_OUTPUT"
+          # El SHA de DESPUES del commit de version: es el codigo que de verdad
+          # va dentro de la imagen, y es lo que `/api/health` tiene que contestar.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "fecha=$(date -Iseconds)" >> "$GITHUB_OUTPUT"
 
       # Sin esto el runner construye con el driver `docker`, que NO sabe exportar
@@ -81,12 +127,12 @@ jobs:
           tags: |
             ghcr.io/${{ steps.repo.outputs.name }}:${{ steps.version.outputs.v }}
             ghcr.io/${{ steps.repo.outputs.name }}:latest
-            ghcr.io/${{ steps.repo.outputs.name }}:${{ github.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}:${{ steps.version.outputs.sha }}
           # Los dos que el Dockerfile declara y deja vacíos sin protestar. Sin
           # ellos `/api/health` no puede decir qué código está corriendo, que es
           # la pregunta que se hace después de cada arreglo.
           build-args: |
-            BUILD_SHA=${{ github.sha }}
+            BUILD_SHA=${{ steps.version.outputs.sha }}
             BUILD_DATE=${{ steps.version.outputs.fecha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
