@@ -1999,3 +1999,30 @@ def test_trend_nivel_sin_reciente_dias_no_pasa(cfg_copia):
         "historico_dias": 180, "percentil_max": 12, "dias_min": 4,
     }
     assert "reciente_dias" in errores(cfg_copia.raw)
+
+
+def test_ninguna_rutina_repite_los_ejercicios_de_su_bloque_hiit(cfg):
+    """El riesgo concreto que deja la fusion del 25/09/2026.
+
+    El bloque de intervalos del Dia 2 dejo de ser una rutina aparte y paso a ser
+    parte fija de `dia_2`. Si algun dia alguien vuelve a colgarle un bloque HIIT
+    a esa rutina -por ejemplo restaurando `hiit.blocks.dia_2`-, los cuatro
+    ejercicios se escribirian DOS VECES en la sesion: una en la rutina y otra en
+    el bloque.
+
+    No daria error. Daria una sesion con las cuerdas de batalla repetidas, el
+    doble de volumen contado, y a nadie se le ocurriria mirar el YAML.
+    """
+    raw = cfg.raw
+    for rutina, bloque in (raw.get("hiit", {}).get("blocks") or {}).items():
+        de_la_rutina = {
+            e["key"] for e in (raw["routines"].get(rutina, {}).get("exercises") or [])
+        }
+        del_bloque = {
+            e["key"] for e in (raw["routines"].get(bloque, {}).get("exercises") or [])
+        }
+        repetidos = sorted(de_la_rutina & del_bloque)
+        assert not repetidos, (
+            f"'{rutina}' y su bloque '{bloque}' comparten {repetidos}: "
+            f"se escribirian dos veces en la misma sesion"
+        )

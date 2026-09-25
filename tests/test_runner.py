@@ -1317,18 +1317,38 @@ def test_el_hiit_que_pedia_el_plan_se_nombra_por_su_titulo(db, cfg_lunes):
     """Este motivo lo lee el mensaje de la mañana tal cual sale de aquí, así
     que un `hiit_dia_1` guardado en la fila es un `hiit_dia_1` en pantalla.
 
-    El escenario es el que hace visible la frase: el plan pedía el bloque del
-    Día 1 y se ejecutó el del Día 2. Hacer el bloque que tocaba no pasa por
-    aquí -se reconoce antes como previsto-, así que sin esta discordancia la
-    rama que nombra el bloque del plan no la comprueba nadie.
+    El escenario es el que hace visible la frase: el plan pedía un bloque HIIT y
+    se ejecutó OTRO. Hacer el que tocaba no pasa por aquí -se reconoce antes
+    como previsto-, así que sin esta discordancia la rama que nombra el bloque
+    del plan no la comprueba nadie.
+
+    EL SEGUNDO BLOQUE SE FABRICA AQUÍ, Y ESO ES UN ARREGLO
+    ------------------------------------------------------
+    Antes se usaba `hiit_dia_2`, que existía en el `config.yaml`. El 25/09/2026
+    ese bloque se fusionó dentro del Día 2 y dejó de existir, y con él se llevó
+    este test por delante: el escenario dependía de que el config real tuviera
+    DOS bloques HIIT.
+
+    Eso era la debilidad, no la fusión. La rama que se prueba aquí es correcta y
+    sigue estándolo; lo que pasa es que con un solo bloque en el YAML no se
+    puede llegar a ella desde el config real. Fabricando el segundo aquí, el
+    test cubre la rama pase lo que pase con la configuración, que es lo que
+    tenía que haber hecho desde el principio.
     """
     corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
     assert _plan_guardado(db)["hiit_block"] == "hiit_dia_1", (
         "el escenario ya no lleva HIIT; el test hay que rehacerlo"
     )
 
+    cfg_lunes.raw["routines"]["hiit_otro"] = {
+        "title": "Otro HIIT",
+        "hevy_routine_id": "rid-hiit-otro",
+        "exercises": [],
+    }
+    cfg_lunes.raw["hiit"]["blocks"]["dia_2"] = "hiit_otro"
+
     w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="el_otro_hiit")
-    w["routine_id"] = _rid(cfg_lunes, "hiit_dia_2")
+    w["routine_id"] = _rid(cfg_lunes, "hiit_otro")
     run_reconcile(db, cfg_lunes, LUNES, workouts=[w])
 
     fila = db.scalars(

@@ -1779,7 +1779,7 @@ hiit:
   start_week: 1             # semanas contadas desde `program_start_date`
   program_start_date: null  # AAAA-MM-DD; si es null se usa la fecha del primer
                             # check-in registrado
-  allowed_routines: [dia_1, dia_2]
+  allowed_routines: [dia_1]
 
   # Día 3 (viernes) NUNCA lleva HIIT. Es la sesión ligera previa a la bici del
   # fin de semana y esa función se pierde si se le añade intensidad.
@@ -1791,7 +1791,6 @@ hiit:
   # Un bloque distinto por día. Los dos existen como rutinas propias en Hevy.
   blocks:
     dia_1: hiit_dia_1
-    dia_2: hiit_dia_2
 
   only_on_green: true
 
@@ -2159,6 +2158,54 @@ routines:
           - {duration_s: 20}
           - {duration_s: 20}
 
+      # --- Bloque de intervalos, fijo desde el 25/09/2026 -------------------
+      #
+      # Hasta aquí esto era `hiit_dia_2`, una rutina aparte que solo se escribía
+      # en día verde. Se fusiona por decisión del usuario: una sola rutina que
+      # abrir en el gimnasio en vez de dos.
+      #
+      # LO QUE SE PIERDE AL FUSIONARLO, ESCRITO PARA QUE NO SE REDESCUBRA:
+      #
+      #   - Ya NO es condicional. Antes `hiit.only_on_green` lo retiraba en día
+      #     ámbar; ahora está siempre. Si algún día se quiere recuperar ese
+      #     comportamiento sin volver a partir la rutina, la pieza que hace
+      #     falta ya existe y es `expendable_in_amber: true` en estos cuatro:
+      #     el ámbar los quitaría y el resto del Día 2 seguiría igual.
+      #   - Ya no lo recorre la guarda de `safety.forbidden_in_hiit`, que solo
+      #     mira las rutinas referenciadas desde `hiit.blocks`. Los cuatro de
+      #     abajo la pasaban limpios cuando se movieron; lo que se añada aquí en
+      #     adelante no la pasa. Es el mismo alcance que ya tenía el resto del
+      #     Día 2 y que el peso muerto rumano del Día 3, donde está razonado.
+      #
+      # `progression_type: none` en los cuatro: son intervalos por tiempo, no
+      # hay carga que progresar.
+      - key: battle_ropes
+        template_id: "084A67CA"
+        name: "Cuerdas de batalla"
+        notes: "40 - 20"
+        progression_type: none
+        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
+
+      - key: comba
+        template_id: "040BA2E3"
+        name: "Salto a la cuerda"
+        progression_type: none
+        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
+
+      - key: ski_erg
+        template_id: "5D99A2FA"
+        name: "Ski erg"
+        notes: "40 - 20"
+        progression_type: none
+        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
+
+      - key: step_up
+        template_id: "128A2381"
+        name: "Step up"
+        notes: "40 - 20"
+        progression_type: none
+        sets: [{reps: 40}, {reps: 40}, {reps: 40}]
+
   # ---------------------------------------------------------------------------
   dia_3:
     title: "Día 3"
@@ -2475,36 +2522,6 @@ routines:
           - {reps: 20, weight_kg: 5}
           - {reps: 20, weight_kg: 5}
 
-  hiit_dia_2:
-    title: "Día 2 HIIT"
-    hevy_routine_id: "6265a7b5-5cdd-422a-8833-735828827189"
-    exercises:
-      - key: battle_ropes
-        template_id: "084A67CA"
-        name: "Cuerdas de batalla"
-        notes: "40 - 20"
-        progression_type: none
-        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
-
-      - key: comba
-        template_id: "040BA2E3"
-        name: "Salto a la cuerda"
-        progression_type: none
-        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
-
-      - key: ski_erg
-        template_id: "5D99A2FA"
-        name: "Ski erg"
-        notes: "40 - 20"
-        progression_type: none
-        sets: [{duration_s: 40}, {duration_s: 40}, {duration_s: 40}]
-
-      - key: step_up
-        template_id: "128A2381"
-        name: "Step up"
-        notes: "40 - 20"
-        progression_type: none
-        sets: [{reps: 40}, {reps: 40}, {reps: 40}]
 
 
 # -----------------------------------------------------------------------------
