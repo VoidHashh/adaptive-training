@@ -1257,6 +1257,24 @@ def post_checkin(
 def _decidir(
     s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None
 ) -> dict[str, Any]:
+    """`_decidir_sin_cerrojo` con el MISMO cerrojo que `scheduler.job_decision`.
+
+    Desde el 25/09/2026 hay tres caminos que deciden el día: el check-in que se
+    envía desde el móvil, el reintento con hora del scheduler y el recálculo al
+    abrir la app. Los dos últimos ya compartían cerrojo; este no, y un check-in
+    enviado justo a las 07:30 podía decidir a la vez que el reintento: dos
+    decisiones, dos escrituras en Hevy y dos Telegram para el mismo día. El que
+    llega segundo espera y decide con lo que el primero dejó.
+    """
+    from app.scheduler import _DECIDIENDO
+
+    with _DECIDIENDO:
+        return _decidir_sin_cerrojo(s, cfg, day, source=source, sesion_pedida=sesion_pedida)
+
+
+def _decidir_sin_cerrojo(
+    s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None
+) -> dict[str, Any]:
     """Decide el día, y si no puede lo dice sin fingir que sí.
 
     Y CUANDO NO PUEDE, DICE ADEMÁS HASTA DÓNDE LLEGÓ

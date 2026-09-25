@@ -3512,3 +3512,29 @@ def test_recalcular_no_se_dispara_con_un_get(cliente):
     """Cuando actúa escribe en Hevy y manda un Telegram: no va detrás de un
     verbo que cualquier precargador de enlaces puede disparar solo."""
     assert cliente.get("/api/decision/recalcular").status_code in (404, 405)
+
+
+def test_el_checkin_del_movil_espera_al_mismo_cerrojo_que_el_scheduler(monkeypatch):
+    """Tres caminos deciden el día y solo dos compartían cerrojo (25/09/2026).
+
+    Un check-in enviado justo a la hora del reintento podía decidir a la vez que
+    él: dos decisiones, dos escrituras en Hevy y dos Telegram. Se sujeta el
+    cerrojo desde fuera y se comprueba que el envío espera en vez de entrar.
+    """
+    import threading
+
+    import app.api as api
+    import app.scheduler as sched
+
+    entro = threading.Event()
+    monkeypatch.setattr(api, "_decidir_sin_cerrojo", lambda *a, **k: entro.set() or {})
+
+    with sched._DECIDIENDO:
+        hilo = threading.Thread(
+            target=lambda: api._decidir(None, None, date.today(), source="checkin"),
+            daemon=True,
+        )
+        hilo.start()
+        assert not entro.wait(0.5), "el check-in ha decidido con el cerrojo cogido"
+    assert entro.wait(10), "al soltar el cerrojo el check-in no ha decidido"
+    hilo.join(10)

@@ -347,6 +347,37 @@ def test_el_dia_sin_base_se_dice_en_el_mensaje(cfg):
     assert rec.skip_reason in rec.text()
 
 
+def test_sin_base_en_rojo_no_se_invita_a_salir_por_sensaciones(cfg):
+    """El techo del semáforo es del día, no del histórico (25/09/2026).
+
+    Sin punto de partida el mensaje decía «si sales, sal por sensaciones»
+    también en rojo. El `level` interno era `descanso`, pero el texto no lo
+    leía: el móvil ofrecía salir el día en que el cuerpo decía que no.
+    """
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=None), "red")
+    texto = rec.text()
+    assert "sensaciones" not in texto, texto
+    assert "descanso" in texto and "rojo" in texto, texto
+    # En indicativo, como el descanso de siempre: un rojo no se ofrece como
+    # opción. «Si sales, que sea descanso» pasaba todo lo de arriba.
+    assert "si sales" not in texto.lower(), texto
+    assert rec.to_dict()["techo_sin_base"] == ["descanso", "el semáforo está en rojo"]
+
+
+def test_sin_base_en_ambar_se_dice_el_techo(cfg):
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=None), "amber")
+    texto = rec.text()
+    assert "suave como mucho" in texto and "ámbar" in texto, texto
+    assert "sensaciones" not in texto
+
+
+def test_sin_base_en_verde_sigue_siendo_por_sensaciones(cfg):
+    """Verde no recorta nada: ahí «por sensaciones» es lo honrado."""
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=None), "green")
+    assert rec.techo_sin_base is None
+    assert "sal por sensaciones" in rec.text()
+
+
 def test_sin_base_las_notas_de_contexto_sobreviven(cfg):
     """Lo que se hizo ayer no depende del punto de partida.
 

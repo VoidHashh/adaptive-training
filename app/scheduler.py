@@ -245,7 +245,8 @@ def job_decision(
     # abrirse, este trabajo tiene dos llamantes que no se ven entre sí: el
     # scheduler y una petición. Sin cerrojo, abrir la app a las 07:30 en punto
     # rehacía el día dos veces y mandaba dos Telegram. El segundo en llegar
-    # espera, encuentra la decisión ya completa y sale sin tocar nada.
+    # espera, encuentra la decisión ya completa y sale sin tocar nada. El envío
+    # del check-in (`api._decidir`) no pasa por aquí y toma el mismo cerrojo.
     with _DECIDIENDO:
         day = day or date.today()
         with session_scope() as s:

@@ -123,6 +123,12 @@ class BikeRecommendation:
     # sistema reconociendo que hoy no tiene base para aconsejar, no el sistema
     # callando porque no toca. Un fallo que no se ve es el fallo peligroso.
     skip_visible: bool = False
+    # El techo del semáforo cuando NO hay punto de partida: `(nivel, motivo)`,
+    # o None si hoy no recorta nada (verde). Existe desde el 25/09/2026: sin
+    # histórico, el mensaje decía «si sales, sal por sensaciones» también en un
+    # día ROJO, y lo único que respetaba el techo era un `level` interno que el
+    # texto no leía. El techo es del día, no del histórico: se aplica igual.
+    techo_sin_base: tuple[str, str] | None = None
 
     @property
     def se_muestra(self) -> bool:
@@ -147,6 +153,7 @@ class BikeRecommendation:
                 {"from": a, "to": b, "why": why} for a, b, why in self.downgrades
             ],
             "notas": list(self.notas),
+            "techo_sin_base": list(self.techo_sin_base) if self.techo_sin_base else None,
         }
 
     def text(self) -> str:
@@ -179,10 +186,14 @@ class BikeRecommendation:
         """
         if not self.applies:
             if self.skip_visible:
-                return (
-                    f"Bici: hoy no hay punto de partida ({self.skip_reason}). "
-                    f"No se inventa uno; si sales, sal por sensaciones."
-                )
+                sin_base = f"Bici: hoy no hay punto de partida ({self.skip_reason}). "
+                if self.techo_sin_base is None:
+                    return sin_base + "No se inventa uno; si sales, sal por sensaciones."
+                techo, motivo = self.techo_sin_base
+                if techo == DESCANSO:
+                    # Indicativo, como el descanso de siempre: ver abajo.
+                    return sin_base + f"Y hoy toca descanso: {motivo}."
+                return sin_base + f"Si sales, que sea {techo} como mucho: {motivo}."
             return ""
         rango = (
             f"{self.duration_min}-{self.duration_max} min"
@@ -308,12 +319,18 @@ def recommend_bike(
     # las bandas sería castigar al mensaje por un problema que no es suyo.
     notas = _notas_de_contexto(rec, signals, cycling)
 
+    # El techo del semáforo se lee ANTES de saber si hay punto de partida: es
+    # del día, no del histórico, y el caso sin histórico también lo respeta.
+    ceiling = str((actions.get(light, {}) or {}).get("bike_max", "suave"))
+
     base = _baseline_gaps(rec, signals, order)
     if base.nivel is None:
         out = build(DESCANSO, DESCANSO, [], notas)
         out.applies = False
         out.skip_reason = base.motivo_sin_base
         out.skip_visible = True
+        if ceiling in order and order.index(ceiling) < len(order) - 1:
+            out.techo_sin_base = (ceiling, f"el semáforo está en {_light_es(light)}")
         return out
 
     baseline, why, en_claro = base.nivel, base.why, base.en_claro
@@ -327,7 +344,6 @@ def recommend_bike(
             level = new
 
     # --- 2. techo del semáforo ---------------------------------------------
-    ceiling = str((actions.get(light, {}) or {}).get("bike_max", "suave"))
     capped = _cap(level, ceiling, order)
     if capped != level:
         downgrade(capped, f"semáforo en {_light_es(light)}, techo {ceiling}")
