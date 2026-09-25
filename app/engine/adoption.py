@@ -64,6 +64,25 @@ sigue mandando en la rama de BAJAR y en la racha de sesiones limpias que abre la
 progresión, porque ahí el riesgo es el contrario: una sesión hecha a 50 cuando
 el plan pedía 60 no puede pagar la siguiente subida.
 
+SE ADOPTA LA FORMA QUE SE HIZO, NO SOLO SU NÚMERO MÁS ALTO (25/09/2026)
+-----------------------------------------------------------------------
+Hasta esa fecha la adopción recibía un solo número por ejercicio -el peso de la
+serie más pesada- y movía TODAS las series del objetivo lo que se había movido
+esa. Con un objetivo plano y una rampa hecha, eso inventa carga: la aducción
+hecha a 50/60/80 sobre 25/40/50 subía 30 kg entera y quedaba en 55/70/80; la
+prensa a una pierna hecha a 40/50/60 quedaba en 60/60/60. Dos series por encima
+de lo que se había levantado, en el mismo reconciliado que decía «se levantó
+eso de verdad».
+
+Ahora se copian los pesos de las series hechas, una por serie del objetivo
+(`_series_que_se_adoptan`): hiciste 30/40/50, la próxima vez 30/40/50. Lo pidió
+el usuario con estas palabras: «el sistema aconseja, pero no decide ni
+determina». Las REPS no se copian: el volumen lo lleva la progresión, y aquí
+solo se adopta el peso.
+
+Y como ya no se adopta solo el tope, las series que se copian tienen que estar
+completas TODAS, no solo las que el plan del día contaba. Ver la rama de subir.
+
 EL TOPE DE SALTO
 ----------------
 Un 600 en vez de un 60 al teclear en Hevy se convertiría, sin este tope, en la
@@ -90,6 +109,7 @@ from typing import Any
 
 from app.engine.progression import _fmt_kg
 from app.engine.sets import warmup_flags
+from app.integrations.hevy import _falla, tope_apuntado
 
 ARRIBA = "up"
 ABAJO = "down"
@@ -196,24 +216,91 @@ def _efectivas_del_plan(
     return [s for s, f in zip(sets, flags, strict=True) if not f]
 
 
-def _desplazar(series: list[dict[str, Any]], delta: float) -> list[dict[str, Any]]:
-    """Suma `delta` a todas las series efectivas, sin dejar ninguna en negativo.
+def _series_que_se_adoptan(
+    objetivo_series: list[dict[str, Any]], hechas: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Qué serie hecha pasa a ocupar cada serie del objetivo. Una por cada una.
 
-    Delta y no peso absoluto, por el mismo motivo que la progresión de carga:
-    una rampa 50/60/65 adoptada a peso absoluto saldría 65/65/65, aplanada de un
-    golpe. Con delta pasa a 55/65/70 y el esquema sigue siendo el que era.
+    Aquí vivía `_desplazar`, que sumaba a todas las series del objetivo lo que
+    había subido la más pesada. Con un objetivo plano y una rampa hecha eso
+    inventaba carga (ver el docstring del módulo): 50/60/80 sobre 25/40/50
+    salía 55/70/80. Ahora cada serie del objetivo recibe el peso de una serie
+    hecha de verdad.
 
-    El tope inferior es 0 y no un mínimo inventado: una serie a 0 kg significa
-    "sin carga registrada", que es un estado que el resto del motor ya sabe leer
-    (`_can_raise_load`, `needs_data`).
+    Solo cuentan las series con peso apuntado: una sin kilos no dice cuánto se
+    levantó, y tratarla como 0 metería un cero en el objetivo.
+
+    LOS TRES CASOS, Y LOS TRES SALEN DE TUS DATOS
+    ---------------------------------------------
+    Hasta el 25/09/2026 se han hecho SIEMPRE tres series, y en 14 de 66
+    ejercicios el plan del día pedía dos -un ámbar o una descarga recortan
+    volumen- mientras el objetivo guardaba tres.
+
+      - Tantas hechas como el objetivo: una a una, en el orden en que se
+        hicieron. 30/40/50 queda 30/40/50.
+      - MÁS hechas que el objetivo: las más pesadas, en su orden. Una serie de
+        tanteo al principio, sin marcar como calentamiento, no desplaza a la
+        serie top; y la serie top tiene que entrar siempre, porque es la que
+        decidió que había algo que adoptar.
+      - MENOS hechas que el objetivo: se rellena por delante con la más ligera
+        de las hechas. Es el único relleno que no inventa: ese peso se levantó,
+        y ponerlo delante mantiene la serie top al final, donde el usuario la
+        pone. Rellenar con el objetivo viejo podría dejar una serie más pesada
+        que cualquiera de las hechas.
+    """
+    con_peso = [
+        (i, s) for i, s in enumerate(hechas or []) if s.get("weight_kg") is not None
+    ]
+    k = len(objetivo_series)
+    if not con_peso or not k:
+        return []
+    if len(con_peso) > k:
+        mas_pesadas = sorted(con_peso, key=lambda p: (-float(p[1]["weight_kg"]), p[0]))
+        con_peso = sorted(mas_pesadas[:k], key=lambda p: p[0])
+    elegidas = [s for _, s in con_peso]
+    if len(elegidas) < k:
+        ligera = min(elegidas, key=lambda s: float(s["weight_kg"]))
+        elegidas = [ligera] * (k - len(elegidas)) + elegidas
+    return elegidas
+
+
+def _con_pesos_de(
+    objetivo_series: list[dict[str, Any]], elegidas: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """El objetivo con el PESO de cada serie elegida. Todo lo demás se queda.
+
+    Las reps y los segundos siguen siendo los del objetivo: los mueve la
+    progresión, con su propia puerta, y la adopción solo sabe de kilos. Copiar
+    las reps hechas convertiría una serie de 15 un día con ganas en el mínimo
+    de todas las sesiones siguientes.
     """
     salida = []
-    for s in series:
-        nueva = dict(s)
-        actual = float(s.get("weight_kg") or 0)
-        nueva["weight_kg"] = round(max(0.0, actual + delta), 3)
+    for obj, hecha in zip(objetivo_series, elegidas, strict=True):
+        nueva = dict(obj)
+        nueva["weight_kg"] = round(float(hecha["weight_kg"]), 3)
         salida.append(nueva)
     return salida
+
+
+def _serie_corta(
+    objetivo_series: list[dict[str, Any]], elegidas: list[dict[str, Any]]
+) -> str | None:
+    """La primera serie que se iba a adoptar y no se terminó, dicha en palabras.
+
+    `limpio_arriba` ya mira que el plan DEL DÍA se completara, pero solo sus
+    series: en un día de volumen recortado el plan pide dos y se hacen tres, y
+    la tercera -la más pesada, casi siempre- no la comprobaba nadie. Mientras se
+    adoptaba solo el tope daba igual por suerte; al copiar series, adoptarla sin
+    mirar sería subir el objetivo sobre una serie de 60 kg hecha a 4 reps.
+
+    Se mide contra la serie del OBJETIVO que va a ocupar, porque es a lo que se
+    volverá mañana: esas reps son lo que el peso nuevo tendrá que aguantar.
+    """
+    for obj, hecha in zip(objetivo_series, elegidas, strict=True):
+        falla = _falla(hecha, obj, ignorar_peso=True)
+        if falla is not None:
+            return f"la serie de {_fmt_kg(float(hecha['weight_kg']))} kg {falla}"
+    return None
 
 
 def _margen(
@@ -272,7 +359,7 @@ def adoptar_cargas(
     *,
     routine_key: str,
     exercises: list[dict[str, Any]],
-    pesos_hechos: dict[str, float | None],
+    series_hechas: dict[str, list[dict[str, Any]] | None],
     limpio: dict[str, bool],
     motivos: dict[str, str],
     limpio_arriba: dict[str, bool],
@@ -284,9 +371,11 @@ def adoptar_cargas(
 
     `exercises` es el plan del día TAL Y COMO SE ESCRIBIÓ en Hevy -con la
     descarga, los recortes por regla y el ámbar ya aplicados-, que es contra lo
-    que se mide quedarse corto. `pesos_hechos` es el peso de la serie efectiva
-    más pesada de cada ejercicio, o None si el ejercicio no aparece o no lleva
-    peso apuntado. `limpio` es el cumplimiento por ejercicio que ya calcula
+    que se mide quedarse corto. `series_hechas` son las series efectivas que se
+    hicieron de cada ejercicio (`hevy.series_ejecutadas`), o None si no aparece;
+    de ellas sale tanto el peso que decide -el más alto apuntado- como la forma
+    que se adopta, y por eso llegan juntas y no como dos parámetros que podrían
+    no cuadrar. `limpio` es el cumplimiento por ejercicio que ya calcula
     `workout_compliance`, y `motivos` la causa de cada incumplimiento tal y como
     la nombra `motivos_incumplimiento`.
 
@@ -321,7 +410,8 @@ def adoptar_cargas(
         if not key:
             continue
         clave = (routine_key, key)
-        hecho = pesos_hechos.get(key)
+        hechas = series_hechas.get(key)
+        hecho = tope_apuntado(hechas)
 
         objetivo_series = state.current_sets.get(clave)
         if objetivo_series is None:
@@ -390,6 +480,12 @@ def adoptar_cargas(
                 # de otra serie. Sería una carga no subida con una explicación
                 # que no la explica.
                 porque = motivos_arriba.get(key) or "no consta en qué se quedó corto"
+            else:
+                # Y las series que se van a COPIAR, también las que el plan del
+                # día no contaba. Ver `_serie_corta`.
+                elegidas = _series_que_se_adoptan(objetivo_series, hechas)
+                porque = _serie_corta(objetivo_series, elegidas)
+            if porque is not None:
                 salida.append(
                     Adopcion(
                         routine_key, key, str(ex.get("name", key)), ARRIBA,
@@ -401,7 +497,7 @@ def adoptar_cargas(
                 )
                 continue
             salida.append(
-                _aplicar(state, clave, ex, objetivo_series, objetivo, hecho,
+                _aplicar(state, clave, ex, objetivo_series, elegidas,
                          prescrito, ARRIBA, cfg, racha=None)
             )
             continue
@@ -413,9 +509,17 @@ def adoptar_cargas(
 
         # --- por debajo de lo que se pidió hoy --------------------------------
         racha = int(state.below_plan_streak.get(clave, 0)) + 1
-        mejor = max(float(state.below_plan_best_kg.get(clave) or 0), hecho)
         state.below_plan_streak[clave] = racha
-        state.below_plan_best_kg[clave] = mejor
+        # Se guarda la SESIÓN entera y no su tope: cuando por fin se baje, se
+        # bajará a la forma de la mejor, igual que al subir se sube a la forma
+        # de la que se hizo. Con solo el número, un objetivo de 50/50/50 hecho
+        # tres veces a 30/40/45 bajaba a 45/45/45, dos series por encima de lo
+        # que se levantó. Empate: se queda la primera, que ya era la mejor.
+        previa = state.below_plan_best_sets.get(clave)
+        if previa is None or hecho > (tope_apuntado(previa) or 0.0):
+            state.below_plan_best_sets[clave] = [dict(s) for s in hechas or []]
+        mejor_series = state.below_plan_best_sets[clave]
+        mejor = tope_apuntado(mejor_series) or 0.0
 
         if racha < necesarias:
             # A propósito NO se cuenta en el mensaje. Una sesión más floja es lo
@@ -432,7 +536,8 @@ def adoptar_cargas(
             continue
 
         salida.append(
-            _aplicar(state, clave, ex, objetivo_series, objetivo, mejor,
+            _aplicar(state, clave, ex, objetivo_series,
+                     _series_que_se_adoptan(objetivo_series, mejor_series),
                      prescrito, ABAJO, cfg, racha=racha)
         )
 
@@ -441,7 +546,7 @@ def adoptar_cargas(
 
 def _reset_por_debajo(state: Any, clave: tuple[str, str]) -> None:
     state.below_plan_streak.pop(clave, None)
-    state.below_plan_best_kg.pop(clave, None)
+    state.below_plan_best_sets.pop(clave, None)
 
 
 def _aplicar(
@@ -449,14 +554,18 @@ def _aplicar(
     clave: tuple[str, str],
     ex: dict[str, Any],
     objetivo_series: list[dict[str, Any]],
-    objetivo: float,
-    hecho: float,
+    elegidas: list[dict[str, Any]],
     prescrito: float,
     direccion: str,
     cfg: dict[str, Any],
     racha: int | None,
 ) -> Adopcion:
     """Mueve la carga vigente y redacta lo que se va a leer en el mensaje.
+
+    `elegidas` son las series hechas que pasan a ser el objetivo, una por serie
+    (`_series_que_se_adoptan`). El objetivo viejo y el peso hecho se sacan de
+    las dos listas aquí dentro, y no llegan como números aparte, para que el
+    tope de salto mida exactamente lo que se va a escribir.
 
     POR QUÉ `racha` ES OBLIGATORIO Y ADEMÁS ESTÁ ATADO A `direccion`
     ----------------------------------------------------------------
@@ -493,6 +602,16 @@ def _aplicar(
 
     routine_key, key = clave
     nombre = str(ex.get("name", key))
+    objetivo = tope_efectivo(objetivo_series)
+    hecho = tope_apuntado(elegidas)
+    if hecho is None:
+        # Inalcanzable desde `adoptar_cargas`, que solo llega aquí con un peso
+        # apuntado en la mano. Si alguna vez se llega, que no sea escribiendo un
+        # objetivo de ceros con cara de adopción.
+        raise AdoptionError(
+            f"_aplicar({clave}, {direccion}) sin una sola serie con peso que "
+            f"adoptar: no hay forma nueva, y seguir escribiría un objetivo vacío."
+        )
     delta = hecho - objetivo
 
     # Un objetivo a 0 no es un salto desde 0: es la PRIMERA carga registrada de
@@ -512,7 +631,7 @@ def _aplicar(
             f"en Hevy, ya está corregida por no hacerle caso",
         )
 
-    state.current_sets[clave] = _desplazar(objetivo_series, delta)
+    state.current_sets[clave] = _con_pesos_de(objetivo_series, elegidas)
     _reset_por_debajo(state, clave)
 
     if direccion == ARRIBA:

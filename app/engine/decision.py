@@ -138,8 +138,15 @@ class EngineState:
     # una sesión más floja casi siempre es la máquina ocupada, y hace falta
     # recordar cuántas van y cuál fue la mejor para no fijar el suelo en un día
     # malo. Se vacían en cuanto una sesión alcanza lo pedido.
+    #
+    # La mejor es la SESIÓN, con sus series, y no su peso más alto: la bajada
+    # adopta su forma entera (ver `app/engine/adoption.py`). Hasta el 25/09/2026
+    # aquí había `below_plan_best_kg`, un número, y con él un objetivo plano
+    # hecho en rampa bajaba al tope de la rampa en todas las series.
     below_plan_streak: dict[tuple[str, str], int] = field(default_factory=dict)
-    below_plan_best_kg: dict[tuple[str, str], float] = field(default_factory=dict)
+    below_plan_best_sets: dict[tuple[str, str], list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
     # Semáforo del día en que se hizo por última vez CADA rutina. Es el reloj
     # de los frenos de volumen: un rojo en lunes no cancela el viernes.
     last_routine_light: dict[str, str | None] = field(default_factory=dict)
@@ -1094,7 +1101,9 @@ def advance_state(
         current_sets={k: copy.deepcopy(v) for k, v in state.current_sets.items()},
         sessions_since_progress=dict(state.sessions_since_progress),
         below_plan_streak=dict(state.below_plan_streak),
-        below_plan_best_kg=dict(state.below_plan_best_kg),
+        below_plan_best_sets={
+            k: copy.deepcopy(v) for k, v in state.below_plan_best_sets.items()
+        },
         last_routine_light=dict(state.last_routine_light),
         active_rules=[copy.deepcopy(r) for r in decision.active_rules],
         last_strength=state.last_strength,

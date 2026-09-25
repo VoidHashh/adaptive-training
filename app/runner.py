@@ -53,7 +53,8 @@ from app.integrations.hevy import (
     SIN_RASTRO,
     claves_hiit,
     motivos_incumplimiento,
-    pesos_ejecutados,
+    series_ejecutadas,
+    tope_apuntado,
     workout_compliance,
 )
 from app.integrations.telegram import escapar_html
@@ -1321,13 +1322,14 @@ def run_reconcile(
 
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
+    series: dict[str, list[dict[str, Any]]] = {}
     motivos: dict[str, str] = {}
     sube: dict[str, bool] = {}
     motivos_sube: dict[str, str] = {}
     if es_fuerza:
         cumpl = _cumplimiento_contra(nuevos_fuerza, plan, cfg, hechos_sin_apuntar)
         executed, pesos, motivos = cumpl.executed, cumpl.pesos, cumpl.motivos
-        sube, motivos_sube = cumpl.sube, cumpl.motivos_sube
+        sube, motivos_sube, series = cumpl.sube, cumpl.motivos_sube, cumpl.series
     res.executed = executed
     res.pesos = pesos
 
@@ -1340,7 +1342,7 @@ def run_reconcile(
     ]
     ex_hiit = plan_hiit.get("exercises") or []
     executed_hiit: dict[str, bool] = {}
-    pesos_hiit: dict[str, float | None] = {}
+    series_hiit: dict[str, list[dict[str, Any]]] = {}
     motivos_hiit: dict[str, str] = {}
     sube_hiit: dict[str, bool] = {}
     motivos_sube_hiit: dict[str, str] = {}
@@ -1349,7 +1351,7 @@ def run_reconcile(
             del_bloque, plan_hiit, cfg, hechos_sin_apuntar
         )
         executed_hiit = cumpl_hiit.executed
-        pesos_hiit = cumpl_hiit.pesos
+        series_hiit = cumpl_hiit.series
         motivos_hiit = cumpl_hiit.motivos
         sube_hiit = cumpl_hiit.sube
         motivos_sube_hiit = cumpl_hiit.motivos_sube
@@ -1509,7 +1511,7 @@ def run_reconcile(
             state,
             routine_key=str(bloque_hiit),
             exercises=ex_hiit,
-            pesos_hechos=pesos_hiit,
+            series_hechas=series_hiit,
             limpio=executed_hiit,
             motivos=motivos_hiit,
             limpio_arriba=sube_hiit,
@@ -1566,7 +1568,7 @@ def run_reconcile(
         state,
         routine_key=str(rkey),
         exercises=plan.get("exercises") or [],
-        pesos_hechos=pesos,
+        series_hechas=series,
         limpio=executed,
         motivos=motivos,
         limpio_arriba=sube,
@@ -1763,6 +1765,10 @@ class Cumplimiento(NamedTuple):
     motivos: dict[str, str]
     sube: dict[str, bool]
     motivos_sube: dict[str, str]
+    # Las series hechas de cada ejercicio, de las que `pesos` es el resumen.
+    # Van las dos porque `pesos` lo leen el resultado de la noche y sus tests, y
+    # la adopción necesita la forma entera (ver `app/engine/adoption.py`).
+    series: dict[str, list[dict[str, Any]]]
 
 
 def _cumplimiento_contra(
@@ -1784,7 +1790,7 @@ def _cumplimiento_contra(
     nada fallara.
     """
     executed: dict[str, bool] = {}
-    pesos: dict[str, float | None] = {}
+    series: dict[str, list[dict[str, Any]]] = {}
     motivos: dict[str, str] = {}
     sube: dict[str, bool] = {}
     motivos_sube: dict[str, str] = {}
@@ -1808,14 +1814,18 @@ def _cumplimiento_contra(
             ).items():
                 if destino.get(key, SIN_RASTRO) == SIN_RASTRO:
                     destino[key] = porque
-        # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
+        # El rato con la serie más pesada, por lo mismo que el cumplimiento se
         # une con un OR: partir la sesión en dos ratos es normal, y la serie
-        # más pesada del día es la más pesada de los dos ratos.
-        for key, kg in pesos_ejecutados(w, plan_obj, cfg).items():
+        # más pesada del día es la más pesada de los dos ratos. Se guardan las
+        # series de ESE rato y no una mezcla de los dos: la forma que se adopta
+        # tiene que ser una que se hizo de seguido, y `pesos` sale de ella.
+        for key, hechas in series_ejecutadas(w, plan_obj, cfg).items():
+            kg = tope_apuntado(hechas)
             if kg is None:
                 continue
-            previo = pesos.get(key)
-            pesos[key] = kg if previo is None else max(previo, kg)
+            previo = tope_apuntado(series.get(key))
+            if previo is None or kg > previo:
+                series[key] = hechas or []
     # LO QUE EL USUARIO DICE QUE HIZO Y NO APUNTÓ (25/09/2026).
     #
     # Hasta aquí, un ejercicio que no está en Hevy contaba como incumplido y
@@ -1845,7 +1855,8 @@ def _cumplimiento_contra(
     # ejercicios que para subir ya cuentan como limpios.
     motivos = {k: v for k, v in motivos.items() if not executed.get(k)}
     motivos_sube = {k: v for k, v in motivos_sube.items() if not sube.get(k)}
-    return Cumplimiento(executed, pesos, motivos, sube, motivos_sube)
+    pesos = {k: tope_apuntado(v) for k, v in series.items()}
+    return Cumplimiento(executed, pesos, motivos, sube, motivos_sube, series)
 
 
 # ---------------------------------------------------------------------------

@@ -108,7 +108,14 @@ def estado_lleno():
         # tiene que devolverla como ausencia, no como un cero que luego se
         # confundiría con "lleva dos sesiones cortas y a la próxima baja".
         below_plan_streak={("dia_1", "hip_thrust_barra"): 2},
-        below_plan_best_kg={("dia_1", "hip_thrust_barra"): 52.5},
+        # Una rampa, y no un peso repetido: si la vuelta perdiera el orden o
+        # aplanara las series, con tres iguales no se notaría.
+        below_plan_best_sets={
+            ("dia_1", "hip_thrust_barra"): [
+                {"type": "normal", "reps": 10, "weight_kg": 45.0},
+                {"type": "normal", "reps": 10, "weight_kg": 52.5},
+            ]
+        },
         last_routine_light={"dia_1": "green", "dia_2": "amber"},
         active_rules=[
             ActiveRule(
@@ -376,9 +383,9 @@ def test_el_estado_sobrevive_a_la_ida_y_la_vuelta(db, estado_lleno):
         "olvidarían al reiniciar y la carga no bajaría nunca aunque no se esté "
         "levantando"
     )
-    assert vuelto.below_plan_best_kg == estado_lleno.below_plan_best_kg, (
-        "el mejor peso de la racha no ha sobrevivido: al bajar se adoptaría el "
-        "último en vez del mejor de la racha, que es más bajo"
+    assert vuelto.below_plan_best_sets == estado_lleno.below_plan_best_sets, (
+        "la mejor sesión de la racha no ha sobrevivido: al bajar se adoptaría la "
+        "última en vez de la mejor, o su tope repetido en todas las series"
     )
     assert vuelto.last_routine_light == estado_lleno.last_routine_light
     assert vuelto.program_start == estado_lleno.program_start
@@ -449,7 +456,7 @@ def test_la_racha_por_debajo_que_se_anula_se_anula_tambien_en_la_tabla(db, estad
 
     # Una sesión buena rompe la racha: `adoptar_cargas` hace exactamente esto.
     estado_lleno.below_plan_streak.pop(("dia_1", "hip_thrust_barra"))
-    estado_lleno.below_plan_best_kg.pop(("dia_1", "hip_thrust_barra"))
+    estado_lleno.below_plan_best_sets.pop(("dia_1", "hip_thrust_barra"))
     save_state(db, estado_lleno, day=LUNES + timedelta(days=1))
 
     vuelto = load_state(db)
@@ -457,7 +464,11 @@ def test_la_racha_por_debajo_que_se_anula_se_anula_tambien_en_la_tabla(db, estad
         "la racha anulada ha sobrevivido en la tabla: la próxima sesión floja "
         "bajaría la carga creyendo que es la tercera seguida"
     )
-    assert vuelto.below_plan_best_kg == {}
+    assert vuelto.below_plan_best_sets == {}, (
+        "la mejor sesión borrada ha vuelto. Si es por `below_plan_best_kg`, es "
+        "la proyección sin anular, y `load_state` la lee como una racha de antes "
+        "del 25/09/2026"
+    )
 
 
 def test_un_cero_en_la_tabla_no_vuelve_como_racha_de_cero(db, estado_lleno):
@@ -469,17 +480,46 @@ def test_un_cero_en_la_tabla_no_vuelve_como_racha_de_cero(db, estado_lleno):
     vuelto = load_state(db)
 
     assert ("dia_2", "remo_t_apoyado") not in vuelto.below_plan_streak
-    assert ("dia_2", "remo_t_apoyado") not in vuelto.below_plan_best_kg
+    assert ("dia_2", "remo_t_apoyado") not in vuelto.below_plan_best_sets
 
 
 def test_un_mejor_peso_de_cero_kilos_sobrevive(db, estado_lleno):
     """0 kg no es "no hay". Es un ejercicio hecho sin carga, y la columna es
     nullable justamente para poder distinguirlos: si `0.0` se guardara como NULL,
     la mejor sesión de la racha se perdería y al bajar se adoptaría otra cosa."""
-    estado_lleno.below_plan_best_kg[("dia_1", "hip_thrust_barra")] = 0.0
+    ceros = [{"type": "normal", "reps": 10, "weight_kg": 0.0}]
+    estado_lleno.below_plan_best_sets[("dia_1", "hip_thrust_barra")] = ceros
     save_state(db, estado_lleno, day=LUNES)
 
-    assert load_state(db).below_plan_best_kg == {("dia_1", "hip_thrust_barra"): 0.0}
+    assert load_state(db).below_plan_best_sets == {("dia_1", "hip_thrust_barra"): ceros}
+    fila = db.query(ExerciseTarget).filter_by(exercise_key="hip_thrust_barra").one()
+    assert fila.below_plan_best_kg == 0.0, "la proyección también distingue el cero"
+
+
+def test_la_proyeccion_en_kilos_es_el_tope_de_la_mejor_sesion(db, estado_lleno):
+    """Se calcula al guardar, de la misma lista, como `current_target_kg`.
+    Es lo que se consulta a mano en la base, y no puede decir otra cosa."""
+    save_state(db, estado_lleno, day=LUNES)
+    fila = db.query(ExerciseTarget).filter_by(exercise_key="hip_thrust_barra").one()
+    assert fila.below_plan_best_kg == 52.5
+
+
+def test_una_racha_de_antes_del_25_09_se_lee_con_su_peso(db, estado_lleno):
+    """Hasta esa fecha solo se guardaba el peso más alto de la mejor sesión.
+
+    Había dos rachas vivas en la base de verdad (extensión de cuádriceps y hip
+    thrust). Tirarlas retrasaría una bajada que ya llevaba sesiones contadas; se
+    leen como una sesión de una serie con ese peso, que es lo que se sabe.
+    """
+    save_state(db, estado_lleno, day=LUNES)
+    fila = db.query(ExerciseTarget).filter_by(exercise_key="hip_thrust_barra").one()
+    fila.below_plan_best_sets_json = None
+    fila.below_plan_best_kg = 50.0
+    db.flush()
+
+    assert load_state(db).below_plan_best_sets == {
+        ("dia_1", "hip_thrust_barra"): [{"weight_kg": 50.0}]
+    }
 
 
 # ---------------------------------------------------------------------------

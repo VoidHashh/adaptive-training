@@ -470,16 +470,53 @@ def pesos_ejecutados(
     esquema en rampa 50/60/65 se resume por su serie top, que es la que define
     la carga de trabajo. Comparar medias mezclaría el calentamiento efectivo con
     la serie que de verdad manda.
+
+    Es un resumen de `series_ejecutadas`, y sale de ella a propósito: el número
+    que decide si una carga sube y las series que se adoptan cuando sube tienen
+    que ser las mismas series. Ver `app/engine/adoption.py`.
     """
-    salida: dict[str, float | None] = {}
-    for key, (_objetivo, reales) in _emparejar(workout, planned, config).items():
-        pesos = [
-            float(s["weight_kg"])
-            for s in (reales or [])
-            if s.get("weight_kg") is not None
-        ]
-        salida[key] = max(pesos) if pesos else None
-    return salida
+    return {
+        key: tope_apuntado(hechas)
+        for key, hechas in series_ejecutadas(workout, planned, config).items()
+    }
+
+
+def series_ejecutadas(
+    workout: dict[str, Any],
+    planned: Any,
+    config: Any = None,
+) -> dict[str, list[dict[str, Any]] | None]:
+    """Las series efectivas HECHAS de cada ejercicio del plan, en su orden.
+
+    `None` cuando el ejercicio no aparece; lista (quizá vacía) cuando aparece.
+    La misma distinción que `_emparejar`, que es de donde sale.
+
+    Existe desde el 25/09/2026, y por un fallo que ya había actuado. La adopción
+    solo recibía el peso de la serie MÁS PESADA y movía todas las series del
+    objetivo lo mismo que se había movido esa. Con rampas eso inventa carga: la
+    aducción hecha a 50/60/80 sobre un objetivo de 25/40/50 subía 30 kg entera y
+    quedaba en 55/70/80, dos series por encima de lo que se había levantado; la
+    prensa a una pierna hecha a 40/50/60 quedaba en 60/60/60. Para adoptar lo
+    que se hizo hacen falta las series que se hicieron, no su máximo.
+    """
+    return {
+        key: None if reales is None else [dict(s) for s in reales]
+        for key, (_objetivo, reales) in _emparejar(workout, planned, config).items()
+    }
+
+
+def tope_apuntado(series: list[dict[str, Any]] | None) -> float | None:
+    """El peso más alto APUNTADO entre `series`, o `None` si no hay ninguno.
+
+    No es `adoption.tope_efectivo`, y la diferencia es el `None`: aquello lee un
+    objetivo, donde una serie sin peso es «sin carga» y vale 0; esto lee lo
+    ejecutado, donde una serie sin peso es «no se apuntó» y no vale nada. Ver
+    `pesos_ejecutados` para lo que costaría fundirlos.
+    """
+    pesos = [
+        float(s["weight_kg"]) for s in (series or []) if s.get("weight_kg") is not None
+    ]
+    return max(pesos) if pesos else None
 
 
 # El plan y la respuesta de Hevy no llaman igual a lo mismo: el motor usa
@@ -518,11 +555,12 @@ def _falla(
 
     `ignorar_peso` NO TIENE DEFECTO, y eso lo decidió el banco de mutaciones del
     25/09/2026: con `= False` puesto, cambiarlo a `= True` no ponía rojo ni un
-    test, porque los dos únicos llamantes -`_alcanza` y `_motivo`- lo pasan
-    siempre explícito. Un defecto que nadie lee es un defecto que no defiende
-    nada y que el día que alguien añada un tercer llamante decidirá por él, en
-    la dirección de mirar menos. Los defectos viven arriba, en las dos puertas
-    públicas, que es donde hay llamadas que de verdad los usan.
+    test, porque los llamantes -`_alcanza`, `_motivo` y, desde ese mismo día,
+    `adoption._serie_corta`- lo pasan siempre explícito. Un defecto que nadie
+    lee es un defecto que no defiende nada y que el día que alguien añada otro
+    llamante decidirá por él, en la dirección de mirar menos. Los defectos
+    viven arriba, en las dos puertas públicas, que es donde hay llamadas que de
+    verdad los usan.
 
     `ignorar_peso` SOLO lo usa la adopción hacia arriba, y el motivo está en
     `app/engine/adoption.py`. En dos líneas: una serie más LIGERA de lo pedido

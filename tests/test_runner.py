@@ -2297,6 +2297,37 @@ def test_subir_el_peso_a_mano_en_hevy_mueve_el_objetivo_guardado(db, cfg):
     assert despues == antes + 2.5, "el objetivo guardado no se ha movido"
 
 
+def test_una_rampa_hecha_se_guarda_con_su_forma_y_no_desplazada(db, cfg):
+    """El cable entero del 25/09/2026: de Hevy a la tabla, serie a serie.
+
+    La primera serie más ligera de lo pedido y la última más pesada. Con el
+    desplazamiento, el objetivo guardado subía TODAS las series lo que subió
+    la última, y la primera quedaba por encima de lo que se había hecho.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+
+    w = _entrenamiento_completo(plan)
+    hechas = []
+    for e in w["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            efectivas = [s for s in e["sets"] if s.get("type") != "warmup"]
+            efectivas[0]["weight_kg"] = round(efectivas[0]["weight_kg"] - 5, 2)
+            efectivas[-1]["weight_kg"] = round(efectivas[-1]["weight_kg"] + 2.5, 2)
+            hechas = [s["weight_kg"] for s in efectivas]
+    assert len(hechas) >= 2, "hace falta un ejercicio con al menos dos series"
+
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    estado = load_state(db, program_start=cfg.program_start)
+    guardadas = [s["weight_kg"] for s in estado.current_sets[("dia_1", ex["key"])]]
+    assert guardadas == hechas, (
+        f"se hizo {hechas} y ha quedado {guardadas}: el objetivo no es lo que "
+        f"se levantó"
+    )
+
+
 def test_la_adopcion_de_anoche_se_cuenta_en_el_mensaje_de_la_manana(db, cfg):
     """El último tramo del cable. Sin él, el usuario ve un peso distinto del que
     el mensaje de ayer prometía y no puede saber si es el sistema funcionando o
@@ -3242,6 +3273,26 @@ def test_una_sesion_partida_en_dos_ratos_se_une_igual_en_los_dos(cfg):
     assert c.motivos == {} and c.motivos_sube == {}
     # Y el peso que viaja a la adopcion es el mas alto de los dos ratos.
     assert c.pesos["patada_atras"] == 35.0
+
+
+def test_de_una_sesion_partida_se_adoptan_las_series_del_rato_mas_pesado(cfg):
+    """Las series de UN rato, el de la serie más pesada, y no las del último.
+
+    Desde el 25/09/2026 la adopción copia la forma hecha, no solo el tope. Si
+    se quedaran las del último rato, un segundo rato más ligero borraría lo que
+    se levantó en el primero; y si se mezclaran, la forma adoptada sería una que
+    no se hizo de seguido nunca. El rato pesado va PRIMERO a propósito: con el
+    orden al revés, «el último» y «el más pesado» coinciden y no se distinguen.
+    """
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra(
+        [_entreno(45, wid="w1"), _entreno(35, wid="w2")],
+        _plan_de_una_serie(35),
+        cfg,
+    )
+    assert [s["weight_kg"] for s in c.series["patada_atras"]] == [45]
+    assert c.pesos["patada_atras"] == 45.0, "`pesos` es el tope de esas series"
 
 
 def test_el_motivo_de_subir_se_filtra_con_SU_veredicto_y_no_con_el_estricto(cfg):

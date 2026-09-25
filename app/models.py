@@ -598,7 +598,17 @@ class ExerciseTarget(Base):
     )
     # Nullable a propósito: "no hay ninguna sesión por debajo" no es "la mejor
     # sesión por debajo fue de 0 kg". Un 0 aquí se adoptaría como objetivo.
+    #
+    # Desde el 25/09/2026 es una PROYECCIÓN de la columna de abajo, como
+    # `current_target_kg` lo es de `current_sets_json`: se calcula al guardar y
+    # no la lee el motor. Se conserva para consultar a mano y para las filas
+    # anteriores a esa fecha, que solo tienen esto (ver `load_state`).
     below_plan_best_kg: Mapped[float | None] = mapped_column(Float)
+    # Las series de la mejor sesión por debajo, tal cual se hicieron. La bajada
+    # adopta su forma y no solo su peso más alto: con el número solo, un
+    # objetivo de 50/50/50 hecho tres veces a 30/40/45 bajaba a 45/45/45, dos
+    # series por encima de lo levantado. Ver `app/engine/adoption.py`.
+    below_plan_best_sets_json: Mapped[str | None] = mapped_column(Text)
     # Aquí vivían `last_progressed_date` y `last_session_date`. Se declararon y
     # no se escribieron NUNCA: cero apariciones en el resto del código, así que
     # su valor era NULL en todas las filas desde el primer día. Una columna que

@@ -6,9 +6,11 @@ caro: todas las mutaciones de esta lista producen un sistema que ARRANCA, decide
 escribe la rutina y manda el mensaje. Ninguna da un error. Lo único que cambia es
 el peso que acaba en la barra.
 
-Las trece de abajo no son hipótesis: doce son el comportamiento REAL del sistema
-antes del punto 13 o un paso en falso plausible al escribirlo, y la número uno
--el peso fuera del cumplimiento- estuvo en producción.
+Las de abajo no son hipótesis: son el comportamiento REAL del sistema antes del
+punto 13 o un paso en falso plausible al escribirlo. Dos estuvieron en
+producción: la A -el peso fuera del cumplimiento- y la I, que es la forma que
+tenía hasta el 25/09/2026 el fallo de las rampas (una aducción hecha a 50/60/80
+guardada como 55/70/80).
 
 Reglas de la casa: `newline=''` para no tocar los finales de línea, copia con
 `shutil.copy2` y restauración en un `finally` (nunca `git checkout`: hay trabajo
@@ -39,7 +41,10 @@ MUTACIONES = [
     (
         "A. el peso vuelve a quedarse fuera del cumplimiento (el fallo real)",
         "app/integrations/hevy.py",
-        "if objetivo_kg is not None and float(objetivo_kg) > 0:",
+        # Desde el 25/09/2026 la condición lleva delante `not ignorar_peso`, y
+        # hasta que esto se corrigió esa misma tarde la aguja vieja no aparecía:
+        # la mutación del fallo que SÍ estuvo en producción no se probaba.
+        "if not ignorar_peso and objetivo_kg is not None and float(objetivo_kg) > 0:",
         "if False:",
         ["tests/test_hevy_reconcile.py", "tests/test_runner.py"],
     ),
@@ -53,8 +58,8 @@ MUTACIONES = [
     (
         "C. 'sin peso apuntado' pasa a valer 0 kg en vez de 'no hay dato'",
         "app/integrations/hevy.py",
-        "salida[key] = max(pesos) if pesos else None",
-        "salida[key] = max(pesos) if pesos else 0.0",
+        "return max(pesos) if pesos else None",
+        "return max(pesos) if pesos else 0.0",
         ["tests/test_hevy_reconcile.py", "tests/test_adoption.py"],
     ),
     (
@@ -67,10 +72,11 @@ MUTACIONES = [
     (
         "E. se adopta hacia arriba aunque la sesión no se completara",
         "app/engine/adoption.py",
-        # La aguja lleva la línea de encima porque `if not limpio...` aparece
-        # dos veces: aquí y en la rama del ejercicio sin peso que se leyera.
-        "_reset_por_debajo(state, clave)\n            if not limpio.get(key, False):",
-        "_reset_por_debajo(state, clave)\n            if False:",
+        # Desde el 25/09/2026 subir se decide con `limpio_arriba`, el veredicto
+        # que no mira el peso de cada serie (ver `app/engine/adoption.py`), y
+        # ese nombre ya es único: la aguja no necesita la línea de encima.
+        "if not limpio_arriba.get(key, False):",
+        "if False:",
         ["tests/test_adoption.py"],
     ),
     (
@@ -92,8 +98,8 @@ MUTACIONES = [
     (
         "G. al bajar se adopta la última sesión y no la mejor de la racha",
         "app/engine/adoption.py",
-        "mejor = max(float(state.below_plan_best_kg.get(clave) or 0), hecho)",
-        "mejor = hecho",
+        "if previa is None or hecho > (tope_apuntado(previa) or 0.0):",
+        "if True:",
         ["tests/test_adoption.py"],
     ),
     (
@@ -104,13 +110,31 @@ MUTACIONES = [
         ["tests/test_adoption.py"],
     ),
     (
-        "I. se adopta el peso absoluto y la rampa 50/60/65 se aplana a 65/65/65",
+        # Hasta el 25/09/2026 esta era «se adopta el peso absoluto y la rampa se
+        # aplana», contra `_desplazar`. Ese desplazamiento ERA el fallo: una
+        # rampa hecha sobre un objetivo plano quedaba con todas las series al
+        # tope. La mutación sigue siendo la misma idea contra el código nuevo.
+        "I. se adopta el tope en todas las series y 30/40/50 se aplana a 50/50/50",
         "app/engine/adoption.py",
-        'nueva["weight_kg"] = round(max(0.0, actual + delta), 3)',
-        'nueva["weight_kg"] = round(max(0.0, max(\n'
-        '            float(x.get("weight_kg") or 0) for x in series\n'
-        "        ) + delta), 3)",
+        'nueva["weight_kg"] = round(float(hecha["weight_kg"]), 3)',
+        'nueva["weight_kg"] = round(max(float(h["weight_kg"]) for h in elegidas), 3)',
+        ["tests/test_adoption.py", "tests/test_runner.py"],
+    ),
+    (
+        "I2. la serie de más, que el plan del día no contaba, se adopta sin mirar"
+        " sus reps",
+        "app/engine/adoption.py",
+        'if falla is not None:\n            return f"la serie de',
+        'if False:\n            return f"la serie de',
         ["tests/test_adoption.py"],
+    ),
+    (
+        "I3. en una sesión partida se adoptan las series del último rato y no"
+        " las del más pesado",
+        "app/runner.py",
+        "if previo is None or kg > previo:",
+        "if True:",
+        ["tests/test_runner.py"],
     ),
     (
         "J. quedarse corto se mide contra el objetivo y no contra el plan del día:"
@@ -123,8 +147,11 @@ MUTACIONES = [
     (
         "K. un día sin peso apuntado rompe la racha por debajo",
         "app/engine/adoption.py",
-        "if hecho is None:",
-        "if hecho is None and _reset_por_debajo(state, clave) is None:",
+        # Con la línea de debajo: desde el 25/09/2026 `_aplicar` también tiene
+        # un `if hecho is None:`, la guarda de «sin una sola serie con peso».
+        "if hecho is None:\n            # Ni se hizo",
+        "if hecho is None and _reset_por_debajo(state, clave) is None:\n"
+        "            # Ni se hizo",
         ["tests/test_adoption.py"],
     ),
     (

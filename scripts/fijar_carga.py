@@ -23,8 +23,8 @@ QUÉ TOCA Y QUÉ NO
 Toca las series EFECTIVAS. Los calentamientos salen del YAML en cada
 construcción y la progresión tampoco los mueve nunca.
 
-Borra la racha de sesiones por debajo (`below_plan_streak`, `below_plan_best_kg`)
-porque esa racha se contaba contra el objetivo ANTERIOR: dejarla puesta
+Borra la racha de sesiones por debajo (`below_plan_streak` y la mejor sesión,
+`below_plan_best_sets_json` con su proyección `below_plan_best_kg`) porque esa racha se contaba contra el objetivo ANTERIOR: dejarla puesta
 significaría que una bajada futura se decidiera sobre sesiones que ya no se
 comparan con nada. No toca `clean_streak` ni `last_compliant`: el cumplimiento
 de la última sesión pasó como pasó, y ponerlo a cero cerraría la puerta de la
@@ -494,7 +494,12 @@ def main(argv: list[str] | None = None) -> int:
         tope = [x.get("weight_kg") or 0 for x in propuestas]
         fila.current_target_kg = max(tope) if any(tope) else None
         fila.below_plan_streak = 0
+        # Las dos: desde el 25/09/2026 la mejor sesión se guarda con sus series
+        # y el peso es solo su proyección. Borrar solo el peso dejaría la sesión
+        # vieja viva, y la próxima racha por debajo arrancaría con una «mejor»
+        # que se midió contra el objetivo que se acaba de sustituir.
         fila.below_plan_best_kg = None
+        fila.below_plan_best_sets_json = None
 
     print("\nEscrito. La próxima sesión se construye ya con esa carga.")
     return 0

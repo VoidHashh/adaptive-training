@@ -244,3 +244,62 @@ def test_la_base_limpia_no_tiene_nada_que_borrar(cfg):
     ))
     assert len(todas) > 30, "el config real tiene ejercicios de sobra"
     assert huerfanas(cfg, todas) == []
+
+
+# ---------------------------------------------------------------------------
+# Lo que se escribe de verdad con --aplicar
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def base_con_racha(tmp_path, monkeypatch):
+    """Una base con una carga y una racha por debajo a medias, y su mejor sesión."""
+    import json
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import db as appdb
+    from app.models import Base
+    from app.settings import settings
+
+    ruta = tmp_path / "con_racha.db"
+    eng = create_engine(f"sqlite:///{ruta}", future=True)
+    Base.metadata.create_all(eng)
+    monkeypatch.setattr(appdb, "engine", eng)
+    monkeypatch.setattr(appdb, "SessionLocal", sessionmaker(bind=eng, future=True))
+    monkeypatch.setattr(settings, "database_url", f"sqlite:///{ruta}")
+
+    with appdb.session_scope() as s:
+        s.add(
+            ExerciseTarget(
+                routine_key="dia_1",
+                exercise_key="prensa_horizontal",
+                current_sets_json=json.dumps(series(90, 100, 120)),
+                below_plan_streak=2,
+                below_plan_best_kg=100.0,
+                below_plan_best_sets_json=json.dumps(series(70, 90, 100)),
+            )
+        )
+    return appdb
+
+
+def test_fijar_una_carga_borra_tambien_la_mejor_sesion_de_la_racha(base_con_racha):
+    """La racha se contaba contra el objetivo que se acaba de sustituir.
+
+    Desde el 25/09/2026 la mejor sesión se guarda con sus series y el peso es
+    solo su proyección. Borrar solo el peso dejaba la sesión viva: `load_state`
+    la leía y la próxima racha arrancaba con una «mejor» medida contra otra
+    cosa.
+    """
+    from scripts.fijar_carga import main
+
+    assert main(["dia_1", "prensa_horizontal", "70,90,110", "--aplicar"]) == 0
+
+    with base_con_racha.session_scope() as s:
+        fila = s.query(ExerciseTarget).one()
+        assert fila.below_plan_streak == 0
+        assert fila.below_plan_best_kg is None
+        assert fila.below_plan_best_sets_json is None, (
+            "la mejor sesión de la racha vieja ha sobrevivido a fijar la carga"
+        )

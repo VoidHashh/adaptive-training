@@ -22,8 +22,8 @@ from app.engine.adoption import (
     ABAJO,
     ARRIBA,
     Adopcion,
-    _desplazar,
     _margen,
+    _series_que_se_adoptan,
     adoptar_cargas,
     tope_efectivo,
 )
@@ -64,7 +64,9 @@ class EstadoFalso:
 
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] = field(default_factory=dict)
     below_plan_streak: dict[tuple[str, str], int] = field(default_factory=dict)
-    below_plan_best_kg: dict[tuple[str, str], float] = field(default_factory=dict)
+    below_plan_best_sets: dict[tuple[str, str], list[dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
 
 def series(*pesos: float, reps: int = 10) -> list[dict[str, Any]]:
@@ -75,10 +77,41 @@ def ejercicio(*pesos: float, key: str = "hip_thrust", reps: int = 10) -> dict[st
     return {"key": key, "name": "Hip thrust", "sets": series(*pesos, reps=reps)}
 
 
+Hecho = float | None | list[float | None | tuple[float | None, int]]
+
+
+def _hechas(plan_ex: dict[str, Any], valor: Hecho) -> list[dict[str, Any]] | None:
+    """Lo que se hizo de un ejercicio, en la forma que devuelve Hevy.
+
+    Un número es «todas las series del plan del día a ese peso, con sus reps»:
+    es lo que decían los tests escritos cuando la adopción solo recibía un
+    número, y así siguen diciendo lo mismo. Una lista es la sesión serie a
+    serie; cada elemento es el peso, o `(peso, reps)` cuando las reps importan.
+    `None` es que el ejercicio no aparece.
+    """
+    if valor is None:
+        return None
+    pedidas = [s for s in plan_ex.get("sets") or [] if s.get("type") != "warmup"]
+    if not isinstance(valor, list):
+        valor = [valor] * len(pedidas)
+    salida = []
+    for i, v in enumerate(valor):
+        kg, reps = v if isinstance(v, tuple) else (v, None)
+        pedida = pedidas[min(i, len(pedidas) - 1)]
+        salida.append(
+            {
+                "type": "normal",
+                "weight_kg": kg,
+                "reps": pedida.get("reps") if reps is None else reps,
+            }
+        )
+    return salida
+
+
 def adoptar(
     estado: EstadoFalso,
     plan: list[dict[str, Any]],
-    pesos: dict[str, float | None],
+    pesos: dict[str, Hecho],
     limpio: dict[str, bool] | None = None,
     prog: dict[str, Any] | None = None,
     motivos: dict[str, str] | None = None,
@@ -97,11 +130,12 @@ def adoptar(
     de reps- pasan los dos a mano.
     """
     estricto = limpio if limpio is not None else {k: True for k in pesos}
+    por_clave = {ex["key"]: ex for ex in plan}
     return adoptar_cargas(
         estado,
         routine_key=RUTINA,
         exercises=plan,
-        pesos_hechos=pesos,
+        series_hechas={k: _hechas(por_clave[k], v) for k, v in pesos.items()},
         limpio=estricto,
         motivos=motivos or {},
         limpio_arriba=limpio_arriba if limpio_arriba is not None else estricto,
@@ -132,19 +166,43 @@ def test_sin_series_el_tope_es_cero_y_no_revienta():
     assert tope_efectivo(None) == 0.0
 
 
-def test_se_desplaza_la_rampa_entera_y_no_se_aplana():
-    """Delta y no peso absoluto.
+def _kg(elegidas):
+    return [s["weight_kg"] for s in elegidas]
 
-    A peso absoluto una rampa 50/60/65 saldría 65/65/65: el esquema se destruiría
-    de un golpe y las tres series pasarían a ir a tope. Con delta el esquema
-    sigue siendo el que era.
+
+def test_tantas_series_como_el_objetivo_se_toman_una_a_una():
+    assert _kg(_series_que_se_adoptan(series(35, 35, 35), series(30, 40, 50))) == [30, 40, 50]
+
+
+def test_si_sobran_series_entran_las_mas_pesadas_en_su_orden():
+    """Una serie de tanteo al principio, sin marcar como calentamiento, no puede
+    desplazar a la serie top: es la que decidió que había algo que adoptar."""
+    elegidas = _series_que_se_adoptan(series(35, 35, 35), series(20, 40, 50, 60))
+    assert _kg(elegidas) == [40, 50, 60]
+
+
+def test_si_sobran_y_la_mas_pesada_no_es_la_ultima_se_respeta_el_orden():
+    """Una serie de descarga al final se queda donde se hizo."""
+    elegidas = _series_que_se_adoptan(series(35, 35, 35), series(40, 50, 60, 45))
+    assert _kg(elegidas) == [50, 60, 45]
+
+
+def test_si_faltan_series_se_rellena_por_delante_con_la_mas_ligera():
+    """El único relleno que no inventa un kilo: ese peso se levantó.
+
+    Rellenar con el objetivo viejo podía dejar una serie por encima de todas
+    las hechas; rellenar por detrás movería la serie top de su sitio.
     """
-    assert [s["weight_kg"] for s in _desplazar(series(50, 60, 65), 5)] == [55, 65, 70]
+    elegidas = _series_que_se_adoptan(series(35, 35, 35), series(40, 50))
+    assert _kg(elegidas) == [40, 40, 50]
 
 
-def test_el_desplazamiento_no_deja_pesos_negativos():
-    """Un -10 kg en la rutina de mañana sería un dato imposible viajando a Hevy."""
-    assert [s["weight_kg"] for s in _desplazar(series(5, 20), -10)] == [0, 10]
+def test_una_serie_sin_peso_apuntado_no_mete_un_cero():
+    """Sin kilos no se sabe cuánto se levantó; un 0 en el objetivo sería
+    inventar una serie sin carga."""
+    hechas = series(40, 50)
+    hechas.insert(1, {"type": "normal", "reps": 10, "weight_kg": None})
+    assert _kg(_series_que_se_adoptan(series(35, 35, 35), hechas)) == [40, 40, 50]
 
 
 def test_el_margen_es_el_menor_de_los_dos():
@@ -269,8 +327,89 @@ def test_la_subida_se_mide_contra_el_objetivo_y_no_contra_el_plan_del_dia():
 
 def test_la_subida_conserva_el_esquema_de_la_rampa():
     e = EstadoFalso(current_sets={CLAVE: series(50, 60, 65)})
-    adoptar(e, [ejercicio(50, 60, 65)], {"hip_thrust": 70})
+    adoptar(e, [ejercicio(50, 60, 65)], {"hip_thrust": [55, 65, 70]})
     assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [55, 65, 70]
+
+
+# ---------------------------------------------------------------------------
+# Se adopta la forma que se hizo (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Hasta esa fecha se movían todas las series lo que había subido la más pesada.
+# Los casos de aquí son los del Día 3 de ese mismo día, reconciliado con el
+# fallo puesto: la aducción hecha a 50/60/80 quedó en 55/70/80 y la prensa a una
+# pierna hecha a 40/50/60 quedó en 60/60/60.
+
+
+def test_una_rampa_sobre_un_objetivo_plano_se_adopta_tal_cual(cfg):
+    """La patada atrás: objetivo 35/35/35, hecha a 30/40/50.
+
+    Con el desplazamiento salía 50/50/50: tres series a un peso que se había
+    levantado en una. Con el `config.yaml` real, que es el tope que deja pasar
+    este salto de verdad.
+    """
+    prog = {"adopt_executed_load": cfg.raw["progression"]["adopt_executed_load"]}
+    e = estado_en(35, 35, 35)
+    (a,) = adoptar(
+        e, [ejercicio(35, 35, 35)], {"hip_thrust": [30, 40, 50]}, prog=prog,
+        limpio={"hip_thrust": False}, limpio_arriba={"hip_thrust": True},
+    )
+    assert a.aplicada is True
+    assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [30, 40, 50]
+
+
+def test_la_primera_carga_registrada_se_adopta_con_su_forma():
+    """La prensa a una pierna del 25/09: 40/50/60 sin carga previa. Quedó en
+    60/60/60, y el primer objetivo de un ejercicio nuevo no puede ser dos
+    series por encima de lo que se hizo."""
+    e = EstadoFalso(current_sets={CLAVE: series(0, 0, 0)})
+    (a,) = adoptar(e, [ejercicio(0, 0, 0)], {"hip_thrust": [40, 50, 60]})
+    assert a.motivo == "primera carga registrada en Hevy"
+    assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [40, 50, 60]
+
+
+def test_con_el_volumen_recortado_se_adopta_la_serie_de_mas():
+    """El plan del día pedía DOS -un ámbar recorta volumen- y se hicieron tres.
+
+    Pasó en 14 de 66 ejercicios hasta el 25/09/2026. La tercera es casi siempre
+    la más pesada, y el objetivo guarda tres series: se adoptan las tres.
+    """
+    e = estado_en(35, 35, 35)
+    adoptar(e, [ejercicio(35, 35)], {"hip_thrust": [30, 40, 50]}, prog=_PROG_ANCHO)
+    assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [30, 40, 50]
+
+
+def test_una_serie_de_mas_que_se_corto_no_sube_nada():
+    """La tercera serie no la mira el plan del día, y aun así se va a copiar.
+
+    60 kg a 4 reps cuando el objetivo pide 10 no es un objetivo nuevo, se esté
+    donde se esté de la sesión. Antes esa serie SÍ se adoptaba: el veredicto
+    solo comprobaba las dos que pedía el plan y el peso salía del máximo de
+    todas.
+    """
+    e = estado_en(35, 35, 35)
+    (a,) = adoptar(
+        e, [ejercicio(35, 35)], {"hip_thrust": [40, 45, (60, 4)]}, prog=_PROG_ANCHO
+    )
+    assert a.aplicada is False
+    assert "60 kg" in a.motivo and "4 de las 10 reps" in a.motivo, a.motivo
+    assert tope_efectivo(e.current_sets[CLAVE]) == 35
+
+
+def test_las_reps_del_objetivo_no_se_copian():
+    """Se adopta el peso. Un día con ganas de 15 reps no fija el mínimo de las
+    sesiones siguientes: las reps las mueve la progresión con su propia puerta."""
+    e = estado_en(35, 35, 35)
+    adoptar(e, [ejercicio(35, 35, 35)], {"hip_thrust": [(40, 15)] * 3})
+    assert [s["reps"] for s in e.current_sets[CLAVE]] == [10, 10, 10]
+
+
+# Tope ancho para los tests de forma: los saltos de aquí son de verdad y el de
+# 5 kg de `PROG` los frenaría por un motivo que no es el que se prueba.
+_PROG_ANCHO = {
+    "adopt_executed_load": {**PROG["adopt_executed_load"], "max_jump_kg": 30,
+                            "max_jump_pct": 0.60}
+}
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +530,7 @@ def test_una_sesion_buena_rompe_la_racha_por_debajo():
     adoptar(e, [ejercicio(60)], {"hip_thrust": 60})
 
     assert CLAVE not in e.below_plan_streak
-    assert CLAVE not in e.below_plan_best_kg
+    assert CLAVE not in e.below_plan_best_sets
 
     assert adoptar(e, [ejercicio(60)], {"hip_thrust": 50}) == []
     assert tope_efectivo(e.current_sets[CLAVE]) == 60
@@ -447,8 +586,37 @@ def test_pasarse_del_objetivo_sin_llegar_al_plan_del_dia_si_sube():
 def test_al_bajar_se_conserva_el_esquema_de_la_rampa():
     e = EstadoFalso(current_sets={CLAVE: series(50, 60, 65)})
     for _ in range(3):
-        adoptar(e, [ejercicio(50, 60, 65)], {"hip_thrust": 60})
+        adoptar(e, [ejercicio(50, 60, 65)], {"hip_thrust": [45, 55, 60]})
     assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [45, 55, 60]
+
+
+def test_al_bajar_se_adopta_la_forma_de_la_mejor_sesion():
+    """Objetivo plano, hecho en rampa por debajo tres veces.
+
+    Con solo el número de la mejor, 50/50/50 bajaba a 48/48/48: dos series por
+    encima de lo que se levantó en ninguna de las tres sesiones. Y es la mejor
+    la que se adopta, no la última.
+    """
+    e = estado_en(50, 50, 50)
+    for hecho in ([30, 40, 45], [35, 45, 48], [20, 30, 40]):
+        adopciones = adoptar(e, [ejercicio(50, 50, 50)], {"hip_thrust": hecho})
+    (a,) = adopciones
+    assert a.direccion == ABAJO and a.aplicada is True
+    assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [35, 45, 48]
+
+
+def test_una_racha_vieja_con_solo_el_peso_baja_sin_inventar_kilos():
+    """Las rachas empezadas antes del 25/09/2026 solo guardaban el tope.
+
+    `load_state` las lee como una sesión de una serie con ese peso. Al bajar se
+    reparte sin inventar: todas a ese peso, que es lo único que se sabe.
+    """
+    e = estado_en(60, 60, 60)
+    e.below_plan_streak[CLAVE] = 2
+    e.below_plan_best_sets[CLAVE] = [{"weight_kg": 50.0}]
+    (a,) = adoptar(e, [ejercicio(60, 60, 60)], {"hip_thrust": [40, 45, 45]})
+    assert a.direccion == ABAJO
+    assert [s["weight_kg"] for s in e.current_sets[CLAVE]] == [50, 50, 50]
 
 
 def test_despues_de_bajar_la_racha_queda_a_cero():
@@ -460,7 +628,7 @@ def test_despues_de_bajar_la_racha_queda_a_cero():
         adoptar(e, [ejercicio(60)], {"hip_thrust": 50})
 
     assert CLAVE not in e.below_plan_streak
-    assert CLAVE not in e.below_plan_best_kg
+    assert CLAVE not in e.below_plan_best_sets
 
 
 # ---------------------------------------------------------------------------
@@ -695,9 +863,24 @@ def _aplicar_directo(direccion, racha):
 
     e = estado_en(60)
     return _aplicar(
-        e, CLAVE, ejercicio(60), e.current_sets[CLAVE], 60.0, 55.0, 60.0,
+        e, CLAVE, ejercicio(60), e.current_sets[CLAVE], series(55), 60.0,
         direccion, PROG["adopt_executed_load"], racha=racha,
     )
+
+
+def test_aplicar_sin_una_serie_con_peso_revienta_en_vez_de_escribir_ceros():
+    """Inalcanzable desde `adoptar_cargas`, y por eso mismo una guarda: si se
+    llegara, la alternativa es un objetivo nuevo sin un solo kilo con la frase
+    «se levantó eso de verdad» al lado."""
+    from app.engine.adoption import AdoptionError, _aplicar
+
+    e = estado_en(60)
+    with pytest.raises(AdoptionError, match="sin una sola serie con peso"):
+        _aplicar(
+            e, CLAVE, ejercicio(60), e.current_sets[CLAVE], [], 60.0,
+            ARRIBA, PROG["adopt_executed_load"], racha=None,
+        )
+    assert tope_efectivo(e.current_sets[CLAVE]) == 60
 
 
 def test_bajar_sin_racha_revienta_en_vez_de_escribir_un_motivo_falso():

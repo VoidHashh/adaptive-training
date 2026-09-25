@@ -234,12 +234,19 @@ Nada de esto está a medias: está terminado y sin datos que enseñar.
 mueven las cargas:
 
 - **Una serie más ligera ya no bloquea una subida.** Si la sesión sube en rampa
-  —30, 40, 50 con las reps completas— se adopta lo que se levantó arriba. Antes
-  la serie de 30 invalidaba los 50. Lo que sigue bloqueando es que las **reps**
-  se queden cortas: 70 kg a 4 reps cuando se pedían 10 es un peso intentado, no
-  levantado.
-- **Bajar no cambia**: siguen haciendo falta 3 sesiones seguidas por debajo, y
-  se baja a la mejor de las tres. Ahí el peso sí cuenta.
+  —30, 40, 50 con las reps completas— se adopta. Antes la serie de 30
+  invalidaba los 50. Lo que sigue bloqueando es que las **reps** se queden
+  cortas: 70 kg a 4 reps cuando se pedían 10 es un peso intentado, no
+  levantado. Y eso vale para TODAS las series que se adoptan, también la
+  tercera de un día en que el plan pedía dos.
+- **Se adopta la forma, no solo el tope.** Hiciste 30/40/50, la próxima vez
+  30/40/50. Hasta la tarde del 25/09 se movían todas las series lo que había
+  subido la más pesada, y un objetivo plano hecho en rampa quedaba con todas
+  las series al tope: la aducción hecha a 50/60/80 quedó en 55/70/80, la prensa
+  a una pierna hecha a 40/50/60 en 60/60/60. Se copian los pesos; las reps
+  siguen siendo las del objetivo.
+- **Bajar sigue igual de lento**: 3 sesiones seguidas por debajo, y se baja a
+  la mejor de las tres —ahora con su forma entera—. Ahí el peso sí cuenta.
 - **El tope de salto pasa de 5 kg / 20% a 30 kg / 60%.** En seis meses había
   actuado cuatro veces y las cuatro eran levantamientos reales, ninguna una
   errata: frenaba la realidad, no el ruido. Sigue frenando un dígito de más.

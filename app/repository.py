@@ -37,6 +37,7 @@ from app.config_loader import opciones_selector
 from app.engine.decision import ActiveRule, EngineState
 from app.engine.signals import CLAVE_SESION_ELEGIDA
 from app.engine.tendencia import DecisionDia
+from app.integrations.hevy import tope_apuntado
 from app.models import (
     ExerciseTarget,
     HevyWrite,
@@ -64,7 +65,7 @@ CAMPOS_PERSISTIDOS = frozenset(
         "current_sets",
         "sessions_since_progress",
         "below_plan_streak",
-        "below_plan_best_kg",
+        "below_plan_best_sets",
         "last_routine_light",
         "active_rules",
         "last_deload_start",
@@ -151,8 +152,17 @@ def load_state(
         # ceros para ejercicios que nunca se han quedado cortos.
         if row.below_plan_streak:
             state.below_plan_streak[clave] = int(row.below_plan_streak)
-        if row.below_plan_best_kg is not None:
-            state.below_plan_best_kg[clave] = float(row.below_plan_best_kg)
+        if row.below_plan_best_sets_json:
+            state.below_plan_best_sets[clave] = json.loads(row.below_plan_best_sets_json)
+        elif row.below_plan_best_kg is not None:
+            # Una racha empezada ANTES del 25/09/2026, cuando solo se guardaba el
+            # peso más alto. No se tira: perderla retrasaría una bajada que ya
+            # llevaba sesiones contadas. Se lee como una sesión de una sola
+            # serie con ese peso, que es exactamente lo que se sabe de ella, y
+            # `_series_que_se_adoptan` la reparte sin inventar ni un kilo más.
+            state.below_plan_best_sets[clave] = [
+                {"weight_kg": float(row.below_plan_best_kg)}
+            ]
 
     for row in session.scalars(select(RoutineState)).all():
         state.last_routine_light[row.routine_key] = row.last_light
@@ -278,7 +288,7 @@ def _guardar_ejercicios(session: Session, state: EngineState) -> None:
         | set(state.current_sets)
         | set(state.sessions_since_progress)
         | set(state.below_plan_streak)
-        | set(state.below_plan_best_kg)
+        | set(state.below_plan_best_sets)
     )
     if not claves:
         return
@@ -309,15 +319,21 @@ def _guardar_ejercicios(session: Session, state: EngineState) -> None:
                 state.sessions_since_progress[(rutina, ejercicio)]
             )
 
-        # Estas DOS se escriben siempre, presentes o no, y ahí está el detalle.
+        # Estas se escriben siempre, presentes o no, y ahí está el detalle.
         # La racha por debajo se anula BORRANDO la clave del diccionario, así que
         # con el patrón de arriba -"solo si está"- la anulación no llegaría nunca
         # a la tabla: el contador se quedaría clavado en 2 para siempre y la
         # siguiente sesión floja, meses después, bajaría la carga como si fuera
         # la tercera seguida. La ausencia es un valor, y hay que guardarlo.
         fila.below_plan_streak = int(state.below_plan_streak.get((rutina, ejercicio), 0))
-        mejor = state.below_plan_best_kg.get((rutina, ejercicio))
-        fila.below_plan_best_kg = None if mejor is None else float(mejor)
+        mejor = state.below_plan_best_sets.get((rutina, ejercicio))
+        fila.below_plan_best_sets_json = (
+            None if mejor is None else json.dumps(mejor, ensure_ascii=False)
+        )
+        # La proyección, calculada de la misma lista para que no pueda discrepar.
+        # Con la de arriba a NULL esta también, o `load_state` la leería como una
+        # racha vieja y resucitaría una mejor sesión que ya se había borrado.
+        fila.below_plan_best_kg = tope_apuntado(mejor)
 
 
 def _guardar_rutinas(session: Session, state: EngineState, day: date | None) -> None:

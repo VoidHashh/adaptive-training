@@ -1276,3 +1276,32 @@ def test_la_respuesta_del_dia_viaja_en_el_json_con_sus_tres_estados(cfg):
         # campo de arriba dice qué hizo el motor con la respuesta, y el de aquí
         # dentro dice qué se leyó, aunque algún día el motor deje de mirarla.
         assert recargada["inputs"]["values"]["will_train"] is respuesta
+
+
+# ---------------------------------------------------------------------------
+# La memoria de la adopción cruza la mañana
+# ---------------------------------------------------------------------------
+
+
+def test_la_racha_por_debajo_y_su_mejor_sesion_sobreviven_a_la_manana(cfg):
+    """`runner` guarda cada mañana lo que devuelve `advance_state`.
+
+    Así que un campo que `advance_state` no copie no se queda sin avanzar: se
+    BORRA de la base, cada mañana, en cuanto se guarda. Con la mejor sesión
+    pasaba sin un solo error: la racha seguía contando -esa sí se copiaba- y la
+    bajada, al llegar, se hacía sobre la primera sesión que entrara después,
+    no sobre la mejor. Lo cazó el banco de mutaciones del 25/09/2026.
+    """
+    clave = ("dia_1", "prensa_horizontal")
+    mejor = [{"type": "normal", "reps": 12, "weight_kg": p} for p in (70, 90, 100)]
+    st = EngineState(below_plan_streak={clave: 2}, below_plan_best_sets={clave: mejor})
+
+    d = decide(cfg, LUNES, sig(LUNES), st)
+    despues = advance_state(st, d, executed=None)
+
+    assert despues.below_plan_streak == {clave: 2}
+    assert despues.below_plan_best_sets == {clave: mejor}
+    assert despues.below_plan_best_sets[clave] is not mejor, (
+        "la copia comparte la lista con el estado de ayer: una decisión podría "
+        "contaminar hacia atrás la que la produjo"
+    )
