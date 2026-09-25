@@ -25,6 +25,7 @@ from app.integrations.hevy import (
     motivos_incumplimiento,
     pesos_ejecutados,
     routine_key_de,
+    ultima_serie_corta,
     workout_compliance,
 )
 from tests.conftest import FakeHTTP, FakeResponse
@@ -746,3 +747,66 @@ def test_los_dos_motivos_pueden_senalar_series_distintas():
     assert "serie 1" in estricto and "30 kg" in estricto
     assert "serie 2" in arriba and "reps" in arriba
     assert estricto != arriba
+
+
+# ---------------------------------------------------------------------------
+# ultima_serie_corta: el 12/12/9 que ni suma ni borra la racha (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# «Es válida, pero no cuenta para el próximo día, que seguiría siendo 12/12/12.»
+# Solo ese caso: cualquier otro fallo sigue siendo otra sesión.
+
+
+def _tres(*reps_y_kg):
+    """Plan de tres series de 12 en rampa 40/45/50, y lo hecho serie a serie."""
+    plan = Plan(ejercicio("jalon", sets=[
+        serie(reps=12, weight_kg=40), serie(reps=12, weight_kg=45),
+        serie(reps=12, weight_kg=50),
+    ]))
+    hechas = [serie(reps=r, weight_kg=kg) for r, kg in reps_y_kg]
+    return ultima_serie_corta(workout(hecho("T-jalon", *hechas)), plan, CFG_SETS)
+
+
+def test_la_ultima_corta_de_reps_se_reconoce():
+    assert _tres((12, 40), (12, 45), (9, 50)) == {"jalon"}
+
+
+def test_una_de_en_medio_corta_no_es_la_ultima():
+    assert _tres((12, 40), (9, 45), (12, 50)) == set()
+
+
+def test_la_ultima_corta_y_ademas_ligera_no_es_solo_la_ultima():
+    """A 45 cuando pedía 50 y sin las reps: no es el final de una serie dura,
+    es una serie más fácil que no se terminó."""
+    assert _tres((12, 40), (12, 45), (9, 45)) == set()
+
+
+def test_la_ultima_corta_con_una_de_antes_ligera_tampoco():
+    assert _tres((12, 35), (12, 45), (9, 50)) == set()
+
+
+def test_una_serie_de_menos_no_es_la_ultima_corta():
+    """Dos de tres, y la segunda corta: emparejadas por posición, la segunda
+    parece «la última», pero falta una serie entera y eso es otra sesión."""
+    assert _tres((12, 40), (9, 45)) == set()
+
+
+def test_una_sesion_limpia_no_se_mantiene_se_suma():
+    """Limpia no es «mantener»: sale por el otro camino y suma a la racha."""
+    assert _tres((12, 40), (12, 45), (12, 50)) == set()
+
+
+def test_un_ejercicio_que_no_aparece_no_se_mantiene():
+    plan = Plan(ejercicio("jalon", sets=[serie(reps=12, weight_kg=40)]))
+    assert ultima_serie_corta(workout(), plan, CFG_SETS) == set()
+
+
+def test_por_tiempo_la_ultima_corta_de_segundos_tambien_cuenta():
+    """La plancha de 40 s que en la tercera se queda en 30: la misma idea."""
+    plan = Plan(ejercicio("plancha", sets=[serie(duration_s=40)] * 3))
+    w = workout(hecho(
+        "T-plancha",
+        serie(duration_seconds=40), serie(duration_seconds=40),
+        serie(duration_seconds=30),
+    ))
+    assert ultima_serie_corta(w, plan, CFG_SETS) == {"plancha"}

@@ -1835,6 +1835,39 @@ def test_un_checkin_rojo_tardio_tambien_deshace_el_hiit(db, cfg_lunes):
     assert sorted(f.routine_key for f in vueltas) == ["dia_1", "hiit_dia_1"]
 
 
+def test_en_el_bloque_hiit_la_ultima_serie_corta_tampoco_borra_la_racha(db, cfg_lunes):
+    """El bloque tiene su propio `apply_execution` y su propio cumplimiento: sin
+    esto, la regla del 12/12/9 valdría en la fuerza y no en el HIIT sin que
+    nada lo dijera."""
+    from app import repository as repo
+
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    bloque = plan["hiit"]
+    subidos = set(repo.progressed_keys(repo.current_decision(db, LUNES), hiit=True))
+    ex = next(
+        e for e in bloque["exercises"]
+        if e["key"] not in subidos and any(s.get("reps") for s in e["sets"])
+    )
+    clave = ("hiit_dia_1", ex["key"])
+    estado = load_state(db, program_start=cfg_lunes.program_start)
+    estado.clean_sessions[clave] = 1
+    save_state(db, estado, day=LUNES)
+
+    hecho = copy.deepcopy(bloque)
+    for e in hecho["exercises"]:
+        if e["key"] == ex["key"]:
+            ultima = [s for s in e["sets"] if s.get("type") != "warmup"][-1]
+            ultima["reps"] = ultima["reps"] - 3
+    w = _ejecuta(hecho, wid="hiit", rid=_rid(cfg_lunes, "hiit_dia_1"))
+
+    run_reconcile(db, cfg_lunes, LUNES, workouts=[w])
+
+    estado = load_state(db, program_start=cfg_lunes.program_start)
+    assert estado.clean_sessions[clave] == 1, "en el HIIT la última serie corta borra la racha"
+    assert estado.compliance[clave] is False
+
+
 def test_la_carga_del_hiit_se_adopta_bajo_la_clave_del_bloque(db, cfg_lunes):
     """El wall ball sube en `hiit_dia_1`, que es donde el config lo declara.
 
@@ -2297,6 +2330,42 @@ def test_subir_el_peso_a_mano_en_hevy_mueve_el_objetivo_guardado(db, cfg):
     assert despues == antes + 2.5, "el objetivo guardado no se ha movido"
 
 
+def test_la_ultima_serie_corta_no_borra_la_racha_de_punta_a_punta(db, cfg):
+    """De Hevy a la tabla: el 12/12/9 deja la racha donde estaba.
+
+    Y cierra la puerta de mañana: «no cuenta para el próximo día, que seguiría
+    siendo 12/12/12». Un ejercicio que la mañana haya subido se salta, porque
+    su racha vuelve a cero por la subida y el test no probaría nada.
+    """
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    from app import repository as repo
+
+    subidos = set(repo.progressed_keys(repo.current_decision(db, LUNES)))
+    ex = next(
+        e for e in plan["exercises"]
+        if e["key"] not in subidos
+        and any((s.get("weight_kg") or 0) > 0 for s in e.get("sets") or [])
+        and any(s.get("reps") for s in e.get("sets") or [])
+    )
+    clave = ("dia_1", ex["key"])
+    estado = load_state(db, program_start=cfg.program_start)
+    estado.clean_sessions[clave] = 1
+    save_state(db, estado, day=LUNES)
+
+    w = _entrenamiento_completo(plan)
+    for e in w["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            ultima = [s for s in e["sets"] if s.get("type") != "warmup"][-1]
+            ultima["reps"] = ultima["reps"] - 3
+
+    run_reconcile(db, cfg, LUNES, workouts=[w])
+
+    estado = load_state(db, program_start=cfg.program_start)
+    assert estado.clean_sessions[clave] == 1, "la última serie corta ha tocado la racha"
+    assert estado.compliance[clave] is False, "cuenta para mañana, y no debería"
+
+
 def test_una_rampa_hecha_se_guarda_con_su_forma_y_no_desplazada(db, cfg):
     """El cable entero del 25/09/2026: de Hevy a la tabla, serie a serie.
 
@@ -2625,7 +2694,7 @@ def test_la_racha_se_rompe_entera_no_se_decrementa():
     st = EngineState(clean_sessions={("dia_1", "hip_thrust"): 5})
     apply_execution(
         st, routine_key="dia_1", exercises=EJS,
-        executed={"hip_thrust": False, "remo": True},
+        executed={"hip_thrust": False, "remo": True}, mantener=(),
         progressed=(),
     )
     assert st.clean_sessions[("dia_1", "hip_thrust")] == 0
@@ -2642,11 +2711,44 @@ def test_un_ejercicio_que_ha_subido_hoy_empieza_racha_de_cero():
     st = EngineState(clean_sessions={("dia_1", "hip_thrust"): 2})
     apply_execution(
         st, routine_key="dia_1", exercises=EJS,
-        executed={"hip_thrust": True, "remo": True},
+        executed={"hip_thrust": True, "remo": True}, mantener=(),
         progressed=["hip_thrust"],
     )
     assert st.clean_sessions[("dia_1", "hip_thrust")] == 0
     assert st.clean_sessions[("dia_1", "remo")] == 1
+
+
+def test_la_ultima_serie_corta_ni_suma_ni_borra_la_racha():
+    """«Es válida, pero no cuenta para el próximo día, que seguiría siendo
+    12/12/12.» Decisión del usuario, 25/09/2026.
+
+    No suma: `compliance` queda en False y eso cierra la puerta de mañana. No
+    borra: la cadena posterior pide dos limpias seguidas, y empezar de cero cada
+    vez que la última serie no sale entera la dejaba sin subir nunca.
+    """
+    st = EngineState(clean_sessions={("dia_1", "hip_thrust"): 1, ("dia_1", "remo"): 1})
+    apply_execution(
+        st, routine_key="dia_1", exercises=EJS,
+        executed={"hip_thrust": False, "remo": False}, mantener={"hip_thrust"},
+        progressed=(),
+    )
+    assert st.clean_sessions[("dia_1", "hip_thrust")] == 1, "se ha borrado o sumado"
+    assert st.compliance[("dia_1", "hip_thrust")] is False, (
+        "cuenta para mañana: la puerta de subir se abriría con la serie corta"
+    )
+    assert st.clean_sessions[("dia_1", "remo")] == 0, (
+        "un fallo que no es el de la última serie sigue rompiendo la racha"
+    )
+
+
+def test_limpio_gana_a_mantener():
+    """Si llega limpio, suma aunque también figure en `mantener`."""
+    st = EngineState(clean_sessions={("dia_1", "hip_thrust"): 1})
+    apply_execution(
+        st, routine_key="dia_1", exercises=EJS,
+        executed={"hip_thrust": True}, mantener={"hip_thrust"}, progressed=(),
+    )
+    assert st.clean_sessions[("dia_1", "hip_thrust")] == 2
 
 
 def test_la_racha_es_por_rutina_y_ejercicio():
@@ -2654,7 +2756,7 @@ def test_la_racha_es_por_rutina_y_ejercicio():
     st = EngineState(clean_sessions={("dia_3", "hip_thrust"): 4})
     apply_execution(
         st, routine_key="dia_1", exercises=EJS, executed={"hip_thrust": True},
-        progressed=(),
+        mantener=(), progressed=(),
     )
     assert st.clean_sessions[("dia_1", "hip_thrust")] == 1
     assert st.clean_sessions[("dia_3", "hip_thrust")] == 4
@@ -3273,6 +3375,24 @@ def test_una_sesion_partida_en_dos_ratos_se_une_igual_en_los_dos(cfg):
     assert c.motivos == {} and c.motivos_sube == {}
     # Y el peso que viaja a la adopcion es el mas alto de los dos ratos.
     assert c.pesos["patada_atras"] == 35.0
+
+
+def test_la_ultima_corta_se_mantiene_y_un_rato_limpio_la_convierte_en_limpia(cfg):
+    """Mantener es la excepción de un fallo, no un tercer veredicto que compita
+    con el limpio: si en otro rato del día el ejercicio salió entero, suma."""
+    from app.runner import _cumplimiento_contra
+
+    sola = _cumplimiento_contra([_entreno(35, reps=20)], _plan_de_una_serie(35), cfg)
+    assert sola.mantiene == {"patada_atras"}
+    assert sola.executed["patada_atras"] is False
+
+    partida = _cumplimiento_contra(
+        [_entreno(35, reps=20, wid="w1"), _entreno(35, reps=24, wid="w2")],
+        _plan_de_una_serie(35),
+        cfg,
+    )
+    assert partida.executed["patada_atras"] is True
+    assert partida.mantiene == set()
 
 
 def test_de_una_sesion_partida_se_adoptan_las_series_del_rato_mas_pesado(cfg):

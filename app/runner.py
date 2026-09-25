@@ -55,6 +55,7 @@ from app.integrations.hevy import (
     motivos_incumplimiento,
     series_ejecutadas,
     tope_apuntado,
+    ultima_serie_corta,
     workout_compliance,
 )
 from app.integrations.telegram import escapar_html
@@ -1326,10 +1327,12 @@ def run_reconcile(
     motivos: dict[str, str] = {}
     sube: dict[str, bool] = {}
     motivos_sube: dict[str, str] = {}
+    mantiene: set[str] = set()
     if es_fuerza:
         cumpl = _cumplimiento_contra(nuevos_fuerza, plan, cfg, hechos_sin_apuntar)
         executed, pesos, motivos = cumpl.executed, cumpl.pesos, cumpl.motivos
         sube, motivos_sube, series = cumpl.sube, cumpl.motivos_sube, cumpl.series
+        mantiene = cumpl.mantiene
     res.executed = executed
     res.pesos = pesos
 
@@ -1346,6 +1349,7 @@ def run_reconcile(
     motivos_hiit: dict[str, str] = {}
     sube_hiit: dict[str, bool] = {}
     motivos_sube_hiit: dict[str, str] = {}
+    mantiene_hiit: set[str] = set()
     if ex_hiit:
         cumpl_hiit = _cumplimiento_contra(
             del_bloque, plan_hiit, cfg, hechos_sin_apuntar
@@ -1355,6 +1359,7 @@ def run_reconcile(
         motivos_hiit = cumpl_hiit.motivos
         sube_hiit = cumpl_hiit.sube
         motivos_sube_hiit = cumpl_hiit.motivos_sube
+        mantiene_hiit = cumpl_hiit.mantiene
 
     # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
     # que solo se le pone a las filas que salen de esa rutina. Antes se le
@@ -1497,6 +1502,7 @@ def run_reconcile(
             routine_key=str(bloque_hiit),
             exercises=ex_hiit,
             executed=executed_hiit,
+            mantener=mantiene_hiit,
             light=fila.light if fila is not None else None,
             # Las del BLOQUE, sacadas de SU plan. Aquí había un filtro de las
             # claves de la fuerza por pertenencia al bloque, y estaba bien
@@ -1549,6 +1555,7 @@ def run_reconcile(
         routine_key=str(rkey),
         exercises=plan.get("exercises") or [],
         executed=executed,
+        mantener=mantiene,
         light=fila.light,
         progressed=repo.progressed_keys(fila),
     )
@@ -1769,6 +1776,9 @@ class Cumplimiento(NamedTuple):
     # Van las dos porque `pesos` lo leen el resultado de la noche y sus tests, y
     # la adopción necesita la forma entera (ver `app/engine/adoption.py`).
     series: dict[str, list[dict[str, Any]]]
+    # Los que no salieron limpios SOLO porque la última serie se quedó corta de
+    # reps. No suman a la racha y no la borran: ver `hevy.ultima_serie_corta`.
+    mantiene: set[str]
 
 
 def _cumplimiento_contra(
@@ -1794,8 +1804,13 @@ def _cumplimiento_contra(
     motivos: dict[str, str] = {}
     sube: dict[str, bool] = {}
     motivos_sube: dict[str, str] = {}
+    mantiene: set[str] = set()
     plan_obj = _PlanLeido(plan)
     for w in workouts:
+        # Con el mismo criterio de unión que el cumplimiento: basta con que en
+        # UN rato el único fallo fuera la última serie. Lo que acabó limpio en
+        # otro rato se quita abajo, porque limpio gana.
+        mantiene |= ultima_serie_corta(w, plan_obj, cfg)
         # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos
         # lo completó: partir la sesión en dos ratos es normal y no debería
         # romper la racha.
@@ -1856,7 +1871,8 @@ def _cumplimiento_contra(
     motivos = {k: v for k, v in motivos.items() if not executed.get(k)}
     motivos_sube = {k: v for k, v in motivos_sube.items() if not sube.get(k)}
     pesos = {k: tope_apuntado(v) for k, v in series.items()}
-    return Cumplimiento(executed, pesos, motivos, sube, motivos_sube, series)
+    mantiene = {k for k in mantiene if not executed.get(k)}
+    return Cumplimiento(executed, pesos, motivos, sube, motivos_sube, series, mantiene)
 
 
 # ---------------------------------------------------------------------------

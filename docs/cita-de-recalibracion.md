@@ -251,6 +251,12 @@ mueven las cargas:
   actuado cuatro veces y las cuatro eran levantamientos reales, ninguna una
   errata: frenaba la realidad, no el ruido. Sigue frenando un dígito de más.
 
+- **La última serie corta de reps ni suma ni borra la racha.** Con tus
+  palabras: el 12/12/9 «es válida, pero no cuenta para el próximo día, que
+  seguiría siendo 12/12/12». No paga ninguna subida, y tampoco obliga a la
+  cadena posterior -que pide dos limpias seguidas- a empezar de cero. Solo ese
+  caso: una serie de en medio corta, una de menos o un peso por debajo siguen
+  rompiendo la racha.
 - **El HIIT cuenta por lo que se hizo, no por la rutina.** Al fusionar el HIIT
   del Día 2 en el Día 2, el recuento de sesiones intensas dejó de ver sus
   intervalos, y también los «Día 2 HIIT» ya hechos. Ahora un entreno cuenta

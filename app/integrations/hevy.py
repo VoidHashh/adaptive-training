@@ -687,8 +687,19 @@ def _falla(
             f"una de {[p for p, _ in CAMPOS_SERIE]}."
         )
 
+    if not ignorar_peso:
+        return _falla_de_peso(real, plan)
+    return None
+
+
+def _falla_de_peso(real: dict[str, Any], plan: dict[str, Any]) -> str | None:
+    """Si la serie se quedó corta de PESO, en palabras; `None` si no.
+
+    Sale aparte de `_falla` para que `ultima_serie_corta` pueda preguntar por el
+    peso sin las reps, y lo pregunte con la misma regla y no con una copia.
+    """
     objetivo_kg = plan.get("weight_kg")
-    if not ignorar_peso and objetivo_kg is not None and float(objetivo_kg) > 0:
+    if objetivo_kg is not None and float(objetivo_kg) > 0:
         hecho_kg = real.get("weight_kg")
         if hecho_kg is None:
             return "no lleva peso apuntado"
@@ -699,8 +710,44 @@ def _falla(
             return (
                 f"se hizo a {_num(hecho_kg)} kg y pedía {_num(objetivo_kg)}"
             )
-
     return None
+
+
+def ultima_serie_corta(
+    workout: dict[str, Any], planned: Any, config: Any = None
+) -> set[str]:
+    """Los ejercicios cuyo ÚNICO fallo es que la última serie se quedó corta de reps.
+
+    Todas las series a su peso o más; todas con sus reps menos la última; y la
+    última, a su peso pero sin llegar a las reps (o a los segundos). Es el
+    12/12/9 con 12 pedidas.
+
+    Existe por una decisión del usuario del 25/09/2026, con sus palabras: esa
+    sesión «es válida, pero no cuenta para el próximo día, que seguiría siendo
+    12/12/12». O sea: no es limpia -no paga ninguna subida, y mañana se repite
+    lo mismo-, pero tampoco borra las sesiones completas de antes. Es lo normal
+    al final de una serie exigente, y tratarlo como un fallo obligaba a la
+    cadena posterior -que pide dos limpias seguidas- a empezar de cero cada vez
+    que la última serie no salía entera.
+
+    Solo este caso. Una serie de en medio corta, una serie de menos o un peso
+    por debajo siguen rompiendo la racha: no son el final de una serie dura,
+    son otra sesión.
+    """
+    salida: set[str] = set()
+    for key, (objetivo, reales) in _emparejar(workout, planned, config).items():
+        if not objetivo or not reales or len(reales) < len(objetivo):
+            continue
+        pares = list(zip(reales, objetivo))
+        *antes, (real_ultima, plan_ultima) = pares
+        if any(_falla(r, p, ignorar_peso=False) is not None for r, p in antes):
+            continue
+        if _falla(real_ultima, plan_ultima, ignorar_peso=True) is None:
+            continue  # la última tiene sus reps: o es limpia o falla por peso
+        if _falla_de_peso(real_ultima, plan_ultima) is not None:
+            continue
+        salida.add(str(key))
+    return salida
 
 
 # ---------------------------------------------------------------------------

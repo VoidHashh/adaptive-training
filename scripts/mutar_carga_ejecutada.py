@@ -41,11 +41,12 @@ MUTACIONES = [
     (
         "A. el peso vuelve a quedarse fuera del cumplimiento (el fallo real)",
         "app/integrations/hevy.py",
-        # Desde el 25/09/2026 la condición lleva delante `not ignorar_peso`, y
-        # hasta que esto se corrigió esa misma tarde la aguja vieja no aparecía:
-        # la mutación del fallo que SÍ estuvo en producción no se probaba.
-        "if not ignorar_peso and objetivo_kg is not None and float(objetivo_kg) > 0:",
-        "if False:",
+        # Desde el 25/09/2026 el peso se mira en `_falla_de_peso`, y `_falla`
+        # solo decide si preguntarlo. Esa tarde la aguja vieja estuvo sin
+        # aparecer: la mutación del fallo que SÍ estuvo en producción no se
+        # probaba, y el banco lo contaba como caducada.
+        "if not ignorar_peso:\n        return _falla_de_peso(real, plan)",
+        "if False:\n        return _falla_de_peso(real, plan)",
         ["tests/test_hevy_reconcile.py", "tests/test_runner.py"],
     ),
     (
@@ -134,6 +135,13 @@ MUTACIONES = [
         "app/runner.py",
         "if previo is None or kg > previo:",
         "if True:",
+        ["tests/test_runner.py"],
+    ),
+    (
+        "I4. la última serie corta de reps vuelve a borrar la racha",
+        "app/engine/decision.py",
+        "elif key in mantener:",
+        "elif False:",
         ["tests/test_runner.py"],
     ),
     (

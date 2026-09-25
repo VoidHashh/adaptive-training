@@ -46,7 +46,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from app.engine.bike_advisor import BikeRecommendation, recommend_bike
 from app.engine.progression import ProgressionPlan, plan_progression
@@ -1172,6 +1172,9 @@ def advance_state(
         routine_key=rkey,
         exercises=sess.exercises,
         executed=executed,
+        # La simulación genera `executed` como verdadero o falso y no sabe de
+        # últimas series cortas: ninguna se mantiene.
+        mantener=(),
         light=decision.light,
         progressed=[e.key for e in decision.progression.changes]
         if decision.progression
@@ -1185,6 +1188,7 @@ def apply_execution(
     routine_key: str,
     exercises: Sequence[dict[str, Any]],
     executed: dict[str, bool],
+    mantener: Collection[str],
     progressed: Sequence[str],
     light: str | None = None,
 ) -> EngineState:
@@ -1215,6 +1219,12 @@ def apply_execution(
     una espalda que no admite dos subidas seguidas. Cuando de verdad no hay
     nada que hubiera subido hoy se pasa `()` a mano, y entonces es una
     afirmación en vez de un hueco.
+
+    `mantener` son los que no salieron limpios SOLO porque la última serie se
+    quedó corta de reps (`hevy.ultima_serie_corta`). Su racha no suma y no se
+    borra, por decisión del usuario del 25/09/2026: esa sesión «es válida,
+    pero no cuenta para el próximo día». Obligatorio por lo mismo que
+    `progressed`: un olvido aquí no fallaría, borraría rachas en silencio.
     """
     if light is not None:
         state.last_routine_light[routine_key] = light
@@ -1228,10 +1238,17 @@ def apply_execution(
         state.compliance[scoped] = ok
         if ok:
             state.clean_sessions[scoped] = state.clean_sessions.get(scoped, 0) + 1
+        elif key in mantener:
+            # Ni suma ni se borra: la última serie no salió entera y todo lo
+            # demás sí. `compliance` queda en False, que es lo que cierra la
+            # puerta de mañana -«seguiría siendo 12/12/12»-; la racha se
+            # queda donde estaba para la próxima sesión completa.
+            pass
         else:
             # La racha se rompe entera. Es el punto: "sesiones limpias
             # CONSECUTIVAS". Decrementar en vez de resetear convertiría el
-            # requisito en una media, que es otra cosa.
+            # requisito en una media, que es otra cosa. La única excepción es la
+            # de arriba, y es una sola.
             state.clean_sessions[scoped] = 0
 
     # La cola de los cupos avanza aquí, con el resto de rachas, y no al
