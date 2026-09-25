@@ -178,6 +178,32 @@ registra, pero no toca Hevy ni manda Telegram. La aplicación lo dice en la
 pantalla del móvil, en ámbar, para que un día sin mensaje no se confunda con una
 avería.
 
+### Si esta instancia NO es la que manda
+
+Mientras el sistema de verdad siga corriendo en otra máquina —el PC, por
+ejemplo—, el `.env` de aquí lleva además estas dos:
+
+```bash
+SCHEDULER_ENABLED=false
+DRY_RUN=true
+```
+
+No es prudencia de más. `scheduler_enabled` vale `true` por defecto, así que un
+`.env` copiado tal cual arranca los tres trabajos del día **también aquí**, y
+entonces hay dos planificadores decidiendo el mismo día y dos procesos
+reescribiendo la misma rutina en Hevy. El comentario de `app/settings.py` ya
+nombra este caso: *«dos planificadores sobre la misma base son dos decisiones
+pisándose el mismo día»*. `DRY_RUN=true` es el segundo cinturón: aunque algo
+dispare una decisión, no sale de aquí.
+
+Con las dos puestas, la aplicación se puede abrir, enseñar el formulario y
+servir `/api/health` sin tocar nada de fuera. Es lo que hace falta para
+comprobar que la instalación está bien.
+
+**Para que tome el relevo: apagar primero el otro**, y solo después poner
+`SCHEDULER_ENABLED=true` y `DRY_RUN=false` aquí. En ese orden, porque el
+solapamiento es lo caro.
+
 ### Si falta el `.env`
 
 La aplicación **arranca igual** y lo primero que enseña en el móvil es qué
