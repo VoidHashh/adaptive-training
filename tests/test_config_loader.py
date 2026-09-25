@@ -663,6 +663,28 @@ def test_el_config_real_declara_los_intervalos_del_dia_2(cfg):
     }
 
 
+def test_el_config_real_mira_el_cumplimiento_por_ejercicio(cfg):
+    assert cfg.raw["progression"]["gate"]["compliance_scope"] == "exercise"
+
+
+@pytest.mark.parametrize("valor", [None, "rutina", "todo"])
+def test_el_ambito_del_cumplimiento_se_exige_y_se_valida(cfg, valor):
+    """Decide si un ejercicio incompleto frena la subida de toda la rutina o
+    solo la suya: no lo puede decidir un defecto escondido en el código."""
+    data = copy.deepcopy(cfg.raw)
+    if valor is None:
+        data["progression"]["gate"].pop("compliance_scope")
+    else:
+        data["progression"]["gate"]["compliance_scope"] = valor
+    assert "progression.gate.compliance_scope" in errores(data)
+
+
+def test_una_errata_dentro_de_la_puerta_no_se_ignora(cfg):
+    data = copy.deepcopy(cfg.raw)
+    data["progression"]["gate"]["require_gren"] = data["progression"]["gate"].pop("require_green")
+    assert "progression.gate: clave desconocida 'require_gren'" in errores(data)
+
+
 def test_una_errata_dentro_de_hiit_no_se_ignora(cfg):
     """La sección no tenía lista blanca: `only_on_gren` arrancaba limpio y el
     HIIT se prescribía en ámbar sin que nada lo dijera."""

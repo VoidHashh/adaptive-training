@@ -186,14 +186,23 @@ def test_sin_registro_de_la_ultima_sesion_no_se_progresa(cfg):
     assert "no hay registro" in motivo
 
 
+def _por_rutina(cfg) -> dict:
+    """`progression` con `compliance_scope: routine`, el ámbito de antes del
+    25/09/2026. Sigue siendo una opción del YAML, y sus tests la vigilan."""
+    prog = copy.deepcopy(cfg.raw["progression"])
+    prog["gate"]["compliance_scope"] = "routine"
+    return prog
+
+
 def test_el_motivo_nombra_a_los_ejercicios_sin_registro(cfg):
     """Un aviso que nombra su causa se arregla desde el móvil.
 
     Con una rutina en marcha y un ejercicio nuevo, "no hay registro" a secas
-    es un callejón sin salida: nueve ejercicios y ninguna pista de cuál.
+    es un callejón sin salida: nueve ejercicios y ninguna pista de cuál. Es del
+    ámbito `routine`: por ejercicio, la puerta ni se cierra.
     """
     abierta, motivo = evaluate_gate(
-        cfg.raw["progression"], "green", sig(LUNES, lower_discomfort=1),
+        _por_rutina(cfg), "green", sig(LUNES, lower_discomfort=1),
         None, "dia_1", False,
         compliance_por_ejercicio={
             "prensa_horizontal": True,
@@ -204,6 +213,33 @@ def test_el_motivo_nombra_a_los_ejercicios_sin_registro(cfg):
     assert not abierta
     assert "hip_thrust_barra" in motivo
     assert "prensa_horizontal" not in motivo, "solo los que faltan, no la lista entera"
+
+
+def test_por_ejercicio_uno_sin_registro_no_cierra_la_rutina(cfg):
+    """El mismo caso con `compliance_scope: exercise`: la puerta sigue abierta,
+    y el que no tiene registro se queda sin subir él solo (`plan_progression`)."""
+    abierta, motivo = evaluate_gate(
+        cfg.raw["progression"], "green", sig(LUNES, lower_discomfort=1),
+        None, "dia_1", False,
+        compliance_por_ejercicio={
+            "prensa_horizontal": True,
+            "gemelo_sentado": False,
+            "hip_thrust_barra": None,
+        },
+    )
+    assert abierta, motivo
+
+
+def test_por_ejercicio_sin_registro_de_ninguno_se_cierra_igual(cfg):
+    """El estreno de una rutina sigue cerrando la puerta entera: no hay
+    registro de NINGUNO, y eso sí es de la rutina."""
+    abierta, motivo = evaluate_gate(
+        cfg.raw["progression"], "green", sig(LUNES, lower_discomfort=1),
+        None, "dia_1", False,
+        compliance_por_ejercicio={"prensa_horizontal": None, "gemelo_sentado": None},
+    )
+    assert not abierta
+    assert "no hay registro" in motivo
 
 
 def test_con_la_rutina_entera_sin_estrenar_no_se_listan_los_nueve(cfg):
@@ -378,3 +414,13 @@ def test_un_solo_parte_malo_en_la_semana_no_es_la_media(cfg):
         cfg, lumbar(LUNES, {**{i: 1 for i in range(1, 8)}, 3: 6})
     )
     assert serie_ok
+
+
+def test_sin_ambito_de_cumplimiento_el_motor_revienta_en_vez_de_suponer(cfg):
+    """Tuvo defecto -`routine`- y no lo leía nadie: el banco de mutaciones lo
+    cambió a `exercise` y la suite siguió verde. Lo que decide si un ejercicio
+    incompleto frena a toda la rutina no se supone."""
+    prog = copy.deepcopy(cfg.raw["progression"])
+    prog["gate"].pop("compliance_scope")
+    with pytest.raises(RuleError, match="compliance_scope"):
+        evaluate_gate(prog, "green", sig(LUNES, lower_discomfort=1), True, "dia_1", False)

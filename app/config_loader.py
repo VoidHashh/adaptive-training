@@ -48,6 +48,7 @@ from app.engine.signals import (
 # solo una de las dos entienda: el validador aprobaría una regla que el motor sí
 # sabe evaluar, y la garantía de que el semáforo no puede mirar `will_train`
 # quedaría en papel mojado justo en el caso raro.
+from app.engine.progression import AMBITOS_DE_CUMPLIMIENTO
 from app.engine.tendencia import senales_de_regla
 # El catálogo de lo que `build_signals` fabrica de verdad, leído del mismo sitio
 # que lo fabrica. Una lista de nombres copiada aquí se quedaría atrás a la
@@ -2340,6 +2341,23 @@ def _validate(data: dict[str, Any]) -> list[str]:
         prog.get("adopt_executed_load") or {},
         {"enabled", "down_after_sessions", "max_jump_kg", "max_jump_pct"},
         "progression.adopt_executed_load",
+    )
+    # La puerta tampoco tenía lista blanca hasta el 25/09/2026, que es cuando
+    # ganó una tercera clave. `compliance_scope` se EXIGE: decide si un
+    # ejercicio incompleto cierra la subida de toda la rutina o solo la suya, y
+    # eso no puede decidirlo un defecto escondido en el código.
+    puerta = prog.get("gate") or {}
+    check_keys(
+        puerta,
+        {"require_green", "require_all_sets_at_target_reps", "compliance_scope"},
+        "progression.gate",
+    )
+    require(
+        puerta.get("compliance_scope") in AMBITOS_DE_CUMPLIMIENTO,
+        f"progression.gate.compliance_scope tiene que ser uno de "
+        f"{sorted(AMBITOS_DE_CUMPLIMIENTO)} y vale "
+        f"{puerta.get('compliance_scope')!r}: decide si un ejercicio incompleto "
+        f"frena la subida de toda la rutina o solo la suya",
     )
     check_keys(modes, {"double", "volume", "sets"}, "progression.modes")
     for nombre, permitidas in (

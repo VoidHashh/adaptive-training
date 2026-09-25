@@ -844,12 +844,19 @@ actions:
 progression:
   # Puerta de entrada (todo debe cumplirse):
   #  (a) semáforo VERDE hoy
-  #  (b) en la última ejecución de esa rutina se completaron TODAS las series
-  #      con las reps objetivo
+  #  (b) en su última ejecución se completaron TODAS las series con las reps
+  #      objetivo. «Su» es de cada EJERCICIO desde el 25/09/2026
+  #      (`compliance_scope: exercise`): con `routine`, un ejercicio incompleto
+  #      frenaba la subida de toda la rutina, y en las diez primeras decisiones
+  #      la puerta no se abrió ni una vez. Ahora un 12/12/9 deja ese ejercicio
+  #      en 12/12/12 y no a los demás.
   #  (c) los dos frenos de abajo no están activos
+  # (a) y (c) siguen siendo de la rutina entera: el semáforo y la lumbar hablan
+  # del día, no de un ejercicio.
   gate:
     require_green: true
     require_all_sets_at_target_reps: true
+    compliance_scope: exercise
 
   # `on_missing` dice qué hacer cuando la señal de un freno no está disponible:
   #   block (por defecto) -> se cierra la puerta y se explica por qué

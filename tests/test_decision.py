@@ -1142,13 +1142,24 @@ def test_en_un_dia_sin_verde_la_rutina_virgen_no_se_presenta_como_estreno(
     assert "primera vez" not in d.progression.gate_reason
 
 
+def _por_rutina(cfg):
+    """El config con `compliance_scope: routine`, el ámbito de antes del
+    25/09/2026. Sigue siendo una opción del YAML y estos tests la vigilan."""
+    import copy
+
+    otro = copy.deepcopy(cfg)
+    otro.raw["progression"]["gate"]["compliance_scope"] = "routine"
+    return otro
+
+
 def test_un_ejercicio_nuevo_en_una_rutina_en_marcha_frena_a_toda_la_rutina(cfg):
-    """El caso de en medio, que es el que estaba peor.
+    """El caso de en medio, que es el que estaba peor. Ámbito `routine`.
 
     Ocho ejercicios con registro y uno estrenado hoy. `all(known)` devolvía
     True: la puerta se abría con la evidencia que había e ignoraba la que
     faltaba. Progresar con la evidencia elegida es progresar a ciegas.
     """
+    cfg = _por_rutina(cfg)
     keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
     nuevo = keys[-1]
     st = EngineState(
@@ -1206,8 +1217,9 @@ def test_un_incumplimiento_confirmado_manda_sobre_los_que_faltan(cfg):
 
     Es el criterio de `weekend_summary`. Un False confirmado cierra la puerta
     por incumplimiento, no por falta de registro: el motivo tiene que decir la
-    verdad, porque es lo que se lee en el móvil.
+    verdad, porque es lo que se lee en el móvil. Ámbito `routine`.
     """
+    cfg = _por_rutina(cfg)
     keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
     st = EngineState(
         compliance={("dia_1", keys[0]): False, ("dia_1", keys[1]): None},
@@ -1218,6 +1230,68 @@ def test_un_incumplimiento_confirmado_manda_sobre_los_que_faltan(cfg):
     assert not d.progression.gate_open
     assert "no se completaron" in d.progression.gate_reason
     assert "no hay registro" not in d.progression.gate_reason
+
+
+# ---------------------------------------------------------------------------
+# Por ejercicio: `compliance_scope: exercise` (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Con el ámbito de rutina, en las diez primeras decisiones de verdad la puerta
+# no se abrió ni una vez. Cada ejercicio mira ahora su propia última sesión.
+
+
+def _dia_1_con(cfg, **compliance_de):
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    st = EngineState(
+        compliance={("dia_1", k): compliance_de.get(k, True) for k in keys},
+        clean_sessions={("dia_1", k): 5 for k in keys},
+    )
+    d = decide(cfg, LUNES, sig_completa(LUNES), st)
+    por_clave = {e.key: e for e in d.progression.exercises}
+    return keys, d, por_clave
+
+
+def test_por_ejercicio_uno_incompleto_no_frena_a_los_demas(cfg):
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    _, d, ex = _dia_1_con(cfg, **{keys[0]: False})
+
+    assert d.progression.gate_open, d.progression.gate_reason
+    assert ex[keys[0]].blocked_by == "en su última sesión no se completaron todas las series"
+    assert not ex[keys[0]].changed
+    assert any(c.key != keys[0] for c in d.progression.changes), (
+        "un ejercicio incompleto sigue frenando a toda la rutina"
+    )
+
+
+def test_por_ejercicio_la_racha_mantenida_no_sube_reps(cfg):
+    """El 12/12/9: racha intacta, pero su cumplimiento es False. «No cuenta
+    para el próximo día, que seguiría siendo 12/12/12»: ni carga ni reps."""
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    _, _d, ex = _dia_1_con(cfg, **{k: False for k in keys[:3]})
+    for k in keys[:3]:
+        assert not ex[k].changed, f"{k} ha subido con la última serie corta"
+
+
+def test_por_ejercicio_uno_nuevo_se_queda_quieto_y_los_demas_no(cfg):
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    nuevo = keys[-1]
+    _, d, ex = _dia_1_con(cfg, **{nuevo: None})
+
+    assert d.progression.gate_open, d.progression.gate_reason
+    assert ex[nuevo].blocked_by == "no hay registro de su última sesión"
+    assert d.progression.changes
+
+
+def test_por_ejercicio_el_semaforo_sigue_cerrando_la_rutina_entera(cfg):
+    """(a) y (c) siguen siendo de la rutina: hablan del día, no de un ejercicio."""
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    st = EngineState(
+        compliance={("dia_1", k): True for k in keys},
+        clean_sessions={("dia_1", k): 5 for k in keys},
+    )
+    d = decide(cfg, LUNES, sig(LUNES, upper_discomfort=6), st)
+    assert d.light == "amber"
+    assert not d.progression.gate_open and not d.progression.changes
 
 
 # ---------------------------------------------------------------------------

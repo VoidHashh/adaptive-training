@@ -257,6 +257,14 @@ mueven las cargas:
   cadena posterior -que pide dos limpias seguidas- a empezar de cero. Solo ese
   caso: una serie de en medio corta, una de menos o un peso por debajo siguen
   rompiendo la racha.
+- **La puerta de subir mira cada ejercicio, no la rutina entera**
+  (`progression.gate.compliance_scope: exercise`). Con la rutina entera, un
+  ejercicio incompleto bastaba para que no subiera nada, y en las diez primeras
+  decisiones la puerta no se abrió ni una vez. Ahora cada ejercicio sube -reps
+  o carga- si SU última sesión estuvo completa; el semáforo verde, los frenos
+  lumbares y la descarga siguen siendo de la rutina entera. **Qué vigilar:**
+  que suban cosas donde antes no subía nada es lo esperado; si algo sube que no
+  reconoces, el sitio es `clean_sessions_required` de ese ejercicio.
 - **Rachas y pesos se mueven al cerrar el día, no al llegar cada entreno.**
   Llegar es solo apuntarse; el día se cierra cuando ha terminado -a la mañana
   siguiente, antes de decidir- con todos sus entrenos, el formulario de después

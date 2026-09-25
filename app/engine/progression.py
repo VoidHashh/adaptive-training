@@ -59,6 +59,42 @@ VALID_TYPES = {LOAD, DOUBLE, VOLUME, SETS, NONE}
 KIND_LOAD = "load"
 KIND_VOLUME = "volume"
 
+# SOBRE QUÉ SE MIRA «SE COMPLETARON TODAS LAS SERIES» (25/09/2026).
+#
+# `progression.gate.compliance_scope`. Con `routine`, un solo ejercicio no
+# completo cerraba la puerta de TODA la rutina. En las diez primeras decisiones
+# de verdad la puerta no se abrió ni una vez: el único día verde con registro
+# (22/09) se cerró por «no se completaron todas las series», y las rampas y los
+# ejercicios olvidados daban siempre alguno. Nada subió reps ni series nunca;
+# lo que se movió lo movió la adopción de pesos.
+#
+# Con `exercise` cada ejercicio sube -reps o carga- solo si SU última sesión
+# estuvo completa, y la puerta de la rutina solo se cierra por lo que es de la
+# rutina: el semáforo, los frenos, la descarga y no tener registro de ningún
+# ejercicio. Un 12/12/9 deja en 12/12/12 ese ejercicio y no los demás.
+POR_RUTINA = "routine"
+POR_EJERCICIO = "exercise"
+AMBITOS_DE_CUMPLIMIENTO = {POR_RUTINA, POR_EJERCICIO}
+
+
+def ambito_de_cumplimiento(prog_cfg: dict[str, Any]) -> str:
+    """`routine` o `exercise`, de `progression.gate.compliance_scope`. Sin defecto.
+
+    Tuvo uno -`routine`, lo de antes- para las llamadas con un `progression`
+    escrito a mano, y el banco de mutaciones lo cazó sin dueño: cambiarlo a
+    `exercise` no ponía rojo ningún test. Un defecto que no lee nadie decidiría
+    por el primero que se olvide la clave, y aquí lo que decide es si un
+    ejercicio incompleto frena la subida de toda la rutina. Mejor que reviente.
+    """
+    ambito = (prog_cfg.get("gate") or {}).get("compliance_scope")
+    if ambito not in AMBITOS_DE_CUMPLIMIENTO:
+        raise RuleError(
+            f"progression.gate.compliance_scope vale {ambito!r} y tiene que ser uno "
+            f"de {sorted(AMBITOS_DE_CUMPLIMIENTO)}: decide si un ejercicio "
+            f"incompleto frena la subida de toda la rutina o solo la suya"
+        )
+    return str(ambito)
+
 
 @dataclass
 class ExerciseProgression:
@@ -399,7 +435,20 @@ def evaluate_gate(
         # la doble negación de leer "no está en verde (rojo)".
         return False, f"el semáforo está en {nombre_luz(light)}, no en verde"
 
-    if gate.get("require_all_sets_at_target_reps", True):
+    if gate.get("require_all_sets_at_target_reps", True) and ambito_de_cumplimiento(
+        prog_cfg
+    ) == POR_EJERCICIO:
+        # Por ejercicio, esta puerta solo se cierra si no hay registro de
+        # NINGUNO: el estreno de una rutina. Lo demás lo mira cada ejercicio en
+        # `plan_progression`, sobre su propia última sesión.
+        valores = list((compliance_por_ejercicio or {}).values())
+        if (valores and all(v is None for v in valores)) or (
+            not valores and compliance_ok is None
+        ):
+            return False, _por_que_sin_registro(
+                compliance_por_ejercicio, rutina_estrenada, titulo_rutina
+            )
+    elif gate.get("require_all_sets_at_target_reps", True):
         if compliance_ok is None:
             return False, _por_que_sin_registro(
                 compliance_por_ejercicio, rutina_estrenada, titulo_rutina
@@ -901,7 +950,10 @@ def plan_progression(
         routine.get("exercises") or [], routine_key, current_sets, set_cfg
     )
 
-    # Cumplimiento global: la puerta general mira la rutina entera.
+    # Cumplimiento global. Con `compliance_scope: routine` la puerta general
+    # mira la rutina entera; con `exercise` esto solo decide si hay registro de
+    # alguno, y el resto lo mira cada ejercicio en el bucle de abajo. Ver
+    # `ambito_de_cumplimiento`.
     #
     # Son TRES estados, no dos, y se resuelven con el mismo criterio que
     # `weekend_summary`: si lo confirmado ya decide, lo que falta da igual; si
@@ -930,6 +982,10 @@ def plan_progression(
     else:
         global_compliance = True
 
+    exige_series = bool(
+        (prog_cfg.get("gate") or {}).get("require_all_sets_at_target_reps", True)
+    )
+    ambito = ambito_de_cumplimiento(prog_cfg) if exige_series else None
     gate_open, gate_reason = evaluate_gate(
         prog_cfg, light, signals, global_compliance, routine_key, deload_active,
         compliance_por_ejercicio=por_ejercicio,
@@ -988,6 +1044,18 @@ def plan_progression(
 
         if not gate_open:
             ex.blocked_by = gate_reason
+            plan.exercises.append(ex)
+            continue
+
+        # La puerta por ejercicio. Va antes de la carga Y de las reps: la subida
+        # de reps no pide sesiones limpias, se apoyaba solo en la puerta de la
+        # rutina, así que sin esto un 12/12/9 subiría reps al día siguiente.
+        if exige_series and ambito == POR_EJERCICIO and por_ejercicio.get(key) is not True:
+            ex.blocked_by = (
+                "no hay registro de su última sesión"
+                if por_ejercicio.get(key) is None
+                else "en su última sesión no se completaron todas las series"
+            )
             plan.exercises.append(ex)
             continue
 
