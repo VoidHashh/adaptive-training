@@ -548,6 +548,80 @@ def test_que_ha_cambiado_compara_ventanas_DISJUNTAS(db):
     assert linea["lectura"] == "3 esta semana, 2 más que la anterior"
 
 
+# ---------------------------------------------------------------------------
+# «Esta semana» es desde el lunes (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Contaba los últimos siete días y lo llamaba «esta semana». Un viernes el
+# usuario leyó «1 salida esta semana» sin haber salido desde el lunes: la
+# salida era del domingo. `HOY` es viernes 11/09, así que el domingo es el 6.
+
+
+def _salida(db, dia, n):
+    db.add(Activity(garmin_activity_id=900 + n, date=dia, is_cycling=True,
+                    intensity_level="media"))
+
+
+def test_una_salida_del_domingo_no_es_de_esta_semana(db):
+    """El caso del usuario, tal cual."""
+    assert HOY.weekday() == 4, "la premisa del test: HOY es viernes"
+    _salida(db, HOY - timedelta(days=5), 1)  # domingo 6
+    db.add(WorkoutLog(hevy_workout_id="w-dom", date=HOY - timedelta(days=5),
+                      routine_key="dia_1"))
+    db.commit()
+
+    lineas = {ln["clave"]: ln for ln in vista_portada(db, None, dias=N, hoy=HOY)["como_voy"]["lineas"]}
+    assert lineas["bici"]["lectura"] == "ninguna salida esta semana, la última hace 5 días"
+    assert lineas["fuerza"]["lectura"].startswith("0 sesiones esta semana")
+
+
+def test_esta_semana_empieza_el_lunes_y_la_anterior_acaba_el_mismo_dia(db):
+    """Esta: lunes 7 a viernes 11. La anterior: lunes 31/08 a viernes 4/09.
+
+    El sábado 5 no es de ninguna de las dos: es de la anterior, pero después
+    del mismo día. Contarlo compararía cinco días contra siete, y un martes
+    saldría siempre «menos que la anterior».
+    """
+    _salida(db, HOY - timedelta(days=4), 1)  # lunes 7: esta
+    _salida(db, HOY - timedelta(days=6), 2)  # sábado 5: ninguna
+    _salida(db, HOY - timedelta(days=8), 3)  # jueves 3: la anterior
+    db.commit()
+
+    b = que_ha_cambiado(db, hoy=HOY)
+    linea = next(ln for ln in b["lineas"] if ln["clave"] == "bici")
+    assert (linea["esta_semana"], linea["semana_anterior"]) == (1, 1)
+    assert b["subtitulo"] == "Desde el lunes, frente a los mismos días de la semana pasada."
+
+
+def test_tu_semana_y_que_ha_cambiado_cuentan_las_mismas_sesiones(db):
+    """Dos entrenos el mismo día -el Día 2 y su HIIT aparte, como el 22/09- son
+    UNA sesión en los dos bloques. Arriba decía 4 y abajo 3 en la misma
+    pantalla, porque uno contaba filas y el otro días."""
+    for wid, rutina in (("w1", "dia_2"), ("w2", "hiit_dia_2")):
+        db.add(WorkoutLog(hevy_workout_id=wid, date=HOY, routine_key=rutina))
+    db.commit()
+
+    arriba = next(
+        ln for ln in vista_portada(db, None, dias=N, hoy=HOY)["como_voy"]["lineas"]
+        if ln["clave"] == "fuerza"
+    )
+    abajo = next(ln for ln in que_ha_cambiado(db, hoy=HOY)["lineas"] if ln["clave"] == "fuerza")
+    assert arriba["lectura"].startswith("1 sesión esta semana"), arriba["lectura"]
+    assert abajo["esta_semana"] == 1
+
+
+def test_un_lunes_la_semana_es_solo_hoy(db):
+    """El borde: el lunes compara un día con un día, no con siete."""
+    lunes = HOY - timedelta(days=4)
+    _salida(db, lunes, 1)
+    _salida(db, lunes - timedelta(days=1), 2)  # domingo: la semana pasada, fuera
+    _salida(db, lunes - timedelta(days=7), 3)  # el lunes anterior: la anterior
+    db.commit()
+
+    linea = next(ln for ln in que_ha_cambiado(db, hoy=lunes)["lineas"] if ln["clave"] == "bici")
+    assert (linea["esta_semana"], linea["semana_anterior"]) == (1, 1)
+
+
 def test_la_fuerza_distingue_no_entrenar_de_no_haber_apuntado_nunca(db):
     """Dos vacíos que se leerían igual y no son el mismo.
 

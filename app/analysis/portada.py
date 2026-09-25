@@ -68,6 +68,31 @@ DIAS_RECIENTES = 7
 # la media ya no es de la semana: es de tres días que resultaron tener reloj.
 MINIMO_RECIENTES = 4
 
+
+# LOS RECUENTOS VAN POR SEMANA DE CALENDARIO, Y LAS MEDIAS NO (25/09/2026).
+#
+# Las líneas de fuerza y bici y el bloque «qué ha cambiado» contaban los
+# últimos `DIAS_RECIENTES` días y lo llamaban «esta semana». Un viernes eso es
+# del sábado anterior a hoy, y el usuario lo leyó como es natural leerlo: «1
+# salida esta semana» cuando desde el lunes no había salido -la salida era del
+# domingo-. El número estaba bien; la frase decía otra cosa.
+#
+# Se arregla la cuenta y no la frase, porque «esta semana» es lo que se quiere
+# saber: desde el lunes. Y la anterior se corta EN EL MISMO DÍA, para que un
+# martes no se compare dos días contra siete y salga siempre «menos».
+#
+# Las medias de bienestar siguen en ventana móvil y ya lo dicen: «Tus últimos 7
+# días». Una media de dos días un martes no sería una media de nada.
+def _semana_en_curso(hoy: date) -> tuple[date, date]:
+    """Del lunes de esta semana a hoy, los dos incluidos."""
+    return hoy - timedelta(days=hoy.weekday()), hoy
+
+
+def _la_anterior_hasta_el_mismo_dia(hoy: date) -> tuple[date, date]:
+    """Del lunes de la semana pasada al mismo día de la semana que hoy."""
+    lunes, _ = _semana_en_curso(hoy)
+    return lunes - timedelta(days=7), hoy - timedelta(days=7)
+
 # Cuántas ventanas de referencia hacen falta para situar la semana. Por debajo
 # de esto el percentil no significa nada: "estás en el percentil 30" sobre seis
 # ventanas es "hay dos peores que esta".
@@ -727,8 +752,8 @@ def _hace(dias: int) -> str:
 
 
 def _linea_bici(session: Session, *, hoy: date) -> dict[str, Any]:
-    """Salidas de la semana y cuánto hace de la última."""
-    desde = hoy - timedelta(days=DIAS_RECIENTES - 1)
+    """Salidas de la semana -desde el lunes- y cuánto hace de la última."""
+    desde, _ = _semana_en_curso(hoy)
     dias_con_salida = set(
         session.scalars(
             select(Activity.date).where(Activity.date >= desde, Activity.date <= hoy)
@@ -767,7 +792,7 @@ def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
     segundo no habla del usuario, habla del sistema, y confundirlos sería
     exactamente el reproche sin fundamento que esta portada no puede permitirse.
     """
-    desde = hoy - timedelta(days=DIAS_RECIENTES - 1)
+    desde, _ = _semana_en_curso(hoy)
     total = session.scalar(select(func.count()).select_from(WorkoutLog)) or 0
     if not total:
         return _linea(
@@ -776,14 +801,11 @@ def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
             na="el sistema todavía no ha apuntado ninguna sesión de fuerza",
             n_reciente=0,
         )
-    n = (
-        session.scalar(
-            select(func.count())
-            .select_from(WorkoutLog)
-            .where(WorkoutLog.date >= desde, WorkoutLog.date <= hoy)
-        )
-        or 0
-    )
+    # DÍAS con entreno, no filas de `workout_log`, y con la misma función que
+    # «qué ha cambiado». Contaba filas, y el 25/09/2026 la misma pantalla decía
+    # «4 sesiones esta semana» arriba y «3 esta semana» abajo: el Día 2 del 22
+    # y su HIIT eran dos entrenos en Hevy y una sola sesión para quien los hizo.
+    n = _cuenta_dias(session, WorkoutLog, WorkoutLog.date, desde, hoy)
     ultima = session.scalar(select(func.max(WorkoutLog.date)))
     hace = (hoy - S.a_fecha(ultima)).days if ultima is not None else None
     cola = "" if hace is None else f", la última {_hace(hace)}"
@@ -805,6 +827,12 @@ def _linea_fuerza(session: Session, *, hoy: date) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# Lo que se lee encima del bloque. Dice las dos fronteras porque ninguna es la
+# que se supondría sin decirla: la semana empieza el lunes, y la anterior se
+# corta en el mismo día.
+SUBTITULO_CAMBIOS = "Desde el lunes, frente a los mismos días de la semana pasada."
+
+
 def que_ha_cambiado(session: Session, *, hoy: date) -> dict[str, Any]:
     """Esta semana contra la anterior. Dos ventanas DISJUNTAS, otra vez.
 
@@ -813,9 +841,8 @@ def que_ha_cambiado(session: Session, *, hoy: date) -> dict[str, Any]:
     bloque que se inventara un "sin cambios" con cero datos estaría diciendo que
     ha mirado, y no ha mirado.
     """
-    ini_esta = hoy - timedelta(days=DIAS_RECIENTES - 1)
-    ini_previa = ini_esta - timedelta(days=DIAS_RECIENTES)
-    fin_previa = ini_esta - timedelta(days=1)
+    ini_esta, _ = _semana_en_curso(hoy)
+    ini_previa, fin_previa = _la_anterior_hasta_el_mismo_dia(hoy)
     lineas: list[dict[str, Any]] = []
 
     colores_esta = _colores(session, ini_esta, hoy)
@@ -863,14 +890,14 @@ def que_ha_cambiado(session: Session, *, hoy: date) -> dict[str, Any]:
     if lineas:
         return {
             "titulo": "Qué ha cambiado",
-            "subtitulo": "Esta semana frente a la anterior.",
+            "subtitulo": SUBTITULO_CAMBIOS,
             "estado": "con_datos",
             "na": None,
             "lineas": lineas,
         }
     return {
         "titulo": "Qué ha cambiado",
-        "subtitulo": "Esta semana frente a la anterior.",
+        "subtitulo": SUBTITULO_CAMBIOS,
         "estado": "vacio",
         "na": (
             "todavía no hay nada que comparar. Este bloque mira la semana contra "
