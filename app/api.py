@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -1835,6 +1836,132 @@ def export_csv(
 # Se monta LA ÚLTIMA y en la raíz. `StaticFiles` en "/" se traga todo lo que no
 # haya casado antes, así que si esto subiera de sitio se comería `/api/...` y la
 # aplicación entera contestaría 404 en HTML. Va aquí abajo a propósito.
+# ---------------------------------------------------------------------------
+# Lo que se contesta DESPUÉS de entrenar
+# ---------------------------------------------------------------------------
+#
+# El botón «¿Qué tal la sesión de hoy?» hace dos cosas de golpe: pedirle a Hevy
+# lo de hoy y montar el formulario con los ejercicios que de verdad salieron.
+# Va bajo demanda y no con un detector en segundo plano porque así el formulario
+# siempre habla de una sesión que acaba de leerse, y no de la que había cuando
+# saltó un aviso hace dos horas.
+
+
+class FeedbackIn(BaseModel):
+    """Lo que manda la pantalla de después.
+
+    `extra="forbid"` por lo mismo que en el check-in: un campo con una errata se
+    guardaría a None y nadie vería que la respuesta se ha perdido.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    day: date | None = None
+    rpe: int | None = Field(None, ge=0, le=10)
+    lower_discomfort_after: int | None = Field(None, ge=0, le=10)
+    nota: str | None = Field(None, max_length=2000)
+    # Sin tipar más fino a propósito: quien valida el vocabulario es
+    # `engine/feedback.validar_ejercicios`, que es donde vive, y duplicar aquí
+    # las opciones en un Literal daría dos listas que pueden separarse.
+    ejercicios: list[dict[str, Any]] | None = None
+
+
+@app.get("/api/sesion/hoy")
+def sesion_hoy(
+    day: date | None = None,
+    s: Session = Depends(get_session),
+    cfg=Depends(get_config),
+) -> dict[str, Any]:
+    """Lee Hevy AHORA y devuelve el formulario de después ya montado."""
+    from app.engine import feedback as fb
+    from app.scheduler import poner_al_dia_lo_entrenado
+
+    day = day or date.today()
+    hevy, _tg, motivos = _clientes(cfg)
+    # Idempotente y no lanza: si Hevy no contesta, se sigue con lo que hubiera
+    # en la base y se dice por qué. Es el mismo camino que usa el check-in de la
+    # mañana, no un segundo lector de Hevy que pueda discrepar del primero.
+    poner_al_dia_lo_entrenado(cfg, hevy_client=hevy, day=day, session=s)
+
+    filas = repo.workouts_del_dia(s, day)
+    workouts = [json.loads(f.raw_json) for f in filas if f.raw_json]
+    plan = repo.planned_session(repo.current_decision(s, day))
+    ejercicios = fb.cruzar(
+        plan.get("exercises") or [], workouts, cfg.raw.get("set_types") or {}
+    )
+
+    # Lo ya contestado se funde con el cruce recién hecho, y manda el cruce en
+    # `estado`: si entre el primer envío y el segundo se apuntó en Hevy el
+    # ejercicio que faltaba, el desplegable que toca ya no es el de «¿por qué no
+    # está?». Lo que se conserva es la RESPUESTA, que es lo que costó escribir.
+    guardado = repo.get_feedback(s, day)
+    previas = {
+        e["key"]: e.get("respuesta")
+        for e in json.loads(guardado.ejercicios_json or "[]")
+    } if guardado else {}
+    for e in ejercicios:
+        anterior = previas.get(e["key"])
+        if anterior in fb.respuestas_de(e["estado"]):
+            e["respuesta"] = anterior
+
+    manana = repo.get_checkin(s, day)
+    return {
+        "day": day.isoformat(),
+        "hay_sesion": bool(workouts),
+        "entrenamientos": len(workouts),
+        "ejercicios": ejercicios,
+        # El vocabulario viaja con el formulario. La pantalla no lleva escrita
+        # ni una opción, igual que no lleva escritos los deslizadores.
+        "respuestas": {
+            fb.HECHO: fb.RESPUESTAS_HECHO,
+            fb.FALTA: fb.RESPUESTAS_FALTA,
+        },
+        "guardado": {
+            "enviado": guardado is not None,
+            "rpe": getattr(guardado, "rpe", None),
+            "lower_discomfort_after": getattr(guardado, "lower_discomfort_after", None),
+            "nota": getattr(guardado, "nota", None),
+        },
+        # Con cuánta molestia lumbar se llegó por la mañana. Va aquí para que la
+        # pantalla pueda enseñarlo al lado: el número de después solo significa
+        # algo comparado con el de antes.
+        "lumbar_manana": getattr(manana, "lower_discomfort", None),
+        "motivo_sin_hevy": motivos.get("hevy"),
+    }
+
+
+@app.post("/api/sesion/feedback")
+def post_sesion_feedback(
+    body: FeedbackIn,
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Guarda lo contestado. Se puede reenviar: manda el último envío."""
+    from app.engine.feedback import FeedbackError, validar_ejercicios
+
+    day = body.day or date.today()
+    try:
+        ejercicios = validar_ejercicios(body.ejercicios)
+    except FeedbackError as exc:
+        # 422 y no 500: lo que ha llegado mal es la petición, no el servidor.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    filas = repo.workouts_del_dia(s, day)
+    fila = repo.guardar_feedback(
+        s,
+        day,
+        rpe=body.rpe,
+        lower_discomfort_after=body.lower_discomfort_after,
+        nota=(body.nota or "").strip() or None,
+        ejercicios_json=json.dumps(ejercicios, ensure_ascii=False),
+        workout_ids_json=json.dumps(
+            [f.hevy_workout_id for f in filas if f.hevy_workout_id]
+        ),
+        routine_key=next((f.routine_key for f in filas if f.routine_key), None),
+    )
+    s.commit()
+    return {"day": day.isoformat(), "guardado": True, "ejercicios": len(ejercicios)}
+
+
 # ---------------------------------------------------------------------------
 
 _ESTATICOS = Path(__file__).resolve().parent.parent / "static"

@@ -3276,3 +3276,144 @@ def test_no_poder_leer_la_marca_de_escritura_tampoco_es_no_tenerla(cliente, monk
     assert any("permission denied" in p for p in cuerpo["problemas"]), (
         f"el motivo real no llega al veredicto: {cuerpo['problemas']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# El formulario de despues de entrenar
+# ---------------------------------------------------------------------------
+
+
+def _mete_entreno(db, dia, *, ejercicios):
+    """Un entreno de Hevy ya guardado, para no depender de la red."""
+    import json as _json
+
+    from app.models import WorkoutLog
+
+    db.add(WorkoutLog(
+        hevy_workout_id="w-test",
+        date=dia,
+        routine_key="dia_1",
+        title="Día 1",
+        raw_json=_json.dumps({"id": "w-test", "exercises": list(ejercicios)}),
+    ))
+    db.commit()
+
+
+def test_la_pantalla_de_despues_trae_el_vocabulario_y_no_lo_lleva_escrito(cliente):
+    """La PWA no puede llevar ni una opcion escrita a mano.
+
+    Misma regla que los deslizadores del check-in: si las opciones vivieran en
+    el JavaScript, anadir una en Python la dejaria fuera del formulario y el
+    usuario no podria contestarla sin que nada fallara.
+    """
+    from app.engine.feedback import FALTA, HECHO, RESPUESTAS_FALTA, RESPUESTAS_HECHO
+
+    r = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["respuestas"][HECHO] == RESPUESTAS_HECHO
+    assert d["respuestas"][FALTA] == RESPUESTAS_FALTA
+
+
+def test_sin_entreno_lo_dice_en_vez_de_devolver_una_lista_vacia(cliente):
+    r = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()})
+    assert r.json()["hay_sesion"] is False
+
+
+def test_se_guarda_y_se_puede_rectificar(cliente):
+    dia = LUNES.isoformat()
+    primero = cliente.post("/api/sesion/feedback", json={
+        "day": dia, "rpe": 7, "lower_discomfort_after": 4,
+        "ejercicios": [{"key": "a", "estado": "hecho", "respuesta": None}],
+    })
+    assert primero.status_code == 200, primero.text
+
+    segundo = cliente.post("/api/sesion/feedback", json={
+        "day": dia, "rpe": 9, "lower_discomfort_after": 6,
+        "nota": "la espalda tras el peso muerto",
+        "ejercicios": [
+            {"key": "a", "estado": "hecho", "respuesta": "molestia_lumbar"},
+        ],
+    })
+    assert segundo.status_code == 200, segundo.text
+
+    d = cliente.get("/api/sesion/hoy", params={"day": dia}).json()
+    assert d["guardado"]["enviado"] is True
+    assert d["guardado"]["rpe"] == 9
+    assert d["guardado"]["nota"] == "la espalda tras el peso muerto"
+
+
+def test_una_respuesta_inventada_se_rechaza_con_422(cliente):
+    """Y no un 500: lo que ha llegado mal es la peticion, no el servidor."""
+    r = cliente.post("/api/sesion/feedback", json={
+        "day": LUNES.isoformat(),
+        "ejercicios": [{"key": "a", "estado": "hecho", "respuesta": "me_dio_pereza"}],
+    })
+    assert r.status_code == 422
+    assert "me_dio_pereza" in r.text
+
+
+def test_un_campo_con_errata_se_rechaza_en_vez_de_perderse(cliente):
+    """`extra=forbid`: `rpé` en vez de `rpe` se guardaria a None en silencio."""
+    r = cliente.post("/api/sesion/feedback", json={
+        "day": LUNES.isoformat(), "esfuerzo": 7,
+    })
+    assert r.status_code == 422
+
+
+def test_la_respuesta_guardada_sobrevive_pero_el_estado_se_recalcula(cliente, db):
+    """Si entre dos envios se apunta en Hevy lo que faltaba, cambia el estado.
+
+    Lo que cuesta escribir es la RESPUESTA, asi que esa se conserva. El
+    `estado` sale del cruce recien hecho: seguir ofreciendo el desplegable de
+    «¿por que no esta?» sobre un ejercicio que ya esta apuntado seria enseñar
+    una pregunta que ya no tiene sentido.
+    """
+    dia = LUNES.isoformat()
+    cliente.post("/api/sesion/feedback", json={
+        "day": dia,
+        "ejercicios": [
+            {"key": "x", "name": "Equis", "estado": "falta",
+             "respuesta": "molestia_lumbar"},
+        ],
+    })
+    d = cliente.get("/api/sesion/hoy", params={"day": dia}).json()
+    # Sin plan ni entreno el ejercicio ya no sale en el cruce, y eso tambien es
+    # correcto: el formulario describe la sesion que hay, no la que hubo.
+    assert d["hay_sesion"] is False
+    assert d["guardado"]["enviado"] is True
+
+
+def test_ninguna_ruta_de_api_se_declara_despues_del_montaje_de_estaticos():
+    """`StaticFiles` en "/" se traga todo lo que no haya casado ANTES que el.
+
+    El fichero lo avisa donde se monta, y aun asi el 25/09/2026 los dos
+    endpoints del formulario de despues nacieron pegados al final del modulo y
+    contestaron 404 desde el primer momento. El sintoma es traicionero: no hay
+    error de importacion, no hay ruta duplicada, la funcion existe y el
+    decorador se ejecuta. Solo que nunca casa.
+
+    Un aviso en un comentario no basta para algo que se rompe pegando codigo al
+    final de un fichero, que es lo mas natural del mundo. Esto si.
+    """
+    from starlette.routing import Mount
+
+    from app.api import app
+
+    raiz = next(
+        (i for i, r in enumerate(app.routes)
+         if isinstance(r, Mount) and r.path in ("", "/")),
+        None,
+    )
+    if raiz is None:  # sin `static/` delante no hay montaje y no hay nada que vigilar
+        pytest.skip("no hay montaje en la raíz en este entorno")
+
+    tarde = [
+        r.path for r in app.routes[raiz + 1:]
+        if getattr(r, "path", "").startswith("/api")
+    ]
+    assert not tarde, (
+        f"estas rutas se declaran DESPUÉS del montaje en «/» y por eso "
+        f"contestan 404: {tarde}. Muévelas por encima de la sección de "
+        f"estáticos de `app/api.py`"
+    )

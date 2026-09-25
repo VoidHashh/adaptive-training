@@ -1095,3 +1095,83 @@ class SessionPerformance(Base):
     __table_args__ = (
         Index("ix_session_performance_pendientes", "reported_at", "dissociation"),
     )
+
+
+class SessionFeedback(Base):
+    """Lo que solo sabe quien entrenó: por qué pasó lo que Hevy no cuenta.
+
+    POR QUÉ EXISTE
+    --------------
+    Hevy apunta lo que se hizo. No apunta por qué no se hizo el resto, y esa es
+    justo la parte que decide qué debería hacer el sistema. El 25/09/2026 se
+    dejó un ejercicio sin hacer porque tras el peso muerto la espalda no iba
+    fina, y lo único que la reconciliación podía escribir esa noche era:
+
+        «no aparece en el entrenamiento: o no se hizo, o se hizo sin apuntarlo»
+
+    Esa frase cubre cuatro situaciones que piden cosas opuestas -lo hice y no lo
+    apunté, lo dejé por la espalda, no me dio tiempo, me lo salté- y el sistema
+    no puede distinguirlas mirando más fuerte. Hay que preguntarlo, y hay que
+    preguntarlo al terminar, que es cuando se acuerda uno.
+
+    En una espalda con hernia L4-L5, «lo dejé porque me molestaba» es además el
+    dato más caro de perder de todos los que este sistema maneja.
+
+    UNA FILA POR DÍA, Y NO POR ENTRENAMIENTO
+    ----------------------------------------
+    Al revés que `session_performance`, que va por `source_key`. El motivo es que
+    la pregunta que se contesta es «¿qué tal la sesión de hoy?», y una sesión
+    partida en dos ratos -o un día con fuerza y HIIT- sigue siendo el día de uno.
+    Los entrenamientos concretos que cubre quedan en `workout_ids_json` para no
+    perder el enlace con Hevy.
+
+    ESTO TAMPOCO DECIDE EL COLOR DEL DÍA
+    ------------------------------------
+    Y por eso sus preguntas NO están en `checkin_sliders` del `config.yaml`.
+    Estar en esa lista es tener permiso para mover el semáforo -lo dice el
+    propio YAML, junto a `will_train`-, y estas respuestas describen una sesión
+    que ya ha pasado. Lo que sí hacen es dos cosas concretas, y por eso no son
+    decorativas: `rpe` cierra la evaluación de la sesión esa misma noche en vez
+    de esperar al `yesterday_rpe` de mañana, y un ejercicio marcado como «lo
+    hice y no lo apunté» deja de contar como incumplido en la reconciliación.
+
+    LOS DOS RPE SON DOS MEDIDAS, NO UNA DUPLICADA
+    ---------------------------------------------
+    `rpe` es lo duro que pareció AL TERMINAR. `checkins.yesterday_rpe` es lo duro
+    que parece a la mañana siguiente, después de dormir. La decisión de mantener
+    los dos es del usuario y la diferencia entre ellos es el dato nuevo: cuánto
+    pasa factura una sesión una vez que se enfría. Ninguno sustituye al otro, y
+    los seis meses ya medidos de `yesterday_rpe` siguen siendo una serie
+    continua porque esa pregunta no se toca.
+    """
+
+    __tablename__ = "session_feedback"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+
+    # Los entrenamientos de Hevy que se estaban comentando, para no perder el
+    # enlace. Lista de ids en JSON: un día puede llevar fuerza y HIIT.
+    workout_ids_json: Mapped[str | None] = mapped_column(Text)
+    routine_key: Mapped[str | None] = mapped_column(String(64))
+
+    # --- Las dos escalas, 0-10 como las del formulario de la mañana ----------
+    rpe: Mapped[int | None] = mapped_column(Integer)
+    # La pareja de `checkins.lower_discomfort`. Lo que importa no es el número:
+    # es la diferencia con el de esa mañana, que es lo único que dice qué le ha
+    # hecho la sesión a la espalda. El de la mañana describe cómo se levantó uno.
+    lower_discomfort_after: Mapped[int | None] = mapped_column(Integer)
+
+    # --- Qué pasó con cada ejercicio -----------------------------------------
+    # Lista de objetos `{key, name, estado, respuesta}`. El vocabulario de
+    # `respuesta` depende de `estado` y vive en `app/engine/feedback.py`, que es
+    # quien lo valida: aquí solo se guarda ya validado.
+    ejercicios_json: Mapped[str | None] = mapped_column(Text)
+
+    # Una línea libre, opcional. No la lee ningún cálculo y eso es deliberado:
+    # su lector es el usuario dentro de tres meses, en el histórico de la
+    # sesión. Se guarda porque hay cosas que no caben en un desplegable.
+    nota: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime)

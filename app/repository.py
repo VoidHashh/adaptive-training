@@ -44,6 +44,7 @@ from app.models import (
     ProgramState,
     RoutineState,
     RuleState,
+    SessionFeedback,
     WorkoutLog,
 )
 from app.models import Checkin as CheckinRow
@@ -1655,3 +1656,52 @@ def state_as_dict(state: EngineState) -> dict[str, Any]:
             else None
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Lo que se contesta DESPUÉS de entrenar
+# ---------------------------------------------------------------------------
+
+
+def workouts_del_dia(session: Session, day: date) -> list[WorkoutLog]:
+    """Los entrenamientos de Hevy de ese día, en el orden en que se apuntaron.
+
+    Sin filtrar por rutina, y a propósito: el formulario de después pregunta
+    «¿qué tal la sesión de hoy?», y un día con fuerza y HIIT sigue siendo un
+    día. Filtrar aquí por `routine_key` dejaría fuera los entrenos sueltos, que
+    son justo los que nadie más mira.
+    """
+    return list(
+        session.scalars(
+            select(WorkoutLog)
+            .where(WorkoutLog.date == day)
+            .order_by(WorkoutLog.id)
+        ).all()
+    )
+
+
+def get_feedback(session: Session, day: date) -> SessionFeedback | None:
+    return session.scalar(select(SessionFeedback).where(SessionFeedback.date == day))
+
+
+def guardar_feedback(session: Session, day: date, **campos: Any) -> SessionFeedback:
+    """Crea o ACTUALIZA la fila del día. Una por día, y se puede rectificar.
+
+    Se puede volver a enviar, al revés que `session_performance`, que es
+    append-only. La diferencia no es un descuido: aquella guarda un juicio
+    calculado con el histórico que había ese día y reescribirlo falsearía el
+    contador. Esta guarda lo que dice el usuario, y el usuario puede acordarse
+    de algo diez minutos después. Impedírselo solo consigue que no lo cuente.
+
+    `reported_at` se pone a NULL en cada reenvío: si la sesión cambia de
+    contenido, lo que ya se contó en un mensaje ha dejado de describirla.
+    """
+    fila = get_feedback(session, day)
+    if fila is None:
+        fila = SessionFeedback(date=day)
+        session.add(fila)
+    for k, v in campos.items():
+        setattr(fila, k, v)
+    fila.reported_at = None
+    session.flush()
+    return fila

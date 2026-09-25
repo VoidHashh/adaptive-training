@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from app import repository as repo
 from app.engine.decision import apply_execution, decide
+from app.engine.feedback import sin_apuntar as feedback_sin_apuntar
 from app.engine.message import render_telegram
 from app.engine.recalibracion import evaluar_recalibracion
 from app.engine.rotacion import pendientes as rutinas_pendientes
@@ -1303,13 +1304,28 @@ def run_reconcile(
     nuevos_hiit = [w for w in nuevos if rutinas.get(str(w.get("id"))) in hiit]
     nuevos_fuerza = [w for w in nuevos if rutinas.get(str(w.get("id"))) not in hiit]
 
+    # Lo que el usuario contestó al terminar, si lo contestó. Se lee una vez y
+    # vale para los dos planes del día: el formulario habla de la sesión, no de
+    # cuál de los dos bloques la componía.
+    #
+    # EL LÍMITE, ESCRITO PARA QUE NO SE DESCUBRA DENTRO DE UN AÑO: esto se aplica
+    # cuando corre la reconciliación. Un formulario contestado DESPUÉS de que el
+    # día se haya cerrado no lo corrige, porque `job_reconcile` es idempotente y
+    # no vuelve sobre lo ya contado. En el uso normal se contesta al salir del
+    # gimnasio y llega de sobra; si algún día deja de ser así, lo que hay que
+    # cambiar es la ventana de reconciliación, no esta lectura.
+    fb_dia = repo.get_feedback(session, day)
+    hechos_sin_apuntar = feedback_sin_apuntar(
+        json.loads(fb_dia.ejercicios_json) if fb_dia and fb_dia.ejercicios_json else []
+    )
+
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
     motivos: dict[str, str] = {}
     sube: dict[str, bool] = {}
     motivos_sube: dict[str, str] = {}
     if es_fuerza:
-        cumpl = _cumplimiento_contra(nuevos_fuerza, plan, cfg)
+        cumpl = _cumplimiento_contra(nuevos_fuerza, plan, cfg, hechos_sin_apuntar)
         executed, pesos, motivos = cumpl.executed, cumpl.pesos, cumpl.motivos
         sube, motivos_sube = cumpl.sube, cumpl.motivos_sube
     res.executed = executed
@@ -1329,7 +1345,9 @@ def run_reconcile(
     sube_hiit: dict[str, bool] = {}
     motivos_sube_hiit: dict[str, str] = {}
     if ex_hiit:
-        cumpl_hiit = _cumplimiento_contra(del_bloque, plan_hiit, cfg)
+        cumpl_hiit = _cumplimiento_contra(
+            del_bloque, plan_hiit, cfg, hechos_sin_apuntar
+        )
         executed_hiit = cumpl_hiit.executed
         pesos_hiit = cumpl_hiit.pesos
         motivos_hiit = cumpl_hiit.motivos
@@ -1748,9 +1766,16 @@ class Cumplimiento(NamedTuple):
 
 
 def _cumplimiento_contra(
-    workouts: list[dict[str, Any]], plan: dict[str, Any], cfg: Any
+    workouts: list[dict[str, Any]],
+    plan: dict[str, Any],
+    cfg: Any,
+    sin_apuntar: set[str] | None = None,
 ) -> Cumplimiento:
     """Qué de `plan` se hizo, uniendo todos los `workouts` que lo ejecutaban.
+
+    `sin_apuntar` son los ejercicios que el usuario dice haber hecho aunque no
+    consten en Hevy, del formulario de después de entrenar. Cuentan como hechos
+    y sin motivo que explicar. Ver el bloque de abajo.
 
     Existe como función aparte porque ahora hay DOS planes que reconciliar cada
     noche -la fuerza y el bloque HIIT- y hasta ahora esto era un bucle suelto
@@ -1791,6 +1816,29 @@ def _cumplimiento_contra(
                 continue
             previo = pesos.get(key)
             pesos[key] = kg if previo is None else max(previo, kg)
+    # LO QUE EL USUARIO DICE QUE HIZO Y NO APUNTÓ (25/09/2026).
+    #
+    # Hasta aquí, un ejercicio que no está en Hevy contaba como incumplido y
+    # rompía la racha. Es lo prudente cuando no hay más información -si no está,
+    # o no se hizo o no se registró, y ninguna de las dos es prueba de nada-,
+    # pero deja de serlo en cuanto alguien lo contesta: entonces no es una
+    # ausencia de dato, es un dato. Castigar un olvido de REGISTRO como si fuera
+    # un entreno sin hacer es exactamente lo contrario de lo que el sistema dice
+    # que hace.
+    #
+    # Solo toca el cumplimiento y su motivo. NO inventa un peso: `pesos` sigue
+    # saliendo de lo que Hevy tiene apuntado, y de un ejercicio sin registrar no
+    # hay ni un kilo que leer. Así esto puede cerrar una racha pero nunca subir
+    # una carga, que es la dirección segura en una espalda con hernia.
+    for key in (sin_apuntar or ()):
+        if key not in executed and key not in sube:
+            # Un ejercicio que ni siquiera estaba en el plan de ese día. Se
+            # ignora en vez de inventarle una entrada: el formulario habla de la
+            # sesión de hoy y el plan puede haber cambiado entre medias.
+            continue
+        executed[key] = True
+        sube[key] = True
+
     # Lo que acabó completo no tiene nada que explicar, aunque en uno de los
     # ratos se quedara corto. Cada motivo se filtra con SU propio veredicto: con
     # el estricto, `motivos_sube` conservaría la frase del peso justo en los

@@ -3255,3 +3255,77 @@ def test_el_motivo_de_subir_se_filtra_con_SU_veredicto_y_no_con_el_estricto(cfg)
     assert c.motivos_sube == {}, (
         f"para subir no hay nada que explicar y quedo: {c.motivos_sube}"
     )
+
+
+# ---------------------------------------------------------------------------
+# «Lo hice y no lo apunté», del formulario de despues de entrenar
+# ---------------------------------------------------------------------------
+
+
+def _otro_entreno() -> dict:
+    """Una sesión que existe pero que no contiene el ejercicio del plan."""
+    return {
+        "id": "w9",
+        "start_time": f"{LUNES.isoformat()}T07:30:00Z",
+        "exercises": [{
+            "exercise_template_id": "T-OTRO",
+            "title": "Otra cosa",
+            "sets": [{"type": "normal", "reps": 10, "weight_kg": 20}],
+        }],
+    }
+
+
+def test_lo_que_se_hizo_sin_apuntar_cuenta_como_hecho(cfg):
+    """Un olvido de REGISTRO deja de castigarse como un entreno sin hacer.
+
+    Sin esto, un ejercicio que no aparece en Hevy cuenta como incumplido y
+    rompe la racha. Es lo prudente mientras nadie sepa qué pasó -si no está, o
+    no se hizo o no se registró-, pero deja de serlo en cuanto el usuario lo
+    contesta: entonces no es ausencia de dato, es un dato.
+    """
+    from app.runner import _cumplimiento_contra
+
+    # Hay sesión -por eso hay veredicto- pero ESE ejercicio no está en ella.
+    # Con la lista de entrenamientos vacía no hay veredicto de nada y el test
+    # no probaría lo que dice: lo enseñó un KeyError al escribirlo.
+    sin = _cumplimiento_contra([_otro_entreno()], _plan_de_una_serie(35), cfg)
+    con = _cumplimiento_contra(
+        [_otro_entreno()], _plan_de_una_serie(35), cfg, {"patada_atras"}
+    )
+    assert sin.executed["patada_atras"] is False
+    assert "patada_atras" in sin.motivos
+    assert con.executed["patada_atras"] is True
+    assert con.sube["patada_atras"] is True
+    assert con.motivos == {}, "lo que cuenta como hecho no tiene nada que explicar"
+
+
+def test_lo_que_se_hizo_sin_apuntar_NO_inventa_un_peso(cfg):
+    """Puede cerrar una racha; nunca subir una carga.
+
+    De un ejercicio sin registrar no hay ni un kilo que leer, y ponerle uno
+    sería fabricar el dato del que cuelga la adopción. La direccion segura en
+    una espalda con hernia es esta: que la palabra del usuario valga para decir
+    «lo hice» y no para decir «lo hice con 80».
+    """
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra(
+        [_otro_entreno()], _plan_de_una_serie(35), cfg, {"patada_atras"}
+    )
+    assert c.pesos.get("patada_atras") is None
+
+
+def test_un_ejercicio_que_no_estaba_en_el_plan_se_ignora(cfg):
+    """El formulario habla de hoy y el plan puede haber cambiado entre medias.
+
+    Inventarle una entrada al cumplimiento meteria en el veredicto del dia un
+    ejercicio que ese dia no se pedia, y el veredicto es el que dice si la
+    sesion fue completa.
+    """
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra(
+        [_otro_entreno()], _plan_de_una_serie(35), cfg, {"un_ejercicio_de_otro_dia"}
+    )
+    assert "un_ejercicio_de_otro_dia" not in c.executed
+    assert c.executed["patada_atras"] is False
