@@ -40,11 +40,24 @@ Se publican tres etiquetas y cada una contesta una pregunta distinta:
 Para ver si el taller ha terminado y con qué:
 <https://github.com/VoidHashh/adaptive-training/actions>
 
-**La primera vez, el paquete nace privado.** GitHub crea el paquete de `ghcr.io`
-con la visibilidad en privado aunque el repositorio sea público, y el Umbrel no
-podrá descargarlo: la instalación falla al hacer `pull`. Se arregla una sola vez
-en <https://github.com/users/VoidHashh/packages/container/adaptive-training/settings>
-→ *Change visibility* → **Public**.
+**El paquete se descarga sin credenciales, comprobado el 25/09/2026.** Aquí
+ponía que GitHub crea el paquete en privado aunque el repositorio sea público y
+que había que cambiarlo a mano; no es verdad en este caso —el paquete heredó la
+visibilidad del repositorio—, y un aviso falso en un documento de instalación
+manda a buscar un problema que no existe. La forma de saberlo sin creerse a
+nadie es pedir el manifiesto sin token, que es justo lo que hará el Umbrel:
+
+```bash
+IMG=voidhashh/adaptive-training
+T=$(curl -s "https://ghcr.io/token?scope=repository:$IMG:pull&service=ghcr.io" | jq -r .token)
+curl -s -o /dev/null -w '%{http_code}
+' -H "Authorization: Bearer $T"   https://ghcr.io/v2/$IMG/manifests/0.1.0      # 200 = publico; 401 = privado
+```
+
+Si algún día diera 401, se cambia en
+<https://github.com/users/VoidHashh/packages/container/adaptive-training/settings>
+→ *Change visibility* → **Public**. Sin eso, la instalación falla al hacer
+`pull` y en la interfaz de Umbrel es un error genérico sin causa legible.
 
 > Solo `linux/amd64`. El Umbrel de destino es x86_64; añadir `linux/arm64`
 > significa compilar `uvloop` y `httptools` bajo emulación QEMU —los dos
