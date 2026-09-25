@@ -555,6 +555,20 @@ HUELLAS_DEL_ARMAZON = {
     # No hay mezcla peligrosa de generaciones: `app.js` nuevo con `index.html`
     # viejo funciona, porque el aviso se cuelga de `#formulario`, que ya existía.
     "v27": "b4f6706ed63a8fd84186e1ef840feba759d0a57dd1662d77cc00bf2626971d58",
+    # v28: «Hoy» abre con la decisión cuando el día ya está decidido, con el
+    # formulario plegado detrás de «Cambiar mis respuestas»; la tarjeta dice
+    # Hevy y Telegram en palabras y no en código. Toca `index.html` (el botón),
+    # `app.js` y `styles.css`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE. Ignora `decision_de_hoy` y abre con
+    # el formulario relleno, como hasta hoy: menos cómodo, pero nada falso.
+    #
+    # La mezcla peligrosa sería `app.js` nuevo con `index.html` viejo: el script
+    # engancha `$("cambiar-respuestas")` al cargar, el HTML viejo no tiene ese
+    # `id`, y la pantalla entera reventaría antes de pintar el formulario. Es la
+    # mezcla de generaciones que el armazón versionado existe para impedir, y la
+    # vigila `test_el_armazon_no_mezcla_dos_generaciones`.
+    "v28": "c31be18e7cdca7c7d58eb2aa970df8fddd904aea6168e464656dd561d635a6a4",
 }
 
 
@@ -2595,6 +2609,93 @@ def test_si_no_se_puede_mirar_se_dice_y_no_se_calla(tmp_path, recalculo, causa):
     assert arriba["clase"] == "aviso mal"
     assert "No se ha podido comprobar si el reloj ya ha subido la noche" in arriba["texto"]
     assert causa in arriba["texto"]
+
+
+# ---------------------------------------------------------------------------
+# «Hoy» abre con la decisión cuando el día ya está decidido (25/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _decidida(**cambios) -> dict:
+    """`decision_de_hoy` con la forma que manda `/api/checkin/today`."""
+    base = {
+        "decided": True, "light": "amber", "session": "Día 3", "kind": "reduced",
+        "hevy": "ok", "telegram": "sent", "problems": [],
+        "cuando": "Decidido a las 06:57 con tu check-in.",
+    }
+    base.update(cambios)
+    return base
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_con_el_dia_decidido_abre_con_la_decision_y_el_formulario_plegado(tmp_path):
+    """Lo que se viene a mirar a esa hora es qué toca, no las respuestas de la
+    mañana. Antes había que buscarlo en Telegram."""
+    salida = _rellenar(tmp_path, _hoy(
+        submitted=True, values={"fatigue": 3}, decision_de_hoy=_decidida(),
+    ), [])
+
+    assert salida["formulario_oculto"] is True
+    assert salida["cambiar_visible"] is True
+    assert "semaforo-amber" in salida["resultado"]["clase"]
+    html = salida["resultado"]["html"]
+    assert "Día 3" in html and "Decidido a las 06:57 con tu check-in." in html
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_tarjeta_dice_hevy_y_telegram_en_palabras_y_no_en_codigo(tmp_path):
+    """Pintaba «Hevy: ok» y «Telegram: sent» tal cual, y un `null` como «—», que
+    no distingue «no se tocó» de «no se sabe»."""
+    salida = _rellenar(tmp_path, _hoy(
+        submitted=True, values={"fatigue": 3},
+        decision_de_hoy=_decidida(telegram=None),
+    ), [])
+    html = salida["resultado"]["html"]
+    assert "sí se ha escrito la rutina" in html
+    assert "<dd>ok</dd>" not in html
+    assert "no se sabe" in html, "un estado que falta se dice, no se rellena"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_cambiar_mis_respuestas_despliega_el_formulario(tmp_path):
+    salida = _rellenar(tmp_path, _hoy(
+        submitted=True, values={"fatigue": 3}, decision_de_hoy=_decidida(),
+    ), [{"tipo": "cambiar-respuestas"}])
+    assert salida["formulario_oculto"] is False
+    assert salida["cambiar_visible"] is False
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_sin_decision_todavia_abre_con_el_formulario(tmp_path):
+    """Check-in guardado y decisión que no salió: no hay nada que enseñar
+    arriba, y esconder el formulario dejaría la pantalla vacía."""
+    salida = _rellenar(tmp_path, _hoy(
+        submitted=True, values={"fatigue": 3}, decision_de_hoy=None,
+    ), [])
+    assert salida["formulario_oculto"] is False
+    assert salida["cambiar_visible"] is False
+    assert salida["resultado"] is None
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_si_el_recalculo_cambia_el_dia_la_tarjeta_se_repinta_con_su_aviso(tmp_path):
+    """La tarjeta de delante deja de ser la vigente al recalcular. Y el aviso va
+    dentro de ella: con el formulario plegado, metido ahí no lo vería nadie."""
+    salida = _rellenar(
+        tmp_path,
+        _hoy(submitted=True, values={"fatigue": 3}, decision_de_hoy=_decidida()),
+        [],
+        recalculo={"respuesta": {
+            "estado": "recalculado", "tono": "bien",
+            "aviso": "Ya han llegado la variabilidad y lo que duermes: el día se "
+                     "ha recalculado y pasa de ámbar a verde.",
+            "decision_de_hoy": _decidida(light="green", cuando="Decidido a las "
+                                         "09:12 al llegar la noche del reloj."),
+        }},
+    )
+    assert "semaforo-green" in salida["resultado"]["clase"]
+    assert "pasa de ámbar a verde" in salida["resultado"]["html"]
+    assert salida["avisos"][0]["clase"] == "aviso bien"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")

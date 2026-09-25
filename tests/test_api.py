@@ -3538,3 +3538,72 @@ def test_el_checkin_del_movil_espera_al_mismo_cerrojo_que_el_scheduler(monkeypat
         assert not entro.wait(0.5), "el check-in ha decidido con el cerrojo cogido"
     assert entro.wait(10), "al soltar el cerrojo el check-in no ha decidido"
     hilo.join(10)
+
+
+# ---------------------------------------------------------------------------
+# «Hoy» abre con la decisión: `decision_de_hoy` (25/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_sin_decision_el_dia_no_trae_decision(cliente):
+    assert cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"] is None
+
+
+def test_con_el_dia_decidido_viaja_la_decision_con_la_forma_de_la_tarjeta(cliente):
+    """La misma forma que la respuesta del envío: la pantalla la pinta con la
+    misma función, y dos formas para lo mismo acabarían pintándose distinto."""
+    enviado = cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4}).json()
+    d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
+
+    assert d["decided"] is True
+    assert d["light"] == enviado["light"]
+    assert d["session"] == enviado["session"]
+    assert d["kind"] == enviado["kind"]
+    assert d["cuando"].startswith("Decidido a las ") and "con tu check-in" in d["cuando"]
+
+
+def test_hevy_y_telegram_salen_de_lo_guardado_y_si_no_hay_fila_no_se_sabe(cliente, db):
+    """Sin cliente de Hevy en el test no hay escritura: `None`, que la pantalla
+    dice «no se sabe», y no un «skipped» inventado. Con fila, su estado tal cual."""
+    from app.models import HevyWrite, Notification
+
+    cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
+    d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
+    plan = repo.planned_session(repo.current_decision(db, LUNES))
+    escrita = (
+        db.query(HevyWrite).filter_by(date=LUNES, routine_key=plan["routine"])
+        .order_by(HevyWrite.id.desc()).first()
+    )
+    avisado = (
+        db.query(Notification).filter_by(date=LUNES, kind="decision")
+        .order_by(Notification.id.desc()).first()
+    )
+    assert d["hevy"] == (escrita.status if escrita else None)
+    assert d["telegram"] == (avisado.status if avisado else None)
+
+    db.add(HevyWrite(date=LUNES, routine_key=plan["routine"], status="ok"))
+    db.add(Notification(date=LUNES, kind="decision", channel="telegram", status="sent"))
+    db.commit()
+    d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
+    assert (d["hevy"], d["telegram"]) == ("ok", "sent")
+
+
+def test_al_recalcular_se_devuelve_la_decision_nueva_para_repintar(cliente, monkeypatch):
+    """La tarjeta que la pantalla tenía delante deja de ser la vigente: sin la
+    decisión nueva en la respuesta, seguiría enseñando el ámbar de antes."""
+    monkeypatch.setattr(
+        "app.scheduler.recalcular_si_hace_falta",
+        lambda cfg, **kw: {"estado": "recalculado", "tono": "bien", "aviso": "x"},
+    )
+    monkeypatch.setattr("app.api._decision_de_hoy", lambda s, cfg, day: {"light": "green", "dia": str(day)})
+
+    r = cliente.post("/api/decision/recalcular").json()
+    assert r["decision_de_hoy"] == {"light": "green", "dia": str(date.today())}
+
+
+def test_si_no_se_recalcula_no_se_manda_decision(cliente, monkeypatch):
+    monkeypatch.setattr(
+        "app.scheduler.recalcular_si_hace_falta",
+        lambda cfg, **kw: {"estado": "nada_que_recalcular", "aviso": None},
+    )
+    assert "decision_de_hoy" not in cliente.post("/api/decision/recalcular").json()

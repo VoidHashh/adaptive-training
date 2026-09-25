@@ -951,6 +951,63 @@ def checkin_today(
         "comment_label": (cfg.raw.get("checkin_comment") or {}).get(
             "label", "Comentarios"
         ),
+        # La decisión vigente, con la forma de la respuesta de `POST
+        # /api/checkin`, para que la pantalla abra con ella en vez de con el
+        # formulario. `None` si hoy aún no se ha decidido nada.
+        "decision_de_hoy": _decision_de_hoy(s, cfg, day),
+    }
+
+
+# Cómo se decidió, dicho para el móvil. Una fuente que no esté aquí se dice sin
+# el «cómo», nunca con un código.
+_COMO_SE_DECIDIO = {
+    "checkin": "con tu check-in",
+    "recompute": "al llegar la noche del reloj",
+    "fallback_0900": "sin check-in",
+}
+
+
+def _decision_de_hoy(s: Session, cfg: Any, day: date) -> dict[str, Any] | None:
+    """La decisión vigente de `day`, tal como la pinta la tarjeta de resultado.
+
+    Existe desde el 25/09/2026: «Hoy» abría siempre con el formulario, también
+    con el día ya decidido, y la decisión -lo único que se viene a mirar a esa
+    hora- había que buscarla en Telegram. Lo que se guardó de Hevy y de Telegram
+    sale de sus tablas, con el mismo vocabulario que usa `POST /api/checkin`; si
+    no hay fila, `None`, que la pantalla dice como «no se sabe» y no como «no».
+    """
+    from sqlalchemy import select
+
+    from app.engine.message import _hora_local
+    from app.models import HevyWrite, Notification
+
+    fila = repo.current_decision(s, day)
+    if fila is None:
+        return None
+    plan = repo.planned_session(fila)
+    escritura = s.scalars(
+        select(HevyWrite)
+        .where(HevyWrite.date == day, HevyWrite.routine_key == plan.get("routine"))
+        .order_by(HevyWrite.id.desc())
+    ).first()
+    aviso = s.scalars(
+        select(Notification)
+        .where(Notification.date == day, Notification.kind == "decision")
+        .order_by(Notification.id.desc())
+    ).first()
+    hora = _hora_local(fila.computed_at, getattr(cfg, "timezone", None))
+    como = _COMO_SE_DECIDIO.get(str(fila.source or ""))
+    return {
+        "decided": True,
+        "light": fila.light,
+        "session": plan.get("title"),
+        "kind": plan.get("kind"),
+        "hevy": escritura.status if escritura is not None else None,
+        "telegram": aviso.status if aviso is not None else None,
+        "problems": [],
+        "cuando": " ".join(
+            x for x in ("Decidido", f"a las {hora}" if hora else "", como or "") if x
+        ) + ".",
     }
 
 
@@ -1443,7 +1500,9 @@ def get_decision(
 
 
 @app.post("/api/decision/recalcular")
-def post_recalcular(cfg=Depends(get_config)) -> dict[str, Any]:
+def post_recalcular(
+    s: Session = Depends(get_session), cfg=Depends(get_config)
+) -> dict[str, Any]:
     """Rehace el día si se decidió sin la noche del reloj y ya ha llegado.
 
     Lo llama la PWA al abrirse con el check-in hecho. Existe porque los dos
@@ -1456,18 +1515,24 @@ def post_recalcular(cfg=Depends(get_config)) -> dict[str, Any]:
     en Hevy y manda un Telegram, y eso no va detrás de un verbo que cualquier
     precargador puede disparar solo.
 
-    Sin la sesión de la petición, a propósito: aquí no se escribe nada antes de
-    decidir, y `job_decision` abre la suya como cuando lo lanza el scheduler.
-    Es el mismo camino con el mismo cerrojo, no una copia.
+    La sesión de la petición NO decide: `job_decision` abre la suya como cuando
+    lo lanza el scheduler, que es el mismo camino con el mismo cerrojo y no una
+    copia. Esta solo LEE después, para devolver la decisión nueva con la forma
+    de la tarjeta: la pantalla la repinta, porque la que tenía delante acaba de
+    dejar de ser la vigente.
     """
     from app.scheduler import recalcular_si_hace_falta
 
+    hoy = date.today()
     hevy, tg, motivos = _clientes(cfg)
-    return recalcular_si_hace_falta(
-        cfg, day=date.today(),
+    salida = recalcular_si_hace_falta(
+        cfg, day=hoy,
         hevy_client=hevy, telegram_client=tg, client_errors=motivos,
         dry_run=settings.dry_run,
     )
+    if salida.get("estado") == "recalculado":
+        salida["decision_de_hoy"] = _decision_de_hoy(s, cfg, hoy)
+    return salida
 
 
 @app.get("/api/state")

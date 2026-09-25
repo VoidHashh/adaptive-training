@@ -208,10 +208,24 @@ async function arrancar() {
   $("formulario").hidden = false;
   revisar();
 
+  // CON EL DÍA YA DECIDIDO SE ABRE CON LA DECISIÓN (25/09/2026). El
+  // formulario se queda relleno pero plegado detrás de un botón: lo que se
+  // viene a mirar a esta hora es qué toca, no las respuestas de esta mañana.
+  if (datos.submitted && datos.decision_de_hoy) {
+    pintarResultado(datos.decision_de_hoy);
+    $("formulario").hidden = true;
+    $("cambiar-respuestas").hidden = false;
+  }
+
   // Sin `await`: el formulario ya está pintado y no tiene que esperar a
   // Garmin. Solo con el check-in hecho, que es cuando puede haber un día
   // decidido a ciegas.
   if (datos.submitted) recalcularSiHaceFalta();
+}
+
+function cambiarRespuestas() {
+  $("formulario").hidden = false;
+  $("cambiar-respuestas").hidden = true;
 }
 
 /* EL RECÁLCULO AL ABRIR (25/09/2026).
@@ -241,8 +255,13 @@ async function recalcularSiHaceFalta() {
     );
     return;
   }
-  // Sin defecto para el tono: el servidor lo manda siempre junto al aviso.
-  if (d.aviso) aviso(d.aviso, d.tono);
+  // Si el día se ha recalculado, la tarjeta que había delante ya no es la
+  // vigente: se repinta con la que manda el servidor.
+  if (d.decision_de_hoy) pintarResultado(d.decision_de_hoy);
+  // Sin defecto para el tono: el servidor lo manda siempre junto al aviso. Va
+  // en la tarjeta si está a la vista, porque con el formulario plegado un
+  // aviso metido dentro no lo vería nadie.
+  if (d.aviso) avisoEn($("resultado").hidden ? $("formulario") : $("resultado"), d.aviso, d.tono);
 }
 
 /* Lo ya contestado hoy gana sobre el borrador local: es lo que el sistema tiene
@@ -834,12 +853,16 @@ function pintarResultado(d) {
 
   const nombre = { green: "Verde", amber: "Ámbar", red: "Rojo" };
   caja.className = `resultado semaforo-${escapar(d.light)}`;
+  // Hevy y Telegram en palabras, como en la rama del fallo. Aquí se pintaba el
+  // código tal cual -«Hevy: ok», «Telegram: sent»-, y además `null` salía como
+  // «—», que no dice si se tocó o no se sabe. `comoQuedo` sí lo distingue.
   caja.innerHTML = `
     <h2><span class="punto"></span>${escapar(nombre[d.light] || d.light)}</h2>
     <p class="sesion">${escapar(d.session || "")}</p>
+    ${d.cuando ? `<p class="tenue">${escapar(d.cuando)}</p>` : ""}
     <dl>
-      <dt>Hevy</dt><dd>${escapar(d.hevy || "—")}</dd>
-      <dt>Telegram</dt><dd>${escapar(d.telegram || "—")}</dd>
+      <dt>Hevy</dt><dd>${escapar(comoQuedo(QUEDO_HEVY, d.hevy))}</dd>
+      <dt>Telegram</dt><dd>${escapar(comoQuedo(QUEDO_TELEGRAM, d.telegram))}</dd>
     </dl>
     ${(d.problems && d.problems.length) ? `
       <div class="problemas">
@@ -856,10 +879,14 @@ function resultadoMal(titulo, cuerpo) {
 }
 
 function aviso(texto, clase) {
+  avisoEn($("formulario"), texto, clase);
+}
+
+function avisoEn(caja, texto, clase) {
   const p = document.createElement("p");
   p.className = `aviso ${clase}`;
   p.textContent = texto;
-  $("formulario").prepend(p);
+  caja.prepend(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -1923,6 +1950,7 @@ $("comentarios").addEventListener("input", guardarBorrador);
 // día que la función crezca un parámetro -de esos que no revientan, sino que
 // reciben un objeto `Event` donde esperaban una opción-.
 $("previsualizar").addEventListener("click", () => previsualizar());
+$("cambiar-respuestas").addEventListener("click", () => cambiarRespuestas());
 
 // La barra de abajo, antes de pedir nada. No depende del servidor, así que se
 // pinta ya: si el formulario no carga, desde aquí todavía se puede ir a mirar

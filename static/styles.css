@@ -452,7 +452,8 @@ textarea {
  * tiene que leerse como EL PASO DE ANTES, no como la otra opción. El azul es de
  * uno solo de los dos botones porque solo uno de los dos hace algo que no se
  * puede deshacer. */
-#previsualizar {
+#previsualizar,
+#cambiar-respuestas {
   width: 100%;
   padding: 0.85rem;
   margin: 0 0 0.6rem;

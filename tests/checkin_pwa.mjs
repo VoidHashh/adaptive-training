@@ -575,8 +575,11 @@ function disparar(el, tipo, ev = {}) {
 
 await drenar();
 
-if (elemento("formulario").hidden !== false) {
-  throw new Error("`arrancar()` no ha terminado: el formulario sigue oculto");
+// Terminado es que el «Cargando…» se ha ido. Hasta el 25/09/2026 se miraba
+// que el formulario estuviera a la vista, pero con el día ya decidido la
+// pantalla abre con la decisión y el formulario PLEGADO, a propósito.
+if (elemento("cargando").hidden !== true) {
+  throw new Error("`arrancar()` no ha terminado: sigue el «Cargando…»");
 }
 
 for (const a of guion.acciones || []) {
@@ -598,6 +601,9 @@ for (const a of guion.acciones || []) {
     const boton = bloque.querySelector(`[data-opcion="${a.opcion}"]`);
     if (!boton) throw new Error(`el selector no ofrece la opción '${a.opcion}'`);
     disparar(boton, "click");
+  } else if (a.tipo === "cambiar-respuestas") {
+    disparar(elemento("cambiar-respuestas"), "click");
+    await drenar();
   } else if (a.tipo === "enviar") {
     disparar(elemento("formulario"), "submit", { preventDefault() {} });
     await drenar();
@@ -816,9 +822,15 @@ console.log(JSON.stringify({
   // podido mirar».
   veces_recalculado: vecesRecalculado,
   metodo_recalculo: metodoRecalculo,
-  avisos: elemento("formulario").hijos
+  // De los dos sitios donde puede ir un aviso: el formulario y, con el día ya
+  // decidido y el formulario plegado, la tarjeta de la decisión.
+  avisos: [elemento("resultado"), elemento("formulario")].flatMap((caja) => caja.hijos
     .filter((h) => h instanceof Elemento && h.classList.contains("aviso"))
-    .map((h) => ({ clase: h.className, texto: h.textContent })),
+    .map((h) => ({ clase: h.className, texto: h.textContent }))),
+  // Cómo abre la pantalla: con la decisión delante y el formulario plegado, o
+  // con el formulario.
+  formulario_oculto: elemento("formulario").hidden,
+  cambiar_visible: !elemento("cambiar-respuestas").hidden,
   borrador: almacen.has("checkin-borrador")
     ? JSON.parse(almacen.get("checkin-borrador"))
     : null,

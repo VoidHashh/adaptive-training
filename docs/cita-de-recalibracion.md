@@ -257,6 +257,9 @@ mueven las cargas:
   cadena posterior -que pide dos limpias seguidas- a empezar de cero. Solo ese
   caso: una serie de en medio corta, una de menos o un peso por debajo siguen
   rompiendo la racha.
+- **«Hoy» abre con la decisión del día** cuando ya está decidido, con el
+  formulario plegado detrás de «Cambiar mis respuestas». La tarjeta dice Hevy y
+  Telegram en palabras. Si al abrir se recalcula el día, la tarjeta se repinta.
 - **La puerta de subir mira cada ejercicio, no la rutina entera**
   (`progression.gate.compliance_scope: exercise`). Con la rutina entera, un
   ejercicio incompleto bastaba para que no subiera nada, y en las diez primeras
