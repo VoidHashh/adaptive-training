@@ -1424,6 +1424,34 @@ def get_decision(
     }
 
 
+@app.post("/api/decision/recalcular")
+def post_recalcular(cfg=Depends(get_config)) -> dict[str, Any]:
+    """Rehace el día si se decidió sin la noche del reloj y ya ha llegado.
+
+    Lo llama la PWA al abrirse con el check-in hecho. Existe porque los dos
+    reintentos con hora -07:30 y 09:00- caían con el equipo dormido, y el
+    mensaje de un ámbar «sin datos» prometía recalcular: el 25/09/2026 se quedó
+    ámbar todo el día con la HRV y el sueño ya en Garmin. Ver la cabecera de
+    `app/scheduler.py`.
+
+    POST y no GET, aunque casi siempre no haga nada: cuando hace algo, escribe
+    en Hevy y manda un Telegram, y eso no va detrás de un verbo que cualquier
+    precargador puede disparar solo.
+
+    Sin la sesión de la petición, a propósito: aquí no se escribe nada antes de
+    decidir, y `job_decision` abre la suya como cuando lo lanza el scheduler.
+    Es el mismo camino con el mismo cerrojo, no una copia.
+    """
+    from app.scheduler import recalcular_si_hace_falta
+
+    hevy, tg, motivos = _clientes(cfg)
+    return recalcular_si_hace_falta(
+        cfg, day=date.today(),
+        hevy_client=hevy, telegram_client=tg, client_errors=motivos,
+        dry_run=settings.dry_run,
+    )
+
+
 @app.get("/api/state")
 def get_state(
     s: Session = Depends(get_session), cfg=Depends(get_config)

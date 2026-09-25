@@ -1127,6 +1127,18 @@ def marcar_adopciones_contadas(session: Session, ids: Any) -> int:
 # ---------------------------------------------------------------------------
 
 
+def hay_entreno(session: Session, day: date) -> bool:
+    """¿Consta algún entrenamiento de Hevy ese día, del tipo que sea?
+
+    Del tipo que sea, y no solo de fuerza: un HIIT suelto o un entreno sin
+    rutina también dicen que el día ya se ha vivido, y es lo que mira quien no
+    debe rehacer la decisión de un día hecho (`scheduler.job_decision`).
+    """
+    return session.scalar(
+        select(WorkoutLog.id).where(WorkoutLog.date == day).limit(1)
+    ) is not None
+
+
 def sesiones_ejecutadas(
     session: Session, cfg: Any, *, desde: date, hasta: date
 ) -> list[Any]:

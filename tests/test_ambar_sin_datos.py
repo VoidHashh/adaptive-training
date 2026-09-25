@@ -336,6 +336,18 @@ def test_el_mensaje_lo_dice_con_esas_palabras(cfg):
     assert "no es que estés peor" in txt.lower()
 
 
+def test_el_mensaje_promete_solo_lo_que_se_cumple(cfg):
+    """Decía «si el dato llega luego, el día se recalcula y te aviso», sin
+    condición, y el 25/09/2026 no se cumplió: los dos reintentos con hora
+    caían con el equipo dormido. Ahora dice lo que SÍ pasa siempre -abrir la
+    app lo rehace- y su límite: antes de entrenar, porque un día hecho no se
+    recalcula."""
+    _, txt = _mensaje(cfg, **SOLO_CHECKIN)
+    assert "abre la aplicación antes de entrenar" in txt
+    assert "el día se recalcula solo y te aviso" in txt
+    assert "Si el dato llega luego" not in txt
+
+
 def test_el_mensaje_sale_aunque_el_razonamiento_esté_apagado(cfg_copia):
     """El sitio natural para «qué regla ha disparado» es el bloque «Por qué», y
     ese bloque se apaga con `include_reasoning: false`. Puesto ahí, el único

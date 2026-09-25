@@ -78,6 +78,9 @@ const API = {
   // puede traer otra decisión. El juicio tiene que pegarse a la tarjeta que se
   // miró, no a la siguiente que salga.
   desacuerdo: (id) => `/api/preview/${id}/desacuerdo`,
+  // Rehacer el día si se decidió sin la noche del reloj. POST: cuando actúa,
+  // escribe en Hevy y manda un Telegram. Ver `recalcularSiHaceFalta`.
+  recalcular: "/api/decision/recalcular",
   salud: "/api/health",
   // Son POST, no GET, aunque "probar" suene a consulta: mandar un Telegram
   // tiene efecto en el mundo, y las cosas con efecto no se ponen detrás de un
@@ -204,6 +207,42 @@ async function arrancar() {
   $("cargando").hidden = true;
   $("formulario").hidden = false;
   revisar();
+
+  // Sin `await`: el formulario ya está pintado y no tiene que esperar a
+  // Garmin. Solo con el check-in hecho, que es cuando puede haber un día
+  // decidido a ciegas.
+  if (datos.submitted) recalcularSiHaceFalta();
+}
+
+/* EL RECÁLCULO AL ABRIR (25/09/2026).
+ *
+ * Un ámbar «sin datos» prometía recalcular cuando el reloj subiera la noche, y
+ * quien lo cumplía eran dos trabajos con hora que caían con el equipo dormido:
+ * ese día se quedó ámbar con la noche ya en Garmin. Abrir la aplicación es lo
+ * único que garantiza que el servidor está despierto, así que se pregunta aquí.
+ *
+ * La frase la escribe el servidor y aquí solo se pinta. Casi siempre viene
+ * vacía -no había nada que recalcular- y entonces no se pinta nada. */
+async function recalcularSiHaceFalta() {
+  // Un fallo aquí no se calla, ni de red ni del servidor: si el día seguía a
+  // ciegas, lo que queda en pantalla tiene que decir que no se ha podido
+  // mirar, no que no hacía falta. `arrancar()` ya ha salido bien, así que
+  // nadie más lo diría.
+  let d;
+  try {
+    const r = await fetch(API.recalcular, { method: "POST", cache: "no-store" });
+    if (!r.ok) throw new Error(`el servidor ha contestado ${r.status}`);
+    d = await r.json();
+  } catch (err) {
+    aviso(
+      `No se ha podido comprobar si el reloj ya ha subido la noche ` +
+      `(${err.message}).`,
+      "mal",
+    );
+    return;
+  }
+  // Sin defecto para el tono: el servidor lo manda siempre junto al aviso.
+  if (d.aviso) aviso(d.aviso, d.tono);
 }
 
 /* Lo ya contestado hoy gana sobre el borrador local: es lo que el sistema tiene

@@ -297,6 +297,169 @@ def test_la_recomputacion_cuenta_que_anula_a_la_de_antes(en_memoria, cfg):
     )
 
 
+# ---------------------------------------------------------------------------
+# Un día ya entrenado no se recalcula, y el recálculo al abrir (25/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _entrenado(db, day=LUNES):
+    from app.models import WorkoutLog
+
+    db.add(WorkoutLog(hevy_workout_id="W-hoy", date=day, routine_key="dia_1"))
+    db.commit()
+
+
+@pytest.mark.parametrize(
+    "como", [{"solo_recomputar": True}, {}], ids=["07:30", "09:00"],
+)
+def test_un_dia_ya_entrenado_no_se_recalcula(en_memoria, cfg, como):
+    """Rehacerla cambiaría el plan del día por el de la SIGUIENTE rutina.
+
+    La rotación ya habría avanzado con el entreno de hoy, así que el día quedaría
+    con un plan que no se hizo, y la reconciliación de la noche compararía lo
+    entrenado con él. Con el reintento de las 09:00 ya podía pasar -el entreno
+    empieza sobre las 08:00-; abriendo la app a cualquier hora pasaría siempre.
+    """
+    previa = _manana_a_ciegas(en_memoria, cfg)
+    _entrenado(en_memoria)
+
+    res = job_decision(
+        cfg, day=LUNES, fetch=fetch_falso,
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(), **como,
+    )
+
+    assert res is None
+    en_memoria.refresh(previa)
+    assert previa.is_current is True, "el plan de un día ya entrenado ha cambiado"
+
+
+def test_job_decision_espera_su_turno(cfg, monkeypatch):
+    """El cerrojo: la app y el scheduler no pueden rehacer el día a la vez.
+
+    Sin él, abrir la app justo a la hora del reintento recalculaba dos veces y
+    mandaba dos Telegram. Aquí se sujeta el cerrojo desde fuera y se comprueba
+    que el trabajo se queda esperando en vez de entrar.
+
+    Sin base de datos, a propósito: el trabajo corre en otro hilo y SQLite en
+    memoria no se deja usar desde dos. Lo único que se mira es si ENTRA, y eso
+    lo dice la primera pregunta que hace, la del check-in.
+    """
+    import threading
+
+    import app.scheduler as mod
+
+    entro = threading.Event()
+
+    @contextmanager
+    def sin_base():
+        yield None
+
+    def primera_pregunta(*a, **k):
+        entro.set()
+        return None  # sin check-in: con `solo_recomputar` sale sin tocar nada
+
+    monkeypatch.setattr(mod, "session_scope", sin_base)
+    monkeypatch.setattr(mod.repo, "get_checkin", primera_pregunta)
+
+    with mod._DECIDIENDO:
+        hilo = threading.Thread(
+            target=lambda: job_decision(cfg, day=LUNES, solo_recomputar=True),
+            daemon=True,
+        )
+        hilo.start()
+        assert not entro.wait(0.5), "ha entrado con el cerrojo cogido"
+    assert entro.wait(10), "al soltar el cerrojo no ha entrado"
+    hilo.join(10)
+
+
+def _recalcular(cfg, fetch):
+    from app.scheduler import recalcular_si_hace_falta
+
+    return recalcular_si_hace_falta(
+        cfg, day=LUNES, fetch=fetch,
+        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
+    )
+
+
+def test_al_abrir_sin_checkin_no_hay_nada_que_decir(en_memoria, cfg):
+    assert _recalcular(cfg, fetch_falso) == {"estado": "sin_checkin", "aviso": None}
+
+
+def test_al_abrir_con_la_decision_completa_ni_se_pregunta_a_garmin(en_memoria, cfg):
+    """Es lo de casi todas las veces, y por eso no puede costar una llamada."""
+    repo.upsert_checkin(en_memoria, LUNES, {"fatigue": 3, "lower_discomfort": 1}, config=cfg)
+    en_memoria.commit()
+    job_decision(cfg, day=LUNES, fetch=fetch_falso, source="checkin",
+                 solo_si_falta_checkin=False)
+    pedido = []
+
+    salida = _recalcular(cfg, lambda c, d: pedido.append(d) or fetch_falso(c, d))
+
+    assert salida == {"estado": "nada_que_recalcular", "aviso": None}
+    assert not pedido
+
+
+def test_al_abrir_con_el_dato_ya_llegado_se_recalcula_y_se_dice(en_memoria, cfg):
+    previa = _manana_a_ciegas(en_memoria, cfg)
+
+    salida = _recalcular(cfg, fetch_falso)
+
+    assert salida["estado"] == "recalculado"
+    assert salida["tono"] == "bien"
+    assert salida["antes"] == previa.light
+    assert "Ya han llegado" in salida["aviso"] and "se ha recalculado" in salida["aviso"]
+    vigente = repo.current_decision(en_memoria, LUNES)
+    assert vigente.id != previa.id and vigente.source == "recompute"
+
+
+def test_al_abrir_sin_el_dato_se_dice_que_sigue_sin_llegar(en_memoria, cfg):
+    """Y no se escribe nada: es el mismo cerrojo de no ensuciar que a las 09:00."""
+    previa = _manana_a_ciegas(en_memoria, cfg)
+
+    salida = _recalcular(cfg, sin_wellness)
+
+    assert salida["estado"] == "sigue_sin_dato"
+    assert salida["tono"] == "ojo"
+    assert salida["aviso"].startswith("Garmin todavía no tiene")
+    en_memoria.refresh(previa)
+    assert previa.is_current is True
+
+
+def test_al_abrir_despues_de_entrenar_se_explica_por_que_no_se_toca(en_memoria, cfg):
+    previa = _manana_a_ciegas(en_memoria, cfg)
+    _entrenado(en_memoria)
+
+    salida = _recalcular(cfg, fetch_falso)
+
+    assert salida["estado"] == "ya_entrenado"
+    assert salida["tono"] == "tenue"
+    assert "un día hecho no se recalcula" in salida["aviso"]
+    en_memoria.refresh(previa)
+    assert previa.is_current is True
+
+
+def test_al_abrir_si_el_reintento_gano_el_cerrojo_el_dia_sigue_recalculado(
+    en_memoria, cfg, monkeypatch
+):
+    """Lo que manda es que la vigente ya no sea la de antes, no quién la cambió.
+
+    Si el reintento de las 07:30 rehízo el día mientras la app esperaba, la
+    llamada de la app entra, lo encuentra completo y no hace nada. Contestar
+    «sigue sin llegar» ese día sería decir lo contrario de lo que pasó.
+    """
+    import app.scheduler as mod
+
+    _manana_a_ciegas(en_memoria, cfg)
+    real = mod.job_decision
+
+    def otro_llego_antes(*a, **k):
+        real(*a, **k)   # lo rehace «el otro»...
+        return None     # ...y esta llamada no encuentra nada que hacer
+
+    monkeypatch.setattr(mod, "job_decision", otro_llego_antes)
+    assert _recalcular(cfg, fetch_falso)["estado"] == "recalculado"
+
+
 def test_el_historico_explica_el_cambio_sin_columna_nueva(en_memoria, cfg):
     """La anulación no se guarda en ninguna columna, y no hace falta.
 

@@ -560,10 +560,12 @@ thresholds:
   # igual, y con una hernia L4-L5 el error barato es el de más.
   #
   # El caso real es el del check-in a las 06:23, antes de que Garmin tenga la
-  # noche. Ese ámbar nace PROVISIONAL: a las 09:00 se vuelve a pedir el
-  # wellness, y si llega, el día se recalcula. Si de eso sale verde, el mensaje
-  # lo anuncia como anulación -en negrita, debajo de la cabecera- igual que ya
-  # lo anunciaba cuando el cambio iba al revés.
+  # noche. Ese ámbar nace PROVISIONAL: se vuelve a pedir el wellness a las
+  # 07:30 (`schedule.recompute_time`), a las 09:00 y cada vez que se abre la
+  # aplicación, y si ha llegado, el día se recalcula. Si de eso sale verde, el
+  # mensaje lo anuncia como anulación -en negrita, debajo de la cabecera- igual
+  # que ya lo anunciaba cuando el cambio iba al revés. Un día que ya consta
+  # entrenado no se recalcula: ver la cabecera de `app/scheduler.py`.
   #
   # Solo cuenta lo que sube el reloj. Un verde decidido sin check-in también es
   # ciego, y a propósito NO lo promueve: ver `_verde_a_ciegas` en

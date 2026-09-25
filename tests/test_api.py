@@ -3482,3 +3482,33 @@ def test_los_vocabularios_de_sesion_tambien_viajan_al_formulario(cliente):
     assert por_clave["tecnica"]["opciones"] == TECNICA
     assert [e["enunciado"] for e in d["elecciones"]] == [e["enunciado"] for e in ELECCIONES]
     assert d["textos"]["mas_costoso"] == PREGUNTA_MAS_COSTOSO
+
+
+# ---------------------------------------------------------------------------
+# El recálculo al abrir (25/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_recalcular_llama_a_la_misma_puerta_que_el_scheduler(cliente, monkeypatch):
+    """No es una copia de `job_decision`: es `recalcular_si_hace_falta`, que
+    pasa por él con su cerrojo. Y con el día de HOY, que es el único que tiene
+    sentido rehacer al abrir la app; lo que conteste se devuelve tal cual."""
+    llamadas = []
+
+    def espia(cfg, **kw):
+        llamadas.append(kw)
+        return {"estado": "sigue_sin_dato", "tono": "ojo", "aviso": "x"}
+
+    monkeypatch.setattr("app.scheduler.recalcular_si_hace_falta", espia)
+    r = cliente.post("/api/decision/recalcular")
+
+    assert r.status_code == 200
+    assert r.json() == {"estado": "sigue_sin_dato", "tono": "ojo", "aviso": "x"}
+    (kw,) = llamadas
+    assert kw["day"] == date.today()
+
+
+def test_recalcular_no_se_dispara_con_un_get(cliente):
+    """Cuando actúa escribe en Hevy y manda un Telegram: no va detrás de un
+    verbo que cualquier precargador de enlaces puede disparar solo."""
+    assert cliente.get("/api/decision/recalcular").status_code in (404, 405)

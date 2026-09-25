@@ -579,13 +579,21 @@ def _lineas_sin_datos(decision: Any) -> list[str]:
         que = "el bienestar"
     else:
         que = _enumerar(medidas)
+    # LA ÚLTIMA FRASE ERA UNA PROMESA QUE NO SE CUMPLÍA. Decía «si el dato
+    # llega luego, el día se recalcula y te aviso», sin condición. Quien la
+    # cumplía eran dos reintentos con hora, y el 25/09/2026 el ámbar de las
+    # 06:57 se quedó ámbar todo el día con la noche ya en Garmin: el equipo
+    # dormía a las 07:30 y a las 09:00. Ahora dice lo que SÍ pasa siempre -abrir
+    # la app lo rehace, ver `scheduler.recalcular_si_hace_falta`- y el límite
+    # de verdad: un día ya entrenado no se recalcula.
     return [
         "",
         f"🟡 <b>Ámbar por precaución: no {_concordar(medidas, 'se ha', 'se han')} "
         f"podido evaluar {escapar_html(que)}.</b> A esta hora el reloj todavía no "
         f"había subido la noche. No es que estés peor: es que no se ha podido "
-        f"mirar, y no mirar no se pinta de verde. Si el dato llega luego, el día "
-        f"se recalcula y te aviso.",
+        f"mirar, y no mirar no se pinta de verde. Cuando el reloj sincronice, "
+        f"abre la aplicación antes de entrenar: el día se recalcula solo y te "
+        f"aviso.",
     ]
 
 

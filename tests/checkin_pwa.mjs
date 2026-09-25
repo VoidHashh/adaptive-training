@@ -310,6 +310,8 @@ function buscarTodo(sel) {
 
 let cuerpoEnviado = null;
 let vecesEnviado = 0;
+let vecesRecalculado = 0;
+let metodoRecalculo = null;
 
 // Lo que sale por el cable al previsualizar. En lista y no en una variable
 // suelta: la segunda previsualización del día es medio encargo -«no quiero que
@@ -494,6 +496,21 @@ const contexto = {
         status,
         json: async () =>
           (elegida && elegida.respuesta) ?? previsualizacionPorDefecto(n),
+      };
+    }
+    if (u.includes("/api/decision/recalcular")) {
+      // El recálculo al abrir. `guion.recalculo` elige qué contesta; sin él, lo
+      // de casi todos los días: no había nada que recalcular. `status` permite
+      // la rama del fallo, y `red: true` la de una red que no contesta.
+      vecesRecalculado += 1;
+      metodoRecalculo = (opciones && opciones.method) || "GET";
+      const g = guion.recalculo || {};
+      if (g.red) throw new Error("sin red");
+      const status = g.status || 200;
+      return {
+        ok: status < 400,
+        status,
+        json: async () => g.respuesta ?? { estado: "nada_que_recalcular", aviso: null },
       };
     }
     if (u.includes("/api/health")) {
@@ -793,6 +810,15 @@ console.log(JSON.stringify({
   })(),
   cuerpo_desacuerdo: cuerpoDesacuerdo,
   url_desacuerdo: urlDesacuerdo,
+  // El recálculo al abrir: cuántas veces se pidió, con qué verbo, y los
+  // avisos que quedaron encima del formulario, con su clase. La clase sale
+  // porque es lo único que distingue en pantalla «recalculado» de «no se ha
+  // podido mirar».
+  veces_recalculado: vecesRecalculado,
+  metodo_recalculo: metodoRecalculo,
+  avisos: elemento("formulario").hijos
+    .filter((h) => h instanceof Elemento && h.classList.contains("aviso"))
+    .map((h) => ({ clase: h.className, texto: h.textContent })),
   borrador: almacen.has("checkin-borrador")
     ? JSON.parse(almacen.get("checkin-borrador"))
     : null,

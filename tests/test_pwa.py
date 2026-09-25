@@ -541,6 +541,20 @@ HUELLAS_DEL_ARMAZON = {
     # versionado existe para impedir -los dos van en el mismo caché y se
     # renuevan juntos-, y la vigila `test_el_armazon_no_mezcla_dos_generaciones`.
     "v26": "0f06eec4cf7f1b45fe6b6aa2143d5de6d3368bd382035760ae59d605791c994f",
+    # v27: el recálculo al abrir. Con el check-in hecho, `app.js` pide
+    # `POST /api/decision/recalcular` y pinta el aviso que conteste el
+    # servidor. Solo toca `app.js`.
+    #
+    # EL MÓVIL VIEJO FALLA CALLADO, y es el caso que motivó el cambio. Abre la
+    # app, no pide nada, y el día a ciegas se queda a ciegas sin que la pantalla
+    # lo diga, mientras el mensaje de la mañana -que lo redacta el servidor y le
+    # llega ya nuevo- le promete que abrir la app lo recalcula. Dura lo que
+    # tarde en coger la v27: dos arranques. Los dos reintentos con hora (07:30
+    # y 09:00) siguen existiendo y cubren ese hueco si el equipo está despierto.
+    #
+    # No hay mezcla peligrosa de generaciones: `app.js` nuevo con `index.html`
+    # viejo funciona, porque el aviso se cuelga de `#formulario`, que ya existía.
+    "v27": "b4f6706ed63a8fd84186e1ef840feba759d0a57dd1662d77cc00bf2626971d58",
 }
 
 
@@ -2158,6 +2172,7 @@ def _rellenar(
     respuesta=None,
     previsualizaciones=None,
     desacuerdo=None,
+    recalculo=None,
 ) -> dict:
     """Abre el formulario contra un `/api/checkin/today` de mentira y lo rellena.
 
@@ -2184,6 +2199,9 @@ def _rellenar(
                 # `None` deja el defecto del arnés, que sube `seq` con cada una.
                 "previsualizaciones": previsualizaciones,
                 "desacuerdo": desacuerdo,
+                # Lo que contesta el recálculo al abrir. `None` deja el de
+                # casi todos los días: nada que recalcular, sin aviso.
+                "recalculo": recalculo,
             },
             ensure_ascii=False,
         ),
@@ -2505,6 +2523,78 @@ def test_lo_ya_contestado_hoy_vuelve_a_la_pantalla_con_los_tres_estados(tmp_path
     # Y el botón sigue gris, porque de verdad falta una respuesta.
     assert salida["enviar_deshabilitado"] is True
     assert "¿Te apetece entrenar hoy?" in salida["faltan"]
+
+
+# ---------------------------------------------------------------------------
+# El recálculo al abrir (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Un ámbar «sin datos» prometía recalcular cuando el reloj subiera la noche, y
+# los dos trabajos con hora que lo cumplían caían con el equipo dormido. Abrir
+# la app es lo único que garantiza un servidor despierto.
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_con_el_checkin_hecho_abrir_la_app_pide_el_recalculo(tmp_path):
+    """Y lo pide con POST: cuando actúa, escribe en Hevy y manda un Telegram."""
+    salida = _rellenar(tmp_path, _hoy(submitted=True, values={"fatigue": 3}), [])
+    assert salida["veces_recalculado"] == 1
+    assert salida["metodo_recalculo"] == "POST"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_sin_checkin_no_se_pide_nada(tmp_path):
+    """Sin check-in no hay decisión a ciegas que rehacer, y a esa hora la
+    pantalla está para contestar, no para mover el día."""
+    salida = _rellenar(tmp_path, _hoy(), [])
+    assert salida["veces_recalculado"] == 0
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_lo_que_contesta_el_recalculo_se_pinta_tal_cual(tmp_path):
+    """La frase y el tono son del servidor: la pantalla no calcula."""
+    salida = _rellenar(
+        tmp_path, _hoy(submitted=True, values={"fatigue": 3}), [],
+        recalculo={"respuesta": {
+            "estado": "recalculado", "tono": "bien",
+            "aviso": "Ya han llegado la variabilidad y lo que duermes: el día "
+                     "se ha recalculado y pasa de ámbar a verde.",
+        }},
+    )
+    (arriba, *_resto) = salida["avisos"]
+    assert arriba == {
+        "clase": "aviso bien",
+        "texto": "Ya han llegado la variabilidad y lo que duermes: el día se ha "
+                 "recalculado y pasa de ámbar a verde.",
+    }
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_casi_siempre_no_hay_nada_que_contar_y_no_se_pinta_nada(tmp_path):
+    """Un aviso que saliera cada vez que se abre se aprendería a no leer."""
+    salida = _rellenar(tmp_path, _hoy(submitted=True, values={"fatigue": 3}), [])
+    assert [a["texto"] for a in salida["avisos"]] == [
+        "Hoy ya has hecho el check-in. Si lo envías otra vez se recalcula el día "
+        "con las respuestas nuevas."
+    ]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+@pytest.mark.parametrize(
+    "recalculo, causa",
+    [({"status": 500}, "el servidor ha contestado 500"), ({"red": True}, "sin red")],
+    ids=["servidor", "red"],
+)
+def test_si_no_se_puede_mirar_se_dice_y_no_se_calla(tmp_path, recalculo, causa):
+    """Callar aquí es decir «no hacía falta» el día que seguía a ciegas."""
+    salida = _rellenar(
+        tmp_path, _hoy(submitted=True, values={"fatigue": 3}), [],
+        recalculo=recalculo,
+    )
+    (arriba, *_resto) = salida["avisos"]
+    assert arriba["clase"] == "aviso mal"
+    assert "No se ha podido comprobar si el reloj ya ha subido la noche" in arriba["texto"]
+    assert causa in arriba["texto"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
