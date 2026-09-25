@@ -66,18 +66,52 @@ concreto que motivó cada pieza, con fecha. Sigue ese registro: no escribas
 - Tests: `.venv\Scripts\python.exe -m pytest -q -p no:randomly`. Tardan unos
   cuatro minutos. Son ~2670 y tienen que quedar todos en verde.
 
-## Despliegue: la divergencia que hay que tener siempre en la cabeza
+## Despliegue: donde vive el sistema, y como llega hasta alli un cambio
 
-- **`config.yaml` va bind-mounted**: un cambio en el fichero afecta al sistema
-  en marcha en cuanto se recrea el contenedor, sin reconstruir la imagen.
-- **El código va horneado en la imagen**: no cambia hasta reconstruir.
-- **Reconstruir es decisión del usuario, no tuya.** Propónselo diciendo qué
-  entra además de lo de hoy.
-- **Añadir una clave nueva a `config.yaml` rompe el contenedor que está
-  corriendo**, porque su validador no la conoce y la rechaza al recargar.
-  Primero el código, luego la reconstrucción, y solo después la clave.
-- La base de datos del contenedor **no es `data/` del repositorio**: es un
-  volumen Docker con nombre. Para contar filas de verdad, `docker exec`.
+**El sistema en marcha es el Umbrel** (`192.168.8.188`), aplicación
+`planb-adaptive-training`, desde el 25/09/2026. El contenedor del PC quedó
+**parado a propósito, no borrado**: su volumen `hevy2garmin-test_datos-pruebas`
+es la vuelta atrás. No lo borres, y no lo levantes sin apagar el Umbrel antes
+—dos planificadores sobre la misma cuenta son dos decisiones pisándose el mismo
+día y dos escrituras de la misma rutina en Hevy—.
+
+**UN CAMBIO EN EL CÓDIGO NO LLEGA SOLO.** Son cinco pasos y ninguno es
+opcional; saltarse uno no da error, da un sistema que sigue corriendo lo de
+antes mientras el repositorio dice otra cosa:
+
+1. **Commit y `git push`.** La rama local es `master` y la remota `main`; está
+   puesto `push.default = upstream`, así que `git push` a secas vale.
+2. **El taller publica la imagen.** `.github/workflows/docker.yml` construye y
+   sube a `ghcr.io/voidhashh/adaptive-training` en cada empujón. Esto es lo
+   único automático de la lista.
+3. **Subir la versión, en los cuatro sitios a la vez**: `pyproject.toml`,
+   `image:` de `umbrel/docker-compose.yml`, `version:` de
+   `umbrel/umbrel-app.yml` y `image:` del compose de la raíz.
+   `tests/test_despliegue.py` se pone rojo si falta uno. **Sin subirla, el
+   Umbrel NO vuelve a descargar nada**: la etiqueta ya la tiene, sigue
+   corriendo lo instalado, y desde el móvil eso se parece exactamente a que el
+   arreglo está puesto.
+4. **Copiar `umbrel/umbrel-app.yml` y `umbrel/docker-compose.yml` al
+   repositorio de la tienda**, `VoidHashh/PlanB`, carpeta
+   `planb-adaptive-training/`. Umbrel lee de ahí, no de aquí. **Ningún test
+   avisa si no se hace**, porque el test no ve el otro repositorio.
+5. **Actualizar desde la interfaz de Umbrel.** Eso lo hace el usuario: no hay
+   acceso a Docker en esa máquina (el usuario `umbrel` no está en el grupo
+   `docker` y `sudo` pide contraseña).
+
+**`config.yaml` es la excepción y sigue siéndolo.** Va bind-mounted en
+`${APP_DATA_DIR}/config.yaml` y se aplica al recrear el contenedor, sin imagen
+nueva. Pero **añadir una clave nueva rompe el contenedor que está corriendo**,
+porque su validador no la conoce y la rechaza al recargar: primero el código,
+luego la actualización, y solo después la clave.
+
+**Para saber qué código corre, `/api/health` devuelve `build.sha`.** La
+etiqueta no sirve para eso: lleva congelada en `0.1.0` desde el principio, y de
+ahí que el taller pase `BUILD_SHA` como `--build-arg`.
+
+Los datos del Umbrel están en `~/umbrel/app-data/planb-adaptive-training/data/`
+y se leen por SSH (`ssh umbrel`), no por `docker exec`. Ahí dentro está
+`hevy_backups/`, que es lo único que permite deshacer una escritura en Hevy.
 
 ## Las guardas que se disparan solas, y qué pedirán de ti
 
