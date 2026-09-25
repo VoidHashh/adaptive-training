@@ -1286,3 +1286,175 @@ code {
  * desplegable nativo casi no se puede pintar en un móvil: iOS ignora el color.
  * El `optgroup` sí se ve, y es el que de verdad las separa. */
 .filtro optgroup { font-style: normal; }
+
+/* =========================================================================
+ * DESPUÉS DE ENTRENAR (25/09/2026)
+ * =========================================================================
+ *
+ * Todo lo de aquí imita al check-in a propósito -misma caja, mismo borde, mismo
+ * acento- porque son las dos pantallas que se contestan, y una que se pareciera
+ * a las de métricas se leería como algo que mirar y no como algo que rellenar.
+ * Los deslizadores ni siquiera tienen regla propia: son los `.slider` de arriba,
+ * con su `.sin-contestar` discontinuo, y eso es lo que hace que una escala sin
+ * tocar se vea sin tocar igual en las dos páginas. */
+
+#despues, #avanzado { max-width: 34rem; margin: 0 auto; }
+
+.arranque-despues { margin: 0.5rem 0 1rem; }
+
+/* El botón de arranque es lo único de la pantalla hasta que se pulsa, así que
+ * se lleva el acento lleno. Lo mismo que «Enviar» en el check-in: es la acción
+ * de la pantalla, no una más. */
+.boton-grande {
+  width: 100%;
+  padding: 1.05rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: var(--acento);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.08rem;
+  cursor: pointer;
+}
+.boton-grande:disabled { background: var(--borde); color: var(--tenue); }
+
+.nota-arranque { color: var(--tenue); font-size: 0.88rem; margin: 0.55rem 0 0; text-align: center; }
+
+/* El aviso NO es rojo: casi siempre dice «todavía no hay entreno en Hevy», que
+ * no es un error sino una hora. En rojo se leería como que algo se ha roto. */
+.aviso-despues {
+  color: var(--texto);
+  border-left: 3px solid var(--ambar);
+  padding: 0.3rem 0 0.3rem 0.9rem;
+  margin: 0 0 1rem;
+  font-size: 0.93rem;
+}
+
+#form-despues { margin-top: 0.4rem; }
+
+.resumen-sesion { color: var(--tenue); font-size: 0.9rem; margin: 0 0 0.9rem; }
+
+/* Lo que falta, arriba y con borde ámbar: es lo único que pide respuesta. No
+ * rojo por lo mismo que el aviso -dejar un ejercicio no es un fallo que haya
+ * que señalar, es algo que hay que explicar-. */
+#faltan-despues { margin-bottom: 0.9rem; }
+
+.bloque-faltan {
+  background: var(--caja);
+  border: 1px solid var(--ambar);
+  border-radius: 0.65rem;
+  padding: 0.85rem 0.9rem;
+}
+
+.titulo-faltan { margin: 0 0 0.6rem; color: var(--ambar); font-weight: 600; font-size: 0.9rem; }
+
+#hechos-despues { margin-bottom: 1.4rem; }
+
+.bloque-hechos {
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-radius: 0.65rem;
+  padding: 0.75rem 0.9rem;
+}
+.bloque-hechos summary { cursor: pointer; font-weight: 600; font-size: 0.97rem; }
+.bloque-hechos[open] summary { margin-bottom: 0.6rem; }
+
+.pista-hechos { display: block; color: var(--tenue); font-weight: 400; font-size: 0.82rem; margin-top: 0.1rem; }
+
+.ejercicio-despues { padding: 0.55rem 0; border-top: 1px solid var(--borde); }
+.bloque-faltan .ejercicio-despues:first-of-type { border-top: 0; padding-top: 0; }
+
+.nombre-ejercicio { margin: 0 0 0.4rem; font-size: 0.95rem; }
+
+/* Los desplegables se estiran al ancho entero: en un móvil, un `<select>` de su
+ * tamaño natural se queda en una esquina y el toque cae fuera. */
+.respuesta-ejercicio, #mas-costoso {
+  width: 100%;
+  padding: 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+  font-size: 0.95rem;
+}
+
+#escalas-despues { margin-bottom: 1.1rem; }
+
+/* El valor de esta mañana, pegado a la etiqueta y en tenue. No compite con la
+ * respuesta: es la referencia contra la que se contesta. */
+.manana { color: var(--tenue); font-weight: 400; font-size: 0.8rem; margin-left: 0.5rem; }
+
+#elecciones-despues { margin-bottom: 0.7rem; }
+
+/* Tres opciones y no dos, así que no vale la rejilla de `.si-o-no`. Mismo
+ * botón, mismo peso para las tres, por el mismo motivo que allí: hacer una más
+ * llamativa empujaría la respuesta hacia ella. */
+.eleccion {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+.eleccion button {
+  padding: 0.75rem 0.3rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--borde);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  line-height: 1.25;
+}
+.eleccion button[aria-pressed="true"] {
+  border-color: var(--acento);
+  background: rgba(76, 141, 255, 0.22);
+}
+
+#costoso-despues { margin-bottom: 1.1rem; }
+.costoso { display: block; }
+.costoso .enunciado { display: block; margin-bottom: 0.55rem; }
+
+.nota-libre { display: block; margin-bottom: 1.2rem; }
+.nota-libre span { display: block; color: var(--tenue); font-size: 0.88rem; margin-bottom: 0.4rem; }
+
+#nota-despues { min-height: 3.2rem; }
+
+#guardar-despues {
+  width: 100%;
+  padding: 1rem;
+  border: 0;
+  border-radius: 0.6rem;
+  background: var(--acento);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+#guardar-despues:disabled { background: var(--borde); color: var(--tenue); }
+
+.guardado-despues { margin-top: 1rem; }
+.hecho-guardado { color: var(--texto); border-left: 3px solid var(--verde); padding-left: 0.9rem; margin: 0; }
+
+/* --- Avanzado ------------------------------------------------------------ */
+
+.subtitulo-avanzado { color: var(--tenue); margin: 0.3rem 0 0; font-size: 0.93rem; }
+
+.lista-avanzado { display: grid; gap: 0.6rem; margin-top: 0.4rem; }
+
+/* Cada análisis es una tarjeta entera que se toca, no un enlace de texto: en
+ * un móvil un enlace de una línea es un blanco pequeño, y aquí lo que se elige
+ * es por la frase de debajo, que tiene que caber en el toque. */
+.tarjeta-avanzado {
+  display: block;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-radius: 0.65rem;
+  padding: 0.85rem 0.95rem;
+  color: var(--texto);
+  text-decoration: none;
+}
+.titulo-avanzado { display: block; font-weight: 600; font-size: 0.98rem; }
+.que-avanzado { display: block; color: var(--tenue); font-size: 0.86rem; margin-top: 0.2rem; line-height: 1.35; }

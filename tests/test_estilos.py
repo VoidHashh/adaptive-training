@@ -62,8 +62,23 @@ from app.settings import REPO_ROOT
 
 ESTATICOS = REPO_ROOT / "static"
 
-HTML = ["index.html", "metricas.html"]
-JS = ["app.js", "comun.js", "metricas.js", "graficos.js"]
+# LAS DOS LISTAS SALEN DEL DISCO, Y ESTABAN ESCRITAS A MANO (25/09/2026).
+#
+# Eran `["index.html", "metricas.html"]` y los cuatro scripts de entonces. El día
+# que nacieron dos páginas nuevas -la de después de entrenar y la de avanzado-
+# este fichero las certificó en verde SIN HABERLAS ABIERTO: una pantalla entera
+# con decenas de clases sin una sola regla, y la guarda escrita precisamente
+# para eso diciendo que no faltaba nada.
+#
+# Es el defecto que abre la cabecera de este fichero -el botón que nació sin
+# CSS y nadie se enteró en dos semanas-, una planta más arriba: aquel se escapó
+# por una clase; esta guarda iba a dejar escapar páginas enteras. Una lista de
+# lo que hay que vigilar, escrita a mano, envejece en silencio igual que un
+# comentario.
+#
+# `sw.js` se excluye porque no pinta: no tiene DOM, corre en otro hilo.
+HTML = sorted(p.name for p in ESTATICOS.glob("*.html"))
+JS = sorted(p.name for p in ESTATICOS.glob("*.js") if p.name != "sw.js")
 
 # Un nombre de CSS válido. Sirve para tirar la basura que deja leer JavaScript
 # con expresiones regulares: `?`, `===`, `||` y demás trozos de expresión que
@@ -422,3 +437,16 @@ def test_no_se_perdona_a_quien_ya_tiene_regla():
         f"asideros que no pintan- y `styles.css` les escribe una regla: "
         f"{ya_peinados}. Una de las dos cosas es mentira."
     )
+
+
+def test_la_guarda_mira_todas_las_paginas_y_todos_los_scripts():
+    """La guarda de la guarda.
+
+    El 25/09/2026 las dos listas de arriba estaban escritas a mano y dos páginas
+    nuevas pasaron en verde sin que nadie las abriera. Ahora salen del disco;
+    esto es lo que impide que vuelvan a escribirse a mano sin que se note.
+    """
+    en_disco_html = {p.name for p in ESTATICOS.glob("*.html")}
+    en_disco_js = {p.name for p in ESTATICOS.glob("*.js")} - {"sw.js"}
+    assert set(HTML) == en_disco_html, sorted(en_disco_html - set(HTML))
+    assert set(JS) == en_disco_js, sorted(en_disco_js - set(JS))

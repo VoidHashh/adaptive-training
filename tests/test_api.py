@@ -3472,8 +3472,13 @@ def test_una_eleccion_inventada_se_rechaza(cliente):
 
 
 def test_los_vocabularios_de_sesion_tambien_viajan_al_formulario(cliente):
-    from app.engine.feedback import CANTIDAD, TECNICA
+    """Las elecciones viajan CON su enunciado, y los desplegables con sus textos:
+    la pantalla no lleva ni una pregunta escrita."""
+    from app.engine.feedback import CANTIDAD, ELECCIONES, PREGUNTA_MAS_COSTOSO, TECNICA
 
     d = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()}).json()
-    assert d["cantidad"] == CANTIDAD
-    assert d["tecnica"] == TECNICA
+    por_clave = {e["key"]: e for e in d["elecciones"]}
+    assert por_clave["cantidad"]["opciones"] == CANTIDAD
+    assert por_clave["tecnica"]["opciones"] == TECNICA
+    assert [e["enunciado"] for e in d["elecciones"]] == [e["enunciado"] for e in ELECCIONES]
+    assert d["textos"]["mas_costoso"] == PREGUNTA_MAS_COSTOSO

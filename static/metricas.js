@@ -663,10 +663,14 @@ function bloqueLoQueSeSabe(b) {
   // contrapeso de lo que se acaba de leer, y arriba se leerían como un aviso
   // antes de que haya nada de lo que avisar.
   const pie = [];
+  // «en Más» y no «en las vistas de abajo», que es lo que ponía. Desde el
+  // 25/09/2026 las vistas técnicas ya no están en la barra de abajo: están
+  // detrás de «Más». La frase se quedó apuntando a un sitio donde ya no había
+  // nada, y es la que se lee en la pantalla que se abre a diario.
   if (b.resto) {
     pie.push(
       `<p class="explica">Hay ${cuenta(b.resto, "hallazgo", "hallazgos")} más, ` +
-      `que éstos. Están enteros en las vistas de abajo.</p>`,
+      `que éstos. Están enteros en <a href="/avanzado.html">Más</a>.</p>`,
     );
   }
   if (b.nota_azar) pie.push(`<p class="ficha">${escapar(b.nota_azar)}</p>`);

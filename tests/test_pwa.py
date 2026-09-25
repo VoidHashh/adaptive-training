@@ -507,6 +507,23 @@ HUELLAS_DEL_ARMAZON = {
     # hacia el umbral de diez de una regla con la que nadie está discutiendo.
     # El móvil sin actualizar no solo enseña de más: ensucia la medida.
     "v24": "b07fb43dc6a44b11f6f898ba989c9e5d2b55d88f5e35957a894d40f56dec6ed8",
+    # v25: la pantalla de después de entrenar, la página de Avanzado, y la
+    # barra de nueve pestañas reducida a cuatro. Cuatro archivos nuevos en el
+    # armazón -`despues.html`, `despues.js`, `avanzado.html`, `avanzado.js`- y
+    # cambios en `comun.js` y `styles.css`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE, y es de las pocas veces que lo
+    # hace sin matices. Se queda con la barra de nueve pestañas de la v24, y las
+    # nueve siguen llevando a algo que existe, porque ninguna vista se ha
+    # borrado: solo se han movido de sitio. No ve «Después» ni «Más», así que no
+    # tiene cómo llegar a las páginas nuevas, y no llegar a algo nuevo no es
+    # enseñar algo falso.
+    #
+    # El único camino roto de verdad es entrar a `avanzado.html` por una URL
+    # escrita a mano: cargaría el `comun.js` de la v24, que no tiene
+    # `pintarAvanzado`, y la lista saldría vacía. Pero la barra vieja no enlaza
+    # ahí, así que hay que ir a buscarlo.
+    "v25": "780cc97b6854126eeeac5cab24ef9d2708297e817603ff3aeabcd01aeb13241f",
 }
 
 
@@ -1905,45 +1922,89 @@ def test_los_renderizadores_no_leen_ni_una_clave_que_el_backend_no_mande(
     )
 
 
-def test_las_pantallas_de_la_nav_llevan_a_algo_que_existe():
-    """Un enlace de la barra que no lleva a ninguna vista es un callejón.
+def _hrefs_de(lista: str) -> list[str]:
+    """Los `href` de UNA lista de `comun.js`, no de todo el fichero.
 
-    La barra se pinta desde `PANTALLAS` en `comun.js` y las vistas viven en
-    `VISTAS` en `metricas.js`: dos listas en dos archivos que tienen que decir
-    lo mismo. Sin esto, un enlace roto cae en la vista por defecto y la barra
-    marca como activa una pestaña que no es la que se ve.
+    Antes bastaba con buscar `href:` en todo `comun.js`, porque había una sola
+    lista de enlaces. Desde que existe `AVANZADO` hay dos, y buscar en todo el
+    fichero las mezclaría: la barra parecería tener once entradas.
     """
-    pantallas = re.findall(r'href: "([^"]+)"', COMUN)
-    vistas = set(_claves_de_objeto(METRICAS, "VISTAS"))
-    assert vistas, "no encuentro las claves de VISTAS en metricas.js"
+    m = re.search(rf"const {lista} = \[(.*?)\n\];", COMUN, re.S)
+    assert m, f"no encuentro `const {lista} = [...]` en comun.js"
+    return re.findall(r'href: "([^"]+)"', m.group(1))
 
-    # Una por vista, más el check-in. El número NO se escribe: se cuenta desde
-    # `VISTAS`, que es la lista de la que depende de verdad. Escrito -y estuvo
-    # escrito- había que subirlo a mano con cada pantalla nueva, y un test que
-    # hay que editar para que siga pasando acaba editándose sin mirar qué decía.
-    assert len(pantallas) == len(vistas) + 1, (
-        f"la barra tiene {len(pantallas)} enlaces y `VISTAS` tiene "
-        f"{len(vistas)} vistas más el check-in: {pantallas}"
-    )
-    assert "/" in pantallas, (
-        "la barra ha perdido el enlace al check-in, que es la única pantalla "
-        "que no es una métrica y la que se abre todas las mañanas"
-    )
 
-    for href in pantallas:
-        if href == "/":
-            assert (ESTATICOS / "index.html").is_file()
-            continue
-        pagina, _, ancla = href.partition("#")
-        assert (ESTATICOS / pagina.lstrip("/")).is_file(), f"{pagina} no existe"
+def _lleva_a_algo(href: str, vistas: set[str]) -> None:
+    pagina, _, ancla = href.partition("#")
+    fichero = "index.html" if pagina == "/" else pagina.lstrip("/")
+    assert (ESTATICOS / fichero).is_file(), f"`{href}` apunta a {fichero}, que no existe"
+    if ancla:
         assert ancla in vistas, (
-            f"la barra enlaza a `{href}` y `{ancla}` no está en VISTAS: ese "
+            f"`{href}` lleva a la vista `{ancla}`, que no está en VISTAS: ese "
             f"toque cae en la vista por defecto sin decir nada"
         )
 
-    assert vistas <= {a.partition("#")[2] for a in pantallas}, (
-        "hay vistas en metricas.js a las que no llega ningún enlace de la barra"
+
+def test_las_pantallas_de_la_nav_llevan_a_algo_que_existe():
+    """Ningún enlace es un callejón y ninguna vista se queda sin enlace.
+
+    ESTE TEST SE REESCRIBIÓ EL 25/09/2026, Y NO PARA AFLOJARLO. Antes exigía una
+    entrada en la barra por cada vista, porque así estaba hecha la aplicación:
+    nueve pestañas. Ese día la barra pasó a cuatro y seis vistas técnicas se
+    fueron detrás de «Más», a una página propia. La regla de «una por vista» se
+    habría cumplido volviendo a meter las nueve, que es justo lo que se quería
+    quitar.
+
+    Lo que el test protegía no era el número, eran dos cosas, y siguen aquí:
+    que ningún enlace lleve a nada, y que ninguna vista quede huérfana. Ahora
+    una vista puede estar en la barra O en Avanzado; lo que no puede es no estar
+    en ninguno de los dos.
+    """
+    vistas = set(_claves_de_objeto(METRICAS, "VISTAS"))
+    assert vistas, "no encuentro las claves de VISTAS en metricas.js"
+    barra = _hrefs_de("PANTALLAS")
+    avanzado = _hrefs_de("AVANZADO")
+
+    assert "/" in barra, (
+        "la barra ha perdido el enlace al check-in, que es la pantalla que se "
+        "abre todas las mañanas"
     )
+    for href in barra + avanzado:
+        _lleva_a_algo(href, vistas)
+
+    alcanzables = {h.partition("#")[2] for h in barra + avanzado if "#" in h}
+    huerfanas = vistas - alcanzables
+    assert not huerfanas, (
+        f"estas vistas de metricas.js no tienen enlace ni en la barra ni en "
+        f"Avanzado: {sorted(huerfanas)}. Existen y no hay forma de llegar a ellas"
+    )
+
+
+def test_la_barra_es_corta():
+    """La promesa del cambio del 25/09/2026, escrita donde se pueda romper.
+
+    La barra tenía nueve pestañas y en un móvil no cabían: había que deslizarla
+    de lado para llegar a la última. Se dejó en cuatro. Sin este test, la
+    siguiente vista nueva entraría en la barra por costumbre -es donde estaban
+    todas- y en tres meses volveríamos a las nueve sin que nadie lo decidiera.
+
+    Cinco y no cuatro: deja sitio a una pantalla principal más, que es una
+    decisión razonable. Una sexta ya no lo es sin pensarlo.
+    """
+    barra = _hrefs_de("PANTALLAS")
+    assert len(barra) <= 5, (
+        f"la barra tiene {len(barra)} entradas: {barra}. Lo que no es de uso "
+        f"diario va en `AVANZADO`, detrás de «Más»"
+    )
+
+
+def test_ninguna_vista_esta_a_la_vez_en_la_barra_y_en_avanzado():
+    """Dos caminos a lo mismo en dos sitios distintos acaban diciendo cosas
+    distintas: el título de una tarjeta de Avanzado y la etiqueta corta de la
+    barra se escriben por separado y se separan con el tiempo."""
+    barra = set(_hrefs_de("PANTALLAS"))
+    avanzado = set(_hrefs_de("AVANZADO"))
+    assert not barra & avanzado, f"en los dos sitios: {sorted(barra & avanzado)}"
 
 
 # ---------------------------------------------------------------------------
@@ -4368,3 +4429,61 @@ def test_diciendo_que_si_la_tarjeta_propone_como_siempre(tmp_path):
     assert "Lo que propondría" in texto
     assert "Hoy se quedan fuera" in texto
     assert "Hoy no entrenas" not in texto
+
+
+# ---------------------------------------------------------------------------
+# La barra y Avanzado, pintadas de verdad
+# ---------------------------------------------------------------------------
+#
+# Los tests de arriba leen las listas de `comun.js`. Estos ejecutan las dos
+# funciones que las pintan, porque una lista perfecta que nadie pinta es la
+# pieza que certifica que no falta nada mientras falta: las seis vistas de
+# Avanzado serían «alcanzables» según el test e inalcanzables en la pantalla.
+
+
+def _pinta_comun(llamada: str) -> dict[str, str]:
+    """Carga `comun.js` en node, hace `llamada` y devuelve el HTML de cada hueco."""
+    script = (
+        "const fs=require('fs'),vm=require('vm');"
+        "const els={};"
+        "const doc={getElementById:(id)=>(els[id]=els[id]||{innerHTML:''})};"
+        "const ctx={document:doc,console};vm.createContext(ctx);"
+        "vm.runInContext(fs.readFileSync('static/comun.js','utf8'),ctx);"
+        f"vm.runInContext({json.dumps(llamada)},ctx);"
+        "console.log(JSON.stringify(Object.fromEntries("
+        "Object.entries(els).map(([k,v])=>[k,v.innerHTML]))));"
+    )
+    r = subprocess.run(
+        ["node", "-e", script], cwd=RAIZ, capture_output=True, text=True,
+        encoding="utf-8", timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_avanzado_pinta_un_enlace_por_cada_vista_de_la_lista():
+    html = _pinta_comun("pintarAvanzado()")["lista-avanzado"]
+    for href in _hrefs_de("AVANZADO"):
+        assert f'href="{href}"' in html, (
+            f"`AVANZADO` nombra `{href}` y la página no lo pinta: la vista existe, "
+            f"el test de la barra la da por alcanzable, y no hay dónde tocar"
+        )
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_una_vista_de_avanzado_enciende_mas_en_la_barra():
+    """Sin esto, abrir una de ellas dejaba la barra sin ninguna pestaña activa, y
+    no se sabía ni dónde se estaba ni cómo volver."""
+    html = _pinta_comun('pintarNav("#concordancia")')["nav"]
+    activa = re.findall(r'<a href="([^"]+)" class="activa"', html)
+    assert activa == ["/avanzado.html"], activa
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
+def test_la_portada_enciende_como_vas_y_no_mas():
+    """La pareja del anterior: «Cómo vas» vive en metricas.html como las de
+    Avanzado, y no por eso es una de ellas."""
+    html = _pinta_comun('pintarNav("#portada")')["nav"]
+    activa = re.findall(r'<a href="([^"]+)" class="activa"', html)
+    assert activa == ["/metricas.html#portada"], activa

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Después</title>
+
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="theme-color" content="#14161a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Después">
+</head>
+<body class="con-nav">
+
+<main id="despues">
+  <header class="cab">
+    <h1>¿Qué tal la sesión?</h1>
+    <p class="fecha" id="fecha-despues">—</p>
+  </header>
+
+  <!--
+    UN BOTÓN, Y NO UNA CARGA AUTOMÁTICA AL ABRIR. La pantalla lee Hevy en el
+    momento de pulsarlo, y eso es lo que hace que el formulario hable de la
+    sesión que acaba de terminar y no de la que había cuando se abrió la pestaña
+    hace una hora. Además, leer Hevy cuesta una llamada de red: hacerlo solo por
+    abrir la aplicación desde la barra sería gastarla en quien venía a otra cosa.
+  -->
+  <section id="arranque-despues" class="arranque-despues">
+    <button type="button" id="cargar-sesion" class="boton-grande">
+      ¿Qué tal la sesión de hoy?
+    </button>
+    <p class="nota-arranque">Lee Hevy ahora y te pregunta por lo que has hecho.</p>
+  </section>
+
+  <p class="cargando" id="cargando-despues" hidden>Leyendo Hevy…</p>
+  <p class="aviso-despues" id="aviso-despues" hidden></p>
+
+  <form id="form-despues" hidden>
+    <p class="resumen-sesion" id="resumen-sesion"></p>
+
+    <!-- Lo que falta va PRIMERO y abierto: es lo único que pide respuesta. Lo
+         que fue bien va plegado debajo. Es la inversión que quita densidad: una
+         sesión sin incidencias se contesta sin abrir ni una lista. -->
+    <div id="faltan-despues"></div>
+    <div id="hechos-despues"></div>
+
+    <div id="escalas-despues"></div>
+    <div id="elecciones-despues"></div>
+    <div id="costoso-despues"></div>
+
+    <label class="nota-libre">
+      <span>Algo más (opcional)</span>
+      <textarea id="nota-despues" rows="2" maxlength="2000"></textarea>
+    </label>
+
+    <button type="submit" id="guardar-despues">Guardar</button>
+  </form>
+
+  <section id="guardado-despues" class="guardado-despues" hidden></section>
+</main>
+
+<nav id="nav" class="nav" aria-label="Secciones"></nav>
+
+<script src="/comun.js"></script>
+<script src="/despues.js"></script>
+</body>
+</html>

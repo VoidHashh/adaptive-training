@@ -4,8 +4,28 @@
     {
       "name": "pwa",
       "runtimeExecutable": ".venv\\Scripts\\python.exe",
-      "runtimeArgs": ["-m", "uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8099"],
+      "runtimeArgs": [
+        "-m",
+        "uvicorn",
+        "app.api:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8099"
+      ],
       "port": 8099
+    },
+    {
+      "name": "estaticos",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8098",
+        "--directory",
+        "static"
+      ],
+      "port": 8098
     }
   ]
 }

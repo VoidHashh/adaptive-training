@@ -45,7 +45,7 @@
  * que salte nada. Ahora la ata `tests/test_pwa.py`, que guarda la huella del
  * armazón al lado de la versión y se pone rojo si el contenido se mueve y el
  * número no. */
-const VERSION = "v24";
+const VERSION = "v25";
 const CACHE = `armazon-${VERSION}`;
 
 /* TODO el armazón, no "lo principal".
@@ -70,11 +70,15 @@ const ARMAZON = [
   "/",
   "/index.html",
   "/metricas.html",
+  "/despues.html",
+  "/avanzado.html",
   "/styles.css",
   "/app.js",
   "/comun.js",
   "/graficos.js",
   "/metricas.js",
+  "/despues.js",
+  "/avanzado.js",
   "/manifest.webmanifest",
   "/icons/icon.svg",
   // El maskable va también, aunque no salga en ningún `<img>` de ningún HTML:

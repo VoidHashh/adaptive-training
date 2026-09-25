@@ -1924,8 +1924,16 @@ def sesion_hoy(
             fb.HECHO: fb.RESPUESTAS_HECHO,
             fb.FALTA: fb.RESPUESTAS_FALTA,
         },
-        "cantidad": fb.CANTIDAD,
-        "tecnica": fb.TECNICA,
+        "elecciones": fb.ELECCIONES,
+        "escalas": fb.escalas_con_manana(manana),
+        # Los textos que acompañan a los desplegables, por lo mismo que los
+        # enunciados: la pantalla no lleva ni una pregunta escrita.
+        "textos": {
+            "mas_costoso": fb.PREGUNTA_MAS_COSTOSO,
+            "falta": fb.PREGUNTA_FALTA,
+            "sin_problema": fb.SIN_PROBLEMA,
+            "ninguno": fb.NINGUNO_EN_ESPECIAL,
+        },
         "guardado": {
             "enviado": guardado is not None,
             "rpe": getattr(guardado, "rpe", None),

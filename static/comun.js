@@ -183,16 +183,42 @@ async function pedir(ruta, parametros = {}) {
  * CALIBRAR». Traducir eso a algo más llano sería quitarle el nombre que ya
  * tiene en la cabeza para ponerle uno que no ha usado nunca.
  */
+/* LA BARRA SON CUATRO, Y ESO ES UNA DECISIÓN (25/09/2026).
+ *
+ * Hasta aquí la barra llevaba una entrada por vista: nueve pestañas de las que
+ * seis hablaban en correlaciones, retardos y nombres internos de reglas. Para
+ * quien no ha construido el sistema eran ruido, y para quien sí, un scroll
+ * lateral en el móvil para llegar a la que buscaba.
+ *
+ * Las técnicas NO se han borrado. Viven en `AVANZADO`, detrás de una sola
+ * entrada, enteras y con sus tests. Borrarlas sería irreversible y no ganaría
+ * nada que no gane esconderlas; si dentro de un tiempo nadie abre Avanzado,
+ * esa será la prueba para quitarlas, y no una intuición de hoy. */
 const PANTALLAS = [
-  { href: "/", etiqueta: "Check-in", corta: "Hoy" },
+  { href: "/", etiqueta: "Hoy", corta: "Hoy" },
+  { href: "/despues.html", etiqueta: "Después", corta: "Después" },
   { href: "/metricas.html#portada", etiqueta: "Cómo vas", corta: "Cómo vas" },
-  { href: "/metricas.html#concordancia", etiqueta: "Concordancia", corta: "Coincide" },
-  { href: "/metricas.html#desfase", etiqueta: "Desfase", corta: "Retraso" },
-  { href: "/metricas.html#impacto", etiqueta: "Impacto", corta: "Efecto" },
-  { href: "/metricas.html#umbral", etiqueta: "El umbral de la bici", corta: "Umbral" },
-  { href: "/metricas.html#auditoria", etiqueta: "Auditoría", corta: "Motor" },
-  { href: "/metricas.html#percepcion", etiqueta: "Percepción", corta: "Real" },
-  { href: "/metricas.html#calibracion", etiqueta: "Calibración", corta: "Calibra" },
+  { href: "/avanzado.html", etiqueta: "Avanzado", corta: "Más" },
+];
+
+/* Lo que está detrás de «Más». Cada una lleva la pregunta que contesta en
+ * lenguaje llano, que es lo que permite elegir sin saber qué es una
+ * correlación: el título de la vista dice DE QUÉ va, esto dice PARA QUÉ. */
+const AVANZADO = [
+  { href: "/metricas.html#umbral", titulo: "Cuánta bici te pasa factura",
+    que: "A partir de qué salida lo nota tu cuerpo al día siguiente, y cuánto dura." },
+  { href: "/metricas.html#impacto", titulo: "Qué efecto tiene cada cosa",
+    que: "Qué le hace al cuerpo cada entreno uno, dos y tres días después." },
+  { href: "/metricas.html#concordancia", titulo: "Lo que notas y lo que mide el reloj",
+    que: "Si tus sensaciones van de la mano de lo que marca el reloj." },
+  { href: "/metricas.html#desfase", titulo: "¿Te adelantas al reloj?",
+    que: "Si notas las cosas antes o después de que el reloj las marque." },
+  { href: "/metricas.html#percepcion", titulo: "Lo que esperabas y lo que salió",
+    que: "Si la sesión salió como anunciaba la mañana." },
+  { href: "/metricas.html#auditoria", titulo: "Qué ha decidido el sistema",
+    que: "El color de cada día, y qué lo decidió." },
+  { href: "/metricas.html#calibracion", titulo: "Cuándo no estás de acuerdo",
+    que: "Las veces que le has llevado la contraria, y hacia qué lado." },
 ];
 
 /* La barra de abajo, pintada desde `PANTALLAS` y no escrita a mano en los dos
@@ -201,13 +227,31 @@ const PANTALLAS = [
 function pintarNav(activa) {
   const nav = $("nav");
   if (!nav) return;
+  // Una vista de Avanzado marca «Más» como activa. Sin esto, abrir una de ellas
+  // dejaba la barra sin ninguna pestaña encendida, y no se sabía dónde se
+  // estaba ni cómo volver.
+  const enAvanzado = !!activa && AVANZADO.some((a) => a.href.endsWith(activa));
   nav.innerHTML = PANTALLAS.map((p) => {
-    const sel = p.href === activa || (activa && p.href.endsWith(activa));
+    const sel = p.href === activa
+      || (activa && p.href.endsWith(activa))
+      || (enAvanzado && p.href === "/avanzado.html");
     return (
       `<a href="${escapar(p.href)}"${sel ? ' class="activa" aria-current="page"' : ""}>` +
       `${escapar(p.corta)}</a>`
     );
   }).join("");
+}
+
+/* La página de Avanzado, desde `AVANZADO`. Vive aquí y no en un fichero suyo
+ * por lo mismo que `pintarNav`: la lista y quien la pinta van juntas. */
+function pintarAvanzado() {
+  const cont = $("lista-avanzado");
+  if (!cont) return;
+  cont.innerHTML = AVANZADO.map((a) => `
+    <a class="tarjeta-avanzado" href="${escapar(a.href)}">
+      <span class="titulo-avanzado">${escapar(a.titulo)}</span>
+      <span class="que-avanzado">${escapar(a.que)}</span>
+    </a>`).join("");
 }
 
 // ---------------------------------------------------------------------------

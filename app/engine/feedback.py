@@ -307,3 +307,71 @@ def validar_mas_costoso(valor: Any, ejercicios: list[dict[str, Any]]) -> str | N
             f"({sorted(claves)})"
         )
     return valor
+
+
+# ---------------------------------------------------------------------------
+# Las cuatro escalas, con su pareja de la mañana
+# ---------------------------------------------------------------------------
+#
+# Viajan a la pantalla desde aquí, igual que los deslizadores del check-in salen
+# de `checkin_sliders`: la pantalla no lleva ni una etiqueta escrita. Si las
+# llevara, cambiar un texto aquí no cambiaría lo que se lee en el móvil.
+#
+# `pareja` es la columna del check-in de esa mañana con la que se compara. La
+# pantalla la enseña al lado -«esta mañana: 1»- porque el número de después
+# solo significa algo restado del de antes, y sin verlo el usuario contesta en
+# el vacío.
+
+ESCALAS: tuple[dict[str, Any], ...] = (
+    {"key": "rpe", "label": "Esfuerzo",
+     "hint_low": "suave", "hint_high": "al límite"},
+    {"key": "lower_discomfort_after", "label": "La espalda, ahora",
+     "hint_low": "sin molestias", "hint_high": "mucho dolor",
+     "pareja": "lower_discomfort"},
+    {"key": "training_desire_after", "label": "Ganas al acabar",
+     "hint_low": "ninguna", "hint_high": "muchas",
+     "pareja": "training_desire"},
+    {"key": "satisfaccion", "label": "A gusto",
+     "hint_low": "nada", "hint_high": "mucho"},
+)
+
+
+def escalas_con_manana(checkin_manana: Any) -> list[dict[str, Any]]:
+    """Las escalas, cada una con el valor de esa mañana si tiene pareja.
+
+    `manana` es `None` tanto si no hubo check-in como si esa pregunta se dejó
+    sin contestar, y la pantalla lo pinta igual -no pone nada-. No se inventa un
+    punto de partida: un «esta mañana: 5» que nadie contestó convertiría la
+    resta en una afirmación falsa.
+    """
+    salida = []
+    for e in ESCALAS:
+        d = dict(e)
+        pareja = e.get("pareja")
+        d["manana"] = getattr(checkin_manana, pareja, None) if pareja else None
+        salida.append(d)
+    return salida
+
+
+# ---------------------------------------------------------------------------
+# Los enunciados de las preguntas de elección
+# ---------------------------------------------------------------------------
+#
+# También viajan desde aquí, y no solo sus opciones. La primera versión de la
+# pantalla llevaba los enunciados escritos en `despues.js` mientras su propia
+# cabecera decía «NO LLEVA NI UNA PREGUNTA ESCRITA»: un comentario que mentía
+# en el mismo fichero que describía.
+#
+# «¿Te pareció corta o larga?» y no «¿Se te quedó corta?», que fue la primera:
+# vista en el móvil, la pregunta y su primera opción -«se me quedó corta»- se
+# repetían palabra por palabra.
+
+ELECCIONES: tuple[dict[str, Any], ...] = (
+    {"key": "cantidad", "enunciado": "¿Te pareció corta o larga?", "opciones": CANTIDAD},
+    {"key": "tecnica", "enunciado": "¿Aguantó la técnica?", "opciones": TECNICA},
+)
+
+PREGUNTA_MAS_COSTOSO = "¿Cuál te costó más?"
+PREGUNTA_FALTA = "¿Por qué?"
+SIN_PROBLEMA = "Sin problema"
+NINGUNO_EN_ESPECIAL = "Ninguno en especial"
