@@ -19,8 +19,12 @@ manifestVersion: 1
 # de la tienda privada. Umbrel lo comprueba en código
 # (`.filter(app => app.id.startsWith(meta.id))`) y una aplicación que no cumpla
 # NO APARECE en la tienda: no da error, simplemente no está en la lista.
-# Con una tienda cuyo `id` sea `roolez`, este id es el correcto.
-id: roolez-adaptive-training
+# La tienda es `VoidHashh/PlanB`, cuyo `umbrel-app-store.yml` declara
+# `id: planb`. De ahí el prefijo, que no describe la aplicación: describe la
+# tienda que la sirve. Se eligió esa tienda y no una nueva porque ya está dada
+# de alta en el Umbrel de destino, y una tienda nueva es otro repositorio más
+# que mantener para una sola aplicación.
+id: planb-adaptive-training
 name: Entrenamiento adaptativo
 version: "0.1.0"
 category: automation
@@ -41,10 +45,18 @@ description: >
   toca no se envía: el motor tiene un camino para las señales que faltan, y ese
   camino es mejor que un 5 inventado.
 
-developer: roolez
-website: https://github.com/roolez/adaptive-training
-repo: https://github.com/roolez/adaptive-training
-support: https://github.com/roolez/adaptive-training/issues
+developer: VoidHashh
+website: https://github.com/VoidHashh/adaptive-training
+repo: https://github.com/VoidHashh/adaptive-training
+support: https://github.com/VoidHashh/adaptive-training/issues
+
+# El icono va por URL COMPLETA y apunta al repositorio de la TIENDA, no al del
+# código. En la tienda oficial Umbrel reescribe estos nombres contra su propio
+# repositorio de imágenes; en una tienda privada no hay tal reescritura y un
+# nombre suelto -`icon.png`- no se resuelve contra nada: la aplicación sale con
+# el hueco gris. El fichero se sirve desde `raw.githubusercontent.com`, que
+# exige que el repositorio de la tienda sea público. Lo es.
+icon: https://raw.githubusercontent.com/VoidHashh/PlanB/main/planb-adaptive-training/icon.png
 
 dependencies: []
 
@@ -61,5 +73,5 @@ path: ""
 # Umbrel). Sin capturas que enseñar, se queda vacía.
 gallery: []
 
-submitter: roolez
-submission: https://github.com/roolez/adaptive-training
+submitter: VoidHashh
+submission: https://github.com/VoidHashh/adaptive-training

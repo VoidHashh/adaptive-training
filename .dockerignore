@@ -41,3 +41,7 @@ README*.md
 docs/
 scripts/
 umbrel/
+
+# El taller que construye la imagen no viaja dentro de ella. Mismo motivo que
+# `umbrel/`: describe el contenedor desde fuera y no pinta nada dentro.
+.github/

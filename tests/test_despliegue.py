@@ -408,6 +408,110 @@ def test_la_version_de_la_imagen_es_la_que_declara_el_proyecto(servidor):
 
 
 # ---------------------------------------------------------------------------
+# El taller que publica la imagen, y el nombre que nadie comparaba
+# ---------------------------------------------------------------------------
+
+
+TALLER = REPO_ROOT / ".github" / "workflows" / "docker.yml"
+
+
+def _taller() -> dict:
+    return _yaml(TALLER)
+
+
+def _paso_del_build() -> dict:
+    """El paso de `build-push-action`, que es el que publica de verdad."""
+    for paso in _taller()["jobs"]["build"]["steps"]:
+        if "build-push-action" in str(paso.get("uses", "")):
+            return paso
+    raise AssertionError(
+        "el taller ya no usa `docker/build-push-action`. Si se ha cambiado por "
+        "otra cosa, estos tests miran un paso que no existe y hay que "
+        "reescribirlos, no borrarlos"
+    )
+
+
+def _repositorio_de_ghcr() -> str:
+    """`<duenyo>/<repo>` en minúsculas, sacado del `repo:` del manifiesto.
+
+    De ahí y no de otro sitio porque es lo que el taller va a usar: publica en
+    `ghcr.io/${GITHUB_REPOSITORY,,}`, que es exactamente el `<dueño>/<repo>` de
+    la URL de este repositorio, en minúsculas. Leerlo del manifiesto tiene
+    además un efecto de rebote que vale la pena: hasta hoy `repo:` era un campo
+    decorativo -lo escribía el manifiesto y no lo leía nadie-, y un campo que
+    nadie lee es un campo que se queda viejo sin que se note.
+    """
+    url = str(_yaml(MANIFIESTO_UMBREL)["repo"]).rstrip("/")
+    m = re.search(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?$", url)
+    assert m, f"el `repo:` del manifiesto no parece una URL de GitHub: {url!r}"
+    return f"{m.group(1)}/{m.group(2)}".lower()
+
+
+def test_umbrel_instala_la_imagen_que_este_repositorio_publica(servidor):
+    """El hueco que encontró el banco de mutaciones (25/09/2026).
+
+    `test_la_version_de_la_imagen_es_la_que_declara_el_proyecto` compara la
+    ETIQUETA y tira el resto: hace `rpartition(":")` y se queda con lo de la
+    derecha. Cambiar `ghcr.io/voidhashh/adaptive-training` por
+    `ghcr.io/otro/adaptive-training` dejaba la batería entera en verde.
+
+    Eso importa desde que la imagen la publica un taller de GitHub Actions, que
+    empuja a `ghcr.io/${GITHUB_REPOSITORY,,}` y no a lo que diga este fichero.
+    Son dos sitios que deciden el mismo nombre y que nadie comparaba. El fallo
+    que sale de ahí no se ve al instalar -Umbrel descarga una imagen que existe
+    y arranca-: se ve cuando un arreglo publicado aquí no aparece nunca por allí.
+    """
+    nombre, _, _ = str(servidor["image"]).rpartition(":")
+    esperado = f"ghcr.io/{_repositorio_de_ghcr()}"
+    assert nombre == esperado, (
+        f"el compose de Umbrel instala {nombre!r} y el taller publica en "
+        f"{esperado!r} (de `repo:` del `umbrel-app.yml`). Umbrel se traería una "
+        f"imagen que este repositorio no construye"
+    )
+
+
+def test_el_taller_publica_la_etiqueta_que_umbrel_instala():
+    """Que la etiqueta exista en el registro, no solo en el compose.
+
+    El compose instala `:<versión de pyproject>`. Si el taller solo publicara
+    `:latest` -que es lo primero que uno escribe-, la instalación fallaría al
+    hacer `pull` con un «manifest unknown», y en la interfaz de Umbrel eso es un
+    error genérico de instalación sin ningún sitio donde leer la causa.
+    """
+    etiquetas = str(_paso_del_build()["with"]["tags"]).split()
+    _, _, version = str(_yaml(COMPOSE_UMBREL)["services"]["server"]["image"]).rpartition(":")
+    assert any(e.endswith(f":{version}") or "steps.version.outputs.v" in e for e in etiquetas), (
+        f"el compose instala la etiqueta {version!r} y el taller publica "
+        f"{etiquetas!r}. Umbrel pediría una etiqueta que no está en el registro"
+    )
+
+
+def test_el_taller_pasa_las_marcas_que_el_dockerfile_declara():
+    """Sin esto, `/api/health` miente sobre qué código está corriendo.
+
+    El `Dockerfile` declara `BUILD_SHA` y `BUILD_DATE` y los deja vacíos sin
+    protestar -es deliberado: prefiere decir «no se sabe» a inventarse un
+    valor-. El precio es que olvidarlos en el taller no rompe nada: la imagen
+    construye, arranca, y `/api/health` contesta sin `build`. Y esa es la única
+    pregunta que se hace después de CADA arreglo, porque la etiqueta lleva
+    congelada desde el primer día y no la puede contestar.
+    """
+    declarados = set(re.findall(r"^\s*ARG\s+(BUILD_\w+)", _dockerfile(), re.M))
+    assert declarados, "el Dockerfile ya no declara ningún `ARG BUILD_*`"
+    pasados = {
+        linea.split("=", 1)[0].strip()
+        for linea in str(_paso_del_build()["with"]["build-args"]).splitlines()
+        if "=" in linea
+    }
+    faltan = declarados - pasados
+    assert not faltan, (
+        f"el Dockerfile declara {sorted(declarados)} y el taller solo pasa "
+        f"{sorted(pasados)}. Sin {sorted(faltan)}, `/api/health` no puede decir "
+        f"qué commit está corriendo"
+    )
+
+
+# ---------------------------------------------------------------------------
 # `.dockerignore`: lo que entra y lo que no puede entrar
 # ---------------------------------------------------------------------------
 

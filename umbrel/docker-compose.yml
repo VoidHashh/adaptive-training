@@ -28,20 +28,34 @@ services:
       # `<id-de-la-aplicación>_<servicio>_1` y lo inyecta él mismo, por eso aquí
       # abajo no hay ningún `container_name`. Si este nombre no coincide, el
       # proxy no encuentra nada y la aplicación sale en blanco.
-      APP_HOST: roolez-adaptive-training_server_1
+      APP_HOST: planb-adaptive-training_server_1
       APP_PORT: 8000
 
   server:
-    # Imagen ya construida, con el digest fijado.
+    # Imagen ya construida. La publica `.github/workflows/docker.yml` en cada
+    # empujón a la rama por defecto; aquí no se construye nada.
     #
-    # Se fija el digest del ÍNDICE multiarquitectura (el que sale de
-    # `docker buildx imagetools inspect`), no el de una arquitectura suelta: el
-    # mismo compose tiene que servir para un Umbrel de Raspberry (arm64) y para
-    # uno x86.
+    # POR ETIQUETA Y NO POR DIGEST, Y ESO ES UNA DECISIÓN (25/09/2026)
+    # ----------------------------------------------------------------
+    # Aquí ponía «fijar el digest del índice multiarquitectura», con el
+    # razonamiento de que el mismo compose tenía que servir para un Umbrel de
+    # Raspberry y para uno x86. El Umbrel de destino es x86_64 -comprobado-, el
+    # taller construye solo `linux/amd64`, y no hay índice multiarquitectura que
+    # fijar: el motivo que pedía el digest ya no existe.
     #
-    # PENDIENTE: sustituir por la imagen y el digest reales una vez publicada.
-    # Ver `umbrel/README.md`.
-    image: ghcr.io/roolez/adaptive-training:0.1.0
+    # Y fijarlo igualmente tendría un coste que no se ve: el taller reescribe
+    # esta etiqueta en CADA empujón, así que un digest clavado aquí envejece al
+    # commit siguiente. Un digest viejo no falla -eso sería lo bueno-: instala
+    # en silencio el código de hace tres semanas, y desde el móvil eso se parece
+    # exactamente a la aplicación funcionando.
+    #
+    # Lo que contesta «¿qué código está corriendo?» es `BUILD_SHA`, que el
+    # taller pasa como `--build-arg` y `/api/health` devuelve. La etiqueta no
+    # tiene que contestarlo, y por eso puede estar quieta.
+    #
+    # La etiqueta la ata `tests/test_despliegue.py` a la versión de
+    # `pyproject.toml`: se mueven las cuatro a la vez o el test se pone rojo.
+    image: ghcr.io/voidhashh/adaptive-training:0.1.0
     restart: on-failure
     stop_grace_period: 1m
 

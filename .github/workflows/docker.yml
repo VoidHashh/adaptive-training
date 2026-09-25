@@ -1,0 +1,92 @@
+# Publica la imagen en ghcr.io en cada empujón a la rama por defecto.
+#
+# POR QUÉ AQUÍ Y NO EN EL PC (25/09/2026)
+# ---------------------------------------
+# `umbrel/README.md` mandaba construir y empujar a mano desde el portátil. Eso
+# exige un `docker login ghcr.io` con un token de paquetes guardado en la
+# máquina, y sobre todo hace que la imagen publicada dependa de QUÉ había en el
+# disco de quien la construyó: un fichero sin commitear entra en la imagen y no
+# está en el repositorio, y entonces el `BUILD_SHA` que enseña `/api/health`
+# MIENTE -dice un commit que no describe lo que está corriendo-. Construyendo
+# aquí, el contexto es exactamente el árbol del commit, sin excepción posible.
+#
+# El `GITHUB_TOKEN` de abajo lo fabrica Actions para esta ejecución y caduca con
+# ella. No hay ningún secreto que crear ni que rotar.
+name: build-image
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ghcr.io exige el nombre del repositorio en minúsculas y el de aquí
+      # lleva mayúsculas (`VoidHashh`). Sin esto el push falla con un 403 que
+      # parece de permisos y es de ortografía.
+      - name: Nombre del repositorio en minusculas
+        id: repo
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      # La versión sale de `pyproject.toml` y de ningún otro sitio.
+      # `tests/test_despliegue.py` ata esa versión con la etiqueta que instala
+      # `umbrel/docker-compose.yml`, con `umbrel-app.yml` y con el compose de la
+      # raíz. Si se leyera de aquí serían cinco sitios en vez de cuatro, y el
+      # quinto sin test.
+      - name: Version declarada por el proyecto y fecha del build
+        id: version
+        run: |
+          v=$(python -c "import tomllib;print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "v=$v" >> "$GITHUB_OUTPUT"
+          echo "fecha=$(date -Iseconds)" >> "$GITHUB_OUTPUT"
+
+      # Sin esto el runner construye con el driver `docker`, que NO sabe exportar
+      # caché (`cache-to: type=gha` de abajo) y aborta el paso con un error que
+      # habla de la caché y no de que falte este paso. Es también lo que hace
+      # falta el día que se añada `linux/arm64`.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Solo `linux/amd64`. El Umbrel de destino es x86_64 -comprobado con
+      # `uname -m`-, y añadir `linux/arm64` significa compilar `uvloop` y
+      # `httptools` bajo emulación QEMU: son los dos paquetes sin rueda para ARM
+      # que justifican el `build-essential` del Dockerfile, y emulados tardan
+      # más que todo lo demás junto. El día que haya un Umbrel de Raspberry
+      # delante, se añade la plataforma aquí y se acepta el build lento.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          # TRES etiquetas, y cada una contesta una pregunta distinta:
+          #   - la versión: es la que instala Umbrel, y la que el test compara
+          #     con `pyproject.toml`. Se sobrescribe en cada empujón a propósito
+          #     (ver `umbrel/docker-compose.yml`).
+          #   - `latest`: para un `docker run` rápido sin mirar versiones.
+          #   - el SHA: la ÚNICA que no se mueve nunca. Es a la que se vuelve
+          #     cuando hay que reinstalar exactamente lo de antes de un cambio.
+          tags: |
+            ghcr.io/${{ steps.repo.outputs.name }}:${{ steps.version.outputs.v }}
+            ghcr.io/${{ steps.repo.outputs.name }}:latest
+            ghcr.io/${{ steps.repo.outputs.name }}:${{ github.sha }}
+          # Los dos que el Dockerfile declara y deja vacíos sin protestar. Sin
+          # ellos `/api/health` no puede decir qué código está corriendo, que es
+          # la pregunta que se hace después de cada arreglo.
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ steps.version.outputs.fecha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

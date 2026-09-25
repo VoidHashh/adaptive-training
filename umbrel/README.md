@@ -17,71 +17,73 @@ contenedor se llega solo por el proxy.
 
 ## 1. Publicar la imagen
 
-Umbrel instala, no compila: rechaza `build:` a propósito. Hace falta una imagen
-ya construida en un registro.
+**Esto ya no se hace a mano.** `.github/workflows/docker.yml` construye y
+publica la imagen en cada empujón a `main`, con el `GITHUB_TOKEN` que Actions
+fabrica para esa ejecución: no hay ningún `docker login ghcr.io` que hacer en el
+portátil, ni un token de paquetes que guardar y rotar.
 
-```bash
-docker login ghcr.io
-docker buildx build --platform linux/amd64,linux/arm64 \
-  --build-arg BUILD_SHA="$(git rev-parse --short HEAD)" \
-  --build-arg BUILD_DATE="$(date -Iseconds)" \
-  -t ghcr.io/<usuario>/adaptive-training:0.1.0 --push .
-docker buildx imagetools inspect ghcr.io/<usuario>/adaptive-training:0.1.0
-```
+Aquí ponía el `docker buildx ... --push` desde el PC, y se ha quitado por algo
+más que comodidad: construyendo en local, la imagen sale del DISCO de quien la
+construye, no del commit. Un fichero a medio editar entra en la imagen sin estar
+en el repositorio, y entonces el `BUILD_SHA` que enseña `/api/health` miente:
+señala un commit que no describe lo que está corriendo. En el taller el contexto
+es el árbol del commit y no puede ser otra cosa.
 
-Los dos `--build-arg` no son opcionales en la práctica, aunque el `Dockerfile`
-los deje vacíos sin protestar. La etiqueta `0.1.0` **no se mueve entre
-versiones**: es el mismo texto desde hace decenas de cambios, así que sin esta
-marca «¿está corriendo el arreglo de ayer?» no se puede contestar mirando el
-sistema, y esa pregunta se hace después de cada arreglo. Con ella, `/api/health`
-devuelve el `build` y se contesta desde el móvil.
+Se publican tres etiquetas y cada una contesta una pregunta distinta:
 
-Las dos arquitecturas están comprobadas: la imagen construye y arranca en
-`linux/arm64` (Raspberry, Umbrel Home) y en `linux/amd64`. `uvloop` y
-`httptools` compilan en las dos —es lo que hace el `build-essential` de la
-primera etapa del `Dockerfile`—.
+| Etiqueta | Para qué |
+|----------|----------|
+| `:0.1.0` (la de `pyproject.toml`) | La que instala Umbrel. Se sobrescribe en cada empujón. |
+| `:latest` | Un `docker run` rápido sin mirar versiones. |
+| `:<sha>` | La única que no se mueve nunca. A la que se vuelve para reinstalar exactamente lo de antes de un cambio. |
 
-Del `imagetools inspect` se copia el digest **del índice** (el de arriba, el
-multiarquitectura), no el de una arquitectura suelta, y se fija en el
-`docker-compose.yml`:
+Para ver si el taller ha terminado y con qué:
+<https://github.com/VoidHashh/adaptive-training/actions>
 
-```yaml
-image: ghcr.io/<usuario>/adaptive-training:0.1.0@sha256:<digest-del-índice>
-```
+**La primera vez, el paquete nace privado.** GitHub crea el paquete de `ghcr.io`
+con la visibilidad en privado aunque el repositorio sea público, y el Umbrel no
+podrá descargarlo: la instalación falla al hacer `pull`. Se arregla una sola vez
+en <https://github.com/users/VoidHashh/packages/container/adaptive-training/settings>
+→ *Change visibility* → **Public**.
 
-> Si el repositorio es privado hay que hacer `docker login ghcr.io` **en el
-> Umbrel** antes de instalar, o la instalación falla al descargar.
+> Solo `linux/amd64`. El Umbrel de destino es x86_64; añadir `linux/arm64`
+> significa compilar `uvloop` y `httptools` bajo emulación QEMU —los dos
+> paquetes sin rueda para ARM que justifican el `build-essential` del
+> `Dockerfile`— y eso tarda más que todo lo demás junto. El día que haya un
+> Umbrel de Raspberry delante, se añade la plataforma al taller.
 
-## 2. La tienda privada
+## 2. La tienda
 
-Se parte de un fork de `getumbrel/umbrel-community-app-store`. En la raíz:
-
-```yaml
-# umbrel-app-store.yml
-id: "roolez"
-name: "Roolez"
-```
-
-Y un directorio por aplicación:
-
-```
-roolez-adaptive-training/
-  umbrel-app.yml
-  docker-compose.yml
-```
+La aplicación vive en la tienda que ya está dada de alta en este Umbrel:
+**<https://github.com/VoidHashh/PlanB>**, cuyo `umbrel-app-store.yml` declara
+`id: planb`. No hay nada que añadir en la interfaz de Umbrel.
 
 **El `id` de la aplicación tiene que empezar por el `id` de la tienda.** Umbrel
-lo comprueba en código; una aplicación que no cumpla no da error, simplemente
-**no aparece** en la lista. Si la tienda se llama de otra forma, hay que cambiar
-a la vez el `id:` del `umbrel-app.yml` y el `APP_HOST` del compose, que lo
-incluye:
+lo comprueba en código (`.filter(app => app.id.startsWith(meta.id))`) y una
+aplicación que no cumpla **no da error: simplemente no aparece en la lista**. De
+ahí `planb-adaptive-training`, un prefijo que no describe la aplicación sino la
+tienda que la sirve.
 
-```yaml
-APP_HOST: <id-de-la-aplicación>_server_1
+En ese repositorio hay que dejar una carpeta con tres ficheros, que es
+exactamente lo que ya tienen `planb-panel` y `planb-bitstatus`:
+
+```
+planb-adaptive-training/
+  umbrel-app.yml       <- copia de umbrel/umbrel-app.yml de este repositorio
+  docker-compose.yml   <- copia de umbrel/docker-compose.yml de este repositorio
+  icon.png             <- 1024x1024, el mismo formato que las otras dos
 ```
 
-Luego, en la interfaz de Umbrel: **App Store → … → Community App Stores**, y se
-pega la URL del fork.
+Los dos YAML son **copias**, y eso es una duplicación real: el original vive
+aquí, donde `tests/test_despliegue.py` los ata al `Dockerfile` y a
+`pyproject.toml`; la copia vive allí, donde Umbrel los lee. Al cambiar
+cualquiera de los dos hay que copiarlos otra vez, y no hay ningún test que avise
+si no se hace, porque el test no ve el otro repositorio.
+
+El `icon.png` va en la tienda y no aquí: el campo `icon:` del manifiesto es una
+URL completa a `raw.githubusercontent.com`. En la tienda oficial Umbrel reescribe
+esos nombres contra su propio repositorio de imágenes; en una privada no hay tal
+reescritura, y un nombre suelto deja la aplicación con el hueco gris.
 
 ## 3. Los ficheros que van en `${APP_DATA_DIR}`
 
@@ -90,12 +92,12 @@ dos cosas **antes de abrir la aplicación**:
 
 ```bash
 ssh umbrel@<host>
-APP=~/umbrel/app-data/roolez-adaptive-training
+APP=~/umbrel/app-data/planb-adaptive-training
 mkdir -p "$APP/data"
 
 # Las reglas. Sin esto, Docker crea un DIRECTORIO llamado config.yaml,
 # `load_config` no encuentra ningún YAML y el contenedor no levanta.
-curl -fsSL https://raw.githubusercontent.com/<usuario>/adaptive-training/master/config.yaml \
+curl -fsSL https://raw.githubusercontent.com/VoidHashh/adaptive-training/main/config.yaml \
   -o "$APP/config.yaml"
 
 # Los secretos.
@@ -134,8 +136,8 @@ un formulario que se envía y no hace nada.
 
 ```bash
 ssh umbrel@<host>
-docker ps --filter name=roolez-adaptive-training
-docker exec roolez-adaptive-training_server_1 \
+docker ps --filter name=planb-adaptive-training
+docker exec planb-adaptive-training_server_1 \
   python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health')))"
 ```
 
@@ -182,9 +184,24 @@ así es una línea.
 
 ## 6. Actualizar
 
-Se publica una imagen nueva con su etiqueta, se cambia `version:` en el
-`umbrel-app.yml` y `image:` en el compose, y se actualiza desde la interfaz de
-Umbrel.
+El taller publica una imagen en cada empujón, pero **Umbrel no se entera solo**,
+y esa es la parte que hay que tener clara:
+
+- La etiqueta que instala el compose (`:0.1.0`) se sobrescribe en cada empujón.
+  Un Umbrel que ya la descargó **no vuelve a descargarla**: sigue corriendo el
+  código de la instalación, aunque en `ghcr.io` haya otro detrás del mismo
+  nombre. Desde fuera se parece a la aplicación funcionando, que es exactamente
+  el modo de fallo que este proyecto persigue.
+- Para que se entere hay que **subir la versión**: `pyproject.toml`, `image:` del
+  compose de Umbrel, `version:` del `umbrel-app.yml` y `image:` del compose de la
+  raíz. Los cuatro a la vez; `tests/test_despliegue.py` se pone rojo si falta uno.
+- Luego hay que **copiar los dos YAML a `VoidHashh/PlanB`** (sección 2). Umbrel
+  lee de la tienda, no de aquí. Si se sube la versión y no se copia, la interfaz
+  de Umbrel no ofrece ninguna actualización y todo parece en orden.
+
+Y para contestar «¿está corriendo lo de hoy?» sin fiarse de nada de lo anterior,
+`/api/health` devuelve el `build`, que es el SHA del commit que construyó la
+imagen. Esa es la respuesta buena, y se lee desde el móvil.
 
 La base de datos se pone al día sola cuando los cambios son seguros. Cuando no
 lo son **se niega a arrancar y dice exactamente qué migrar a mano**: seguir

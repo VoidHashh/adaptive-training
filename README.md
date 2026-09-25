@@ -467,8 +467,8 @@ En Umbrel no hay `localhost:8000` -el contenedor no publica puertos-, así que s
 pregunta desde dentro:
 
 ```bash
-docker logs -f --tail=100 roolez-adaptive-training_server_1
-docker exec roolez-adaptive-training_server_1 \
+docker logs -f --tail=100 planb-adaptive-training_server_1
+docker exec planb-adaptive-training_server_1 \
   python -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health')))"
 ```
 
@@ -495,7 +495,7 @@ la apaga después de un susto. Probado contra Hevy de verdad, ida y vuelta.
 
 Va por nombre de contenedor y no por `docker compose exec` para que el comando
 sea **el mismo en los dos despliegues**; en Umbrel el nombre es
-`roolez-adaptive-training_server_1`. Es deliberado: un comando de emergencia que
+`planb-adaptive-training_server_1`. Es deliberado: un comando de emergencia que
 depende de acertar con qué `-f` se levantó esto es un comando que va a fallar
 justo el día que haga falta.
 
