@@ -341,6 +341,30 @@ def test_una_base_anterior_a_la_adopcion_de_cargas_se_pone_al_dia(vieja, tmp_pat
     )
 
 
+def test_los_entrenos_de_antes_del_cierre_del_dia_nacen_cerrados(vieja, tmp_path):
+    """`workout_log.cerrado`, contra una base con entrenos ya reconciliados.
+
+    El código de antes del 25/09/2026 movía rachas y pesos en cuanto un entreno
+    llegaba. Esas filas YA aplicaron sus efectos: si la columna nueva entrara a
+    0, el primer cierre de cada día las aplicaría otra vez y cada racha contaría
+    doble, en una espalda con hernia. Por eso el defecto de la base es 1 y el
+    del código, para las filas nuevas, es 0.
+    """
+    vieja.envejecer("workout_log", {"cerrado"})
+    with vieja.begin() as c:
+        c.execute(text(
+            "INSERT INTO workout_log (hevy_workout_id, date, routine_key, unplanned) "
+            "VALUES ('w-viejo', '2026-09-22', 'dia_2', 0)"
+        ))
+
+    cambios = ensure_schema(vieja)
+    assert any("cerrado" in x for x in cambios), cambios
+
+    with vieja.begin() as c:
+        fila = list(c.execute(text("SELECT cerrado FROM workout_log")))
+    assert fila == [(1,)], f"un entreno de antes ha nacido abierto: {fila}"
+
+
 def test_una_base_anterior_al_backfill_aprende_a_marcar_lo_recuperado(vieja, tmp_path):
     """`daily_metrics.recovered_at`, contra una base que ya tiene wellness.
 

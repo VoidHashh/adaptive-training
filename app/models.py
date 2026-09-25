@@ -785,6 +785,23 @@ class WorkoutLog(Base):
     # para que un envío fallido no consuma el aviso.
     reported_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # ¿Ha pasado ya por el cierre de su día? Ver `runner.run_reconcile`.
+    #
+    # Hasta el 25/09/2026 cada entreno movía rachas y pesos en cuanto llegaba, y
+    # nunca más. Eso perdía tres cosas: el formulario de después -abrirlo ya
+    # reconciliaba, así que «lo hice y no lo apunté» llegaba tarde siempre-, la
+    # segunda mitad de una sesión partida -se evaluaba sola contra el plan
+    # entero- y las correcciones de pesos hechas en Hevy esa misma tarde. Ahora
+    # llegar es solo apuntarse; los efectos se aplican una vez, al cerrar el día.
+    #
+    # LOS DOS DEFECTOS SON DISTINTOS, Y ESE ES EL TRUCO DE LA MIGRACIÓN.
+    # `default=False` es para las filas que escribe el código: nacen abiertas.
+    # `server_default="1"` es para las que ya estaban cuando `ensure_schema`
+    # añade la columna: esas ya movieron rachas y pesos con el código viejo, y
+    # tienen que nacer cerradas. Con un defecto de 0 en la base, el primer
+    # cierre las habría aplicado otra vez, y cada racha habría contado doble.
+    cerrado: Mapped[bool] = mapped_column(Boolean, default=False, server_default="1")
+
     raw_json: Mapped[str | None] = mapped_column(Text)
     # `onupdate` por lo mismo que en `daily_metrics` y en `activities`: la fila
     # de un entreno se reescribe cuando la reconciliación lo vuelve a mirar, y

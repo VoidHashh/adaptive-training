@@ -443,8 +443,9 @@ def ventana_de_reconciliacion(
     recupera de verdad, y lo que quede más atrás es trabajo de un relleno a
     mano (`POST /api/reconcile`), que es donde ese problema se puede mirar.
 
-    `run_reconcile` es idempotente -`workout_log.hevy_workout_id` es único-, así
-    que repasar días ya cerrados no cuenta nada dos veces.
+    `run_reconcile` es idempotente -`workout_log.hevy_workout_id` es único para
+    apuntar y `workout_log.cerrado` para cerrar-, así que repasar días ya
+    cerrados no cuenta nada dos veces.
     """
     if ultimo_cierre is None:
         from app.models import JobRun

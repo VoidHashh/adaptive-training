@@ -257,6 +257,13 @@ mueven las cargas:
   cadena posterior -que pide dos limpias seguidas- a empezar de cero. Solo ese
   caso: una serie de en medio corta, una de menos o un peso por debajo siguen
   rompiendo la racha.
+- **Rachas y pesos se mueven al cerrar el día, no al llegar cada entreno.**
+  Llegar es solo apuntarse; el día se cierra cuando ha terminado -a la mañana
+  siguiente, antes de decidir- con todos sus entrenos, el formulario de después
+  y la versión de Hevy de ese momento. Así cuenta «lo hice y no lo apunté»,
+  una sesión partida en dos se evalúa entera, y un peso corregido en Hevy esa
+  misma tarde entra. Lo corregido DESPUÉS del cierre no entra, y un entreno que
+  llega con el día ya cerrado se apunta sin mover nada.
 - **El HIIT cuenta por lo que se hizo, no por la rutina.** Al fusionar el HIIT
   del Día 2 en el Día 2, el recuento de sesiones intensas dejó de ver sus
   intervalos, y también los «Día 2 HIIT» ya hechos. Ahora un entreno cuenta

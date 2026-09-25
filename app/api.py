@@ -1914,6 +1914,10 @@ def sesion_hoy(
 
     day = day or date.today()
     hevy, _tg, motivos = _clientes(cfg)
+    # Hoy SOLO SE APUNTA: desde el 25/09/2026 el día se cierra cuando termina, y
+    # por eso lo que se conteste en este formulario llega al cierre. Antes esta
+    # misma llamada cerraba el día y el formulario llegaba tarde siempre.
+    #
     # Idempotente y no lanza: si Hevy no contesta, se sigue con lo que hubiera
     # en la base y se dice por qué. Es el mismo camino que usa el check-in de la
     # mañana, no un segundo lector de Hevy que pueda discrepar del primero.

@@ -1141,6 +1141,128 @@ def test_reconciliar_dos_veces_no_cuenta_dos_veces(db, cfg):
     assert segunda == primera, "la racha ha avanzado dos veces con un solo entrenamiento"
 
 
+# ---------------------------------------------------------------------------
+# Apuntar al llegar, cerrar el día una vez (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Cada entreno movía rachas y pesos en cuanto llegaba. Una revisión externa
+# encontró tres cosas que eso perdía, y las tres se reproducen aquí: el
+# formulario de después (abrirlo ya reconciliaba), la segunda mitad de una
+# sesión partida y la corrección de un peso hecha en Hevy esa misma tarde.
+
+MARTES = LUNES + timedelta(days=1)
+
+
+def _rachas(db, cfg):
+    return dict(load_state(db, program_start=cfg.program_start).clean_sessions)
+
+
+def test_un_dia_sin_terminar_se_apunta_y_no_mueve_nada(db, cfg):
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    w = _entrenamiento_completo(_plan_guardado(db))
+    antes = _rachas(db, cfg)  # la mañana ya guarda las rachas, a cero
+
+    res = run_reconcile(db, cfg, LUNES, workouts=[w], hoy=LUNES)
+
+    assert not res.avanzado
+    assert _rachas(db, cfg) == antes, "el día no ha terminado y ya ha movido rachas"
+    (fila,) = db.scalars(select(WorkoutLog)).all()
+    assert fila.cerrado is False and fila.all_sets_at_target is None
+
+    cerrado = run_reconcile(db, cfg, LUNES, workouts=[w], hoy=MARTES)
+    assert cerrado.avanzado, cerrado.motivo
+    assert any(v > 0 for v in _rachas(db, cfg).values())
+    db.refresh(fila)
+    assert fila.cerrado is True and fila.all_sets_at_target is True
+
+
+def test_lo_hecho_sin_apuntar_cuenta_aunque_despues_se_abriera_antes(db, cfg):
+    """El fallo 1: abrir «Después» apuntaba Y cerraba, y el formulario llegaba
+    tarde siempre. Ahora abrirlo solo apunta, y el cierre lee lo contestado."""
+    import json as _json
+
+    from app import repository as repo
+    from app.engine.feedback import HECHO_SIN_APUNTAR
+
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    falta = plan["exercises"][0]
+    w = _entrenamiento_completo(plan)
+    w["exercises"] = [
+        e for e in w["exercises"] if e["exercise_template_id"] != falta.get("template_id")
+    ]
+
+    run_reconcile(db, cfg, LUNES, workouts=[w], hoy=LUNES)  # abrir «Después»
+    repo.guardar_feedback(db, LUNES, ejercicios_json=_json.dumps(
+        [{"key": falta["key"], "respuesta": HECHO_SIN_APUNTAR}]
+    ))
+    run_reconcile(db, cfg, LUNES, workouts=[w], hoy=MARTES)  # la mañana siguiente
+
+    assert _rachas(db, cfg).get(("dia_1", falta["key"])) == 1, (
+        "«lo hice y no lo apunté» no ha contado: el día se cerró sin leerlo"
+    )
+
+
+def test_una_sesion_partida_se_evalua_entera_al_cerrar(db, cfg):
+    """El fallo 2: la segunda mitad se evaluaba sola contra el plan entero. Lo
+    hecho en la primera contaba como no hecho y el día movía las rachas dos
+    veces."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    completo = _entrenamiento_completo(_plan_guardado(db))
+    mitad = len(completo["exercises"]) // 2
+    rato1 = {**copy.deepcopy(completo), "id": "rato1",
+             "exercises": copy.deepcopy(completo["exercises"][:mitad])}
+    rato2 = {**copy.deepcopy(completo), "id": "rato2",
+             "exercises": copy.deepcopy(completo["exercises"][mitad:])}
+
+    run_reconcile(db, cfg, LUNES, workouts=[rato1], hoy=LUNES)
+    run_reconcile(db, cfg, LUNES, workouts=[rato1, rato2], hoy=LUNES)
+    run_reconcile(db, cfg, LUNES, workouts=[rato1, rato2], hoy=MARTES)
+
+    rachas = _rachas(db, cfg)
+    assert rachas and all(v == 1 for v in rachas.values()), (
+        f"la sesión partida no ha contado una vez y entera: {rachas}"
+    )
+
+
+def test_una_correccion_en_hevy_antes_de_cerrar_entra(db, cfg):
+    """El fallo 4, en la parte que se arregla: un peso corregido en Hevy antes
+    del cierre. Corregido después del cierre sigue sin entrar, y está dicho."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    ex = _primer_ejercicio_con_peso(plan)
+    tope = max(float(s.get("weight_kg") or 0) for s in ex["sets"])
+    v1 = _entrenamiento_completo(plan)
+    v2 = copy.deepcopy(v1)
+    for e in v2["exercises"]:
+        if e["exercise_template_id"] == ex.get("template_id"):
+            for s in e["sets"]:
+                if s.get("weight_kg"):
+                    s["weight_kg"] = round(s["weight_kg"] + 2.5, 2)
+
+    run_reconcile(db, cfg, LUNES, workouts=[v1], hoy=LUNES)
+    res = run_reconcile(db, cfg, LUNES, workouts=[v2], hoy=MARTES)
+
+    subida = [a for a in res.adopciones if a["key"] == ex["key"] and a["applied"]]
+    assert subida and subida[0]["after_kg"] == tope + 2.5, res.adopciones
+
+
+def test_lo_que_llega_con_el_dia_cerrado_se_apunta_sin_mover_nada(db, cfg):
+    """Reabrir el día exigiría deshacer rachas y pesos que otros días ya usaron;
+    evaluarlo solo es el fallo 2 otra vez. Se apunta y se dice."""
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    completo = _entrenamiento_completo(_plan_guardado(db))
+    tarde = {**copy.deepcopy(completo), "id": "tarde"}
+
+    run_reconcile(db, cfg, LUNES, workouts=[completo], hoy=MARTES)
+    antes = _rachas(db, cfg)
+    res = run_reconcile(db, cfg, LUNES, workouts=[completo, tarde], hoy=MARTES)
+
+    assert _rachas(db, cfg) == antes
+    assert "ya cerrado" in res.motivo
+    assert all(f.cerrado for f in db.scalars(select(WorkoutLog)).all())
+
+
 def test_reconciliar_no_borra_las_reglas_activas(db, cfg):
     """La trampa de llamar a `advance_state` con una decisión rehidratada.
 
@@ -2593,9 +2715,14 @@ def _seis_semanas(db, cfg, *, reconciliar: bool) -> _Simulacion:
         if plan.get("exercises"):
             rutinas[str(plan.get("routine"))] += 1
             if reconciliar:
+                # `hoy` al día siguiente: la simulación cierra cada día antes de
+                # decidir el otro, como la mañana de verdad. Sin él la fecha real
+                # decidía qué días se cerraban, y los posteriores al 25/09/2026
+                # quedaban apuntados y sin mover rachas.
                 run_reconcile(
                     db, cfg, d,
                     workouts=[_entrenamiento_completo(plan, wid=f"w{i}", day=d)],
+                    hoy=d + timedelta(days=1),
                 )
     # EL `if` DE ARRIBA ES UNA PUERTA QUE PUEDE CERRARSE SOLA.
     # Los 42 días de esta simulación son verdes por construcción -el check-in va

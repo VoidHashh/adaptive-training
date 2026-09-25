@@ -32,6 +32,12 @@ sesión fantasma.
 
 from __future__ import annotations
 
+# `json` faltaba y nadie lo notó desde el 25/09/2026 por la mañana: la única
+# línea que lo usaba -leer el formulario de después al reconciliar- solo se
+# alcanzaba con un formulario guardado Y entrenos sin contar, y abrir el propio
+# formulario ya los contaba. Un fallo tapado por otro. Lo destapó el test del
+# cierre del día, que es el primero que junta las dos cosas.
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -1214,15 +1220,31 @@ def run_reconcile(
     day: date,
     *,
     workouts: list[dict[str, Any]],
+    hoy: date | None = None,
 ) -> ReconcileResult:
-    """Cuenta lo que se hizo de verdad y avanza las rachas.
+    """Apunta lo que se hizo y, si el día ya ha terminado, lo cierra una vez.
 
-    ES IDEMPOTENTE, y no por elegancia. Este job se ejecuta cada noche, se
-    reintenta si falla y se puede lanzar a mano; si contara dos veces el mismo
-    entrenamiento, la racha avanzaría el doble y el ejercicio subiría de peso
-    antes de tiempo, sin ningún error visible y en una espalda con hernia. El
-    seguro es `workout_log.hevy_workout_id`, que es único: un entrenamiento ya
-    registrado no vuelve a contar.
+    DOS TIEMPOS DESDE EL 25/09/2026. Llegar es solo APUNTARSE: la fila de
+    `workout_log`, que es lo que lee la rotación y la pantalla de después.
+    Mover rachas y pesos es CERRAR EL DÍA, y pasa una vez, cuando `day` es
+    anterior a `hoy`, con TODOS los entrenos del día y el formulario de
+    después. Antes cada entreno movía rachas y pesos en cuanto llegaba, y eso
+    perdía tres cosas:
+
+      - el formulario: abrir «Después» ya reconciliaba, así que «lo hice y no
+        lo apunté» llegaba tarde siempre y no corregía nada;
+      - la segunda mitad de una sesión partida, que se evaluaba sola contra el
+        plan entero: lo hecho en la primera contaba como no hecho, y el día
+        movía las rachas dos veces;
+      - lo corregido en Hevy esa misma tarde, porque la fila ya estaba escrita.
+
+    El cierre lee la versión de Hevy que llega en `workouts` si la hay, así que
+    una corrección hecha antes de cerrar entra. Una hecha después, no.
+
+    SIGUE SIENDO IDEMPOTENTE, y no por elegancia: si contara dos veces, la racha
+    avanzaría el doble y el ejercicio subiría de peso antes de tiempo, en una
+    espalda con hernia. Los seguros son dos: `hevy_workout_id` único para
+    apuntar, y `workout_log.cerrado` para cerrar.
     """
     from app.engine.adoption import adoptar_cargas
     from app.integrations.hevy import (
@@ -1232,6 +1254,7 @@ def run_reconcile(
     )
 
     res = ReconcileResult(day=day)
+    hoy = hoy or date.today()
 
     # LO PRIMERO ES REGISTRAR, Y ES DELIBERADO QUE VAYA ANTES QUE NADA.
     #
@@ -1248,26 +1271,17 @@ def run_reconcile(
     # Que el sistema no supiera prever algo no es motivo para no anotarlo: es
     # justo el motivo para anotarlo.
     del_dia = [w for w in workouts if _fecha_workout(w) == day]
-    if not del_dia:
+    # Las ya apuntadas cuentan aunque Hevy no las devuelva esta vez: un día
+    # apuntado a mediodía se cierra a la mañana siguiente con lo que haya.
+    previas = session.scalars(select(WorkoutLog).where(WorkoutLog.date == day)).all()
+    if not del_dia and not previas:
         res.motivo = "no hay ningún entrenamiento registrado ese día"
         return res
 
-    ya = {
-        r.hevy_workout_id
-        for r in session.scalars(
-            select(WorkoutLog).where(WorkoutLog.date == day)
-        ).all()
-    }
+    ya = {r.hevy_workout_id for r in previas}
     nuevos = [w for w in del_dia if str(w.get("id")) not in ya]
     res.workouts_ya_contados = len(del_dia) - len(nuevos)
     res.workouts_nuevos = len(nuevos)
-
-    if not nuevos:
-        res.motivo = (
-            f"los {len(del_dia)} entrenamientos del {day} ya estaban contados; "
-            f"no se avanza nada otra vez"
-        )
-        return res
 
     # De qué rutina salió cada uno, por `routine_id` y jamás por el título.
     # `None` = no sale de ninguna rutina conocida: un entrenamiento suelto.
@@ -1291,85 +1305,6 @@ def run_reconcile(
     # ejercicios consigo: si un día hubiera bloque declarado sin sesión, lo que
     # no se puede reconciliar es justo lo que no tiene ejercicios.
     bloque_hiit = plan_hiit.get("routine") or plan.get("hiit_block")
-
-    # LOS DOS PLANES SE MIDEN POR SEPARADO, Y ESE ES EL PUNTO.
-    #
-    # Antes el HIIT viajaba dentro de `plan["exercises"]`, así que un wall ball
-    # que no hice contaba como un ejercicio incumplido DE LA SESIÓN DE FUERZA:
-    # rompía la racha de la prensa y frenaba su progresión. Son dos cosas
-    # distintas y su cumplimiento se evalúa aparte.
-    #
-    # El reparto de entrenamientos es por rutina de origen, nunca por el título.
-    # A la fuerza van también los sueltos -`routine_key` a None-, que es lo que
-    # permite que un rato registrado sin rutina siga contando como media sesión;
-    # al HIIT solo lo que sale de una rutina HIIT.
-    nuevos_hiit = [w for w in nuevos if rutinas.get(str(w.get("id"))) in hiit]
-    nuevos_fuerza = [w for w in nuevos if rutinas.get(str(w.get("id"))) not in hiit]
-
-    # Lo que el usuario contestó al terminar, si lo contestó. Se lee una vez y
-    # vale para los dos planes del día: el formulario habla de la sesión, no de
-    # cuál de los dos bloques la componía.
-    #
-    # EL LÍMITE, ESCRITO PARA QUE NO SE DESCUBRA DENTRO DE UN AÑO: esto se aplica
-    # cuando corre la reconciliación. Un formulario contestado DESPUÉS de que el
-    # día se haya cerrado no lo corrige, porque `job_reconcile` es idempotente y
-    # no vuelve sobre lo ya contado. En el uso normal se contesta al salir del
-    # gimnasio y llega de sobra; si algún día deja de ser así, lo que hay que
-    # cambiar es la ventana de reconciliación, no esta lectura.
-    fb_dia = repo.get_feedback(session, day)
-    hechos_sin_apuntar = feedback_sin_apuntar(
-        json.loads(fb_dia.ejercicios_json) if fb_dia and fb_dia.ejercicios_json else []
-    )
-
-    executed: dict[str, bool] = {}
-    pesos: dict[str, float | None] = {}
-    series: dict[str, list[dict[str, Any]]] = {}
-    motivos: dict[str, str] = {}
-    sube: dict[str, bool] = {}
-    motivos_sube: dict[str, str] = {}
-    mantiene: set[str] = set()
-    if es_fuerza:
-        cumpl = _cumplimiento_contra(nuevos_fuerza, plan, cfg, hechos_sin_apuntar)
-        executed, pesos, motivos = cumpl.executed, cumpl.pesos, cumpl.motivos
-        sube, motivos_sube, series = cumpl.sube, cumpl.motivos_sube, cumpl.series
-        mantiene = cumpl.mantiene
-    res.executed = executed
-    res.pesos = pesos
-
-    # Solo cuenta el HIIT que salió de la rutina QUE HOY TOCABA. Hacer el Día 2
-    # del HIIT un día de Día 1 es un entrenamiento fuera del plan, y medirlo
-    # contra el plan de hoy diría que se incumplió un bloque que nadie llegó a
-    # abrir.
-    del_bloque = [
-        w for w in nuevos_hiit if rutinas.get(str(w.get("id"))) == bloque_hiit
-    ]
-    ex_hiit = plan_hiit.get("exercises") or []
-    executed_hiit: dict[str, bool] = {}
-    series_hiit: dict[str, list[dict[str, Any]]] = {}
-    motivos_hiit: dict[str, str] = {}
-    sube_hiit: dict[str, bool] = {}
-    motivos_sube_hiit: dict[str, str] = {}
-    mantiene_hiit: set[str] = set()
-    if ex_hiit:
-        cumpl_hiit = _cumplimiento_contra(
-            del_bloque, plan_hiit, cfg, hechos_sin_apuntar
-        )
-        executed_hiit = cumpl_hiit.executed
-        series_hiit = cumpl_hiit.series
-        motivos_hiit = cumpl_hiit.motivos
-        sube_hiit = cumpl_hiit.sube
-        motivos_sube_hiit = cumpl_hiit.motivos_sube
-        mantiene_hiit = cumpl_hiit.mantiene
-
-    # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
-    # que solo se le pone a las filas que salen de esa rutina. Antes se le
-    # estampaba a todas las del día, y eso convertía el HIIT de después en una
-    # sesión de fuerza «con todas las series al objetivo» que nadie había
-    # evaluado. El HIIT tiene ahora el suyo, calculado contra su propio plan;
-    # para lo demás -entreno suelto, día sin plan- queda a NULL, que es lo que
-    # esa columna ya significaba: no hay dato.
-    veredicto = all(executed.values()) if (es_fuerza and executed) else None
-    veredicto_hiit = all(executed_hiit.values()) if executed_hiit else None
 
     # LOS DOS DATOS QUE HACEN INFORMATIVO EL AVISO DE «HE ENTRENADO OTRA COSA».
     #
@@ -1436,11 +1371,9 @@ def run_reconcile(
             date=day,
             routine_key=rk,
             title=w.get("title"),
-            all_sets_at_target=(
-                veredicto
-                if es_la_de_fuerza
-                else (veredicto_hiit if es_la_del_hiit else None)
-            ),
+            # Sin veredicto y abierta: las dos cosas se ponen al cerrar el día.
+            all_sets_at_target=None,
+            cerrado=False,
             unplanned=not previsto,
             motivo_suelto=motivo,
             duration_s=totales.duration_s,
@@ -1470,6 +1403,148 @@ def run_reconcile(
             )
     session.flush()
     res.sueltos = sueltos
+
+    # --- EL CIERRE DEL DÍA ---------------------------------------------------
+    filas = session.scalars(
+        select(WorkoutLog).where(WorkoutLog.date == day).order_by(WorkoutLog.id)
+    ).all()
+    abiertas = [f for f in filas if not f.cerrado]
+
+    if day >= hoy:
+        res.motivo = (
+            f"{len(nuevos)} entrenamiento(s) apuntados del {day}; el día no ha "
+            f"terminado, y rachas y pesos se mueven al cerrarlo"
+        )
+        return res
+    if not abiertas:
+        res.motivo = (
+            f"los {len(filas)} entrenamientos del {day} ya estaban contados; "
+            f"no se avanza nada otra vez"
+        )
+        return res
+    if len(abiertas) < len(filas):
+        # LLEGÓ DESPUÉS DE CERRAR. Evaluarlo solo contra el plan entero es el
+        # fallo que el cierre existe para no tener -lo hecho en la otra parte
+        # contaría como no hecho-, y reabrir el día exigiría deshacer rachas y
+        # pesos que otros días ya han usado. Se apunta y se dice.
+        for f in abiertas:
+            f.cerrado = True
+        session.flush()
+        log.warning(
+            "reconciliación del %s: %d entrenamiento(s) llegan con el día ya "
+            "cerrado; se apuntan sin mover rachas ni pesos", day, len(abiertas),
+        )
+        res.motivo = (
+            f"{len(abiertas)} entrenamiento(s) del {day} han llegado con el día "
+            f"ya cerrado: se apuntan, pero no mueven rachas ni pesos"
+        )
+        return res
+
+    # La versión de Hevy de AHORA, si ha llegado en esta lectura: lo que se
+    # corrigió después de apuntarlo -un peso mal tecleado- entra en el cierre.
+    frescos = {str(w.get("id")): w for w in del_dia}
+    pares: list[tuple[Any, dict[str, Any]]] = []
+    for f in filas:
+        w = frescos.get(f.hevy_workout_id)
+        if w is not None:
+            f.raw_json = repo.crudo_para_guardar(w, etiqueta="entrenamiento Hevy")
+            totales = workout_totals(w)
+            f.duration_s = totales.duration_s
+            f.total_sets = totales.total_sets
+            f.total_volume_kg = totales.total_volume_kg
+        else:
+            try:
+                w = json.loads(f.raw_json) if f.raw_json else None
+            except ValueError:
+                w = None
+        if w is not None:
+            pares.append((f, w))
+
+    # LOS DOS PLANES SE MIDEN POR SEPARADO, Y ESE ES EL PUNTO.
+    #
+    # Antes el HIIT viajaba dentro de `plan["exercises"]`, así que un wall ball
+    # que no hice contaba como un ejercicio incumplido DE LA SESIÓN DE FUERZA:
+    # rompía la racha de la prensa y frenaba su progresión. Son dos cosas
+    # distintas y su cumplimiento se evalúa aparte.
+    #
+    # El reparto de entrenamientos es por rutina de origen, nunca por el título.
+    # A la fuerza van también los sueltos -`routine_key` a None-, que es lo que
+    # permite que un rato registrado sin rutina siga contando como media sesión;
+    # al HIIT solo lo que sale de una rutina HIIT.
+    de_fuerza = [w for f, w in pares if (f.routine_key or "") not in hiit]
+
+    # Lo que el usuario contestó al terminar, si lo contestó. Se lee una vez y
+    # vale para los dos planes del día: el formulario habla de la sesión, no de
+    # cuál de los dos bloques la componía.
+    #
+    # EL LÍMITE: esto se lee al CERRAR el día, que desde el 25/09/2026 es cuando
+    # ya ha terminado. Antes se leía al primer reconciliado, y abrir «Después»
+    # ya lo era: el formulario llegaba tarde siempre. Uno contestado después
+    # del cierre sigue sin corregir nada.
+    fb_dia = repo.get_feedback(session, day)
+    hechos_sin_apuntar = feedback_sin_apuntar(
+        json.loads(fb_dia.ejercicios_json) if fb_dia and fb_dia.ejercicios_json else []
+    )
+
+    executed: dict[str, bool] = {}
+    pesos: dict[str, float | None] = {}
+    series: dict[str, list[dict[str, Any]]] = {}
+    motivos: dict[str, str] = {}
+    sube: dict[str, bool] = {}
+    motivos_sube: dict[str, str] = {}
+    mantiene: set[str] = set()
+    if es_fuerza:
+        cumpl = _cumplimiento_contra(de_fuerza, plan, cfg, hechos_sin_apuntar)
+        executed, pesos, motivos = cumpl.executed, cumpl.pesos, cumpl.motivos
+        sube, motivos_sube, series = cumpl.sube, cumpl.motivos_sube, cumpl.series
+        mantiene = cumpl.mantiene
+    res.executed = executed
+    res.pesos = pesos
+
+    # Solo cuenta el HIIT que salió de la rutina QUE HOY TOCABA. Hacer el Día 2
+    # del HIIT un día de Día 1 es un entrenamiento fuera del plan, y medirlo
+    # contra el plan de hoy diría que se incumplió un bloque que nadie llegó a
+    # abrir.
+    del_bloque = [
+        w for f, w in pares
+        if (f.routine_key or "") in hiit and f.routine_key == bloque_hiit
+    ]
+    ex_hiit = plan_hiit.get("exercises") or []
+    executed_hiit: dict[str, bool] = {}
+    series_hiit: dict[str, list[dict[str, Any]]] = {}
+    motivos_hiit: dict[str, str] = {}
+    sube_hiit: dict[str, bool] = {}
+    motivos_sube_hiit: dict[str, str] = {}
+    mantiene_hiit: set[str] = set()
+    if ex_hiit:
+        cumpl_hiit = _cumplimiento_contra(
+            del_bloque, plan_hiit, cfg, hechos_sin_apuntar
+        )
+        executed_hiit = cumpl_hiit.executed
+        series_hiit = cumpl_hiit.series
+        motivos_hiit = cumpl_hiit.motivos
+        sube_hiit = cumpl_hiit.sube
+        motivos_sube_hiit = cumpl_hiit.motivos_sube
+        mantiene_hiit = cumpl_hiit.mantiene
+
+    # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
+    # que solo se le pone a las filas que salen de esa rutina. Antes se le
+    # estampaba a todas las del día, y eso convertía el HIIT de después en una
+    # sesión de fuerza «con todas las series al objetivo» que nadie había
+    # evaluado. El HIIT tiene ahora el suyo, calculado contra su propio plan;
+    # para lo demás -entreno suelto, día sin plan- queda a NULL, que es lo que
+    # esa columna ya significaba: no hay dato.
+    veredicto = all(executed.values()) if (es_fuerza and executed) else None
+    veredicto_hiit = all(executed_hiit.values()) if executed_hiit else None
+    for f, _w in pares:
+        if es_fuerza and f.routine_key and f.routine_key == rkey:
+            f.all_sets_at_target = veredicto
+        elif f.routine_key and f.routine_key == bloque_hiit:
+            f.all_sets_at_target = veredicto_hiit
+    for f in filas:
+        f.cerrado = True
+
+
 
     # LO QUE SE APRENDE DE CADA PLAN VA A SU PROPIA CLAVE DE RUTINA.
     #
@@ -1543,7 +1618,7 @@ def run_reconcile(
             else "no quedó decisión guardada de ese día"
         )
         res.motivo = (
-            f"{len(nuevos)} entrenamiento(s) registrados; el {day} "
+            f"{len(filas)} entrenamiento(s) registrados; el {day} "
             f"{motivo_no_fuerza}: nada que reconciliar contra el plan"
         )
         if hubo_hiit:
