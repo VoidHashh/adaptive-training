@@ -1131,6 +1131,25 @@ progression:
     # teclear en Hevy no se convierta en la rutina de mañana. Los dos son Y: vale
     # el MENOR de los dos, no el mayor.
     #
+    # ENSANCHADOS EL 25/09/2026, de 5 kg y 20% a 30 kg y 60%, y el motivo es que
+    # estaban frenando la realidad y no las erratas. En seis meses el tope actuó
+    # CUATRO veces y las cuatro eran levantamientos de verdad:
+    #
+    #     patada atrás      35 -> 50    (+15)
+    #     extensión cuád.   40 -> 60    (+20)
+    #     aducción cadera   50 -> 60    (+10)
+    #     contractora       30 -> 37,5  (+7,5)
+    #
+    # Cero erratas. Un tope que solo ha frenado aciertos no está protegiendo
+    # nada: está obligando a fijar a mano lo que el sistema ya sabía. Con 30 y
+    # 60% los cuatro pasan con margen y los dedazos de verdad -los que meten un
+    # dígito de más- siguen frenados: 60->600 pide 540, 50->150 pide 100, y el
+    # tope más ancho que existe es 30.
+    #
+    # La decisión de fondo es del usuario y está escrita para que no se relea
+    # como un descuido: el sistema aconseja, no decide. Lo que se levanta es lo
+    # que hay, y el tope se queda solo para lo que no se puede haber levantado.
+    #
     # Estaba en el mayor, y así el tope se AFLOJABA justo donde la carga absoluta
     # es mayor: con un objetivo de 150 kg el margen salía 30, de modo que un
     # dedazo de 150 a 180 entraba sin que nadie lo mirara. Con una L4-L5 eso es
@@ -1147,8 +1166,8 @@ progression:
     # siguiente con el motivo, y con el modo de fijarlo a mano si era real
     # (`scripts/fijar_carga.py`, que escribe en `exercise_targets`, que es lo que
     # manda; este fichero solo es el punto de partida).
-    max_jump_kg: 5
-    max_jump_pct: 0.20
+    max_jump_kg: 30
+    max_jump_pct: 0.60
 
   # En semana de descarga el volumen también baja. `special_rules` recorta la
   # carga al 60%; sin esto el volumen se quedaba intacto y la descarga era

@@ -228,6 +228,33 @@ Nada de esto está a medias: está terminado y sin datos que enseñar.
   commit `518fb3e` el botón se pintaba sin una sola regla de CSS y medía
   92 × 20 píxeles en gris sobre fondo oscuro.
 
+## 7-bis. El cambio de contrato del 25/09/2026
+
+**El sistema aconseja, no decide.** Decisión del usuario, y cambia cómo se
+mueven las cargas:
+
+- **Una serie más ligera ya no bloquea una subida.** Si la sesión sube en rampa
+  —30, 40, 50 con las reps completas— se adopta lo que se levantó arriba. Antes
+  la serie de 30 invalidaba los 50. Lo que sigue bloqueando es que las **reps**
+  se queden cortas: 70 kg a 4 reps cuando se pedían 10 es un peso intentado, no
+  levantado.
+- **Bajar no cambia**: siguen haciendo falta 3 sesiones seguidas por debajo, y
+  se baja a la mejor de las tres. Ahí el peso sí cuenta.
+- **El tope de salto pasa de 5 kg / 20% a 30 kg / 60%.** En seis meses había
+  actuado cuatro veces y las cuatro eran levantamientos reales, ninguna una
+  errata: frenaba la realidad, no el ruido. Sigue frenando un dígito de más.
+
+**Qué vigilar en la cita:** que las cargas no se disparen. El freno que queda
+arriba es solo el de las reps y el tope ancho; si en dos semanas hay subidas que
+no reconoces, el sitio donde apretar es `down_after_sessions` o el tope, no la
+guarda que se acaba de quitar.
+
+**Lo que NO hace este cambio: reescribir el pasado.** Las cuatro adopciones que
+se rechazaron en septiembre siguen rechazadas, y sus objetivos siguen donde
+estaban. La patada atrás sigue en 35 kg aunque se levantaran 50 el día 21. Se
+arregla de dos maneras: volver a hacer el ejercicio —la próxima reconciliación
+ya lo adopta— o fijarlo a mano con `scripts/fijar_carga.py`.
+
 ## 8. Lo que queda sin hacer, anotado
 
 - **La clave `trend.nivel` del `config.yaml`, DESPUÉS de reconstruir.** El

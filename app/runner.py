@@ -35,7 +35,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Sequence
+from typing import Any, NamedTuple, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -1306,8 +1306,12 @@ def run_reconcile(
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
     motivos: dict[str, str] = {}
+    sube: dict[str, bool] = {}
+    motivos_sube: dict[str, str] = {}
     if es_fuerza:
-        executed, pesos, motivos = _cumplimiento_contra(nuevos_fuerza, plan, cfg)
+        cumpl = _cumplimiento_contra(nuevos_fuerza, plan, cfg)
+        executed, pesos, motivos = cumpl.executed, cumpl.pesos, cumpl.motivos
+        sube, motivos_sube = cumpl.sube, cumpl.motivos_sube
     res.executed = executed
     res.pesos = pesos
 
@@ -1322,10 +1326,15 @@ def run_reconcile(
     executed_hiit: dict[str, bool] = {}
     pesos_hiit: dict[str, float | None] = {}
     motivos_hiit: dict[str, str] = {}
+    sube_hiit: dict[str, bool] = {}
+    motivos_sube_hiit: dict[str, str] = {}
     if ex_hiit:
-        executed_hiit, pesos_hiit, motivos_hiit = _cumplimiento_contra(
-            del_bloque, plan_hiit, cfg
-        )
+        cumpl_hiit = _cumplimiento_contra(del_bloque, plan_hiit, cfg)
+        executed_hiit = cumpl_hiit.executed
+        pesos_hiit = cumpl_hiit.pesos
+        motivos_hiit = cumpl_hiit.motivos
+        sube_hiit = cumpl_hiit.sube
+        motivos_sube_hiit = cumpl_hiit.motivos_sube
 
     # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
     # que solo se le pone a las filas que salen de esa rutina. Antes se le
@@ -1485,6 +1494,8 @@ def run_reconcile(
             pesos_hechos=pesos_hiit,
             limpio=executed_hiit,
             motivos=motivos_hiit,
+            limpio_arriba=sube_hiit,
+            motivos_arriba=motivos_sube_hiit,
             set_cfg=(raw.get("set_types") or {}),
             prog_cfg=(raw.get("progression") or {}),
         )
@@ -1540,6 +1551,8 @@ def run_reconcile(
         pesos_hechos=pesos,
         limpio=executed,
         motivos=motivos,
+        limpio_arriba=sube,
+        motivos_arriba=motivos_sube,
         set_cfg=(raw.get("set_types") or {}),
         prog_cfg=(raw.get("progression") or {}),
     )
@@ -1707,9 +1720,36 @@ class _PlanLeido:
         self.exercises = plan.get("exercises") or []
 
 
+class Cumplimiento(NamedTuple):
+    """Los dos veredictos de una noche, con el mismo criterio de unión.
+
+    `executed` y `motivos` son el veredicto ESTRICTO: para estar limpio hay que
+    haber alcanzado reps, segundos y PESO de cada serie del plan. Es el que
+    alimenta la racha de sesiones limpias y por tanto la progresión, y tiene que
+    seguir exigiendo el peso: una sesión hecha a 50 cuando el plan pedía 60 no
+    puede pagar la siguiente subida.
+
+    `sube` y `motivos_sube` son el mismo veredicto SIN mirar el peso, y solo lo
+    usa la adopción hacia arriba. Una serie más ligera con las reps completas es
+    el escalón de abajo de una rampa, no un fallo, y no puede impedir que se
+    adopte lo que sí se levantó más arriba. Ver `app/engine/adoption.py`.
+
+    Los dos salen del MISMO bucle a propósito. Calcularlos por separado habría
+    dejado dos criterios de unión de sesiones partidas -el OR del cumplimiento y
+    la preferencia de motivo sobre `SIN_RASTRO`- que podrían separarse sin que
+    nada fallara, que es el fallo que esta función se creó para no tener.
+    """
+
+    executed: dict[str, bool]
+    pesos: dict[str, float | None]
+    motivos: dict[str, str]
+    sube: dict[str, bool]
+    motivos_sube: dict[str, str]
+
+
 def _cumplimiento_contra(
     workouts: list[dict[str, Any]], plan: dict[str, Any], cfg: Any
-) -> tuple[dict[str, bool], dict[str, float | None], dict[str, str]]:
+) -> Cumplimiento:
     """Qué de `plan` se hizo, uniendo todos los `workouts` que lo ejecutaban.
 
     Existe como función aparte porque ahora hay DOS planes que reconciliar cada
@@ -1717,26 +1757,32 @@ def _cumplimiento_contra(
     dentro de `run_reconcile` que solo sabía del primero. Copiarlo para el
     segundo habría dejado dos criterios de unión que podían separarse sin que
     nada fallara.
-
-    Devuelve `(executed, pesos, motivos)`.
     """
     executed: dict[str, bool] = {}
     pesos: dict[str, float | None] = {}
     motivos: dict[str, str] = {}
+    sube: dict[str, bool] = {}
+    motivos_sube: dict[str, str] = {}
     plan_obj = _PlanLeido(plan)
     for w in workouts:
         # Un ejercicio cuenta como hecho si CUALQUIERA de los entrenamientos
         # lo completó: partir la sesión en dos ratos es normal y no debería
         # romper la racha.
-        for key, ok in workout_compliance(w, plan_obj, cfg).items():
-            executed[key] = executed.get(key, False) or ok
+        for destino, ignorar in ((executed, False), (sube, True)):
+            for key, ok in workout_compliance(
+                w, plan_obj, cfg, ignorar_peso=ignorar
+            ).items():
+                destino[key] = destino.get(key, False) or ok
         # El motivo se une con el mismo criterio, y por eso «no aparece» cede
         # ante cualquier otro: en una sesión partida en dos, el ejercicio no
         # está en uno de los dos ratos por definición, y quedarse con esa
         # frase taparía lo que sí se vio en el rato donde estaba.
-        for key, porque in motivos_incumplimiento(w, plan_obj, cfg).items():
-            if motivos.get(key, SIN_RASTRO) == SIN_RASTRO:
-                motivos[key] = porque
+        for destino, ignorar in ((motivos, False), (motivos_sube, True)):
+            for key, porque in motivos_incumplimiento(
+                w, plan_obj, cfg, ignorar_peso=ignorar
+            ).items():
+                if destino.get(key, SIN_RASTRO) == SIN_RASTRO:
+                    destino[key] = porque
         # El máximo entre entrenamientos, por lo mismo que el cumplimiento se
         # une con un OR: partir la sesión en dos ratos es normal, y la serie
         # más pesada del día es la más pesada de los dos ratos.
@@ -1746,9 +1792,12 @@ def _cumplimiento_contra(
             previo = pesos.get(key)
             pesos[key] = kg if previo is None else max(previo, kg)
     # Lo que acabó completo no tiene nada que explicar, aunque en uno de los
-    # ratos se quedara corto.
+    # ratos se quedara corto. Cada motivo se filtra con SU propio veredicto: con
+    # el estricto, `motivos_sube` conservaría la frase del peso justo en los
+    # ejercicios que para subir ya cuentan como limpios.
     motivos = {k: v for k, v in motivos.items() if not executed.get(k)}
-    return executed, pesos, motivos
+    motivos_sube = {k: v for k, v in motivos_sube.items() if not sube.get(k)}
+    return Cumplimiento(executed, pesos, motivos, sube, motivos_sube)
 
 
 # ---------------------------------------------------------------------------

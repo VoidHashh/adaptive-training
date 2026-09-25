@@ -3140,3 +3140,118 @@ def test_apagar_la_tendencia_tambien_apaga_la_ventana_del_detector_de_nivel(cfg_
     cfg_copia.raw["trend"]["enabled"] = False
     esperado = DIAS_DE_HISTORIA + cfg_copia.raw["baseline"]["window_days"]
     assert dias_de_wellness_en_memoria(cfg_copia) == esperado
+
+
+# ---------------------------------------------------------------------------
+# `_cumplimiento_contra`: los dos veredictos de la noche
+# ---------------------------------------------------------------------------
+#
+# Desde el 25/09/2026 la noche saca DOS veredictos del mismo bucle: el estricto
+# -que exige tambien el peso de cada serie y alimenta la racha de sesiones
+# limpias- y el de subir -que no lo exige, porque una serie mas ligera con las
+# reps completas es el escalon de abajo de una rampa y no un fallo-.
+#
+# Se calculan juntos a proposito: el criterio de union de una sesion partida en
+# dos ratos (el OR del cumplimiento, la preferencia de motivo sobre SIN_RASTRO)
+# tiene que ser el mismo para los dos, y escribirlo dos veces es la forma de que
+# se separen sin que nada falle.
+
+
+def _plan_de_una_serie(peso: float, reps: int = 24) -> dict:
+    return {
+        "exercises": [{
+            "key": "patada_atras",
+            "name": "Patada atrás",
+            "template_id": "T1",
+            "sets": [{"reps": reps, "weight_kg": peso}],
+        }]
+    }
+
+
+def _entreno(peso: float, reps: int = 24, wid: str = "w1") -> dict:
+    return {
+        "id": wid,
+        "start_time": f"{LUNES.isoformat()}T07:30:00Z",
+        "exercises": [{
+            "exercise_template_id": "T1",
+            "sets": [{"type": "normal", "reps": reps, "weight_kg": peso}],
+        }],
+    }
+
+
+def test_la_noche_saca_dos_veredictos_y_no_dicen_lo_mismo(cfg):
+    """Una serie mas ligera con las reps completas: estricto NO, subir SI."""
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra([_entreno(30)], _plan_de_una_serie(35), cfg)
+    assert c.executed["patada_atras"] is False
+    assert c.sube["patada_atras"] is True
+    assert "30 kg" in c.motivos["patada_atras"]
+    # Y para subir no hay nada que explicar: el motivo se filtra con SU
+    # veredicto. Con el estricto, aqui quedaria la frase del peso pegada a un
+    # ejercicio que para subir ya cuenta como limpio.
+    assert "patada_atras" not in c.motivos_sube
+
+
+def test_los_dos_veredictos_coinciden_cuando_lo_corto_son_las_reps(cfg):
+    """La pareja: ignorar el peso no perdona una serie que se corto."""
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra([_entreno(40, reps=4)], _plan_de_una_serie(35), cfg)
+    assert c.executed["patada_atras"] is False
+    assert c.sube["patada_atras"] is False
+    assert "reps" in c.motivos_sube["patada_atras"]
+
+
+def test_una_sesion_partida_en_dos_ratos_se_une_igual_en_los_dos(cfg):
+    """El rato bueno rescata al malo, y tiene que hacerlo en los DOS veredictos.
+
+    Primer rato ligero y completo de reps, segundo rato al peso pedido. El
+    estricto se salva por el segundo; el de subir ya estaba limpio con el
+    primero. Si la union se escribiera dos veces, aqui es donde se separarian.
+    """
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra(
+        [_entreno(30, wid="w1"), _entreno(35, wid="w2")],
+        _plan_de_una_serie(35),
+        cfg,
+    )
+    assert c.executed["patada_atras"] is True
+    assert c.sube["patada_atras"] is True
+    assert c.motivos == {} and c.motivos_sube == {}
+    # Y el peso que viaja a la adopcion es el mas alto de los dos ratos.
+    assert c.pesos["patada_atras"] == 35.0
+
+
+def test_el_motivo_de_subir_se_filtra_con_SU_veredicto_y_no_con_el_estricto(cfg):
+    """Un rato corto de reps y otro completo: para subir no queda nada que decir.
+
+    Es el unico caso en que los dos filtros difieren, y por eso hay que buscarlo
+    a proposito. En una sesion suelta, `sube` falso implica `executed` falso, asi
+    que filtrar por uno o por otro da lo mismo. Partida en dos ratos NO:
+
+        rato 1: 30 kg x 4 reps   -> corto de reps, deja motivo en los dos
+        rato 2: 30 kg x 24 reps  -> completo de reps, rescata `sube` por el OR
+
+    Union: `executed` falso (ningun rato llego a los 35 kg) y `sube` VERDADERO.
+    Filtrando los motivos de subir con `executed`, la frase de las reps del rato
+    1 sobrevive pegada a un ejercicio que para subir ya cuenta como limpio: el
+    mensaje de la manana explicaria un rechazo que no ha ocurrido.
+
+    Lo cazo el banco de mutaciones del 25/09/2026; el primer test que se escribio
+    para esto no lo distinguia.
+    """
+    from app.runner import _cumplimiento_contra
+
+    c = _cumplimiento_contra(
+        [_entreno(30, reps=4, wid="w1"), _entreno(30, reps=24, wid="w2")],
+        _plan_de_una_serie(35),
+        cfg,
+    )
+    assert c.executed["patada_atras"] is False
+    assert c.sube["patada_atras"] is True
+    assert "patada_atras" in c.motivos, "el estricto si tiene algo que explicar"
+    assert c.motivos_sube == {}, (
+        f"para subir no hay nada que explicar y quedo: {c.motivos_sube}"
+    )

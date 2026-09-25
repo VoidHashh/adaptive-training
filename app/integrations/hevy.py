@@ -352,6 +352,8 @@ def workout_compliance(
     workout: dict[str, Any],
     planned: Any,
     config: Any = None,
+    *,
+    ignorar_peso: bool = False,
 ) -> dict[str, bool]:
     """¿Se completó cada ejercicio a lo que se le pedía? Una entrada por ejercicio.
 
@@ -376,7 +378,9 @@ def workout_compliance(
     """
     return {
         key: motivo is None
-        for key, motivo in _motivos(workout, planned, config).items()
+        for key, motivo in _motivos(
+            workout, planned, config, ignorar_peso=ignorar_peso
+        ).items()
     }
 
 
@@ -391,6 +395,8 @@ def motivos_incumplimiento(
     workout: dict[str, Any],
     planned: Any,
     config: Any = None,
+    *,
+    ignorar_peso: bool = False,
 ) -> dict[str, str]:
     """Por qué NO cumplió cada ejercicio que no cumplió. Los demás no salen.
 
@@ -403,7 +409,9 @@ def motivos_incumplimiento(
     """
     return {
         key: motivo
-        for key, motivo in _motivos(workout, planned, config).items()
+        for key, motivo in _motivos(
+            workout, planned, config, ignorar_peso=ignorar_peso
+        ).items()
         if motivo is not None
     }
 
@@ -412,16 +420,21 @@ def _motivos(
     workout: dict[str, Any],
     planned: Any,
     config: Any = None,
+    *,
+    ignorar_peso: bool = False,
 ) -> dict[str, str | None]:
     """Cada ejercicio del plan con su motivo, o `None` si cumplió."""
     salida: dict[str, str | None] = {}
     for key, (objetivo, reales) in _emparejar(workout, planned, config).items():
-        salida[key] = _motivo(objetivo, reales)
+        salida[key] = _motivo(objetivo, reales, ignorar_peso=ignorar_peso)
     return salida
 
 
 def _motivo(
-    objetivo: list[dict[str, Any]], reales: list[dict[str, Any]] | None
+    objetivo: list[dict[str, Any]],
+    reales: list[dict[str, Any]] | None,
+    *,
+    ignorar_peso: bool,
 ) -> str | None:
     if reales is None:
         return SIN_RASTRO
@@ -433,7 +446,7 @@ def _motivo(
     if len(reales) < len(objetivo):
         return f"se apuntaron {len(reales)} de las {len(objetivo)} series"
     for i, (real, plan) in enumerate(zip(reales, objetivo), start=1):
-        falla = _falla(real, plan)
+        falla = _falla(real, plan, ignorar_peso=ignorar_peso)
         if falla is not None:
             return f"la serie {i} {falla}"
     return None
@@ -491,13 +504,40 @@ def _num(x: Any) -> str:
     return f"{float(x):g}".replace(".", ",")
 
 
-def _alcanza(real: dict[str, Any], plan: dict[str, Any]) -> bool:
+def _alcanza(
+    real: dict[str, Any], plan: dict[str, Any], *, ignorar_peso: bool = False
+) -> bool:
     """¿Una serie ejecutada cumple lo que se le pedía? Las reglas, en `_falla`."""
-    return _falla(real, plan) is None
+    return _falla(real, plan, ignorar_peso=ignorar_peso) is None
 
 
-def _falla(real: dict[str, Any], plan: dict[str, Any]) -> str | None:
+def _falla(
+    real: dict[str, Any], plan: dict[str, Any], *, ignorar_peso: bool
+) -> str | None:
     """En qué se quedó corta una serie ejecutada, o `None` si cumple.
+
+    `ignorar_peso` NO TIENE DEFECTO, y eso lo decidió el banco de mutaciones del
+    25/09/2026: con `= False` puesto, cambiarlo a `= True` no ponía rojo ni un
+    test, porque los dos únicos llamantes -`_alcanza` y `_motivo`- lo pasan
+    siempre explícito. Un defecto que nadie lee es un defecto que no defiende
+    nada y que el día que alguien añada un tercer llamante decidirá por él, en
+    la dirección de mirar menos. Los defectos viven arriba, en las dos puertas
+    públicas, que es donde hay llamadas que de verdad los usan.
+
+    `ignorar_peso` SOLO lo usa la adopción hacia arriba, y el motivo está en
+    `app/engine/adoption.py`. En dos líneas: una serie más LIGERA de lo pedido
+    no es una serie fallada si sus reps están completas, es el escalón de abajo
+    de una rampa. El 21/09/2026 la patada atrás se hizo 30/40/50 kg con las 24
+    reps en las tres, y el sistema se negó a adoptar los 50 porque la primera
+    iba a 30 cuando pedía 35. Estaba rechazando la prueba MÁS fuerte -24 reps a
+    50- por culpa de la más floja.
+
+    Lo que NO se ignora nunca es que las reps o los segundos se queden cortos:
+    70 kg a 4 reps cuando se pedían 10 sigue sin ser un objetivo nuevo. Y el
+    veredicto normal -el que alimenta la racha de sesiones limpias y por tanto
+    la progresión- sigue exigiendo el peso, porque ahí el riesgo es el
+    contrario: una sesión hecha a 50 cuando el plan pedía 60 no puede pagar la
+    siguiente subida.
 
     Solo se miran las magnitudes que el plan pide. Un ejercicio por tiempo no
     tiene reps, y exigirle reps lo dejaría siempre en "no cumplido": la plancha
@@ -559,7 +599,7 @@ def _falla(real: dict[str, Any], plan: dict[str, Any]) -> str | None:
         )
 
     objetivo_kg = plan.get("weight_kg")
-    if objetivo_kg is not None and float(objetivo_kg) > 0:
+    if not ignorar_peso and objetivo_kg is not None and float(objetivo_kg) > 0:
         hecho_kg = real.get("weight_kg")
         if hecho_kg is None:
             return "no lleva peso apuntado"

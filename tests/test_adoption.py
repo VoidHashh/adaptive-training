@@ -82,14 +82,30 @@ def adoptar(
     limpio: dict[str, bool] | None = None,
     prog: dict[str, Any] | None = None,
     motivos: dict[str, str] | None = None,
+    limpio_arriba: dict[str, bool] | None = None,
+    motivos_arriba: dict[str, str] | None = None,
 ):
+    """Los dos veredictos, y por defecto `arriba` COPIA al estricto.
+
+    Copiarlo no es pereza: mantiene el significado de los tests escritos antes
+    del 25/09/2026, que decían «esta sesión no fue limpia» sin distinguir por
+    qué. Si el defecto fuera «siempre limpio para subir», esos tests pasarían a
+    probar otra cosa en silencio, que es la forma de que una batería entera
+    quede certificando lo que ya no hace.
+
+    Los tests que SÍ distinguen -una serie más ligera frente a una serie corta
+    de reps- pasan los dos a mano.
+    """
+    estricto = limpio if limpio is not None else {k: True for k in pesos}
     return adoptar_cargas(
         estado,
         routine_key=RUTINA,
         exercises=plan,
         pesos_hechos=pesos,
-        limpio=limpio if limpio is not None else {k: True for k in pesos},
+        limpio=estricto,
         motivos=motivos or {},
+        limpio_arriba=limpio_arriba if limpio_arriba is not None else estricto,
+        motivos_arriba=motivos_arriba if motivos_arriba is not None else (motivos or {}),
         set_cfg=SETS_CFG,
         prog_cfg=prog or PROG,
     )
@@ -579,9 +595,18 @@ def test_una_adopcion_rechazada_tambien_se_cuenta():
 
 
 def test_el_texto_dice_de_donde_a_donde():
+    """Y lo dice CON PALABRAS, no con una flecha.
+
+    El 25/09/2026 el usuario leyó «12,5→15 kg — ... y el plan pedía 12,5» y
+    entendió que el sistema le había bajado a 12,5 cuando le había subido a 15:
+    la flecha es fina y el motivo termina en el número viejo, así que el viejo
+    era a la vez el primero y el último de la frase. «de 12,5 a 15 kg» no se
+    puede leer al revés.
+    """
     e = estado_en(60)
     (a,) = adoptar(e, [ejercicio(60)], {"hip_thrust": 65})
-    assert "60" in a.text() and "65" in a.text()
+    assert "de 60 a 65 kg" in a.text(), a.text()
+    assert "→" not in a.text(), "la flecha se leyó al revés una vez; no vuelve"
 
     e2 = estado_en(60)
     (b,) = adoptar(e2, [ejercicio(60)], {"hip_thrust": 600})
@@ -595,7 +620,7 @@ def test_una_aplicada_sin_objetivo_nuevo_revienta_en_vez_de_escribir_cero_kg():
     `tope_efectivo(...)`, que devuelve un float; las que llevan `None` son
     todas `aplicada=False`. Así que el `or 0` que había aquí era inalcanzable
     con datos legítimos, y lo único que podía hacer es convertir una rotura del
-    invariante en "hip thrust: 62,5→0 kg" dentro del mensaje de la mañana, que
+    invariante en "hip thrust: de 62,5 a 0 kg" dentro del mensaje de la mañana, que
     se lee como que el objetivo se ha ido al suelo.
 
     Un 0,0 de verdad sí puede llegar -un ejercicio sin peso registrado- y ese
@@ -635,7 +660,7 @@ def test_un_objetivo_nuevo_de_cero_si_se_escribe():
         motivo="primera carga registrada en Hevy",
     )
 
-    assert "0→0 kg" in a.text()
+    assert "de 0 a 0 kg" in a.text()
 
 
 @pytest.mark.parametrize("hecho", [60.0, 60.0000001, 59.9999999])
@@ -725,3 +750,138 @@ def test_la_subida_normal_sigue_funcionando_con_la_guarda_puesta():
     assert a.aplicada is True
     assert a.direccion == ARRIBA
     assert "0 sesiones" not in a.motivo
+
+
+# ---------------------------------------------------------------------------
+# Subir ya no lo bloquea una serie mas ligera (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Decision del usuario, escrita para que no se relea como un descuido: el
+# sistema aconseja, no decide. Lo que se levanta es lo que hay. Lo unico que
+# sigue bloqueando una subida es que la serie se CORTARA -reps o segundos por
+# debajo-, porque eso no es un peso levantado, es un peso intentado.
+
+
+def test_una_rampa_por_debajo_del_plan_ya_no_bloquea_la_subida():
+    """El caso real: patada atras del 21/09, 30/40/50 con las 24 reps enteras.
+
+    El veredicto estricto dice que no fue limpia -la serie 1 iba a 30 cuando el
+    plan pedia 35- y el de subir dice que si. Manda el de subir.
+
+    El salto de aqui es de 35 a 40 y no a los 50 reales porque el `PROG` de este
+    fichero lleva el tope de juguete de 5 kg: con 50 el test se pondria verde o
+    rojo por el TOPE y no por la guarda que dice probar. Los 35->50 de verdad
+    los sujeta `test_el_tope_del_config_real_admite_los_saltos_reales_del_historico`,
+    que si usa el `config.yaml`.
+    """
+    estado = estado_en(35, 35)
+    ad = adoptar(
+        estado,
+        [ejercicio(35, 35)],
+        {"hip_thrust": 40.0},
+        limpio={"hip_thrust": False},
+        motivos={"hip_thrust": "la serie 1 se hizo a 30 kg y pedía 35"},
+        limpio_arriba={"hip_thrust": True},
+        motivos_arriba={},
+    )
+    assert len(ad) == 1 and ad[0].aplicada is True
+    assert ad[0].objetivo_despues_kg == 40.0
+    assert estado.current_sets[CLAVE][-1]["weight_kg"] == 40.0
+
+
+def test_el_vecino_que_no_sube_las_reps_cortas():
+    """La pareja. Los mismos 50 kg, pero la serie se corto: no se adopta.
+
+    Y el motivo sale de `motivos_arriba`, no de `motivos`: el estricto estaria
+    hablando de la serie ligera, que aqui ya no es un problema, junto a una
+    carga que no ha subido por otra razon.
+    """
+    estado = estado_en(35, 35)
+    ad = adoptar(
+        estado,
+        [ejercicio(35, 35)],
+        {"hip_thrust": 40.0},
+        limpio={"hip_thrust": False},
+        motivos={"hip_thrust": "la serie 1 se hizo a 30 kg y pedía 35"},
+        limpio_arriba={"hip_thrust": False},
+        motivos_arriba={"hip_thrust": "la serie 2 se quedó en 4 de las 24 reps"},
+    )
+    assert len(ad) == 1 and ad[0].aplicada is False
+    assert "4 de las 24 reps" in ad[0].motivo
+    assert "30 kg" not in ad[0].motivo
+    assert estado.current_sets[CLAVE][-1]["weight_kg"] == 35.0
+
+
+def test_el_veredicto_ancho_no_se_cuela_en_la_rama_de_bajar():
+    """Bajar sigue midiendose contra lo que se pidio, con el peso contando.
+
+    Si alguien cableara `limpio_arriba` tambien aqui, una sesion a 50 cuando el
+    plan pedia 60 saldria limpia y el desfase no se cerraria nunca: exactamente
+    el agujero que la adopcion hacia abajo existe para tapar.
+    """
+    estado = estado_en(60, 60)
+    for _ in range(3):
+        ad = adoptar(
+            estado,
+            [ejercicio(60, 60)],
+            {"hip_thrust": 50.0},
+            limpio={"hip_thrust": False},
+            limpio_arriba={"hip_thrust": True},
+        )
+    assert len(ad) == 1 and ad[0].aplicada is True
+    assert ad[0].direccion == "down"
+    assert estado.current_sets[CLAVE][-1]["weight_kg"] == 50.0
+
+
+def test_el_tope_del_config_real_admite_los_saltos_reales_del_historico(cfg):
+    """Los cuatro saltos que el tope freno en seis meses eran de verdad.
+
+    Ninguno era una errata: 35->50 en la patada atras, 40->60 en la extension de
+    cuadriceps, 50->60 en la aduccion y 30->37,5 en la contractora. Un tope que
+    solo ha frenado aciertos no protege, estorba. El 25/09/2026 se ensancho a
+    30 kg y 60%, y esto ata esos numeros a lo que tienen que dejar pasar.
+
+    La otra mitad -que siga frenando un dedazo- va en el test de al lado.
+    """
+    prog = {"adopt_executed_load": cfg.raw["progression"]["adopt_executed_load"]}
+    for antes, despues in ((35, 50), (40, 60), (50, 60), (30, 37.5)):
+        estado = estado_en(antes, antes)
+        ad = adoptar(
+            estado, [ejercicio(antes, antes)], {"hip_thrust": float(despues)},
+            prog=prog,
+        )
+        assert ad and ad[0].aplicada is True, (
+            f"{antes}->{despues} lo frena el tope, y fue un levantamiento real"
+        )
+
+
+@pytest.mark.parametrize("antes,dedazo", [(60, 600), (50, 150), (100, 1000)])
+def test_el_tope_del_config_real_sigue_frenando_un_dedazo(cfg, antes, dedazo):
+    """Ensanchar no es quitar. Un digito de mas sigue sin llegar a la rutina."""
+    prog = {"adopt_executed_load": cfg.raw["progression"]["adopt_executed_load"]}
+    estado = estado_en(antes, antes)
+    ad = adoptar(
+        estado, [ejercicio(antes, antes)], {"hip_thrust": float(dedazo)}, prog=prog
+    )
+    assert ad and ad[0].aplicada is False
+    assert "no se adopta solo" in ad[0].motivo
+
+
+def test_el_tope_en_kilos_manda_aunque_el_porcentaje_deje_pasar(cfg):
+    """`max_jump_kg: 30` es un techo absoluto, y sin el no habria ninguno arriba.
+
+    Con un objetivo de 100 kg el 60% son 60: el porcentaje dejaria pasar un
+    salto de 40 sin pestanear. Lo frena el tope en kilos, que es lo que
+    significa "nunca mas de 30 de golpe" y la razon de que los dos vayan en Y.
+
+    Existe porque el banco de mutaciones del 25/09/2026 subio `max_jump_kg` a
+    999 y NINGUN test se puso rojo: los dedazos que se probaban eran todos tan
+    grandes que el porcentaje los frenaba solo, asi que el tope en kilos no
+    estaba atado a nada.
+    """
+    prog = {"adopt_executed_load": cfg.raw["progression"]["adopt_executed_load"]}
+    estado = estado_en(100, 100)
+    ad = adoptar(estado, [ejercicio(100, 100)], {"hip_thrust": 140.0}, prog=prog)
+    assert ad and ad[0].aplicada is False
+    assert "no se adopta solo" in ad[0].motivo
+    assert estado.current_sets[CLAVE][-1]["weight_kg"] == 100.0

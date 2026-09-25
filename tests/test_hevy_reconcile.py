@@ -642,3 +642,107 @@ def test_un_error_http_revienta_en_vez_de_devolver_lo_que_haya():
     http = FakeHTTP([FakeResponse(500, None, "boom")])
     with pytest.raises(HevyError, match="500"):
         cliente(http).get_workouts(since=DIA)
+
+
+# ---------------------------------------------------------------------------
+# `ignorar_peso`: una serie mas ligera no es una serie fallada
+# ---------------------------------------------------------------------------
+#
+# Lo pidio el usuario el 25/09/2026 y el caso que lo destapo esta medido: la
+# patada atras del 21/09 se hizo 30, 40 y 50 kg con las 24 reps completas en las
+# tres, y el sistema se nego a adoptar los 50 porque la primera iba a 30 cuando
+# el plan pedia 35. Estaba tirando la prueba MAS fuerte por culpa de la mas
+# floja. Una rampa no es un fallo.
+#
+# La bandera existe SOLO para la rama de subir de `adoptar_cargas`. El veredicto
+# estricto no cambia, y hay un test aqui abajo que lo sujeta: de el cuelga la
+# racha de sesiones limpias, y ahi el peso tiene que seguir contando o una
+# sesion hecha a 50 cuando el plan pedia 60 volveria a pagar la subida.
+
+
+def test_para_subir_una_serie_mas_ligera_con_las_reps_completas_si_cumple():
+    assert _alcanza(
+        {"reps": 24, "weight_kg": 30}, {"reps": 24, "weight_kg": 35},
+        ignorar_peso=True,
+    ) is True
+
+
+def test_ignorar_el_peso_no_perdona_las_reps():
+    """70 kg a 4 reps cuando se pedian 10 sigue sin ser un objetivo nuevo."""
+    assert _alcanza(
+        {"reps": 4, "weight_kg": 70}, {"reps": 10, "weight_kg": 60},
+        ignorar_peso=True,
+    ) is False
+
+
+def test_ignorar_el_peso_tampoco_perdona_los_segundos():
+    assert _alcanza(
+        {"duration_seconds": 12}, {"duration_s": 20}, ignorar_peso=True
+    ) is False
+
+
+def test_el_veredicto_estricto_no_se_entera_de_la_bandera():
+    """La pareja del primero: los MISMOS datos, sin la bandera, no cumplen.
+
+    Es lo que impide que alguien encienda `ignorar_peso` por defecto un dia y
+    reabra el agujero de la racha sin que nada se ponga rojo.
+    """
+    assert _alcanza(
+        {"reps": 24, "weight_kg": 30}, {"reps": 24, "weight_kg": 35}
+    ) is False
+
+
+def test_la_rampa_entera_de_la_patada_atras_del_21_de_septiembre():
+    """El caso real, con el plan y las series tal cual estan en la base.
+
+    Plan: calentamiento 20x20 y dos series de 24 a 35 kg.
+    Hecho: calentamiento 20x20 y 30, 40 y 50 kg, las tres a 24 reps.
+    """
+    plan = Plan(ejercicio("patada_atras", sets=[
+        serie(type="warmup", reps=20, weight_kg=20),
+        serie(reps=24, weight_kg=35),
+        serie(reps=24, weight_kg=35),
+    ]))
+    w = workout(hecho(
+        "T-patada_atras",
+        serie(type="warmup", reps=20, weight_kg=20),
+        serie(type="normal", reps=24, weight_kg=30),
+        serie(type="normal", reps=24, weight_kg=40),
+        serie(type="normal", reps=24, weight_kg=50),
+    ))
+    estricto = workout_compliance(w, plan, CFG_SETS)
+    arriba = workout_compliance(w, plan, CFG_SETS, ignorar_peso=True)
+    assert estricto["patada_atras"] is False
+    assert arriba["patada_atras"] is True
+    # Y el motivo del estricto sigue nombrando la serie ligera, que es verdad.
+    assert "se hizo a 30 kg y pedía 35" in motivos_incumplimiento(
+        w, plan, CFG_SETS
+    )["patada_atras"]
+    # Para subir no hay nada que explicar.
+    assert "patada_atras" not in motivos_incumplimiento(
+        w, plan, CFG_SETS, ignorar_peso=True
+    )
+
+
+def test_los_dos_motivos_pueden_senalar_series_distintas():
+    """Por que la rama de subir necesita SU motivo y no puede usar el estricto.
+
+    Serie 1 ligera pero completa; serie 2 corta de reps. El motivo estricto se
+    para en la primera -el peso- y el de subir llega a la segunda -las reps-.
+    Reusar el estricto imprimiria «la serie 1 se hizo a 30 kg» junto a una carga
+    que NO subio por culpa de la serie 2: una explicacion que no explica.
+    """
+    plan = Plan(ejercicio("x", sets=[
+        serie(reps=10, weight_kg=35),
+        serie(reps=10, weight_kg=35),
+    ]))
+    w = workout(hecho(
+        "T-x",
+        serie(type="normal", reps=10, weight_kg=30),
+        serie(type="normal", reps=4, weight_kg=40),
+    ))
+    estricto = motivos_incumplimiento(w, plan, CFG_SETS)["x"]
+    arriba = motivos_incumplimiento(w, plan, CFG_SETS, ignorar_peso=True)["x"]
+    assert "serie 1" in estricto and "30 kg" in estricto
+    assert "serie 2" in arriba and "reps" in arriba
+    assert estricto != arriba

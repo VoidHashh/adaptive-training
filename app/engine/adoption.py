@@ -44,19 +44,40 @@ serie mal apuntada, y bajar el objetivo por eso es la forma silenciosa de que un
 programa se desinfle. Cuando por fin se baja, se baja a la MEJOR de esas
 sesiones, no a la última ni a la peor: un día malo no fija el suelo.
 
-NO SE ADOPTA LO QUE NO SE COMPLETÓ
-----------------------------------
-Un peso más alto solo se adopta si la sesión fue limpia en ese ejercicio. 70 kg
-a 4 reps cuando se pedían 10 no es un objetivo nuevo, es una serie que se cortó;
-adoptarlo subiría el objetivo apoyándose en un fallo.
+NO SE ADOPTA LO QUE SE CORTÓ — PERO UNA SERIE MÁS LIGERA NO ES UN CORTE
+------------------------------------------------------------------------
+Un peso más alto no se adopta si las REPS o los SEGUNDOS de alguna serie se
+quedaron cortos. 70 kg a 4 reps cuando se pedían 10 no es un objetivo nuevo, es
+una serie que se cortó, y adoptarlo subiría el objetivo apoyándose en un fallo.
+
+Lo que SÍ se adopta desde el 25/09/2026 es un peso levantado en una sesión donde
+alguna serie fue más LIGERA de lo pedido. Antes eso lo bloqueaba todo, y el caso
+que lo destapó fue la patada atrás del 21/09: 30, 40 y 50 kg con las 24 reps
+completas en las tres, y los 50 rechazados porque la primera iba a 30 cuando el
+plan pedía 35. El sistema estaba tirando la prueba MÁS fuerte -24 reps a 50- por
+culpa de la más floja. Una rampa no es un fallo.
+
+La distinción, en una frase: se mira si la serie se TERMINÓ, no con cuánto peso
+se empezó. Los dos veredictos los calcula `runner._cumplimiento_contra` en el
+mismo bucle y llegan aquí por separado; el estricto -el que sí exige el peso-
+sigue mandando en la rama de BAJAR y en la racha de sesiones limpias que abre la
+progresión, porque ahí el riesgo es el contrario: una sesión hecha a 50 cuando
+el plan pedía 60 no puede pagar la siguiente subida.
 
 EL TOPE DE SALTO
 ----------------
 Un 600 en vez de un 60 al teclear en Hevy se convertiría, sin este tope, en la
-rutina de mañana. El margen es `max(max_jump_kg, max_jump_pct × objetivo)`: en
-porcentaje porque 10 kg en un curl de 12 es otra cosa que 10 kg en una prensa de
-150, y con un mínimo en kg para que un ejercicio ligero no quede por debajo del
-propio incremento de la progresión.
+rutina de mañana. Subiendo, el margen es `min(max_jump_kg, max_jump_pct ×
+objetivo)` con un suelo en el `increment_kg` del ejercicio: en porcentaje porque
+10 kg en un curl de 12 es otra cosa que 10 kg en una prensa de 150, en MENOR
+porque si no el tope se afloja justo donde la carga absoluta es mayor, y con el
+suelo para que un ejercicio ligero no quede por debajo de su propia subida
+normal. Bajando es el mayor de los dos, y el motivo está en `_margen`.
+
+El 25/09/2026 los dos valores se ensancharon mucho (5 kg y 20% -> 30 kg y 60%).
+En seis meses el tope había actuado cuatro veces y las cuatro eran
+levantamientos reales, ninguna una errata: frenaba la realidad, no el ruido. El
+motivo largo y las cuatro cifras están en `config.yaml`, junto a las claves.
 
 Pasarse del margen NO adopta y NO calla: se cuenta en el mensaje de la mañana
 siguiente. Es la diferencia entre un tope y una censura.
@@ -114,15 +135,29 @@ class Adopcion:
             #
             # Ese `or 0` era por tanto inalcanzable con datos legítimos, y lo
             # único que podía hacer es convertir una rotura del invariante en la
-            # frase "hip thrust: 62,5→0 kg", que se lee como que el objetivo se
+            # frase "hip thrust: de 62,5 a 0 kg", que se lee como que el objetivo se
             # ha ido al suelo. En el mensaje de la mañana, sobre el ejercicio que
             # toca hacer hoy. Mejor que reviente aquí -`_fmt_kg(None)` peta- y se
             # vea el fallo, que no que salga un cero con cara de decisión.
             #
             # Un 0,0 de verdad sí puede llegar, y entonces "0 kg" es la lectura
             # correcta: es un ejercicio sin peso registrado, no un hueco.
+            #
+            # -----------------------------------------------------------------
+            #
+            # «de X a Y» y no «X→Y», y la flecha no era un capricho de estilo:
+            # el 25/09/2026 el usuario leyó «Tirón a la cara: 12,5→15 kg — se
+            # levantó eso de verdad, y el plan pedía 12,5» y entendió que el
+            # sistema le había puesto 12,5 cuando le había puesto 15. Es fácil de
+            # ver una vez leído: la flecha es fina, y el motivo TERMINA en el
+            # número viejo, así que 12,5 es a la vez el primero y el último de la
+            # frase. Con «de 12,5 a 15 kg» no hay forma de leerlo al revés.
+            #
+            # No es cosmético. Esa frase es lo único que cuenta que una carga se
+            # ha movido, y una carga que se cree movida al revés se corrige a
+            # mano sobre una espalda con hernia.
             return (
-                f"{self.name}: {_fmt_kg(self.objetivo_antes_kg)}→"
+                f"{self.name}: de {_fmt_kg(self.objetivo_antes_kg)} a "
                 f"{_fmt_kg(self.objetivo_despues_kg)} kg ({self.motivo})"
             )
         return f"{self.name}: sigue en {_fmt_kg(self.objetivo_antes_kg)} kg ({self.motivo})"
@@ -240,6 +275,8 @@ def adoptar_cargas(
     pesos_hechos: dict[str, float | None],
     limpio: dict[str, bool],
     motivos: dict[str, str],
+    limpio_arriba: dict[str, bool],
+    motivos_arriba: dict[str, str],
     set_cfg: dict[str, Any],
     prog_cfg: dict[str, Any],
 ) -> list[Adopcion]:
@@ -255,6 +292,18 @@ def adoptar_cargas(
 
     `limpio` sigue mandando sobre `motivos`: quien decide es el veredicto, y un
     motivo que no llegue solo deja la frase más pobre, nunca una carga más alta.
+
+    DOS VEREDICTOS, Y CADA RAMA USA EL SUYO (25/09/2026)
+    -----------------------------------------------------
+    `limpio_arriba` y `motivos_arriba` son el mismo cumplimiento SIN mirar el
+    peso de cada serie, y son los que usa la rama de SUBIR. El motivo está
+    abajo, en esa rama. Los de bajar y los de "no consta" siguen con el
+    estricto: ahí el peso sí tiene que contar.
+
+    Van como parámetros y no se calculan aquí porque el criterio de unión de una
+    sesión partida en dos ratos vive en `runner._cumplimiento_contra` y tiene
+    que ser el mismo para los dos veredictos. Calcular uno aquí habría creado la
+    segunda cuenta en paralelo que esa función existe para no tener.
 
     Devuelve TODAS las adopciones consideradas, aplicadas y rechazadas. Las
     rechazadas también salen: un tope que actúa sin decirlo es un tope que nadie
@@ -310,12 +359,37 @@ def adoptar_cargas(
         # --- hacia arriba: contra el OBJETIVO, y solo con la sesión limpia ----
         if hecho > objetivo:
             _reset_por_debajo(state, clave)
-            if not limpio.get(key, False):
+            # AQUÍ MANDA `limpio_arriba`, QUE NO MIRA EL PESO DE CADA SERIE.
+            #
+            # Con el veredicto estricto, una serie más LIGERA de lo pedido
+            # bloqueaba la subida. El 21/09/2026 la patada atrás se hizo
+            # 30/40/50 kg con las 24 reps completas en las tres, y los 50 no se
+            # adoptaron porque la primera iba a 30 cuando el plan pedía 35: el
+            # sistema rechazaba la prueba MÁS fuerte por culpa de la más floja.
+            # Una rampa no es un fallo, y el escalón de abajo de una rampa no
+            # dice nada malo de lo que se levantó arriba.
+            #
+            # Lo que sigue bloqueando es que las REPS o los segundos se queden
+            # cortos: 70 kg a 4 reps cuando se pedían 10 no es un objetivo
+            # nuevo, es una serie que se cortó, y adoptarlo subiría la carga
+            # apoyándose en un fallo. En una L4-L5 esa distinción es la que
+            # importa, y es justo la que el veredicto estricto no sabía hacer.
+            #
+            # BAJAR NO CAMBIA. Allí el peso tiene que contar: una sesión hecha a
+            # 50 cuando el plan pedía 60 es exactamente lo que hay que detectar,
+            # y con el veredicto de aquí saldría limpia.
+            if not limpio_arriba.get(key, False):
                 # Sin motivo no se inventa uno. Decir «a las reps objetivo»
                 # cuando no consta mandaría a revisar un número que a lo mejor
                 # estaba bien, y esa frase viaja al móvil junto a una carga que
                 # no ha subido: es justo cuando más caro sale equivocarse.
-                porque = motivos.get(key) or "no consta en qué se quedó corto"
+                #
+                # El motivo sale de `motivos_arriba` y no de `motivos`: el
+                # estricto puede estar contando la serie ligera -que aquí ya no
+                # es un problema- mientras lo que de verdad falló son las reps
+                # de otra serie. Sería una carga no subida con una explicación
+                # que no la explica.
+                porque = motivos_arriba.get(key) or "no consta en qué se quedó corto"
                 salida.append(
                     Adopcion(
                         routine_key, key, str(ex.get("name", key)), ARRIBA,
