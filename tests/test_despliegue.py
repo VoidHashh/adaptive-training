@@ -511,6 +511,66 @@ def test_el_taller_pasa_las_marcas_que_el_dockerfile_declara():
     )
 
 
+LEEME_UMBREL = REPO_ROOT / "umbrel" / "README.md"
+
+
+def _rutas_de_app_data(servicio: dict) -> set[str]:
+    """Todo lo que el compose espera encontrar dentro de `${APP_DATA_DIR}`."""
+    crudo = [str(v) for v in servicio.get("volumes", [])]
+    for e in servicio.get("env_file", []):
+        crudo.append(e["path"] if isinstance(e, dict) else str(e))
+    return {
+        m.group(1)
+        for m in (re.match(r"\$\{APP_DATA_DIR\}/([^:]+)", c) for c in crudo)
+        if m
+    }
+
+
+def test_las_instrucciones_nombran_todo_lo_que_el_compose_espera_encontrar(servidor):
+    """La instalación que falla con un error que no dice nada (25/09/2026).
+
+    Umbreld contestó esto en la interfaz, y nada más:
+
+        Command failed with exit code 1: .../app-script install
+        planb-adaptive-training
+
+    Debajo: el compose monta `${APP_DATA_DIR}/config.yaml`, ese fichero no
+    estaba, y **Docker, ante un origen de bind mount que no existe, crea un
+    DIRECTORIO**. `load_config` encontró un directorio donde esperaba un YAML y
+    el contenedor murió. El documento de instalación sí lo contaba... y aun así
+    falló, porque decía «antes de ABRIR la aplicación» cuando la instalación no
+    llega a abrirse.
+
+    Lo que este test ata no es la redacción -eso no se puede comprobar- sino lo
+    que sí se puede: que no haya ninguna ruta que el compose necesite y que las
+    instrucciones no nombren. Ese es el fallo que se repite, porque añadir un
+    montaje es una línea y acordarse del documento es un acto de fe.
+
+    El precio de olvidarlo no es un aviso: es una instalación que se cae con un
+    error genérico, en la máquina de otro, y con `${APP_DATA_DIR}` ya sucio para
+    que el segundo intento falle igual.
+    """
+    leeme = LEEME_UMBREL.read_text(encoding="utf-8")
+    rutas = _rutas_de_app_data(servidor)
+    assert rutas, "el compose ya no monta nada de `${APP_DATA_DIR}`; este test sobra"
+
+    # Se busca `$APP/<ruta>` y no la ruta suelta, y eso lo decidió el banco de
+    # mutaciones: con la subcadena a secas, un montaje nuevo de
+    # `${APP_DATA_DIR}/secretos` pasaba en verde porque la palabra «secretos»
+    # ya salía en una frase del documento. Un test que se conforma con que la
+    # palabra aparezca en algún sitio no comprueba nada; el que exige la forma
+    # `$APP/<ruta>` exige que haya un COMANDO que cree esa ruta, que es lo que
+    # se quiere de unas instrucciones de instalación.
+    sin_documentar = sorted(r for r in rutas if f"$APP/{r}" not in leeme)
+    assert not sin_documentar, (
+        f"el compose espera encontrar {sin_documentar} dentro de "
+        f"`${{APP_DATA_DIR}}` y `umbrel/README.md` no trae ningún comando que "
+        f"lo cree (se busca la forma `$APP/<ruta>`). Si no está antes de "
+        f"instalar, Docker crea un DIRECTORIO con ese nombre y la instalación "
+        f"se cae con un error genérico que no dice por qué"
+    )
+
+
 # ---------------------------------------------------------------------------
 # `.dockerignore`: lo que entra y lo que no puede entrar
 # ---------------------------------------------------------------------------

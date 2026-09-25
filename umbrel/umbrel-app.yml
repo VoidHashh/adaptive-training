@@ -56,7 +56,11 @@ support: https://github.com/VoidHashh/adaptive-training/issues
 # nombre suelto -`icon.png`- no se resuelve contra nada: la aplicación sale con
 # el hueco gris. El fichero se sirve desde `raw.githubusercontent.com`, que
 # exige que el repositorio de la tienda sea público. Lo es.
-icon: https://raw.githubusercontent.com/VoidHashh/PlanB/main/planb-adaptive-training/icon.png
+#
+# SVG y no PNG: el dibujo venía en vector y así no hay que elegir una
+# resolución. El fichero de la tienda lleva el lienzo cuadrado -el original
+# era 49x46, y una tarjeta de Umbrel es cuadrada-.
+icon: https://raw.githubusercontent.com/VoidHashh/PlanB/main/planb-adaptive-training/icon.svg
 
 dependencies: []
 

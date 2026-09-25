@@ -84,7 +84,7 @@ exactamente lo que ya tienen `planb-panel` y `planb-bitstatus`:
 planb-adaptive-training/
   umbrel-app.yml       <- copia de umbrel/umbrel-app.yml de este repositorio
   docker-compose.yml   <- copia de umbrel/docker-compose.yml de este repositorio
-  icon.png             <- 1024x1024, el mismo formato que las otras dos
+  icon.svg             <- lienzo CUADRADO (Umbrel pinta tarjetas cuadradas)
 ```
 
 Los dos YAML son **copias**, y eso es una duplicación real: el original vive
@@ -98,25 +98,70 @@ URL completa a `raw.githubusercontent.com`. En la tienda oficial Umbrel reescrib
 esos nombres contra su propio repositorio de imágenes; en una privada no hay tal
 reescritura, y un nombre suelto deja la aplicación con el hueco gris.
 
-## 3. Los ficheros que van en `${APP_DATA_DIR}`
+## 3. Los ficheros que van en `${APP_DATA_DIR}`, ANTES de instalar
 
-`${APP_DATA_DIR}` es `~/umbrel/app-data/<id-de-la-aplicación>/`. Hay que dejar
-dos cosas **antes de abrir la aplicación**:
+**La primera instalación falla si no se hace esto, y falla con un error que no
+dice por qué.** Pasó el 25/09/2026, en la interfaz de Umbrel:
+
+```
+Command failed with exit code 1:
+/opt/umbreld/source/modules/apps/legacy-compat/app-script install planb-adaptive-training
+```
+
+Eso es todo lo que se ve. Lo que había pasado por debajo:
+
+1. Umbreld creó `${APP_DATA_DIR}` y lanzó `docker compose up`.
+2. El compose monta `${APP_DATA_DIR}/config.yaml` y ese fichero no existía.
+   **Docker, ante un origen de bind mount que no existe, crea un DIRECTORIO.**
+3. `load_config` se encontró un directorio donde esperaba un YAML, el contenedor
+   murió, y umbreld deshizo la instalación —la aplicación ni siquiera aparece en
+   la lista de instaladas—, pero **dejó `${APP_DATA_DIR}` en pie**, con el
+   directorio `config.yaml` dentro para que la siguiente vez vuelva a fallar.
+
+Y aquí estaba el gazapo de este documento: decía «antes de **abrir** la
+aplicación». Era falso. Hay que hacerlo antes de **instalarla**, porque la
+instalación no llega a abrirse: se cae antes.
+
+### El orden que funciona
+
+`${APP_DATA_DIR}` es `~/umbrel/app-data/<id-de-la-aplicación>/`, y no existe
+hasta que se instala. La salida es crearlo a mano antes: si ya está, umbreld lo
+respeta y no lo toca.
 
 ```bash
 ssh umbrel@<host>
 APP=~/umbrel/app-data/planb-adaptive-training
 mkdir -p "$APP/data"
 
-# Las reglas. Sin esto, Docker crea un DIRECTORIO llamado config.yaml,
-# `load_config` no encuentra ningún YAML y el contenedor no levanta.
-curl -fsSL https://raw.githubusercontent.com/VoidHashh/adaptive-training/main/config.yaml \
-  -o "$APP/config.yaml"
+# Las reglas. Un FICHERO, no un directorio (ver arriba).
+curl -fsSL https://raw.githubusercontent.com/VoidHashh/adaptive-training/main/config.yaml   -o "$APP/config.yaml"
 
-# Los secretos.
+# Los secretos. Opcional: sin esto la aplicación arranca y dice qué le falta.
 nano "$APP/.env"
-chown -R 1000:1000 "$APP"
 ```
+
+**Sin `sudo`, y no es un detalle de comodidad.** El usuario `umbrel` es uid
+1000, que es el mismo con el que corre el contenedor (`user: "1000:1000"`), así
+que todo lo que cree él ya tiene el dueño correcto. Aquí ponía un `chown -R
+1000:1000` que además de pedir contraseña tapaba el problema de verdad: **si a
+`data/` lo crea Docker en vez de tú, sale `root:root` y el contenedor no puede
+escribir su propia base de datos.** Arranca, responde, y no persiste nada.
+
+### Si la instalación ya ha fallado
+
+No hace falta root ni reinstalar Umbrel. El directorio de la aplicación es del
+usuario `umbrel`, así que se puede vaciar aunque lo de dentro sea de `root`:
+
+```bash
+APP=~/umbrel/app-data/planb-adaptive-training
+rmdir "$APP/config.yaml"        # el directorio que creó Docker
+rmdir "$APP/data" && mkdir "$APP/data"   # para que salga con uid 1000
+curl -fsSL https://raw.githubusercontent.com/VoidHashh/adaptive-training/main/config.yaml   -o "$APP/config.yaml"
+```
+
+Y volver a darle a **Install** en la interfaz. **No a *Uninstall* primero**: eso
+sí se lleva `${APP_DATA_DIR}` por delante, y con él la base de datos y las copias
+de Hevy.
 
 El `.env` es el mismo de siempre; el modelo está en `.env.example`, en la raíz
 del repositorio:
