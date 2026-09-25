@@ -248,3 +248,62 @@ def cruzar(
             "respuesta": None,
         })
     return salida
+
+
+# ---------------------------------------------------------------------------
+# Las dos elecciones sobre la sesión entera
+# ---------------------------------------------------------------------------
+#
+# Van aquí y no en la API por lo mismo que los otros dos vocabularios: las pinta
+# la pantalla, las valida el endpoint y las cuenta el análisis, y escritas tres
+# veces se separan.
+
+CANTIDAD: dict[str, str] = {
+    "corta": "se me quedó corta",
+    "justa": "justa",
+    "larga": "se me hizo larga",
+}
+
+TECNICA: dict[str, str] = {
+    "bien": "aguantó bien",
+    "se_iba": "se me iba al final",
+    "mal": "no aguantó",
+}
+
+
+def validar_eleccion(valor: Any, tabla: dict[str, str], campo: str) -> str | None:
+    """`None` es no contestar, y es legítimo. Cualquier otra cosa, o vale o revienta.
+
+    No se acepta una cadena vacía como «no contestada»: `""` y `None` llegarían
+    por caminos distintos -un desplegable sin tocar y un campo ausente- y
+    tratarlos igual es la forma de que un día se guarde `""` en la columna y
+    ningún contador lo vea ni como respuesta ni como hueco.
+    """
+    if valor is None:
+        return None
+    valor = str(valor)
+    if valor not in tabla:
+        raise FeedbackError(
+            f"{campo}: {valor!r} no es una respuesta válida. "
+            f"Válidas: {sorted(tabla)}, o no contestar"
+        )
+    return valor
+
+
+def validar_mas_costoso(valor: Any, ejercicios: list[dict[str, Any]]) -> str | None:
+    """El que más costó tiene que ser UNO DE LOS DE HOY.
+
+    Sin esta comprobación se guardaría cualquier cadena, y el cruce con el peso
+    apuntado -que es para lo que existe la pregunta- buscaría un ejercicio que
+    esa sesión no tuvo y saldría vacío para siempre sin que nada fallara.
+    """
+    if valor is None:
+        return None
+    valor = str(valor)
+    claves = {e["key"] for e in ejercicios}
+    if valor not in claves:
+        raise FeedbackError(
+            f"mas_costoso: {valor!r} no está entre los ejercicios de la sesión "
+            f"({sorted(claves)})"
+        )
+    return valor

@@ -3417,3 +3417,63 @@ def test_ninguna_ruta_de_api_se_declara_despues_del_montaje_de_estaticos():
         f"contestan 404: {tarde}. Muévelas por encima de la sección de "
         f"estáticos de `app/api.py`"
     )
+
+
+def test_las_cuatro_preguntas_generales_se_guardan_y_vuelven(cliente):
+    """Las cinco escalas y las tres elecciones, ida y vuelta.
+
+    Una por una, porque el fallo tipico aqui es que un campo nuevo se declare
+    en el modelo y no se copie en el `guardar_feedback`: se aceptaria el envio,
+    devolveria 200 y el dato se perderia en silencio.
+    """
+    dia = LUNES.isoformat()
+    r = cliente.post("/api/sesion/feedback", json={
+        "day": dia,
+        "rpe": 7,
+        "lower_discomfort_after": 6,
+        "training_desire_after": 4,
+        "satisfaccion": 8,
+        "cantidad": "corta",
+        "tecnica": "se_iba",
+        "mas_costoso": "peso_muerto",
+        "ejercicios": [
+            {"key": "peso_muerto", "name": "Peso muerto", "estado": "hecho",
+             "respuesta": None},
+        ],
+    })
+    assert r.status_code == 200, r.text
+
+    g = cliente.get("/api/sesion/hoy", params={"day": dia}).json()["guardado"]
+    assert g["rpe"] == 7
+    assert g["lower_discomfort_after"] == 6
+    assert g["training_desire_after"] == 4
+    assert g["satisfaccion"] == 8
+    assert g["cantidad"] == "corta"
+    assert g["tecnica"] == "se_iba"
+    assert g["mas_costoso"] == "peso_muerto"
+
+
+def test_el_que_mas_costo_tiene_que_estar_en_la_sesion(cliente):
+    """422 y no un guardado silencioso de una clave que no existe."""
+    r = cliente.post("/api/sesion/feedback", json={
+        "day": LUNES.isoformat(),
+        "mas_costoso": "dominadas",
+        "ejercicios": [{"key": "peso_muerto", "estado": "hecho"}],
+    })
+    assert r.status_code == 422
+    assert "dominadas" in r.text
+
+
+def test_una_eleccion_inventada_se_rechaza(cliente):
+    r = cliente.post("/api/sesion/feedback", json={
+        "day": LUNES.isoformat(), "cantidad": "regular",
+    })
+    assert r.status_code == 422
+
+
+def test_los_vocabularios_de_sesion_tambien_viajan_al_formulario(cliente):
+    from app.engine.feedback import CANTIDAD, TECNICA
+
+    d = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()}).json()
+    assert d["cantidad"] == CANTIDAD
+    assert d["tecnica"] == TECNICA

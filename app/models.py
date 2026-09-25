@@ -1162,6 +1162,30 @@ class SessionFeedback(Base):
     # hecho la sesión a la espalda. El de la mañana describe cómo se levantó uno.
     lower_discomfort_after: Mapped[int | None] = mapped_column(Integer)
 
+    # La pareja de `checkins.training_desire`, por el mismo motivo que la de la
+    # espalda: la resta dice si entrenar deja cargado o vaciado. Acabar reventado
+    # CON ganas y acabar reventado SIN ellas son dos sesiones que el esfuerzo
+    # solo puntúa igual.
+    training_desire_after: Mapped[int | None] = mapped_column(Integer)
+    # Lo a gusto que se ha entrenado, que no es lo mismo que lo duro. Es la que
+    # menos decide y la que más dice a largo plazo: un plan que se cumple entero
+    # y no gusta se abandona igual que uno que no se cumple.
+    satisfaccion: Mapped[int | None] = mapped_column(Integer)
+
+    # --- Las tres elecciones -------------------------------------------------
+    # `corta | justa | larga`. La única pregunta que dice si lo que el sistema
+    # MANDA es la cantidad adecuada. Cumplir una sesión que se quedó corta
+    # parece un éxito y es la señal de que se puede pedir más.
+    cantidad: Mapped[str | None] = mapped_column(String(16))
+    # `bien | se_iba | mal`. No la mide nada, y con una L4-L5 es lo que suele
+    # preceder a una molestia. Separa además dos cosas que Hevy escribe igual:
+    # completar las reps limpio y completarlas como sea.
+    tecnica: Mapped[str | None] = mapped_column(String(16))
+    # La clave del ejercicio que más costó. El esfuerzo global dice cuánto; este
+    # dice dónde, y cruzado con el peso apuntado enseña si lo que más cuesta es
+    # también donde más se ha subido.
+    mas_costoso: Mapped[str | None] = mapped_column(String(96))
+
     # --- Qué pasó con cada ejercicio -----------------------------------------
     # Lista de objetos `{key, name, estado, respuesta}`. El vocabulario de
     # `respuesta` depende de `estado` y vive en `app/engine/feedback.py`, que es

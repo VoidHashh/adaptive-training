@@ -1859,6 +1859,14 @@ class FeedbackIn(BaseModel):
     day: date | None = None
     rpe: int | None = Field(None, ge=0, le=10)
     lower_discomfort_after: int | None = Field(None, ge=0, le=10)
+    training_desire_after: int | None = Field(None, ge=0, le=10)
+    satisfaccion: int | None = Field(None, ge=0, le=10)
+    # Las tres elecciones. Sin `Literal` aquí, y por lo mismo que los
+    # ejercicios: el vocabulario vive en `engine/feedback` y repetirlo aquí
+    # daría dos listas que pueden separarse.
+    cantidad: str | None = None
+    tecnica: str | None = None
+    mas_costoso: str | None = None
     nota: str | None = Field(None, max_length=2000)
     # Sin tipar más fino a propósito: quien valida el vocabulario es
     # `engine/feedback.validar_ejercicios`, que es donde vive, y duplicar aquí
@@ -1916,10 +1924,17 @@ def sesion_hoy(
             fb.HECHO: fb.RESPUESTAS_HECHO,
             fb.FALTA: fb.RESPUESTAS_FALTA,
         },
+        "cantidad": fb.CANTIDAD,
+        "tecnica": fb.TECNICA,
         "guardado": {
             "enviado": guardado is not None,
             "rpe": getattr(guardado, "rpe", None),
             "lower_discomfort_after": getattr(guardado, "lower_discomfort_after", None),
+            "training_desire_after": getattr(guardado, "training_desire_after", None),
+            "satisfaccion": getattr(guardado, "satisfaccion", None),
+            "cantidad": getattr(guardado, "cantidad", None),
+            "tecnica": getattr(guardado, "tecnica", None),
+            "mas_costoso": getattr(guardado, "mas_costoso", None),
             "nota": getattr(guardado, "nota", None),
         },
         # Con cuánta molestia lumbar se llegó por la mañana. Va aquí para que la
@@ -1936,11 +1951,15 @@ def post_sesion_feedback(
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Guarda lo contestado. Se puede reenviar: manda el último envío."""
-    from app.engine.feedback import FeedbackError, validar_ejercicios
+    from app.engine import feedback as fb
+    from app.engine.feedback import FeedbackError
 
     day = body.day or date.today()
     try:
-        ejercicios = validar_ejercicios(body.ejercicios)
+        ejercicios = fb.validar_ejercicios(body.ejercicios)
+        cantidad = fb.validar_eleccion(body.cantidad, fb.CANTIDAD, "cantidad")
+        tecnica = fb.validar_eleccion(body.tecnica, fb.TECNICA, "tecnica")
+        mas_costoso = fb.validar_mas_costoso(body.mas_costoso, ejercicios)
     except FeedbackError as exc:
         # 422 y no 500: lo que ha llegado mal es la petición, no el servidor.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1951,6 +1970,11 @@ def post_sesion_feedback(
         day,
         rpe=body.rpe,
         lower_discomfort_after=body.lower_discomfort_after,
+        training_desire_after=body.training_desire_after,
+        satisfaccion=body.satisfaccion,
+        cantidad=cantidad,
+        tecnica=tecnica,
+        mas_costoso=mas_costoso,
         nota=(body.nota or "").strip() or None,
         ejercicios_json=json.dumps(ejercicios, ensure_ascii=False),
         workout_ids_json=json.dumps(

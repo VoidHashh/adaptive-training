@@ -22,18 +22,22 @@ from __future__ import annotations
 import pytest
 
 from app.engine.feedback import (
+    CANTIDAD,
     FALTA,
     HECHO,
     HECHO_SIN_APUNTAR,
     MOLESTIAS,
     RESPUESTAS_FALTA,
     RESPUESTAS_HECHO,
+    TECNICA,
     FeedbackError,
     cruzar,
     molestaron,
     respuestas_de,
     sin_apuntar,
     validar_ejercicios,
+    validar_eleccion,
+    validar_mas_costoso,
 )
 
 SETS = {"source": "api"}
@@ -266,3 +270,50 @@ class TestCruce:
         """Un entreno en un día sin plan -o sin decisión guardada- no se pierde."""
         out = cruzar([], [workout(hecho_en_hevy("x", "normal", title="Equis"))], SETS)
         assert len(out) == 1 and out[0]["name"] == "Equis"
+
+
+# ---------------------------------------------------------------------------
+# Las tres preguntas sobre la sesión entera
+# ---------------------------------------------------------------------------
+
+
+class TestElecciones:
+    def test_no_contestar_es_valido_y_se_guarda_como_None(self):
+        assert validar_eleccion(None, CANTIDAD, "cantidad") is None
+
+    def test_una_cadena_vacia_NO_es_no_contestar(self):
+        """`""` y `None` llegan por caminos distintos -un desplegable sin tocar
+        y un campo ausente- y tratarlos igual es la forma de que un día se
+        guarde `""` en la columna y ningún contador lo vea ni como respuesta ni
+        como hueco."""
+        with pytest.raises(FeedbackError):
+            validar_eleccion("", CANTIDAD, "cantidad")
+
+    @pytest.mark.parametrize("valor", ["corta", "justa", "larga"])
+    def test_las_tres_de_cantidad_valen(self, valor):
+        assert validar_eleccion(valor, CANTIDAD, "cantidad") == valor
+
+    def test_una_cantidad_inventada_revienta(self):
+        with pytest.raises(FeedbackError, match="cantidad"):
+            validar_eleccion("regular", CANTIDAD, "cantidad")
+
+    def test_una_tecnica_inventada_revienta(self):
+        with pytest.raises(FeedbackError, match="tecnica"):
+            validar_eleccion("perfecta", TECNICA, "tecnica")
+
+    def test_el_que_mas_costo_tiene_que_ser_uno_de_los_de_hoy(self):
+        """Sin esto se guardaria cualquier cadena y el cruce con el peso
+        apuntado -que es para lo que existe la pregunta- buscaria un ejercicio
+        que esa sesion no tuvo, y saldria vacio para siempre."""
+        ejs = [{"key": "sentadilla"}, {"key": "press"}]
+        assert validar_mas_costoso("press", ejs) == "press"
+        with pytest.raises(FeedbackError, match="no está entre los ejercicios"):
+            validar_mas_costoso("dominadas", ejs)
+
+    def test_no_decir_cual_costo_mas_es_valido(self):
+        assert validar_mas_costoso(None, [{"key": "a"}]) is None
+
+    def test_los_dos_vocabularios_de_sesion_tienen_etiqueta(self):
+        for tabla in (CANTIDAD, TECNICA):
+            for clave, etiqueta in tabla.items():
+                assert etiqueta.strip(), clave
