@@ -262,6 +262,28 @@ estaban. La patada atrás sigue en 35 kg aunque se levantaran 50 el día 21. Se
 arregla de dos maneras: volver a hacer el ejercicio —la próxima reconciliación
 ya lo adopta— o fijarlo a mano con `scripts/fijar_carga.py`.
 
+**Lo que SÍ se reescribió, a mano, la tarde del 25/09.** Las diez cargas que el
+fallo de la forma había dejado por encima de lo levantado se fijaron con
+`fijar_carga.py --contenedor` a la forma que se hizo, que es lo que el código
+nuevo habría guardado. En las diez, la carga no se había movido desde esa
+adopción. Antes → después:
+
+| Rutina / ejercicio | Antes | Después (lo hecho) |
+|---|---|---|
+| dia_1 prensa_horizontal | 90/100/120 | 70/90/120 |
+| dia_2 peso_muerto_smith | 25/27,5/27,5 | 20/25/27,5 |
+| dia_2 jalon_al_pecho | 45/45/45 | 40/42,5/45 |
+| dia_2 face_pull | 15/15/15 | 12,5/12,5/15 |
+| dia_3 aduccion_cadera | 55/70/80 | 50/60/80 |
+| dia_3 contractora_pecho | 27,5/30/32,5 | 25/27,5/32,5 |
+| dia_3 curl_predicador | 16,25/18,75/20 | 15/17,5/20 |
+| dia_3 extension_triceps_polea | 15/17,5/20 | 12,5/15/20 |
+| dia_3 prensa_una_pierna | 60/60/60 | 40/50/60 |
+| dia_3 jalon_brazos_rectos | 15/15/15 | 12,5/12,5/15 |
+
+La serie top no cambia en ninguna: lo que baja son las de delante, que estaban
+por encima de lo que se levantó.
+
 ## 8. Lo que queda sin hacer, anotado
 
 - **La clave `trend.nivel` del `config.yaml`, DESPUÉS de reconstruir.** El
