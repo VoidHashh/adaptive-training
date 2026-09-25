@@ -1170,6 +1170,65 @@ def test_el_hiit_es_un_tipo_propio_y_se_juzga_contra_su_propio_plan(db):
     assert comp["rendimiento"]["componentes"]["cumplimiento"]["valor"] == 100.0, comp
 
 
+def test_un_bloque_que_ya_no_esta_en_el_config_se_juzga_por_lo_que_era_su_dia(db):
+    """El «Día 2 HIIT» del 22/09/2026, evaluado después de retirarse el bloque.
+
+    Ese día la decisión guardó `hiit_dia_2` como bloque, y el 25 el bloque salió
+    de `hiit.blocks` al fusionarse en el Día 2. El entreno seguía sin evaluar
+    -el 23 y el 24 el sistema no corrió- y con solo el config de hoy entraba
+    como FUERZA: juzgado contra la prensa y el remo, cumplimiento a cero, en
+    una fila que no se reescribe.
+    """
+    cfg = Cfg()
+    cfg.raw["hiit"] = {"blocks": {}}  # el bloque ya no existe en el config
+
+    dia = HOY - timedelta(days=2)
+    checkin(db, dia)
+    checkin(db, dia + timedelta(days=1), rpe=7.0)
+    decision(
+        db,
+        dia,
+        [ejercicio("press", [serie(), serie()])],
+        hiit={
+            "routine": "hiit_dia2",
+            "exercises": [ejercicio("wall_ball", [serie(20, 5.0)])],
+        },
+    )
+    db.add(WorkoutLog(hevy_workout_id="W1", date=dia, routine_key="dia1",
+                      raw_json=json.dumps(entreno(hecho("press", [serie(), serie()])))))
+    db.add(WorkoutLog(hevy_workout_id="W2", date=dia, routine_key="hiit_dia2",
+                      raw_json=json.dumps(entreno(hecho("wall_ball", [serie(20, 5.0)])))))
+    db.commit()
+
+    filas = {f.source_key: f for f in evaluar_pendientes(db, cfg, hasta=HOY, dias=30)}
+
+    assert filas["hevy:W1"].kind == FUERZA
+    assert filas["hevy:W2"].kind == HIIT, (
+        "el bloque que ese día tocaba se ha evaluado como fuerza porque hoy ya "
+        "no está en hiit.blocks"
+    )
+    comp = json.loads(filas["hevy:W2"].components_json or "{}")
+    assert comp["rendimiento"]["componentes"]["cumplimiento"]["valor"] == 100.0, comp
+
+
+def test_un_entreno_sin_rutina_no_pasa_por_hiit_un_dia_sin_bloque(db):
+    """La otra cara: sin rutina de origen no hay nada que comparar con el
+    bloque del día, y un día sin bloque tampoco. Una comparación de vacío con
+    vacío lo convertiría en HIIT."""
+    cfg = Cfg()
+    cfg.raw["hiit"] = {"blocks": {}}
+    dia = HOY - timedelta(days=2)
+    checkin(db, dia)
+    checkin(db, dia + timedelta(days=1), rpe=7.0)
+    decision(db, dia, [ejercicio("press", [serie(), serie()])])
+    db.add(WorkoutLog(hevy_workout_id="W1", date=dia, routine_key=None,
+                      raw_json=json.dumps(entreno(hecho("press", [serie(), serie()])))))
+    db.commit()
+
+    (fila,) = evaluar_pendientes(db, cfg, hasta=HOY, dias=30)
+    assert fila.kind == FUERZA
+
+
 def test_la_sesion_de_hoy_se_queda_fuera_del_barrido(db):
     """Todavía no ha llegado la mañana en la que se pregunta el esfuerzo."""
     db.add(WorkoutLog(hevy_workout_id="W_hoy", date=HOY, raw_json=json.dumps(entreno())))

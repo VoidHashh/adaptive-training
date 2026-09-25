@@ -1884,3 +1884,69 @@ def test_la_fusion_sale_ordenada_por_fecha():
         [DayMetrics(date=LUNES - timedelta(days=i)) for i in (0, 4, 2)],
     )
     assert [m.date for m in fusion] == sorted(m.date for m in fusion)
+
+
+# ---------------------------------------------------------------------------
+# Qué entrenamientos cuentan como HIIT hecho (25/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Hasta esa fecha bastaba la rutina de origen: HIIT si salía de `hiit.blocks`.
+# Al fusionarse el HIIT del Día 2 en el Día 2, el recuento de sesiones intensas
+# dejó de ver los intervalos nuevos Y los «Día 2 HIIT» ya hechos, porque su
+# rutina ya no es un bloque. Contaba de menos, que es el lado que deja margen
+# para una bici intensa que no cabe.
+
+
+def _hecho(plantilla: str, *, tipo: str = "normal") -> dict:
+    return {"exercise_template_id": plantilla,
+            "sets": [{"type": tipo, "duration_seconds": 40}]}
+
+
+# La plantilla real de las cuerdas de batalla, uno de los intervalos del Día 2.
+CUERDAS = "084A67CA"
+
+
+def _hiit_de(db, cfg, rutina, ejercicios) -> bool:
+    from app.repository import sesiones_ejecutadas
+
+    db.add(WorkoutLog(hevy_workout_id=f"W-{rutina}-{len(ejercicios)}", date=LUNES,
+                      routine_key=rutina,
+                      raw_json=json.dumps({"exercises": ejercicios})))
+    db.flush()
+    (s,) = [x for x in sesiones_ejecutadas(db, cfg, desde=LUNES, hasta=LUNES)
+            if x.routine_key == rutina]
+    return s.is_hiit
+
+
+def _plantilla_de_fuerza(cfg) -> str:
+    return next(
+        ex["template_id"] for ex in cfg.raw["routines"]["dia_2"]["exercises"]
+        if ex["key"] == "hip_thrust_barra"
+    )
+
+
+def test_el_dia_2_con_sus_intervalos_cuenta_como_hiit(db, cfg):
+    assert _hiit_de(db, cfg, "dia_2", [_hecho(_plantilla_de_fuerza(cfg)), _hecho(CUERDAS)])
+
+
+def test_el_dia_2_sin_los_intervalos_no_cuenta(db, cfg):
+    """Cuenta lo que se hizo, no la rutina: si ese día se saltaron, no hubo HIIT."""
+    assert not _hiit_de(db, cfg, "dia_2", [_hecho(_plantilla_de_fuerza(cfg))])
+
+
+def test_un_dia_2_hiit_de_antes_de_la_fusion_sigue_contando(db, cfg):
+    """El del 22/09: su rutina ya no es un bloque, pero llevaba esos cuatro
+    ejercicios, y es por la plantilla como se reconoce."""
+    assert "hiit_dia_2" not in cfg.raw["hiit"]["blocks"].values()
+    assert _hiit_de(db, cfg, "hiit_dia_2", [_hecho(CUERDAS)])
+
+
+def test_el_bloque_del_dia_1_cuenta_por_su_rutina(db, cfg):
+    """El camino de siempre, que no depende de qué ejercicios lleve."""
+    bloque = cfg.raw["hiit"]["blocks"]["dia_1"]
+    assert _hiit_de(db, cfg, bloque, [])
+
+
+def test_un_intervalo_solo_de_calentamiento_no_es_hiit(db, cfg):
+    """Abrir las cuerdas para calentar no es un bloque de intervalos."""
+    assert not _hiit_de(db, cfg, "dia_2", [_hecho(CUERDAS, tipo="warmup")])

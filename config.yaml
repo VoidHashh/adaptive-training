@@ -1794,6 +1794,18 @@ hiit:
 
   only_on_green: true
 
+  # Intervalos que viven DENTRO de una rutina de fuerza, sin bloque propio.
+  # Desde el 25/09/2026 el HIIT del Día 2 es parte del Día 2, y sin esto nada
+  # sabía que estos cuatro eran HIIT: el recuento de sesiones intensas dejó de
+  # verlos -también los «Día 2 HIIT» ya hechos- y `safety.forbidden_in_hiit`
+  # dejó de recorrerlos. Un entreno cuenta como HIIT si lleva al menos una
+  # serie de alguno; si el Día 2 se hace sin ellos, no cuenta.
+  #
+  # No admite rutinas de `never_routines`: el Día 3 no lleva HIIT, tampoco
+  # dentro. Cada clave tiene que existir en su rutina.
+  embedded:
+    dia_2: [battle_ropes, comba, ski_erg, step_up]
+
 
 # -----------------------------------------------------------------------------
 # 9. RUTINAS
@@ -2171,11 +2183,11 @@ routines:
       #     comportamiento sin volver a partir la rutina, la pieza que hace
       #     falta ya existe y es `expendable_in_amber: true` en estos cuatro:
       #     el ámbar los quitaría y el resto del Día 2 seguiría igual.
-      #   - Ya no lo recorre la guarda de `safety.forbidden_in_hiit`, que solo
-      #     mira las rutinas referenciadas desde `hiit.blocks`. Los cuatro de
-      #     abajo la pasaban limpios cuando se movieron; lo que se añada aquí en
-      #     adelante no la pasa. Es el mismo alcance que ya tenía el resto del
-      #     Día 2 y que el peso muerto rumano del Día 3, donde está razonado.
+      #   - Al moverlo dejó de recorrerlo la guarda de `safety.forbidden_in_hiit`,
+      #     que solo miraba las rutinas de `hiit.blocks`. Desde la tarde del
+      #     mismo 25/09 vuelve a recorrerlo porque los cuatro están declarados en
+      #     `hiit.embedded`. OJO: un ejercicio que se añada aquí abajo solo pasa
+      #     por esa guarda -y solo cuenta como HIIT- si se añade también allí.
       #
       # `progression_type: none` en los cuatro: son intervalos por tiempo, no
       # hay carga que progresar.

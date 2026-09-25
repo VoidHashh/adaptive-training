@@ -651,6 +651,83 @@ def test_hiit_no_puede_estar_a_la_vez_permitido_y_prohibido(cfg):
 
 
 # ---------------------------------------------------------------------------
+# Intervalos dentro de una rutina: `hiit.embedded` (25/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_el_config_real_declara_los_intervalos_del_dia_2(cfg):
+    """Sin la clave, el recuento de sesiones intensas vuelve a no ver el HIIT
+    del Día 2 y la guarda de la hernia deja de recorrerlo, sin un error."""
+    assert cfg.raw["hiit"]["embedded"] == {
+        "dia_2": ["battle_ropes", "comba", "ski_erg", "step_up"]
+    }
+
+
+def test_una_errata_dentro_de_hiit_no_se_ignora(cfg):
+    """La sección no tenía lista blanca: `only_on_gren` arrancaba limpio y el
+    HIIT se prescribía en ámbar sin que nada lo dijera."""
+    data = copy.deepcopy(cfg.raw)
+    data["hiit"]["only_on_gren"] = data["hiit"].pop("only_on_green")
+    assert "hiit: clave desconocida 'only_on_gren'" in errores(data)
+
+
+@pytest.mark.parametrize(
+    "embedded, esperado",
+    [
+        ({"dia_9": ["comba"]}, "hiit.embedded.dia_9: la rutina no existe"),
+        ({"dia_2": ["no_existe"]}, "'no_existe' no es un ejercicio de esa rutina"),
+        ({"dia_2": []}, "lista no vacía"),
+        ({"dia_2": "comba"}, "lista no vacía"),
+        ({"dia_2": ["comba", "comba"]}, "claves repetidas"),
+        (["dia_2"], "tiene que ser un mapa"),
+    ],
+)
+def test_embedded_mal_escrito_se_rechaza(cfg, embedded, esperado):
+    """Una clave que no existe no cuenta nada y aparenta que sí."""
+    data = copy.deepcopy(cfg.raw)
+    data["hiit"]["embedded"] = embedded
+    assert esperado in errores(data)
+
+
+def test_el_dia_3_no_lleva_hiit_tampoco_dentro(cfg):
+    """`never_routines` protegía solo los bloques. El Día 3 es la sesión ligera
+    previa a la bici, y un intervalo declarado dentro la rompe igual."""
+    data = copy.deepcopy(cfg.raw)
+    dia_3 = data["hiit"]["never_routines"][0]
+    clave = data["routines"][dia_3]["exercises"][0]["key"]
+    data["hiit"]["embedded"] = {dia_3: [clave]}
+    assert "está en hiit.never_routines" in errores(data)
+
+
+def test_un_intervalo_sin_plantilla_se_rechaza(cfg):
+    """Es por la plantilla como se reconoce en lo que se entrenó: sin ella, el
+    ejercicio estaría declarado y no contaría nunca."""
+    data = copy.deepcopy(cfg.raw)
+    for ex in data["routines"]["dia_2"]["exercises"]:
+        if ex["key"] == "comba":
+            ex.pop("template_id")
+    assert "'comba' no tiene template_id" in errores(data)
+
+
+def test_la_guarda_de_la_hernia_recorre_los_intervalos_declarados(cfg):
+    """Al fusionar el HIIT del Día 2, sus ejercicios salieron de todo bloque y
+    `forbidden_in_hiit` dejó de mirarlos. Declarado dentro, un peso muerto en
+    el bloque de intervalos vuelve a ser un error de arranque."""
+    data = copy.deepcopy(cfg.raw)
+    data["routines"]["dia_2"]["exercises"].append(
+        {
+            "key": "colado_dentro",
+            "name": "Peso muerto rumano con mancuernas",
+            "template_id": "DDDDDDDD",
+            "sets": [{"type": "normal", "reps": 10}],
+        }
+    )
+    assert "SEGURIDAD" not in errores(data), "sin declararlo no es HIIT"
+    data["hiit"]["embedded"]["dia_2"].append("colado_dentro")
+    assert "SEGURIDAD — rutina HIIT 'dia_2'" in errores(data)
+
+
+# ---------------------------------------------------------------------------
 # Modos de progresión
 # ---------------------------------------------------------------------------
 

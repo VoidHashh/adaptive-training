@@ -251,6 +251,13 @@ mueven las cargas:
   actuado cuatro veces y las cuatro eran levantamientos reales, ninguna una
   errata: frenaba la realidad, no el ruido. Sigue frenando un dígito de más.
 
+- **El HIIT cuenta por lo que se hizo, no por la rutina.** Al fusionar el HIIT
+  del Día 2 en el Día 2, el recuento de sesiones intensas dejó de ver sus
+  intervalos, y también los «Día 2 HIIT» ya hechos. Ahora un entreno cuenta
+  como HIIT si sale de un bloque de `hiit.blocks` o si lleva alguno de los
+  intervalos de `hiit.embedded`. Eso recupera también el del 16/09, hecho
+  dentro del Día 2 sin que el plan lo pidiera, que tampoco contaba antes.
+
 **Qué vigilar en la cita:** que las cargas no se disparen. El freno que queda
 arriba es solo el de las reps y el tope ancho; si en dos semanas hay subidas que
 no reconoces, el sitio donde apretar es `down_after_sessions` o el tope, no la

@@ -177,6 +177,57 @@ def claves_hiit(config: Any = None) -> set[str]:
     return {str(v) for v in ((raw.get("hiit") or {}).get("blocks") or {}).values()}
 
 
+def plantillas_de_intervalos(config: Any = None) -> set[str]:
+    """Los `template_id` de los intervalos que viven DENTRO de una rutina.
+
+    Salen de `hiit.embedded`, que nombra por clave los ejercicios de cada
+    rutina que son HIIT aunque no tengan bloque propio. Ver `es_hiit_hecho`.
+    """
+    raw = (config.raw if hasattr(config, "raw") else config) or {}
+    rutinas = raw.get("routines") or {}
+    salida: set[str] = set()
+    for rutina, claves in ((raw.get("hiit") or {}).get("embedded") or {}).items():
+        for ex in (rutinas.get(rutina) or {}).get("exercises") or []:
+            if ex.get("key") in set(claves or []) and ex.get("template_id"):
+                salida.add(str(ex["template_id"]).upper())
+    return salida
+
+
+def es_hiit_hecho(
+    routine_key: str | None, workout: dict[str, Any], config: Any = None
+) -> bool:
+    """¿Este entrenamiento llevó HIIT de verdad? Para contar sesiones intensas.
+
+    Hasta el 25/09/2026 bastaba con la rutina: era HIIT si salía de una de
+    `hiit.blocks`. Ese día los intervalos del Día 2 dejaron de ser un bloque y
+    pasaron a estar dentro del Día 2, y el recuento se quedó sin verlos por los
+    dos lados: los del Día 2 de ahora no salen de ningún bloque, y los de antes
+    -filas guardadas como `hiit_dia_2`- salen de una rutina que el config ya no
+    nombra. El número de la mañana contaba de menos, y de menos es el lado que
+    deja margen para una bici intensa que no cabe.
+
+    Ahora cuenta también lo que se HIZO: un entrenamiento con al menos una
+    serie efectiva de un intervalo de `hiit.embedded`. Por plantilla y no por
+    rutina, que es lo que recupera las filas viejas: el «Día 2 HIIT» llevaba
+    esos mismos cuatro ejercicios. Y si un día se entrena el Día 2 sin los
+    intervalos, no cuenta, que es lo que pasó.
+    """
+    if routine_key and routine_key in claves_hiit(config):
+        return True
+    plantillas = plantillas_de_intervalos(config)
+    if not plantillas:
+        return False
+    for ex in workout.get("exercises") or []:
+        if str(ex.get("exercise_template_id") or "").upper() not in plantillas:
+            continue
+        if any(
+            str(s.get("type", "normal")).lower() not in {"warmup", "warm_up"}
+            for s in ex.get("sets") or []
+        ):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class WorkoutTotals:
     """Los tres números de un entrenamiento que van a `workout_log`."""

@@ -805,6 +805,22 @@ def _decision(session: Session, dia: date) -> Decision | None:
     ).first()
 
 
+def _rutina_hiit_del_dia(session: Session, dia: date) -> str | None:
+    """La clave del bloque HIIT que la decisión de `dia` prescribió, o None.
+
+    None y nunca "": quien lo compara con `routine_key or ""` convertiría en
+    HIIT cualquier entreno sin rutina de un día sin bloque.
+    """
+    dec = _decision(session, dia)
+    if dec is None or not dec.planned_session_json:
+        return None
+    try:
+        plan = json.loads(dec.planned_session_json)
+    except ValueError:
+        return None
+    return (plan.get("hiit") or {}).get("routine") or None
+
+
 def _valor(bloque: Any) -> float | None:
     return bloque.get("valor") if isinstance(bloque, dict) else None
 
@@ -1066,12 +1082,22 @@ def evaluar_pendientes(
         # sesiones de fuerza de verdad. Un entreno sin rutina conocida sigue
         # contando como fuerza: es lo que casi siempre es, y `_rendimiento_de_
         # fuerza` ya dice que no hay plan contra el que medirlo.
+        #
+        # Y la rutina se reconoce como bloque HIIT por DOS caminos: los bloques
+        # de hoy (`hiit.blocks`) y el bloque que la decisión de ESE día guardó.
+        # El segundo existe desde el 25/09/2026, cuando `hiit_dia_2` dejó de
+        # ser un bloque: el «Día 2 HIIT» del 22/09 quedaba por evaluar, y con
+        # solo el config de hoy se habría medido contra el plan de fuerza del
+        # Día 2 -ninguno de sus ejercicios, índice por los suelos- en una fila
+        # que no se reescribe. Lo que era ese entreno lo dice su día, no hoy.
+        rk = w.routine_key or ""
+        es_bloque = rk in hiit or rk == _rutina_hiit_del_dia(session, w.date)
         escritas.append(
             evaluar_sesion(
                 session,
                 cfg,
                 dia=w.date,
-                kind=HIIT if (w.routine_key or "") in hiit else FUERZA,
+                kind=HIIT if es_bloque else FUERZA,
                 source_key=f"hevy:{w.hevy_workout_id}",
                 entreno=crudo,
             )

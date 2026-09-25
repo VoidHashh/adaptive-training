@@ -1608,6 +1608,19 @@ def _validate(data: dict[str, Any]) -> list[str]:
 
     # --- HIIT ---------------------------------------------------------------
     hiit = data["hiit"]
+    # La sección no tenía lista blanca hasta el 25/09/2026: un `only_on_gren`
+    # arrancaba limpio y dejaba el HIIT prescribiéndose en ámbar. Las siete de
+    # antes las lee todas `session_builder.hiit_applies` o este validador;
+    # `embedded`, `hevy.plantillas_de_intervalos` y la guarda de seguridad de
+    # abajo.
+    check_keys(
+        hiit,
+        {
+            "enabled", "start_week", "program_start_date", "allowed_routines",
+            "never_routines", "blocks", "only_on_green", "embedded",
+        },
+        "hiit",
+    )
     allowed = hiit.get("allowed_routines", [])
     never = hiit.get("never_routines", [])
     for key in allowed:
@@ -1646,6 +1659,50 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"hiit.allowed_routines incluye '{key}' pero no tiene bloque en hiit.blocks",
         )
 
+    # --- intervalos DENTRO de una rutina (25/09/2026) -------------------------
+    # El HIIT del Día 2 dejó de ser un bloque y pasó a estar dentro del Día 2.
+    # Sin declararlo aquí nada sabía que esos cuatro ejercicios eran HIIT: el
+    # recuento de sesiones intensas no los veía y la guarda de seguridad de
+    # abajo dejó de recorrerlos. Cada clave tiene que existir en su rutina: una
+    # que no exista no cuenta nada y aparenta que sí.
+    embedded = hiit.get("embedded") or {}
+    require(
+        isinstance(embedded, dict),
+        "hiit.embedded tiene que ser un mapa rutina -> lista de claves de ejercicio",
+    )
+    for routine_key, claves in (embedded.items() if isinstance(embedded, dict) else ()):
+        donde = f"hiit.embedded.{routine_key}"
+        if routine_key not in routines:
+            require(False, f"{donde}: la rutina no existe")
+            continue
+        # Lo mismo que protege `never_routines` para los bloques: el Día 3 es
+        # la sesión ligera previa a la bici y no lleva HIIT, tampoco dentro.
+        require(
+            routine_key not in never,
+            f"{donde}: '{routine_key}' está en hiit.never_routines, que no lleva "
+            f"HIIT ni en bloque ni dentro",
+        )
+        if not isinstance(claves, list) or not claves:
+            require(False, f"{donde}: tiene que ser una lista no vacía de claves de ejercicio")
+            continue
+        propias = {
+            str(ex.get("key")): ex
+            for ex in routines[routine_key].get("exercises") or []
+        }
+        for k in claves:
+            if str(k) not in propias:
+                require(False, f"{donde}: '{k}' no es un ejercicio de esa rutina")
+                continue
+            require(
+                bool(propias[str(k)].get("template_id")),
+                f"{donde}: '{k}' no tiene template_id, y es por la plantilla como "
+                f"se reconoce en lo que se entrenó",
+            )
+        require(
+            len(set(map(str, claves))) == len(claves),
+            f"{donde}: hay claves repetidas",
+        )
+
     # --- restricción de seguridad: patrones prohibidos en HIIT --------------
     # Es una restricción médica permanente (hernia L4-L5), no un umbral.
     # Se aplica SOLO a las rutinas HIIT: en la fuerza normal el peso muerto está
@@ -1674,40 +1731,54 @@ def _validate(data: dict[str, Any]) -> list[str]:
         }
         patterns = [re.compile(p, re.IGNORECASE) for p in forbidden.get("name_patterns", [])]
 
-        # Las rutinas HIIT son las referenciadas desde hiit.blocks.
-        hiit_routine_keys = set(blocks.values())
-        for rkey in sorted(hiit_routine_keys):
+        # Lo que es HIIT: las rutinas referenciadas desde hiit.blocks, enteras,
+        # y los intervalos que `hiit.embedded` declara dentro de otra rutina.
+        #
+        # La segunda mitad es del 25/09/2026. Al fusionar el HIIT del Día 2 en
+        # el Día 2, sus cuatro ejercicios salieron de todo bloque y esta guarda
+        # dejó de recorrerlos: lo que se añadiera ahí en adelante entraba en un
+        # bloque de intervalos sin pasar por la lista de la hernia. Pasaban
+        # limpios cuando se movieron; ahora se comprueba, no se recuerda.
+        a_revisar: list[tuple[str, dict[str, Any]]] = []
+        for rkey in sorted(set(blocks.values())):
             for ex in routines.get(rkey, {}).get("exercises") or []:
-                tid = str(ex.get("template_id") or "").upper()
-                if tid in exempt_ids:
-                    continue
-                name = ex.get("name", "")
-                if tid in blocked_ids:
-                    blocked_name = next(
-                        (
-                            e["name"]
-                            for e in forbidden["template_ids"]
-                            if str(e["id"]).upper() == tid
-                        ),
-                        name,
-                    )
+                a_revisar.append((rkey, ex))
+        for rkey, claves in sorted(embedded.items() if isinstance(embedded, dict) else ()):
+            nombradas = {str(k) for k in (claves if isinstance(claves, list) else [])}
+            for ex in routines.get(rkey, {}).get("exercises") or []:
+                if str(ex.get("key")) in nombradas:
+                    a_revisar.append((rkey, ex))
+        for rkey, ex in a_revisar:
+            tid = str(ex.get("template_id") or "").upper()
+            if tid in exempt_ids:
+                continue
+            name = ex.get("name", "")
+            if tid in blocked_ids:
+                blocked_name = next(
+                    (
+                        e["name"]
+                        for e in forbidden["template_ids"]
+                        if str(e["id"]).upper() == tid
+                    ),
+                    name,
+                )
+                errors.append(
+                    f"SEGURIDAD — rutina HIIT '{rkey}': el ejercicio '{name}' "
+                    f"(template {tid} = {blocked_name}) está prohibido en HIIT "
+                    f"por la hernia L4-L5. Ver safety.forbidden_in_hiit."
+                )
+                continue
+            normalized = _strip_accents(name)
+            for pat in patterns:
+                if pat.search(normalized):
                     errors.append(
-                        f"SEGURIDAD — rutina HIIT '{rkey}': el ejercicio '{name}' "
-                        f"(template {tid} = {blocked_name}) está prohibido en HIIT "
-                        f"por la hernia L4-L5. Ver safety.forbidden_in_hiit."
+                        f"SEGURIDAD — rutina HIIT '{rkey}': el nombre del ejercicio "
+                        f"'{name}' coincide con el patrón prohibido "
+                        f"/{pat.pattern}/ (hernia L4-L5). Si es un falso positivo, "
+                        f"añádelo a safety.forbidden_in_hiit.allow_exceptions con "
+                        f"el motivo."
                     )
-                    continue
-                normalized = _strip_accents(name)
-                for pat in patterns:
-                    if pat.search(normalized):
-                        errors.append(
-                            f"SEGURIDAD — rutina HIIT '{rkey}': el nombre del ejercicio "
-                            f"'{name}' coincide con el patrón prohibido "
-                            f"/{pat.pattern}/ (hernia L4-L5). Si es un falso positivo, "
-                            f"añádelo a safety.forbidden_in_hiit.allow_exceptions con "
-                            f"el motivo."
-                        )
-                        break
+                    break
 
     # --- recuento semanal de intensidad -------------------------------------
     conteo = (

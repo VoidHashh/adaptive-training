@@ -1153,25 +1153,33 @@ def sesiones_ejecutadas(
     dato que no decide nada es justamente el que nadie va a ir a comprobar, así
     que tiene que salir bien de aquí o no sale bien de ningún sitio.
 
-    `is_hiit` sale de `hiit.blocks` del config y no de una lista aparte, para
-    que añadir un tercer bloque no exija acordarse de tocar esto también.
+    `is_hiit` sale del config y no de una lista aparte, para que añadir un
+    tercer bloque no exija acordarse de tocar esto también. Desde el 25/09/2026
+    no sale solo de `hiit.blocks`: también de lo que el entrenamiento llevaba
+    dentro, porque el HIIT del Día 2 ya no es un bloque. Ver `es_hiit_hecho`.
     """
     from app.engine.signals import StrengthSession
-    from app.integrations.hevy import claves_hiit
+    from app.integrations.hevy import es_hiit_hecho
 
-    hiit = claves_hiit(cfg)
-    return [
-        StrengthSession(
-            date=f.date,
-            routine_key=f.routine_key,
-            is_hiit=bool(f.routine_key) and f.routine_key in hiit,
+    salida = []
+    for f in session.scalars(
+        select(WorkoutLog)
+        .where(WorkoutLog.date >= desde, WorkoutLog.date <= hasta)
+        .order_by(WorkoutLog.date, WorkoutLog.id)
+    ).all():
+        try:
+            crudo = json.loads(f.raw_json or "{}")
+        except ValueError:
+            # Sin el crudo solo queda la rutina, que es lo que se miraba antes.
+            crudo = {}
+        salida.append(
+            StrengthSession(
+                date=f.date,
+                routine_key=f.routine_key,
+                is_hiit=es_hiit_hecho(f.routine_key, crudo, cfg),
+            )
         )
-        for f in session.scalars(
-            select(WorkoutLog)
-            .where(WorkoutLog.date >= desde, WorkoutLog.date <= hasta)
-            .order_by(WorkoutLog.date, WorkoutLog.id)
-        ).all()
-    ]
+    return salida
 
 
 def entrenos_sin_contar(session: Session) -> list[dict[str, Any]]:
