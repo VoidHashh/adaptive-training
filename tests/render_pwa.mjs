@@ -88,6 +88,7 @@ function elemento(id) {
 }
 
 let vistaEnCurso = null;
+const pedidas = {};
 
 const RUTAS = {
   portada: "/api/metrics/portada",
@@ -123,6 +124,9 @@ const contexto = {
       .filter(([, r]) => u.includes(r))
       .sort((a, b) => b[1].length - a[1].length)[0]?.[0];
     if (!clave) throw new Error(`ruta no prevista: ${u}`);
+    // La URL que pidió la vista en curso, para comprobar después si mandó la
+    // ventana. El ranking va por dentro de impacto y no cuenta como la suya.
+    if (clave !== "ranking") pedidas[vistaEnCurso] = u;
 
     /* EL RANKING SE PIDE PARA UNA RESPUESTA CONCRETA, y aquí hay una sola.
      *
@@ -186,7 +190,9 @@ const EXIGIDOS = {
   // Aquí van solo las marcas de ESTRUCTURA, las que no viajan en el payload.
   // El texto de la tabla lo comprueba `tablaMalPintada`, comparándolo contra lo
   // que mandó el servidor en vez de contra una frase escrita aquí.
-  portada: ['class="casillas"', "discorde"],
+  // Los dos plegables de la portada (25/09/2026). Exigidos por su clase: si un
+  // día alguien desenvuelve la cobertura o lo pendiente, dejan de estar.
+  portada: ['class="casillas"', "discorde", 'class="de-donde"', 'class="pendientes"'],
   concordancia: ['class="casillas"', "discorde"],
 };
 
@@ -448,6 +454,55 @@ for (const v of VISTAS) {
     fallos++;
     continue;
   }
+  /* LA VENTANA: LA PORTADA NO LA LLEVA, LAS DEMÁS SÍ (25/09/2026).
+   *
+   * La portada dejó de enseñar el selector y de mandar `dias`: la referencia la
+   * pone el servidor. Las otras seis siguen con los dos. Se mira aquí, con
+   * `cargar()` de verdad, porque las dos mitades -esconder la barra y no mandar
+   * el parámetro- viven en sitios distintos y pueden separarse: una portada sin
+   * selector que siguiera mandando el último `dias` elegido en otra pantalla
+   * cambiaría de números según por dónde se hubiera llegado a ella, sin nada a
+   * la vista que lo explicara. */
+  const sinVentana = v === "portada";
+  const conDias = /[?&]dias=/.test(pedidas[v] || "");
+  const barraOculta = elementos["barra-ventana"]?.hidden === true;
+  if (sinVentana && (conDias || !barraOculta)) {
+    console.log(
+      `FALLO ${v}: la portada no lleva ventana y ha ${conDias ? "mandado dias" : ""}` +
+      `${conDias && !barraOculta ? " y " : ""}${!barraOculta ? "dejado el selector a la vista" : ""}` +
+      ` (pidió ${pedidas[v]})`,
+    );
+    fallos++;
+    continue;
+  }
+  if (!sinVentana && (!conDias || barraOculta)) {
+    console.log(
+      `FALLO ${v}: esta vista SÍ lleva ventana y ha ${!conDias ? "pedido sin dias" : ""}` +
+      `${!conDias && barraOculta ? " y " : ""}${barraOculta ? "escondido el selector" : ""}` +
+      ` (pidió ${pedidas[v]}). Ir a la portada no puede quitárselo a las demás`,
+    );
+    fallos++;
+    continue;
+  }
+
+  /* LA COBERTURA, PLEGADA Y AL FINAL. Que aparezca `de-donde` no basta: un
+   * `<details>` vacío al final con la cobertura otra vez arriba lo cumpliría.
+   * Lo que se comprueba es que la ventana y sus fechas empiezan DESPUÉS de que
+   * se abra el plegable, o sea que están dentro de él. */
+  if (v === "portada") {
+    const pliegue = html.indexOf('class="de-donde"');
+    const ventana = html.indexOf('class="ventana"');
+    if (ventana !== -1 && (pliegue === -1 || ventana < pliegue)) {
+      console.log(
+        `FALLO ${v}: la cobertura -«Se está mirando del…» y sus cuatro rangos de ` +
+        `fechas- vuelve a estar FUERA del plegable «De dónde salen estos datos». ` +
+        `En la portada es de consulta, no lo primero que se lee`,
+      );
+      fallos++;
+      continue;
+    }
+  }
+
   const faltan = (EXIGIDOS[v] || []).filter((s) => !html.includes(s));
   if (faltan.length) {
     console.log(

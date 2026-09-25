@@ -450,3 +450,77 @@ def test_la_guarda_mira_todas_las_paginas_y_todos_los_scripts():
     en_disco_js = {p.name for p in ESTATICOS.glob("*.js")} - {"sw.js"}
     assert set(HTML) == en_disco_html, sorted(en_disco_html - set(HTML))
     assert set(JS) == en_disco_js, sorted(en_disco_js - set(JS))
+
+
+# ---------------------------------------------------------------------------
+# `hidden` que no esconde
+# ---------------------------------------------------------------------------
+
+
+def _reglas_sin_comentarios() -> list[tuple[list[str], str]]:
+    css = re.sub(r"/\*.*?\*/", "", (ESTATICOS / "styles.css").read_text(encoding="utf-8"), flags=re.S)
+    return [
+        ([s.strip() for s in m.group(1).split(",")], m.group(2))
+        for m in re.finditer(r"([^{}]+)\{([^}]*)\}", css)
+    ]
+
+
+def test_todo_lo_que_se_esconde_con_hidden_se_esconde_de_verdad():
+    """Un `display` del autor le gana al `[hidden]` del navegador.
+
+    El atributo `hidden` solo esconde porque el navegador lo traduce a
+    `display: none`, y esa traducción es una regla MÁS BAJA que cualquiera que
+    escriba esta hoja. Si la clase de un elemento dice `display: flex`, poner
+    `el.hidden = true` deja el atributo en el DOM y el elemento en pantalla: el
+    código cree que lo ha escondido, el test que mira el atributo también, y el
+    usuario lo sigue viendo.
+
+    Se encontró el 25/09/2026 con la barra del selector de ventana, antes de que
+    llegara a ningún móvil: `.barra-ventana` lleva `display: flex` y la portada
+    iba a esconderla con `hidden`. Se barrió entonces toda la aplicación y era
+    el único caso; esto es lo que impide que el siguiente pase igual.
+
+    Sigue los `$("id").hidden = ...` y las variables que guardan un `$("id")`.
+    No sigue elementos buscados por clase, que es donde esta comprobación se
+    queda corta -dicho para que no se lea como más de lo que es-.
+    """
+    reglas = _reglas_sin_comentarios()
+
+    def display_de(sel: str) -> str | None:
+        for sels, cuerpo in reglas:
+            if sel in sels:
+                d = re.search(r"display\s*:\s*([\w-]+)", cuerpo)
+                if d and d.group(1) != "none":
+                    return d.group(1)
+        return None
+
+    def cubierto(sel: str) -> bool:
+        return any(f"{sel}[hidden]" in s or s == "[hidden]" for sels, _ in reglas for s in sels)
+
+    escondidos: dict[str, set[str]] = {}
+    for f in JS:
+        texto = re.sub(r"/\*.*?\*/", "", (ESTATICOS / f).read_text(encoding="utf-8"), flags=re.S)
+        for i in re.findall(r'\$\("([\w-]+)"\)\.hidden\s*=', texto):
+            escondidos.setdefault(i, set()).add(f)
+        for var, i in re.findall(r'(?:const|let)\s+(\w+)\s*=\s*\$\("([\w-]+)"\)', texto):
+            if re.search(rf"\b{var}\.hidden\s*=", texto):
+                escondidos.setdefault(i, set()).add(f)
+    assert escondidos, "no encuentro ningún `.hidden = ...`: el patrón de búsqueda ha dejado de valer"
+
+    clases_de: dict[str, list[str]] = {}
+    for h in HTML:
+        for m in re.finditer(r'<[a-z]+[^>]*\bid="([\w-]+)"[^>]*>', (ESTATICOS / h).read_text(encoding="utf-8")):
+            c = re.search(r'class="([^"]+)"', m.group(0))
+            clases_de[m.group(1)] = c.group(1).split() if c else []
+
+    visibles = []
+    for i, donde in sorted(escondidos.items()):
+        for sel in ["#" + i] + ["." + c for c in clases_de.get(i, [])]:
+            d = display_de(sel)
+            if d and not cubierto(sel):
+                visibles.append(f"#{i} ({', '.join(sorted(donde))}): {sel} lleva display:{d}")
+    assert not visibles, (
+        "estos elementos se esconden con `hidden` y su regla les pone un "
+        "`display`, así que el atributo se pone y el elemento sigue en pantalla. "
+        "Añade `SELECTOR[hidden] { display: none; }`:\n  " + "\n  ".join(visibles)
+    )

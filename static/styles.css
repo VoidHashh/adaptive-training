@@ -1458,3 +1458,57 @@ code {
 }
 .titulo-avanzado { display: block; font-weight: 600; font-size: 0.98rem; }
 .que-avanzado { display: block; color: var(--tenue); font-size: 0.86rem; margin-top: 0.2rem; line-height: 1.35; }
+
+/* =========================================================================
+ * CÓMO VAS, MÁS LIGERA (25/09/2026)
+ * ========================================================================= */
+
+/* SIN ESTA LÍNEA, `hidden` NO ESCONDE LA BARRA. `.barra-ventana` lleva
+ * `display: flex`, y una regla del autor con `display` gana a la del navegador
+ * que traduce `[hidden]` a `display: none`. El atributo se pondría, el DOM
+ * diría que está oculta, y el selector seguiría en pantalla: el mismo tipo de
+ * fallo que el botón de 92 × 20 píxeles, que estaba y no se veía, al revés.
+ * Esta hoja no tiene una regla general para `[hidden]`, y ponerla ahora
+ * cambiaría de golpe a cualquier otro elemento con `display` que hoy dependa de
+ * lo contrario sin que nadie lo sepa; así que va solo donde hace falta. */
+.barra-ventana[hidden] { display: none; }
+
+/* Lo plegable de la portada se lee como un pie, no como un bloque más: tenue y
+ * con la raya de arriba, que es lo que dice «esto es de consulta». */
+.de-donde, .pendientes {
+  margin-top: 1.4rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--borde);
+}
+.de-donde summary, .pendientes summary { cursor: pointer; color: var(--tenue); }
+.de-donde summary { font-size: 0.9rem; }
+
+/* El `<h2>` va dentro del `<summary>` para que la sección siga siendo una
+ * sección; aquí se le quita el aire de título para que quepa en la línea. */
+/* Sin las mayúsculas ni el peso de un `.grupo` normal: en el pie de la portada
+ * los dos plegables son de consulta y tienen que leerse igual. Con el aspecto de
+ * título de sección, «lo que todavía no se puede contestar» pesaba más que todo
+ * lo de encima -se vio en el navegador, no en ningún test-. */
+.pendientes summary .grupo {
+  display: inline;
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--tenue);
+}
+
+.cuantas-pendientes {
+  display: inline-block;
+  min-width: 1.4rem;
+  padding: 0 0.4rem;
+  margin-left: 0.4rem;
+  border-radius: 999px;
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  color: var(--texto);
+  font-size: 0.8rem;
+  text-align: center;
+}
+.nada-pendiente { margin-left: 0.4rem; color: var(--verde); font-size: 0.82rem; font-weight: 400; }

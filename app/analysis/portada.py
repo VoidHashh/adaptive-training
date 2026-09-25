@@ -694,8 +694,13 @@ def como_voy(
     return {
         "titulo": "Cómo voy",
         "resumen": resumen,
+        # «frente a tus últimos 180» obligaba a adivinar 180 qué. Ahora dice lo
+        # que es la referencia -lo normal para ti- y cuánto pasado la forma,
+        # que desde el 25/09/2026 es lo único que dice cuánto se mira: la
+        # portada ya no tiene selector de ventana.
         "subtitulo": (
-            f"Los últimos {DIAS_RECIENTES} días frente a tus últimos {dias}."
+            f"Tus últimos {DIAS_RECIENTES} días, frente a lo que es normal para "
+            f"ti en los últimos {dias}."
         ),
         "estado": "con_datos" if con_algo else "vacio",
         "na": (
@@ -1110,10 +1115,15 @@ def vista_portada(
             # `b.subtitulo` sobre un diccionario que no la tenía y en JavaScript
             # eso no es un error, es un `undefined` que no imprime nada. La
             # cabecera salía a medias y no había forma de notarlo desde el móvil.
-            "subtitulo": (
-                f"De las {calculadas} relaciones que hoy se pueden calcular, "
-                f"éstas son las que aguantan."
-            ),
+            # Decía «De las {calculadas} relaciones que hoy se pueden calcular,
+            # éstas son las que aguantan». Es verdad y es método: el número de
+            # relaciones probadas es el denominador de la corrección, y quien lo
+            # necesita lo tiene en `relaciones_calculadas` y en la vista de
+            # impacto. En la primera pantalla la pregunta es qué se sabe, no
+            # cuántas cosas se probaron para saberlo. La advertencia sobre el
+            # azar NO se va: sigue debajo, en `nota_azar`, que es la que dice en
+            # llano por qué se puede creer lo de encima (25/09/2026).
+            "subtitulo": "Lo que se repite en tus datos lo bastante como para contártelo.",
             "estado": "con_datos" if encontrados else "vacio",
             "na": na_hallazgos
             or (

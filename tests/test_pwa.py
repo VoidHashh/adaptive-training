@@ -524,6 +524,23 @@ HUELLAS_DEL_ARMAZON = {
     # `pintarAvanzado`, y la lista saldría vacía. Pero la barra vieja no enlaza
     # ahí, así que hay que ir a buscarlo.
     "v25": "780cc97b6854126eeeac5cab24ef9d2708297e817603ff3aeabcd01aeb13241f",
+    # v26: «Cómo vas» más ligera. La portada pierde el selector de ventana y
+    # deja de mandar `dias`; la cobertura y «lo que todavía no se puede
+    # contestar» se pliegan al final; «qué ha cambiado» sube junto al semáforo.
+    # Toca `metricas.html` (un `id` en la barra), `metricas.js` y `styles.css`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE. Sigue viendo la portada como en la
+    # v25 -selector y cobertura arriba, lo pendiente desplegado-, que es una
+    # pantalla más densa pero no una pantalla que mienta. Los dos subtítulos
+    # nuevos los recibe igual, porque los redacta el servidor.
+    #
+    # La única mezcla peligrosa sería `metricas.js` nuevo con `metricas.html`
+    # viejo: el script pide `$("barra-ventana")`, el HTML viejo no tiene ese
+    # `id`, y `cargar()` reventaría en TODAS las vistas de métricas, no solo en
+    # la portada. Es exactamente la mezcla de generaciones que el armazón
+    # versionado existe para impedir -los dos van en el mismo caché y se
+    # renuevan juntos-, y la vigila `test_el_armazon_no_mezcla_dos_generaciones`.
+    "v26": "0f06eec4cf7f1b45fe6b6aa2143d5de6d3368bd382035760ae59d605791c994f",
 }
 
 

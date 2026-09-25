@@ -62,6 +62,14 @@ const VISTAS = {
     titulo: "Cómo vas",
     subtitulo: "Lo que hay que saber hoy, sin tener que buscarlo",
     pintar: pintarPortada,
+    // SIN SELECTOR DE VENTANA (25/09/2026). En la portada la ventana no es lo
+    // fresco: es «lo normal para ti», la referencia contra la que se comparan
+    // los últimos siete días. Pedirle a quien abre la aplicación que elija
+    // entre 30 días y 2 años es enseñarle el aparato de medir antes que la
+    // medida, que es justo lo que el endpoint de la portada dice que existe
+    // para evitar. Se pide SIN `dias` y el servidor pone su referencia: así no
+    // hay un 180 escrito aquí que un día acabe distinto del de la API.
+    conVentana: false,
   },
   concordancia: {
     titulo: "Lo que notas y lo que mide el reloj",
@@ -153,7 +161,12 @@ function vistaActual() {
 async function cargar() {
   const clave = vistaActual();
   const v = VISTAS[clave];
-  const dias = Number($("dias").value);
+  // `conVentana: false` quita el selector y NO manda `dias`: `pedir` descarta
+  // los `undefined`, y el servidor aplica su ventana por defecto. Cualquier otra
+  // vista sigue igual que siempre.
+  const conVentana = v.conVentana !== false;
+  $("barra-ventana").hidden = !conVentana;
+  const dias = conVentana ? Number($("dias").value) : undefined;
 
   $("titulo").textContent = v.titulo;
   $("subtitulo").textContent = v.subtitulo;
@@ -271,18 +284,32 @@ async function pintarPortada(dias) {
   // contestarla; la portada es su propio encabezado de arriba abajo -cada uno de
   // los tres bloques trae su estado y su motivo dentro-, y ponerle otro encima
   // sería un estado resumen de tres cosas que no comparten moneda.
-  const partes = [pintarCobertura(d.cobertura, d.ventana)];
-
   // El semáforo va PRIMERO y es lo único de la portada que es un gráfico. Antes
   // iba de tercera línea del segundo bloque, escrito, entre las sesiones de
   // fuerza y las salidas de bici: el resumen de la semana entera colocado como
   // un recuento más.
+  //
+  // «Qué ha cambiado» sube justo debajo (25/09/2026): los dos hablan de ESTA
+  // semana, y estaban separados por dos bloques que miran otra cosa. Lo fresco
+  // arriba y junto; lo que se sabe de fondo, después.
+  const partes = [];
   partes.push(bloqueSemaforo(d.que_ha_cambiado));
+  partes.push(bloqueQueHaCambiado(d.que_ha_cambiado));
   partes.push(bloqueComoVoy(d.como_voy));
   partes.push(bloqueApetecia(d.como_voy));
-  partes.push(bloqueQueHaCambiado(d.que_ha_cambiado));
   partes.push(bloqueLoQueSeSabe(d.lo_que_se_sabe));
   partes.push(bloqueLoQueFalta(d.lo_que_no_se_puede_saber));
+
+  // LA COBERTURA, AL FINAL Y PLEGADA. Iba la primera: cuatro rangos de fechas
+  // -check-ins, Garmin, bici, fuerza- antes de un solo dato. Es lo que dice de
+  // dónde sale cada número, y eso se consulta cuando un número extraña, no se
+  // lee cada mañana antes de ver cómo va la semana. Plegada no desaparece: el
+  // resumen dice qué hay dentro.
+  partes.push(
+    `<details class="de-donde"><summary>De dónde salen estos datos</summary>` +
+    pintarCobertura(d.cobertura, d.ventana) +
+    `</details>`,
+  );
 
   $("vista").innerHTML = partes.join("");
 }
@@ -310,17 +337,37 @@ async function pintarPortada(dias) {
  * Es el mismo criterio que `bloqueNa` aplica en las otras cinco vistas.
  */
 function bloqueLoQueFalta(lista) {
-  const cabecera = `<h2 class="grupo">Lo que todavía no se puede contestar</h2>`;
-  if (!lista || !lista.length) {
+  /* PLEGADO, CON EL NÚMERO FUERA (25/09/2026).
+   *
+   * Eran tres tarjetas con «Llevas 8 y hacen falta 20 para que el número
+   * signifique algo» al final de la pantalla que se abre cada día. Para quien
+   * ha construido el sistema, útil; para cualquier otro, tres párrafos sobre
+   * tamaños de muestra.
+   *
+   * Plegado NO es lo que este bloque tiene prohibido. Lo prohibido -escrito
+   * arriba- es DESAPARECER en silencio, porque entonces el día bueno se lee
+   * igual que el día roto. El resumen dice cuántas preguntas esperan datos, o
+   * que no espera ninguna, y eso es exactamente la distinción que tiene que
+   * seguir viéndose sin abrir nada. El `<h2>` va dentro del `<summary>`: la
+   * sección sigue siendo una sección, y el arnés lo comprueba. */
+  const n = (lista || []).length;
+  const estado = n
+    ? `<span class="cuantas-pendientes">${n}</span>`
+    : `<span class="nada-pendiente">nada pendiente</span>`;
+  const abre =
+    `<details class="pendientes"><summary>` +
+    `<h2 class="grupo">Lo que todavía no se puede contestar ${estado}</h2>` +
+    `</summary>`;
+  if (!n) {
     return (
-      cabecera +
+      abre +
       `<p class="explica">Nada: las cuatro preguntas de esta pantalla ya tienen ` +
       `datos suficientes detrás. Si alguna vista sale vacía a partir de aquí, ` +
-      `no es por falta de histórico.</p>`
+      `no es por falta de histórico.</p></details>`
     );
   }
   return (
-    cabecera +
+    abre +
     `<p class="explica">No es que esté roto: es que le falta un dato concreto, y ` +
     `aquí está cuál.</p>` +
     lista.map((f) => (
@@ -331,7 +378,8 @@ function bloqueLoQueFalta(lista) {
         `<a href="#${escapar(v)}">${escapar(VISTAS[v] ? VISTAS[v].titulo : v)}</a>`
       )).join(" · ")}</p>` +
       `</article>`
-    )).join("")
+    )).join("") +
+    `</details>`
   );
 }
 
