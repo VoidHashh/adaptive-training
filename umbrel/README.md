@@ -33,7 +33,7 @@ Se publican tres etiquetas y cada una contesta una pregunta distinta:
 
 | Etiqueta | Para qué |
 |----------|----------|
-| `:0.1.0` (la de `pyproject.toml`) | La que instala Umbrel. Se sobrescribe en cada empujón. |
+| `:0.1.<N>` (la de `pyproject.toml`, que el propio taller sube en cada empujón) | La que instala Umbrel. Cada empujón publica una nueva y la anterior se queda, así que siempre se puede volver. |
 | `:latest` | Un `docker run` rápido sin mirar versiones. |
 | `:<sha>` | La única que no se mueve nunca. A la que se vuelve para reinstalar exactamente lo de antes de un cambio. |
 
@@ -87,11 +87,19 @@ planb-adaptive-training/
   icon.svg             <- lienzo CUADRADO (Umbrel pinta tarjetas cuadradas)
 ```
 
-Los dos YAML son **copias**, y eso es una duplicación real: el original vive
-aquí, donde `tests/test_despliegue.py` los ata al `Dockerfile` y a
-`pyproject.toml`; la copia vive allí, donde Umbrel los lee. Al cambiar
-cualquiera de los dos hay que copiarlos otra vez, y no hay ningún test que avise
-si no se hace, porque el test no ve el otro repositorio.
+Los dos YAML son **copias**: el original vive aquí, donde
+`tests/test_despliegue.py` los ata al `Dockerfile` y a `pyproject.toml`; la
+copia vive allí, donde Umbrel los lee. **La copia la hace sola un taller que
+vive dentro de `VoidHashh/PlanB`** (`.github/workflows/sincronizar-adaptive-training.yml`):
+se trae los dos ficheros del `main` de este repositorio y los commitea si han
+cambiado. Vive de aquel lado a propósito: así su propio `GITHUB_TOKEN` basta y
+no hay ninguna credencial que crear ni rotar.
+
+Lo que hay que saber de ese taller es su reloj. Está declarado «cada diez
+minutos», y **GitHub no lo cumple**: en un repositorio con poca actividad lo
+retrasa horas —la primera noche corrió tres veces en ocho horas—. Si hace falta
+ya, se lanza a mano en PlanB → *Actions* → *Sincronizar adaptive-training* →
+*Run workflow*.
 
 El `icon.png` va en la tienda y no aquí: el campo `icon:` del manifiesto es una
 URL completa a `raw.githubusercontent.com`. En la tienda oficial Umbrel reescribe
@@ -268,20 +276,33 @@ así es una línea.
 
 ## 6. Actualizar
 
-El taller publica una imagen en cada empujón, pero **Umbrel no se entera solo**,
-y esa es la parte que hay que tener clara:
+**Un `git push` y nada más.** Así es desde el 26/09/2026, y antes no lo era:
+el 25 el Umbrel pasó horas sirviendo `f9a5a4a` con dos commits de código por
+delante, porque la etiqueta de la imagen no se movía y Umbrel no veía ninguna
+actualización que ofrecer. Desde fuera se parecía a la aplicación funcionando,
+que es exactamente el modo de fallo que este proyecto persigue.
 
-- La etiqueta que instala el compose (`:0.1.0`) se sobrescribe en cada empujón.
-  Un Umbrel que ya la descargó **no vuelve a descargarla**: sigue corriendo el
-  código de la instalación, aunque en `ghcr.io` haya otro detrás del mismo
-  nombre. Desde fuera se parece a la aplicación funcionando, que es exactamente
-  el modo de fallo que este proyecto persigue.
-- Para que se entere hay que **subir la versión**: `pyproject.toml`, `image:` del
-  compose de Umbrel, `version:` del `umbrel-app.yml` y `image:` del compose de la
-  raíz. Los cuatro a la vez; `tests/test_despliegue.py` se pone rojo si falta uno.
-- Luego hay que **copiar los dos YAML a `VoidHashh/PlanB`** (sección 2). Umbrel
-  lee de la tienda, no de aquí. Si se sube la versión y no se copia, la interfaz
-  de Umbrel no ofrece ninguna actualización y todo parece en orden.
+Lo que pasa después del `push`, y quién lo hace:
+
+1. **El taller de este repositorio** fija la versión `0.1.<nº de commits>` en
+   los cuatro sitios con `scripts/fijar_version.py`, la devuelve al repositorio
+   en un commit `[skip ci]`, y publica la imagen con esa etiqueta.
+2. **El taller de la tienda** (sección 2) se trae los dos YAML cuando GitHub
+   ejecuta su cron. Horas, no minutos.
+3. **Umbrel ofrece la actualización** al ver una versión mayor que la
+   instalada. Ese clic es el único paso humano que queda.
+
+Probado de punta a punta la primera vez: `push` `93bea18` → versión `0.1.193`
+→ tienda `a8e6ed1` → Umbrel actualizado y decidiendo el día siguiente.
+
+**Lo que empeora, y muerde:** después de cada `push` la rama local queda una
+commit por detrás —la de la versión—. El siguiente `push` se rechaza hasta un
+`git pull --rebase`.
+
+**Si alguna vez hay que mover la versión a mano**: `python
+scripts/fijar_version.py 0.1.200`. Nunca fichero por fichero: el script afirma
+cuántas veces tiene que casar cada patrón y vuelve a leer el disco para
+comprobar que quedó escrito, que es justo lo que un `sed` no hace.
 
 Y para contestar «¿está corriendo lo de hoy?» sin fiarse de nada de lo anterior,
 `/api/health` devuelve el `build`, que es el SHA del commit que construyó la

@@ -84,7 +84,8 @@ código por delante sin que nada lo dijera:
 2. `.github/workflows/docker.yml` **fija la versión** (`0.1.<nº de commits>`)
    con `scripts/fijar_version.py`, **la devuelve al repositorio** en un commit
    suyo, y **publica la imagen** etiquetada con ella.
-3. Un taller **dentro de `VoidHashh/PlanB`** (cada diez minutos) se trae los dos
+3. Un taller **dentro de `VoidHashh/PlanB`** (un cron que GitHub ejecuta cuando
+   quiere: en la práctica, horas) se trae los dos
    YAML y los deja en `planb-adaptive-training/`. Vive de ese lado porque así su
    propio `GITHUB_TOKEN` basta: **no hay ninguna credencial que crear ni rotar.**
 4. Umbrel ve una versión nueva y **te ofrece actualizar**. Ese clic es tuyo: en

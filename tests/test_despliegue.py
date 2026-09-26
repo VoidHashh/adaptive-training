@@ -633,12 +633,20 @@ def test_un_patron_que_deja_de_casar_revienta_y_no_escribe_nada(repo_de_mentira)
     #
     # Y se rompe con comillas SIMPLES, que YAML admite igual. Quitar los
     # espacios no valia: el patron lleva `\s*` y casa igual sin ellos.
+    # Y la version que se rompe se LEE, no se escribe: `0.1.0` estuvo aqui como
+    # literal y dejo de casar en el primer empujon del taller, que la subio a
+    # `0.1.193`. Con el literal viejo el `replace` no encontraba nada, el
+    # fichero no se rompia y el test pasaba en verde sin haber roto nada.
     ultimo = fijar_version.LUGARES[-1]
+    actual = dict((l.ruta, v) for l, v in fijar_version.leer_versiones())[ultimo.ruta]
     roto = repo_de_mentira / ultimo.ruta
-    roto.write_text(
-        roto.read_text(encoding="utf-8").replace('version: "0.1.0"', "version: '0.1.0'"),
-        encoding="utf-8",
+    texto_roto = roto.read_text(encoding="utf-8").replace(
+        f'version: "{actual}"', f"version: '{actual}'"
     )
+    assert texto_roto != roto.read_text(encoding="utf-8"), (
+        "la mutacion no ha roto nada: este test ya no prueba lo que dice"
+    )
+    roto.write_text(texto_roto, encoding="utf-8")
     antes = {
         lugar.ruta: (repo_de_mentira / lugar.ruta).read_text(encoding="utf-8")
         for lugar in fijar_version.LUGARES
@@ -695,10 +703,12 @@ def test_una_version_que_no_es_una_version_no_llega_a_los_ficheros(repo_de_menti
     """
     from scripts import fijar_version
 
+    antes = {v for _, v in fijar_version.leer_versiones()}
+    assert len(antes) == 1 and None not in antes, f"el repo de partida ya no coincide: {antes}"
     for malo in ("0.1.", "", "latest", "v1.2.3", "1.2"):
         with pytest.raises(ValueError):
             fijar_version.fijar(malo)
-    assert {v for _, v in fijar_version.leer_versiones()} == {"0.1.0"}
+    assert {v for _, v in fijar_version.leer_versiones()} == antes
 
 
 def test_el_script_conoce_exactamente_los_sitios_que_este_fichero_vigila():
