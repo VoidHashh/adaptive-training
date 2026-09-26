@@ -54,6 +54,15 @@ RECOVERY = "recovery"
 # se entrena o no lo dice el usuario yendo o no yendo. La piscina y la bici
 # nunca fueron una sesión que este sistema construyera -no escribía nada en
 # Hevy ni progresaba nada-, solo una etiqueta para el mensaje.
+#
+# `BICI` VUELVE EL 26/09/2026, Y NO ES AQUEL `bike`. Aquel lo decidía el
+# calendario; éste lo declara el usuario en el check-in («¿Qué vas a hacer
+# hoy? Bici»). Con sus palabras: «el día en que elijo Bici tiene que ser un día
+# de bici. Ese día no voy a ir al gimnasio». Hasta entonces elegir Bici solo
+# congelaba la progresión, y el día se planificaba con la rutina del ciclo
+# -con su bloque HIIT si era verde-, se escribía en Hevy y el mensaje entero
+# giraba alrededor del gimnasio.
+BICI = "bici"
 
 
 def _tipo_de_sesion(action: dict[str, Any], light: str) -> str:
@@ -810,8 +819,14 @@ def build_session(
     program_start: date | None = None,
     current_sets: dict[tuple[str, str], list[dict[str, Any]]] | None = None,
     sesion_pedida: SesionPedida | None = None,
+    dia_de_bici: bool = False,
 ) -> BuiltSession:
     """Construye la sesión del día completa.
+
+    `dia_de_bici`: el usuario ha declarado que hoy sale en bici y no va al
+    gimnasio. Sale una sesión `BICI` sin ejercicios y sin escritura en Hevy.
+    El rojo manda sobre ella: con el cuerpo diciendo que pares, lo que se
+    propone es el bloque de recuperación, y la bici dirá descanso.
 
     `rotation_routine` es la rutina que toca según el ciclo, y viene dada: la
     calcula `decision.decide` con `siguiente_en_rotacion` y la guarda además en
@@ -854,7 +869,13 @@ def build_session(
     # La anulación entra AQUÍ, en un solo sitio y antes de que se ramifique
     # nada. Más abajo ya no vale: la rama de recuperación se va con un `return`
     # propio, y pedir la completa en rojo tiene que evitar entrar en ella.
-    sesion, anulacion = _aplicar_sesion_pedida(sesion, sesion_pedida, light)
+    #
+    # En un día de bici no se aplica: pedir «sesión completa» es pedir otra
+    # dureza de gimnasio, y ese día no hay gimnasio. Aplicarla contaría como
+    # desacuerdo con el sistema algo que no lo es.
+    anulacion = None
+    if not dia_de_bici:
+        sesion, anulacion = _aplicar_sesion_pedida(sesion, sesion_pedida, light)
 
     # --- día rojo: bloque de recuperación -----------------------------------
     if sesion == RECOVERY:
@@ -893,6 +914,21 @@ def build_session(
         out.notes.append(
             f"la rotación no se mueve: el próximo día que vayas al gimnasio "
             f"sigue tocando {routine_key}"
+        )
+        return out
+
+    # --- día de bici: sin gimnasio ------------------------------------------
+    # Sin ejercicios, sin Hevy y sin bloque HIIT: ese día no se va. La rutina
+    # que tocaba no se escribe -el primer día de gimnasio la escribirá su
+    # mañana- y la rotación no se mueve, porque el puntero sale de lo EJECUTADO.
+    if dia_de_bici:
+        out = BuiltSession(
+            day=day, kind=BICI, routine_key=None, title="Bici",
+            write_to_hevy=False,
+        )
+        titulo = str((routines.get(routine_key) or {}).get("title") or routine_key)
+        out.notes.append(
+            f"el gimnasio no se toca: el próximo día que vayas sigue tocando {titulo}"
         )
         return out
 

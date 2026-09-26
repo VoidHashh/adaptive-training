@@ -333,6 +333,7 @@ NOMBRE_SESION = {
     "full": "sesión completa",
     "reduced": "sesión reducida",
     "recovery": "recuperación",
+    "bici": "bici",
 }
 
 
@@ -686,7 +687,14 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # son la mayoría, y lo haría en silencio.
     prescribe = getattr(decision, "va_a_entrenar", None) is not False
 
-    if prescribe:
+    # EL DÍA DE BICI VA PRIMERO, Y ES OTRA COSA (26/09/2026). Declarado en el
+    # check-in, la bici es la sesión del día: arriba y en afirmativo. Antes el
+    # mensaje empezaba por «Si vas al gimnasio hoy: Día 1» -con su HIIT- el día
+    # en que el usuario había dicho que no iba, y la bici salía al final en
+    # condicional.
+    if s.kind == "bici":
+        L.extend(_lineas_dia_de_bici(decision))
+    elif prescribe:
         L.extend(_lineas_sesion(s, raw, set_cfg))
     else:
         L.extend(_lineas_sin_entreno(decision, raw))
@@ -803,35 +811,10 @@ def render_telegram(decision: Any, config: Any = None) -> str:
     # era un no evento y por eso no se decía-, sino "no se ha podido calcular el
     # punto de partida contra tu histórico". Eso sí se dice, con su motivo, y
     # con las notas de contexto debajo igual que cualquier otro día.
-    if decision.bike is not None and decision.bike.se_muestra:
+    # En un día de bici ya ha salido arriba, en afirmativo: aquí no se repite.
+    if decision.bike is not None and decision.bike.se_muestra and s.kind != "bici":
         L.append("")
-        L.append(f"🚴 {escapar_html(decision.bike.text())}")
-        # DE DÓNDE SALE EL NIVEL, EN CRISTIANO Y TODOS LOS DÍAS.
-        #
-        # Esta línea no existía y el número caía del cielo. El punto de partida
-        # ya no es una constante del YAML que uno pueda ir a mirar: es un
-        # cálculo contra el propio histórico que cambia cada día, así que sin
-        # esto el mensaje afirma «intensa» y no hay forma de saber por qué.
-        #
-        # Va en cursiva y sin viñeta a propósito: no es un hecho de contexto
-        # -esos van debajo, con `·`, y NO han entrado en la decisión-, es
-        # literalmente la razón del nivel de arriba. Mezclarla con las notas
-        # borraría la única distinción que este bloque se ha ganado a pulso.
-        #
-        # Y aquí es donde se ve el freno del parón largo, que es una de las dos
-        # cosas por las que existe la recomendación. Antes el mensaje ponía
-        # «Media» a secas después de seis semanas parado: el freno actuaba y no
-        # se veía. Ahora dice que llevas bastante más de lo que sueles esperar y
-        # que al volver toca volumen antes que carga.
-        if decision.bike.baseline_en_claro:
-            L.append(f"   <i>{escapar_html(decision.bike.baseline_en_claro)}</i>")
-        # Los hechos de contexto van con viñeta y DEBAJO, separados del nivel
-        # recomendado. Pegados a la misma línea se leerían como el motivo del
-        # nivel, y no lo son: ninguno ha entrado en la decisión. Es la misma
-        # distinción que hay en el código entre `downgrades` y `notas`, y tiene
-        # que sobrevivir hasta la pantalla del móvil o no sirve de nada.
-        for nota in decision.bike.texto_notas():
-            L.append(f"   · {escapar_html(nota)}")
+        L.extend(_lineas_bici(decision.bike, declarada=False))
 
     # --- lo que llevas hecho esta semana ------------------------------------
     # TODOS los días, no solo los de bici, y sin denominador.
@@ -1093,3 +1076,57 @@ def render_plain(decision: Any, config: Any = None) -> str:
     `--dry-run` imprimiría `&lt;` donde el mensaje real lleva un `<`.
     """
     return sin_etiquetas(render_telegram(decision, config))
+
+def _lineas_bici(bike: Any, *, declarada: bool) -> list[str]:
+    """El bloque de la bici: nivel, de dónde sale y los hechos de contexto.
+
+    Sale en dos sitios desde el 26/09/2026: al final, en condicional, los días
+    normales; y arriba, en afirmativo (`declarada`), el día que el usuario ha
+    dicho en el check-in que sale en bici. Una sola función para que las dos
+    posiciones no puedan acabar contando cosas distintas.
+    """
+    out: list[str] = []
+    out.append(f"🚴 {escapar_html(bike.text(declarada=declarada))}")
+    # DE DÓNDE SALE EL NIVEL, EN CRISTIANO Y TODOS LOS DÍAS.
+    #
+    # Esta línea no existía y el número caía del cielo. El punto de partida
+    # ya no es una constante del YAML que uno pueda ir a mirar: es un
+    # cálculo contra el propio histórico que cambia cada día, así que sin
+    # esto el mensaje afirma «intensa» y no hay forma de saber por qué.
+    #
+    # Va en cursiva y sin viñeta a propósito: no es un hecho de contexto
+    # -esos van debajo, con `·`, y NO han entrado en la decisión-, es
+    # literalmente la razón del nivel de arriba. Mezclarla con las notas
+    # borraría la única distinción que este bloque se ha ganado a pulso.
+    #
+    # Y aquí es donde se ve el freno del parón largo, que es una de las dos
+    # cosas por las que existe la recomendación. Antes el mensaje ponía
+    # «Media» a secas después de seis semanas parado: el freno actuaba y no
+    # se veía. Ahora dice que llevas bastante más de lo que sueles esperar y
+    # que al volver toca volumen antes que carga.
+    if bike.baseline_en_claro:
+        out.append(f"   <i>{escapar_html(bike.baseline_en_claro)}</i>")
+    # Los hechos de contexto van con viñeta y DEBAJO, separados del nivel
+    # recomendado. Pegados a la misma línea se leerían como el motivo del
+    # nivel, y no lo son: ninguno ha entrado en la decisión. Es la misma
+    # distinción que hay en el código entre `downgrades` y `notas`, y tiene
+    # que sobrevivir hasta la pantalla del móvil o no sirve de nada.
+    for nota in bike.texto_notas():
+        out.append(f"   · {escapar_html(nota)}")
+    return out
+
+
+def _lineas_dia_de_bici(decision: Any) -> list[str]:
+    """El día declarado de bici: la bici arriba, en afirmativo, y nada más.
+
+    Del gimnasio no se dice nada aquí: ese día no se va, y el usuario pidió no
+    contemplarlo. Lo que seguirá tocando el primer día que se vaya es una nota
+    de la sesión y sale en «Por qué», con el resto de motivos.
+    """
+    out = [""]
+    b = decision.bike
+    if b is not None and b.se_muestra:
+        out.extend(_lineas_bici(b, declarada=True))
+    else:
+        out.append("🚴 <b>Hoy sales en bici.</b>")
+    return out

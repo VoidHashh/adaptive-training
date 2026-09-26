@@ -102,9 +102,10 @@ CLAVE_SESION_ELEGIDA = "chosen_session"
 
 # Las dos elecciones que NO son una rutina del ciclo.
 #
-# Se distinguen de las demás en una sola cosa, y es la que tiene efecto: no
-# prescriben fuerza y no mueven nada del ciclo. Lo que sí hacen es dejar dicho
-# que ese día hubo actividad, que es lo que las separa de no contestar.
+# Se distinguen de las demás en lo que tiene efecto: no prescriben fuerza y no
+# mueven nada del ciclo. Lo que sí hacen es dejar dicho que ese día hubo
+# actividad, que es lo que las separa de no contestar. `bici`, además, hace del
+# día un día sin gimnasio desde el 26/09/2026: ver `session_builder.BICI`.
 #
 # `bici` no es lo mismo que la clasificación de salidas de `cycling`: aquélla
 # sale de Garmin y es un hecho medido, ésta es lo que uno declaró a las siete de

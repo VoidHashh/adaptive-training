@@ -1734,9 +1734,10 @@ def _motivo_suelto(
         #
         # Ahora no hay días en los que no toque fuerza. Se llega aquí cuando lo
         # planificado no era una sesión del ciclo, que en la práctica es un día
-        # rojo con su bloque de recuperación: entrenar es entonces una decisión
-        # del usuario por encima de la del sistema, y se cuenta como tal, sin
-        # dar a entender que sobraba.
+        # rojo con su bloque de recuperación o, desde el 26/09/2026, un día en
+        # que se eligió «Bici» en el check-in: entrenar es entonces una
+        # decisión del usuario por encima de la del sistema -o de la suya de
+        # esa mañana-, y se cuenta como tal, sin dar a entender que sobraba.
         return (
             f"ese día el plan era {plan.get('kind')} y entrenaste fuerza igual"
         )

@@ -395,8 +395,10 @@ def evaluate_gate(
     entonces esta puerta no se entera de que el selector existe.
 
     LAS DOS DICEN LO MISMO CON DISTINTAS PALABRAS: hoy no hay fuerza que
-    prescribir. Y ninguna de las dos impide que la rutina se escriba en Hevy;
-    esto decide qué se ANUNCIA, no qué se deja puesto en la aplicación.
+    prescribir. Esta puerta decide qué se ANUNCIA, no qué se deja puesto en la
+    aplicación. Eso lo decide la sesión: con un «no voy» o con `otro` la rutina
+    se escribe igual, por si acabas yendo; con `bici`, desde el 26/09/2026, la
+    sesión es `session_builder.BICI` y no se escribe nada.
     """
     # VA EL PRIMERO, ANTES INCLUSO QUE LA DESCARGA.
     #

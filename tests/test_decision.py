@@ -334,26 +334,24 @@ def test_elegir_lo_que_ya_tocaba_es_el_dia_de_siempre(cfg):
     assert elegido == callado
 
 
-@pytest.mark.parametrize(
-    "eleccion, trozo",
-    [("bici", "bici"), ("otro", "otra cosa")],
-)
-def test_bici_y_otro_no_prescriben_fuerza_pero_dejan_la_rutina_puesta(
-    cfg, eleccion, trozo
-):
+def test_otro_no_prescribe_fuerza_pero_deja_la_rutina_puesta(cfg):
     """Las dos mitades del mismo día, y la segunda es la que se olvida.
 
-    No prescribir es lo que se pidió: si hoy sales en bici, el mensaje no te
+    No prescribir es lo que se pidió: si hoy haces otra cosa, el mensaje no te
     anuncia subidas de peso. Escribir la rutina igual también, y por el mismo
     argumento que el «hoy no voy a entrenar»: la respuesta de las siete de la
     mañana es una intención, y si a las siete de la tarde se cambia de idea, lo
     que tiene que haber en Hevy es la sesión de HOY y no la de hace dos semanas.
+
+    Iba parametrizado con «bici» hasta el 26/09/2026. La bici dejó de dejar la
+    rutina puesta a petición del usuario -«ese día no voy a ir al gimnasio»-, y
+    sus tests son los de abajo.
     """
-    d = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), eleccion), EngineState())
+    d = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), "otro"), EngineState())
 
     assert d.progression is not None
     assert not d.progression.gate_open
-    assert trozo in d.progression.gate_reason
+    assert "otra cosa" in d.progression.gate_reason
     assert not d.progression.changes, "se ha anunciado una subida en un día sin fuerza"
 
     # Y la rutina del ciclo sigue planificada entera, con sus ejercicios y sus
@@ -362,6 +360,84 @@ def test_bici_y_otro_no_prescriben_fuerza_pero_dejan_la_rutina_puesta(
     assert d.session.routine_key == "dia_1"
     assert d.session.exercises, "no hay nada que escribir en Hevy"
     assert d.session.kind == "full"
+
+
+def test_el_dia_de_bici_no_tiene_gimnasio(cfg):
+    """Elegida «Bici», la sesión del día es la bici y nada del gimnasio.
+
+    Con sus palabras: «el día en que elijo Bici tendría que ser un día de bici.
+    Ese día no voy a ir al gimnasio». Hasta el 26/09/2026 se planificaba la
+    rutina del ciclo entera, con su HIIT si era verde, y se escribía en Hevy.
+
+    Se mira un VERDE a propósito: es el único color que antes metía HIIT, y el
+    que tiene más que perder si la rama de la bici se cae. Y con el bloque HIIT
+    de prueba encendido: con el config real los bloques están apagados, y
+    «no hay HIIT» se cumpliría solo, con o sin bici.
+    """
+    cfg = con_bloque_hiit(cfg)
+    st = EngineState(program_start=LUNES - timedelta(weeks=1))
+    normal = decide(cfg, LUNES, sig_completa(LUNES), st)
+    assert normal.session.hiit is not None, "el montaje pide un verde con bloque HIIT"
+
+    d = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), "bici"), st)
+    assert d.light == "green", "el montaje pide un verde"
+
+    assert d.session.kind == "bici"
+    assert d.session.routine_key is None
+    assert d.session.exercises == []
+    assert d.session.write_to_hevy is False
+    assert d.session.hiit is None, "un día de bici ha planificado un bloque HIIT"
+
+    # La rotación no se entera: lo que tocaba sigue tocando, y el mensaje lo
+    # dice por su nombre para que el próximo día de gimnasio no pille de nuevas.
+    assert d.rotation_routine == "dia_1"
+    assert any("Día 1" in n for n in d.session.notes), d.session.notes
+
+    assert d.progression is not None and not d.progression.gate_open
+    assert "bici" in d.progression.gate_reason
+
+
+def test_con_otro_el_mismo_verde_si_va_al_gimnasio(cfg):
+    """El contraste que le da sentido al de arriba: el mismo día con «otro»
+    sigue planificando el Día 1. Sin él, una rama que tratara todo lo que no es
+    rutina como bici pasaría el test de la bici sin enterarse."""
+    d = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), "otro"), EngineState())
+    assert d.session.kind == "full"
+    assert d.session.write_to_hevy is True
+
+
+def test_en_un_dia_de_bici_el_rojo_manda(cfg):
+    """El rojo va antes que la bici: con una lumbar a 7 lo que sale es la
+    recuperación, y la bici dirá lo que el semáforo permita. La dirección en la
+    que se equivoca el sistema cuando duda es la prudente."""
+    d = decide(
+        cfg, LUNES, eligiendo(sig(LUNES, lower_discomfort=7), "bici"), EngineState()
+    )
+    assert d.light == "red"
+    assert d.session.kind == "recovery"
+
+
+def test_en_un_dia_de_bici_no_se_anula_ninguna_sesion_de_gimnasio(cfg):
+    """Pedir una dureza de gimnasio el día de bici no se aplica ni se apunta.
+
+    Apuntarla contaría como desacuerdo con el sistema algo que no lo es -el
+    contador de anulaciones mediría, en parte, los días de bici-. El contraste
+    va en el mismo test: el mismo día sin bici sí la aplica, así que si la
+    anulación dejara de llegar al motor esto no pasaría por el motivo bueno.
+    """
+    from app.engine.session_builder import SesionPedida
+
+    pedida = SesionPedida("recovery", motivo="prueba")
+    sin_bici = decide(cfg, LUNES, sig_completa(LUNES), EngineState(), sesion_pedida=pedida)
+    assert sin_bici.session.kind == "recovery"
+    assert sin_bici.session.anulacion is not None
+
+    en_bici = decide(
+        cfg, LUNES, eligiendo(sig_completa(LUNES), "bici"), EngineState(),
+        sesion_pedida=pedida,
+    )
+    assert en_bici.session.kind == "bici"
+    assert en_bici.session.anulacion is None
 
 
 def test_el_motivo_de_la_puerta_no_regana(cfg):
@@ -415,7 +491,14 @@ def test_un_dia_de_bici_no_toca_el_estado_mas_que_un_dia_callado(cfg):
     """La misma exigencia que se le puso al «hoy no voy», y por el mismo motivo:
     si declarar la bici costara algo -perder el turno, romper una racha, sumar a
     un contador- el selector se dejaría sin tocar y el sistema volvería a no
-    saber qué se hizo los días que no hubo fuerza."""
+    saber qué se hizo los días que no hubo fuerza.
+
+    Con UNA diferencia desde el 26/09/2026, y va a favor: la carga vigente. Un
+    día callado escribe en Hevy la rutina que toca y la fija como vigente; un
+    día de bici no escribe nada, así que no fija nada y la carga se queda como
+    estaba. Si la fijara, el estado diría que en Hevy hay unas series que nadie
+    ha puesto.
+    """
     st = EngineState(last_strength=("dia_1", LUNES))
     martes = LUNES + timedelta(days=1)
 
@@ -424,6 +507,9 @@ def test_un_dia_de_bici_no_toca_el_estado_mas_que_un_dia_callado(cfg):
         st, decide(cfg, martes, eligiendo(sig(martes), "bici"), st), executed=None
     )
 
+    assert callado.current_sets, "el montaje pide un día callado que fije carga"
+    assert en_bici.current_sets == st.current_sets
+    en_bici.current_sets = callado.current_sets
     assert en_bici.__dict__ == callado.__dict__
 
 

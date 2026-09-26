@@ -1519,6 +1519,10 @@ class _Texto:
     el nivel. Mismo desenlace y misma lección: el doble reventó, se añadió el
     campo, y de paso se envenenó, porque también es texto libre que se interpola
     en HTML. Cada vez que este doble se rompe hay un sitio nuevo que escapar.
+
+    La tercera fue `declarada` (26/09/2026), el día de bici que se cuenta
+    arriba y en afirmativo. No es texto nuevo -es la misma frase con otro
+    arranque-, así que aquí solo se acepta y se apunta con qué se pidió.
     """
 
     def __init__(
@@ -1526,6 +1530,8 @@ class _Texto:
     ):
         self._t = t
         self._notas = list(notas or [])
+        # Con qué se pidió la frase la última vez; `None` es que no se pidió.
+        self.pedida_declarada: bool | None = None
         self.applies = True
         self.skip_visible = False
         self.baseline_en_claro = en_claro
@@ -1534,7 +1540,8 @@ class _Texto:
     def se_muestra(self) -> bool:
         return self.applies or self.skip_visible
 
-    def text(self) -> str:
+    def text(self, *, declarada: bool = False) -> str:
+        self.pedida_declarada = declarada
         return self._t
 
     def texto_notas(self) -> list[str]:
@@ -2169,3 +2176,69 @@ def test_la_linea_de_pendiente_tambien_va_escapada(cfg):
 
     assert "Día &lt;1&gt; &amp; 'pierna'" in txt, txt
     assert _telegram_rechazaria({"text": txt, "parse_mode": "HTML"}) is None
+
+
+
+# ---------------------------------------------------------------------------
+# El día de bici (26/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Elegida «Bici» en el check-in, el mensaje empezaba por «Si vas al gimnasio
+# hoy: Día 1» -con su HIIT- y la bici salía al final, en condicional, el día en
+# que el usuario había dicho que salía y que no iba al gimnasio.
+
+
+def _dia_de_bici(cfg):
+    from tests.conftest import eligiendo
+
+    d = decide(cfg, LUNES, eligiendo(sig_completa(LUNES), "bici"), EngineState())
+    assert d.session.kind == "bici", "el montaje pide un día de bici"
+    return d
+
+
+def test_el_dia_de_bici_empieza_por_la_bici_y_no_por_el_gimnasio(cfg):
+    txt = render_telegram(_dia_de_bici(cfg), cfg)
+
+    assert "Si vas al gimnasio" not in txt, txt
+    assert "Hoy sales en bici" in txt, txt
+    assert txt.index("Hoy sales en bici") < txt.index("Por qué"), (
+        "la bici no va arriba: el día de bici se lee desde el gimnasio otra vez"
+    )
+    # Una vez. Arriba en afirmativo y abajo en condicional sería el mensaje
+    # preguntando lo que acaba de afirmar.
+    assert txt.count("🚴") == 1, txt
+    assert "si sales" not in txt.lower(), txt
+
+
+def test_el_dia_de_bici_dice_que_rutina_sigue_tocando(cfg):
+    """La única línea del gimnasio que queda, y es la que evita la sorpresa del
+    próximo día que se vaya: la rotación no se ha movido."""
+    assert "sigue tocando Día 1" in render_telegram(_dia_de_bici(cfg), cfg)
+
+
+def test_el_dia_de_bici_pide_la_frase_en_afirmativo_y_los_demas_no(cfg):
+    """El cable entre el mensaje y `BikeRecommendation.text(declarada=...)`.
+
+    Los tests de texto prueban la frase y los de arriba prueban el mensaje con
+    la bici real; ninguno de los dos ve quién pide qué. Si el mensaje pidiera
+    siempre el afirmativo, todos los días normales anunciarían una salida.
+    """
+    bici = _dia_de_bici(cfg)
+    bici.bike = _Texto("la frase de la bici")
+    render_telegram(bici, cfg)
+    assert bici.bike.pedida_declarada is True
+
+    normal = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
+    normal.bike = _Texto("la frase de la bici")
+    render_telegram(normal, cfg)
+    assert normal.bike.pedida_declarada is False
+
+
+def test_el_dia_de_bici_sin_recomendacion_sigue_diciendo_que_sales(cfg):
+    """Con la bici apagada en el config no hay recomendación, y el mensaje no
+    puede quedarse sin decir qué se hace hoy."""
+    d = _dia_de_bici(cfg)
+    d.bike = None
+    txt = render_telegram(d, cfg)
+    assert "Hoy sales en bici" in txt, txt
+    assert "Si vas al gimnasio" not in txt, txt

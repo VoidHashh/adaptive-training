@@ -263,6 +263,15 @@ mueven las cargas:
   recortadas como el resto). La rutina «Día 1 HIIT» de Hevy ya no existía y
   por eso salía el aviso 404. El mecanismo de bloques sigue en el código,
   apagado (`hiit.enabled: false`), por si se quiere volver a separar.
+- **Elegir «Bici» hace del día un día de bici (26/09/2026).** Sin gimnasio: no
+  se escribe nada en Hevy (y si esa mañana el respaldo ya había puesto una
+  rutina, se deshace), no hay HIIT, y el Telegram y la tarjeta empiezan por la
+  bici en afirmativo -«Hoy sales en bici: media…»- en vez de por «Si vas al
+  gimnasio hoy: Día 1». La rotación no se mueve: lo que tocaba sigue tocando el
+  siguiente día de gimnasio, y el mensaje lo dice. **El rojo manda sobre la
+  bici**: con el día en rojo sale la recuperación, como si no se hubiera
+  elegido nada. `otro` y el «no voy a entrenar» siguen escribiendo la rutina
+  por si acabas yendo.
 - **«Hoy» abre con la decisión del día** cuando ya está decidido, con el
   formulario plegado detrás de «Cambiar mis respuestas». La tarjeta dice Hevy y
   Telegram en palabras. Si al abrir se recalcula el día, la tarjeta se repinta.

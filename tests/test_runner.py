@@ -542,23 +542,28 @@ def test_la_decision_se_guarda_con_su_progresion(db, cfg):
 #
 # HAY TRES MANERAS DE DECIR «HOY NO TOCA FUERZA» Y LAS TRES VALEN IGUAL.
 #
-# Contestar que no al «¿vas a entrenar hoy?», elegir «bici» en el selector y
-# elegir «otro» son tres frases distintas para el mismo hecho, y ninguna de las
-# tres decide si la rutina se escribe. Se parametrizan juntas en vez de probar
-# solo la primera porque el `if` que sobra se escribe mirando UN campo: quien
-# ponga el atajo en `va_a_entrenar` deja `bici` a salvo por casualidad, y quien
-# lo ponga en `chosen_session` deja a salvo el «no voy». Probada una sola, la
-# otra mitad del agujero no la ve nadie.
+# Contestar que no al «¿vas a entrenar hoy?» y elegir «otro» en el selector son
+# dos frases distintas para el mismo hecho, y ninguna de las dos decide si la
+# rutina se escribe. Se parametrizan juntas en vez de probar solo la primera
+# porque el `if` que sobra se escribe mirando UN campo: quien ponga el atajo en
+# `va_a_entrenar` deja `otro` a salvo por casualidad, y quien lo ponga en
+# `chosen_session` deja a salvo el «no voy». Probada una sola, la otra mitad del
+# agujero no la ve nadie.
 #
-# El argumento es del usuario y es el mismo en los tres casos: «si acabo yendo
-# al gimnasio, quiero la rutina puesta y no la de hace dos semanas».
+# El argumento es del usuario: «si acabo yendo al gimnasio, quiero la rutina
+# puesta y no la de hace dos semanas».
+#
+# «Bici» estuvo aquí dentro hasta el 26/09/2026, con el mismo argumento, y el
+# usuario lo retiró para ella: «el día en que elijo Bici tendría que ser un día
+# de bici. Ese día no voy a ir al gimnasio. No es necesario contemplarlo». Sus
+# tests van justo debajo de estos, y prueban lo contrario: que NO se escribe.
 
 
-# Las tres formas de declarar que hoy no hay fuerza, tal y como llegan del
-# formulario. `id` para que el nombre del test diga cuál falló.
+# Las dos formas de declarar que hoy no hay fuerza sin renunciar al gimnasio,
+# tal y como llegan del formulario. `id` para que el nombre del test diga cuál
+# falló.
 SIN_FUERZA = [
     pytest.param({"will_train": False}, id="no_voy"),
-    pytest.param({"chosen_session": "bici"}, id="bici"),
     pytest.param({"chosen_session": "otro"}, id="otro"),
 ]
 
@@ -677,6 +682,52 @@ def test_elegir_otro_dia_del_ciclo_si_cambia_lo_que_se_escribe(db, cfg):
         "se eligió el Día 2 y en Hevy ha acabado escrita la misma rutina que un "
         "día callado: el selector no ha llegado a la escritura"
     )
+
+
+def test_el_dia_de_bici_no_escribe_nada_en_hevy_y_se_sabe(db, cfg):
+    """Elegida «Bici», ese día no hay gimnasio, y Hevy no se toca.
+
+    Hasta el 26/09/2026 un día de bici escribía la rutina del ciclo entera -con
+    su bloque HIIT si era verde- y el mensaje entero giraba alrededor de ella.
+    Lo que se comprueba es el hecho y su registro: ninguna llamada a Hevy, el
+    estado `skipped` -que la pantalla dice «no se ha tocado»- y ninguna fila,
+    porque no hubo escritura que anotar.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    res = _declarando(db, cfg, {"chosen_session": "bici"}, hevy=hevy, tg=tg)
+
+    # El montaje: sin esto, un check-in que no llegara al motor daría un día
+    # normal, que escribiría, y el test fallaría por la razón equivocada.
+    assert res.decision.sesion_elegida == "bici"
+    assert res.decision.session.kind == "bici"
+
+    assert hevy.llamadas == [], (
+        f"un día de bici ha escrito en Hevy: {[r for r, _ in hevy.llamadas]}"
+    )
+    assert res.hevy_status == "skipped", (res.hevy_status, res.hevy_reason)
+    assert db.scalars(select(HevyWrite)).first() is None
+
+    # Y el mensaje que sale ese día es el de la bici, no el del gimnasio.
+    texto = tg.enviados[0]
+    assert "Hoy sales en bici" in texto
+    assert "Si vas al gimnasio" not in texto
+
+
+def test_en_un_dia_de_bici_el_rojo_sigue_mandando(db, cfg):
+    """La bici declarada no le quita la palabra al cuerpo.
+
+    Con el día en rojo, lo que sale es el bloque de recuperación, igual que si
+    no se hubiera elegido nada, y la bici se cuenta abajo en su sitio de siempre
+    diciendo lo que el semáforo permite. Con una hernia L4-L5 la duda se
+    resuelve hacia el lado prudente: elegir bici es decir qué harías, no pedir
+    permiso para hacerlo.
+    """
+    upsert_checkin(db, LUNES, {**CHECKIN_ROJO, "chosen_session": "bici"}, config=cfg)
+    res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+
+    assert res.decision.sesion_elegida == "bici"
+    assert res.decision.light == "red"
+    assert res.decision.session.kind == "recovery", res.decision.session.kind
 
 
 # ---------------------------------------------------------------------------
@@ -1628,19 +1679,39 @@ def test_sin_selector_la_frase_dice_tocaba_y_no_declaraste(db, cfg):
     assert "declaraste" not in fila.motivo_suelto, fila.motivo_suelto
 
 
-def test_declarar_bici_no_convierte_la_propuesta_en_una_declaracion(db, cfg):
-    """«Bici» es declarar que no hay fuerza, no declarar qué fuerza.
+def test_declarar_otro_no_convierte_la_propuesta_en_una_declaracion(db, cfg):
+    """«Otro» es declarar que no hay fuerza del plan, no declarar qué fuerza.
 
     El selector tiene cinco opciones y solo tres son rutinas. La rutina que se
     escribió ese día la siguió eligiendo la rotación -por decisión del usuario:
     si acabo yendo al gimnasio quiero la rutina puesta, no la de hace dos
     semanas-, así que «declaraste Día 1» sería falso. Escrito sin filtrar el
     selector contra el ciclo, este caso diría exactamente eso.
+
+    Se probaba con «bici» hasta el 26/09/2026. Desde entonces un día de bici no
+    planifica ninguna rutina y no llega a esta frase: ver el test de abajo.
     """
     _, _, fila = _declaro_y_entreno(
-        db, cfg, declara="bici", ejecuta="dia_2", pesos_de=LUNES - timedelta(days=9)
+        db, cfg, declara="otro", ejecuta="dia_2", pesos_de=LUNES - timedelta(days=9)
     )
     assert fila.motivo_suelto.startswith("tocaba Día 1 y entrenaste Día 2"), (
+        fila.motivo_suelto
+    )
+    assert "declaraste" not in fila.motivo_suelto, fila.motivo_suelto
+
+
+def test_ir_al_gimnasio_un_dia_de_bici_se_cuenta_como_decision_tuya(db, cfg):
+    """El caso que el usuario dijo que no hacía falta contemplar, y aun así pasa.
+
+    No se contempla en el plan -ese día no se escribe nada-, pero si Hevy trae
+    un entreno, se registra, y la frase dice lo que fue: el plan era bici y se
+    hizo fuerza. La misma que un día rojo con recuperación, y por lo mismo: es
+    una decisión del usuario por encima de la del sistema, sin dar a entender
+    que sobraba.
+    """
+    _, planificada, fila = _declaro_y_entreno(db, cfg, declara="bici", ejecuta="dia_2")
+    assert planificada is None, f"un día de bici ha planificado {planificada}"
+    assert fila.motivo_suelto == "ese día el plan era bici y entrenaste fuerza igual", (
         fila.motivo_suelto
     )
 
@@ -3086,6 +3157,26 @@ def test_un_checkin_rojo_tardio_deshace_lo_que_escribio_el_respaldo(db, cfg):
         "en Hevy ha quedado la sesión de una decisión anulada: es exactamente el "
         "fallo que este arreglo existe para cerrar"
     )
+
+
+def test_elegir_bici_despues_del_respaldo_deshace_la_rutina_de_la_manana(db, cfg):
+    """Lo mismo que el rojo tardío, con la bici: el respaldo de las 09:00 puso el
+    Día 1 y a las 10:30 llega el formulario diciendo que hoy es de bici.
+
+    Es el caso de uso, no una rareza: el respaldo escribe todas las mañanas sin
+    formulario. Si la bici solo dejara de escribir, en Hevy se quedaría el Día 1
+    del respaldo -con sus intervalos dentro- el día en que se dijo que no se iba.
+    """
+    hevy, tg = HevyFalso(), TelegramFalso()
+    manana_sin_checkin(db, cfg, hevy, tg)
+    assert hevy.contenido == "Día 1"
+
+    res = checkin_tardio(db, cfg, hevy, tg, {"chosen_session": "bici"})
+
+    assert res.decision.session.kind == "bici"
+    assert res.hevy_status == "reverted", (res.hevy_status, res.hevy_reason)
+    assert "hoy toca «Bici»" in res.hevy_reason, res.hevy_reason
+    assert hevy.contenido == "la rutina de la semana pasada"
 
 
 def test_la_reversion_queda_registrada_como_escritura_con_su_motivo(db, cfg):

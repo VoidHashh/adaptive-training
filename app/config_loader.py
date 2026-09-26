@@ -687,9 +687,9 @@ def _validate(data: dict[str, Any]) -> list[str]:
         for o in sin_fuerza:
             if isinstance(o, dict):
                 check_keys(o, {"key", "label"}, "checkin_selector.sin_fuerza")
-        # Éstas sí las busca el código una por una: `bici` no prescribe fuerza
-        # pero deja dicho que hubo actividad, y `otro` deja dicho que se entrenó
-        # sin plan. Si faltara una, el formulario no la ofrecería y el caso que
+        # Éstas sí las busca el código una por una: `bici` hace del día un día
+        # de bici -sin gimnasio ni escritura en Hevy, desde el 26/09/2026-, y
+        # `otro` deja dicho que se entrenó sin plan. Si faltara una, el formulario no la ofrecería y el caso que
         # cubre volvería a ser indistinguible de no contestar.
         faltan = [c for c in ELECCIONES_SIN_FUERZA if c not in claves_sin_fuerza]
         require(

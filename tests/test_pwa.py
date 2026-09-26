@@ -569,6 +569,17 @@ HUELLAS_DEL_ARMAZON = {
     # mezcla de generaciones que el armazón versionado existe para impedir, y la
     # vigila `test_el_armazon_no_mezcla_dos_generaciones`.
     "v28": "c31be18e7cdca7c7d58eb2aa970df8fddd904aea6168e464656dd561d635a6a4",
+    # v29: el día de bici. Con la sesión `bici` que manda el motor desde el
+    # 26/09/2026, la tarjeta de previsualizar deja de proponer el gimnasio y de
+    # ofrecer su dureza, y la bici va arriba en afirmativo. Solo toca `app.js`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE. Un día de bici pinta «Lo que
+    # propondría: Bici» con la dureza en crudo -«bici», que no está en su
+    # `DUREZA`-, el control para elegir sesión y la bici al final en
+    # condicional. Feo y contradictorio, pero nada falso llega a ningún sitio:
+    # Hevy no se escribe porque lo decide el servidor, y lo que se pulse en el
+    # control el motor lo ignora ese día y no lo apunta como anulación.
+    "v29": "563b309499b80dc86f9d4a91185028006e8a006d4dab8075280ffad61f0705bf",
 }
 
 
@@ -4695,3 +4706,85 @@ def test_la_portada_enciende_como_vas_y_no_mas():
     html = _pinta_comun('pintarNav("#portada")')["nav"]
     activa = re.findall(r'<a href="([^"]+)" class="activa"', html)
     assert activa == ["/metricas.html#portada"], activa
+
+
+# ---------------------------------------------------------------------------
+# El día de bici en la tarjeta (26/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Elegida «Bici», la tarjeta decía «Lo que propondría: Día 1» con sus cambios,
+# ofrecía elegir la dureza del gimnasio y dejaba la bici para el final, en
+# condicional: «Si sales hoy». El motor ya manda una sesión `bici` sin
+# ejercicios; esto comprueba que la pantalla la lee como lo que es.
+
+
+_BICI_MEDIA = {
+    "applies": True, "skip_visible": False, "level": "media", "label": "Media",
+    "duration_min": 120, "duration_max": 180, "detail": "Z2 con algún repecho",
+    "baseline_en_claro": None, "downgrades": [], "notas": [],
+}
+
+
+def _dia_de_bici(bike=_BICI_MEDIA, kind="bici") -> dict:
+    return {
+        "light": "green", "trigger_rule": None, "fired_rules": [],
+        "skipped_rules": [], "notes": [], "va_a_entrenar": None,
+        "session": {
+            "kind": kind, "title": "Bici" if kind == "bici" else "Día 1",
+            "routine": None if kind == "bici" else "dia_1",
+            "changes": [], "dropped": [], "exercises": [],
+            "notes": ["el gimnasio no se toca: el próximo día que vayas sigue tocando Día 1"],
+        },
+        "progression": {
+            "gate_open": False, "changes": [],
+            "gate_reason": "hoy sales en bici: la fuerza se decide la próxima vez que toque",
+        },
+        "bike": bike,
+    }
+
+
+def test_el_dia_de_bici_la_tarjeta_no_propone_gimnasio(tmp_path):
+    t = _tarjeta(tmp_path, _dia_de_bici())
+    texto, html = t.get("texto", ""), t.get("html", "")
+
+    assert "Hoy sales en bici" in texto, f"no lo dice:\n{texto[:400]}"
+    assert "Media (120–180 min)" in texto, texto[:400]
+    assert "Lo que propondría" not in texto, "sigue proponiendo el gimnasio"
+    assert "Si sales hoy" not in texto, "pregunta lo que el usuario acaba de decir"
+    assert "eleccion-sesion" not in html, (
+        "ofrece elegir la dureza de un gimnasio al que no se va: cada toque se "
+        "apuntaría como una anulación"
+    )
+    assert "sigue tocando Día 1" in texto, "no dice qué sigue tocando en el gimnasio"
+
+
+def test_el_mismo_dia_sin_bici_sigue_en_condicional(tmp_path):
+    """El contrapeso: con la misma bici y una sesión de gimnasio, la tarjeta
+    propone el gimnasio y la bici va en condicional. Sin él, un `declarada`
+    pegado a verdadero pasaría el test de arriba."""
+    texto = _tarjeta(tmp_path, _dia_de_bici(kind="full")).get("texto", "")
+    assert "Lo que propondría" in texto
+    assert "Si sales hoy: Media" in texto, texto[-400:]
+    assert "Hoy sales en bici" not in texto
+
+
+@pytest.mark.parametrize(
+    "bike, trozo",
+    [
+        pytest.param(None, None, id="sin_recomendacion"),
+        pytest.param(
+            {"applies": False, "skip_visible": True,
+             "skip_reason": "no hay ninguna salida intensa registrada"},
+            "no hay ninguna salida intensa registrada", id="sin_base",
+        ),
+        pytest.param({"applies": False, "skip_visible": False}, None, id="callada"),
+    ],
+)
+def test_el_dia_de_bici_sin_nivel_sigue_diciendo_que_sales(tmp_path, bike, trozo):
+    """Sin recomendación que dar, la tarjeta de un día de bici no puede quedarse
+    sin decir qué se hace hoy: los otros dos bloques se han apartado para ella."""
+    texto = _tarjeta(tmp_path, _dia_de_bici(bike=bike)).get("texto", "")
+    assert "Hoy sales en bici" in texto, texto[:400]
+    assert "sigue tocando Día 1" in texto, texto[:400]
+    if trozo:
+        assert trozo in texto

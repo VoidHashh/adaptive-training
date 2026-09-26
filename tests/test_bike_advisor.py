@@ -529,6 +529,49 @@ def test_el_descanso_del_rojo_si_va_en_indicativo(cfg):
     assert rec.text().startswith("Bici:")
 
 
+# ---------------------------------------------------------------------------
+# La bici declarada en el check-in (26/09/2026)
+# ---------------------------------------------------------------------------
+#
+# El condicional de arriba existe porque el sistema no sabe si hoy se sale. El
+# día que el usuario elige «Bici» en el check-in, sí lo sabe: lo ha dicho él. Y
+# entonces «si sales hoy» es preguntarle lo que acaba de contestar.
+
+
+@pytest.mark.parametrize("dias", [1, DIAS_SUAVE, DIAS_INTENSA, DIAS_MEDIA])
+def test_declarada_la_bici_el_consejo_va_en_afirmativo(cfg, dias):
+    """Las mismas cuatro bandas que el condicional, y por lo mismo: el modo
+    verbal es del mensaje entero, y un `if` que dejara una banda atrás pasaría
+    probando solo otra."""
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=dias), "green")
+    texto = rec.text(declarada=True)
+    assert texto.startswith("Hoy sales en bici:"), texto
+    assert "si sales" not in texto.lower(), texto
+    # Y sin pedirlo sigue en condicional: el afirmativo no puede ser el defecto,
+    # o todos los días normales anunciarían una salida que nadie ha dicho.
+    assert rec.text().startswith("Si sales hoy:")
+
+
+@pytest.mark.parametrize(
+    "luz, trozo", [("green", "sal por sensaciones"), ("amber", "suave como mucho")]
+)
+def test_declarada_y_sin_base_tampoco_pregunta_si_sales(cfg, luz, trozo):
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=None), luz)
+    texto = rec.text(declarada=True)
+    assert texto.startswith("Hoy sales en bici, pero no hay punto de partida"), texto
+    assert trozo in texto.lower(), texto
+    assert "si sales" not in texto.lower(), texto
+
+
+@pytest.mark.parametrize("dias", [DIAS_INTENSA, None], ids=["con_base", "sin_base"])
+def test_declarada_el_descanso_del_rojo_no_se_vuelve_una_salida(cfg, dias):
+    """«Hoy sales en bici: descanso» se niega a sí misma. El rojo manda sobre la
+    bici declarada, y su frase es la de siempre, con base o sin ella."""
+    rec = recommend_bike(cfg, _senales(LUNES, dias_desde=dias), "red")
+    assert rec.text(declarada=True) == rec.text()
+    assert "Hoy sales" not in rec.text(declarada=True)
+
+
 def test_de_donde_sale_el_nivel_se_dice_sin_jerga(cfg):
     """El punto de partida ya no se puede ir a mirar al YAML: hay que contarlo.
 

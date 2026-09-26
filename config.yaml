@@ -519,17 +519,23 @@ checkin_selector:
     que la rutina de hoy sea la que vas a hacer.
   # Las dos que no son fuerza. El motor las busca por estos nombres:
   #
-  #   - `bici`: no prescribe fuerza y no mueve el ciclo, pero deja dicho que hubo
-  #     actividad. No se confunde con la clasificación de salidas de la sección
-  #     `cycling`, que sale de Garmin y es un hecho medido: esto es lo que
-  #     declaraste a las siete de la mañana, y pueden no coincidir.
+  #   - `bici`: el día es de bici y no hay gimnasio. No prescribe fuerza, no
+  #     mueve el ciclo y, desde el 26/09/2026, TAMPOCO ESCRIBE EN HEVY: la sesión
+  #     del día es `bici`, sin ejercicios, y si esta mañana se había puesto una
+  #     rutina con otra decisión, se deshace. No se confunde con la clasificación
+  #     de salidas de la sección `cycling`, que sale de Garmin y es un hecho
+  #     medido: esto es lo que declaraste a las siete de la mañana, y pueden no
+  #     coincidir.
   #   - `otro`: entrenaste sin plan. Existe para que «hice algo» no tenga que
   #     contarse como «no contesté», que es donde caía antes todo lo que no fuera
   #     una de las tres rutinas.
   #
-  # Ninguna de las dos cancela la escritura en Hevy, por lo mismo que un «no voy
-  # a entrenar» tampoco la cancela: si acabas yendo al gimnasio, la rutina tiene
-  # que estar puesta y no ser la de hace dos semanas.
+  # `otro` no cancela la escritura en Hevy, por lo mismo que un «no voy a
+  # entrenar» tampoco la cancela: si acabas yendo al gimnasio, la rutina tiene
+  # que estar puesta y no ser la de hace dos semanas. `bici` la cancelaba
+  # igual hasta el 26/09/2026, y el día entero -Telegram, la tarjeta, Hevy-
+  # giraba alrededor de un gimnasio al que habías dicho que no ibas. Con tus
+  # palabras: «ese día no voy a ir al gimnasio, no es necesario contemplarlo».
   sin_fuerza:
     - key: bici
       label: "Bici"

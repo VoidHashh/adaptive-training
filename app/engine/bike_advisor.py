@@ -156,8 +156,13 @@ class BikeRecommendation:
             "techo_sin_base": list(self.techo_sin_base) if self.techo_sin_base else None,
         }
 
-    def text(self) -> str:
+    def text(self, *, declarada: bool = False) -> str:
         """Línea para el mensaje de Telegram.
+
+        `declarada`: el usuario ha dicho en el check-in que hoy sale en bici
+        (26/09/2026). Entonces no hay condicional que valga -ya se sabe que
+        sale- y la frase va en afirmativo: «Hoy sales en bici: media». El
+        condicional de abajo es para los días en que no se sabe.
 
         EL MODO VERBAL ES LA MITAD DEL CONTENIDO
         -----------------------------------------
@@ -183,16 +188,30 @@ class BikeRecommendation:
         lo ofrecería como una opción entre otras, que es lo contrario de lo que
         significa un rojo. Misma distinción, y por el mismo razonamiento, que la
         rama de `recovery` en `message.py`.
+
+        Y `declarada` no lo toca. El rojo manda sobre la bici declarada -la
+        sesión de ese día es la recuperación, `session_builder`-, así que un
+        «Hoy sales en bici: descanso» sería una frase que se niega a sí misma.
         """
         if not self.applies:
             if self.skip_visible:
-                sin_base = f"Bici: hoy no hay punto de partida ({self.skip_reason}). "
-                if self.techo_sin_base is None:
+                techo, motivo = self.techo_sin_base or (None, None)
+                # Con el descanso no hay afirmativo: «Hoy sales en bici… y hoy
+                # toca descanso» se contradice en la misma línea. Ver abajo.
+                declarada = declarada and techo != DESCANSO
+                quien = "Hoy sales en bici, pero" if declarada else "Bici: hoy"
+                sin_base = f"{quien} no hay punto de partida ({self.skip_reason}). "
+                # Declarada, «si sales» contradiría la primera mitad de la frase:
+                # ya se sabe que sale.
+                if techo is None:
+                    if declarada:
+                        return sin_base + "No se inventa uno: sal por sensaciones."
                     return sin_base + "No se inventa uno; si sales, sal por sensaciones."
-                techo, motivo = self.techo_sin_base
                 if techo == DESCANSO:
                     # Indicativo, como el descanso de siempre: ver abajo.
                     return sin_base + f"Y hoy toca descanso: {motivo}."
+                if declarada:
+                    return sin_base + f"Que sea {techo} como mucho: {motivo}."
                 return sin_base + f"Si sales, que sea {techo} como mucho: {motivo}."
             return ""
         rango = (
@@ -202,6 +221,8 @@ class BikeRecommendation:
         )
         if self.level == DESCANSO:
             base = f"Bici: {self.label.lower()} ({rango}). {self.detail}"
+        elif declarada:
+            base = f"Hoy sales en bici: {self.label.lower()} ({rango}). {self.detail}"
         else:
             base = f"Si sales hoy: {self.label.lower()} ({rango}). {self.detail}"
         if self.downgrades:

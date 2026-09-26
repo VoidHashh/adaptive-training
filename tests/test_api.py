@@ -3607,3 +3607,42 @@ def test_si_no_se_recalcula_no_se_manda_decision(cliente, monkeypatch):
         lambda cfg, **kw: {"estado": "nada_que_recalcular", "aviso": None},
     )
     assert "decision_de_hoy" not in cliente.post("/api/decision/recalcular").json()
+
+
+def test_un_dia_de_bici_dice_que_hevy_no_se_ha_tocado_y_no_que_no_se_sabe(cliente, db):
+    """Un día de bici guarda `routine: None`, y buscar su escritura por rutina no
+    encontraba nada: la tarjeta decía «Hevy: no se sabe» el día en que el
+    servidor sí lo sabía (26/09/2026). Sin fila es que no había nada que
+    deshacer -`skipped`-, y con la reversión de la rutina de esta mañana, que
+    va con la clave de ESA rutina, es la reversión."""
+    from app.models import HevyWrite
+
+    enviado = cliente.post(
+        "/api/checkin", json={"day": str(LUNES), "chosen_session": "bici"}
+    ).json()
+    assert enviado["kind"] == "bici", "el montaje pide un día de bici"
+
+    d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
+    assert (d["session"], d["kind"]) == ("Bici", "bici")
+    assert d["hevy"] == "skipped" == enviado["hevy"]
+
+    db.add(HevyWrite(date=LUNES, routine_key="dia_1", status="ok"))
+    db.add(HevyWrite(date=LUNES, routine_key="dia_1", status="reverted"))
+    db.commit()
+    d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
+    assert d["hevy"] == "reverted"
+
+
+def test_en_un_dia_de_bici_la_fila_de_un_bloque_hiit_no_cuenta(cliente, db, monkeypatch):
+    """La fila del bloque HIIT la deshace otro camino y no dice cómo quedó la
+    rutina de fuerza. Con los bloques apagados en el config real no hay claves
+    que apartar, así que se encienden aquí: si no, el filtro no se vería."""
+    from app.models import HevyWrite
+
+    monkeypatch.setattr("app.integrations.hevy.claves_hiit", lambda config=None: {"hiit_dia_1"})
+    cliente.post("/api/checkin", json={"day": str(LUNES), "chosen_session": "bici"})
+    db.add(HevyWrite(date=LUNES, routine_key="dia_1", status="reverted"))
+    db.add(HevyWrite(date=LUNES, routine_key="hiit_dia_1", status="ok"))
+    db.commit()
+    d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
+    assert d["hevy"] == "reverted"

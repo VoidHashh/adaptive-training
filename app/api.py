@@ -975,6 +975,7 @@ def _decision_de_hoy(s: Session, cfg: Any, day: date) -> dict[str, Any] | None:
     hora- había que buscarla en Telegram. Lo que se guardó de Hevy y de Telegram
     sale de sus tablas, con el mismo vocabulario que usa `POST /api/checkin`; si
     no hay fila, `None`, que la pantalla dice como «no se sabe» y no como «no».
+    La excepción es la sesión que no toca Hevy: ver dentro.
     """
     from sqlalchemy import select
 
@@ -985,11 +986,39 @@ def _decision_de_hoy(s: Session, cfg: Any, day: date) -> dict[str, Any] | None:
     if fila is None:
         return None
     plan = repo.planned_session(fila)
-    escritura = s.scalars(
-        select(HevyWrite)
-        .where(HevyWrite.date == day, HevyWrite.routine_key == plan.get("routine"))
-        .order_by(HevyWrite.id.desc())
-    ).first()
+    if plan.get("write_to_hevy") is False:
+        # UNA SESIÓN QUE NO TOCA HEVY SE BUSCABA POR SU RUTINA, Y NO TIENE.
+        # Un día de bici o de recuperación guarda `routine: None`, así que la
+        # consulta de abajo no encontraba nada y la tarjeta decía «Hevy: no se
+        # sabe» el día en que el servidor sí lo sabía (26/09/2026). Lo que ese
+        # día puede haber en la tabla es la reversión de la rutina que se
+        # escribió antes con otra decisión -`runner._deshacer_lo_de_hoy`, con
+        # la clave de ESA rutina-, y la última fila de fuerza del día es la que
+        # cuenta cómo quedó. Si no hay ninguna es que no había nada que
+        # deshacer, y el runner lo llama `skipped` sin dejar fila: eso es un
+        # «no se ha tocado» que se sabe, no un hueco.
+        from app.integrations.hevy import claves_hiit
+
+        bloques = claves_hiit(cfg)
+        escritura = next(
+            (
+                w for w in s.scalars(
+                    select(HevyWrite)
+                    .where(HevyWrite.date == day)
+                    .order_by(HevyWrite.id.desc())
+                )
+                if str(w.routine_key or "") not in bloques
+            ),
+            None,
+        )
+        hevy = escritura.status if escritura is not None else "skipped"
+    else:
+        escritura = s.scalars(
+            select(HevyWrite)
+            .where(HevyWrite.date == day, HevyWrite.routine_key == plan.get("routine"))
+            .order_by(HevyWrite.id.desc())
+        ).first()
+        hevy = escritura.status if escritura is not None else None
     aviso = s.scalars(
         select(Notification)
         .where(Notification.date == day, Notification.kind == "decision")
@@ -1002,7 +1031,7 @@ def _decision_de_hoy(s: Session, cfg: Any, day: date) -> dict[str, Any] | None:
         "light": fila.light,
         "session": plan.get("title"),
         "kind": plan.get("kind"),
-        "hevy": escritura.status if escritura is not None else None,
+        "hevy": hevy,
         "telegram": aviso.status if aviso is not None else None,
         "problems": [],
         "cuando": " ".join(

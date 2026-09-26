@@ -62,6 +62,7 @@ from app.engine.session_builder import (
 )
 from app.engine.signals import (
     CLAVE_VOY_A_ENTRENAR,
+    ELECCION_BICI,
     Signals,
     WEEKDAY_NAMES,
     week_start,
@@ -908,9 +909,11 @@ def decide(
     propuesta = siguiente_en_rotacion(config, ultima[0] if ultima else None)
     sesion_elegida = getattr(signals, "sesion_elegida", None)
 
-    # Solo una elección que ES una rutina del ciclo cambia lo que se planifica.
-    # `bici` y `otro` no nombran ninguna, así que el día se planifica con la
-    # propuesta: es la que hay que dejar puesta en Hevy por si acaba yendo.
+    # Solo una elección que ES una rutina del ciclo cambia QUÉ rutina se
+    # planifica. `bici` y `otro` no nombran ninguna, así que la rotación sigue
+    # con la propuesta. Con `otro` el día se planifica con ella -puede acabar en
+    # el gimnasio-; con `bici`, desde el 26/09/2026, no: ver `dia_de_bici` más
+    # abajo y `session_builder.BICI`.
     del_ciclo = sesion_elegida in orden_de_rotacion(config)
     rotation_routine = sesion_elegida if del_ciclo else propuesta
     routine_key = rotation_routine
@@ -1034,6 +1037,8 @@ def decide(
         # sube entera hasta quien llamó: subir de intensidad en rojo se
         # pregunta, no se resuelve aquí con un valor por defecto.
         sesion_pedida=sesion_pedida,
+        # Declarado en el check-in: hoy bici y no gimnasio (26/09/2026).
+        dia_de_bici=sesion_elegida == ELECCION_BICI,
     )
 
     # EL BLOQUE NO HA ENTRADO: EL PLAN NO HA PASADO.

@@ -1197,6 +1197,10 @@ function bloqueEleccion(d) {
   // que el usuario ni siquiera está discutiendo. El contador mediría, en
   // parte, los días que no se entrena.
   if ((d.decision || {}).va_a_entrenar === false) return "";
+  // Ni en un día de bici: la dureza que se elige aquí es la del gimnasio, y
+  // ese día no se va. El motor ya no la aplica (`session_builder`, 26/09/2026);
+  // enseñar el control sería ofrecer un botón que no hace nada.
+  if (esDiaDeBici(d)) return "";
 
   const propuesto = (d.decision && d.decision.session && d.decision.session.kind) || null;
   const opciones = TIPOS_DE_SESION.map((o) => {
@@ -1331,11 +1335,26 @@ function bloqueSinEntreno(d) {
   );
 }
 
+/* EL DÍA DE BICI NO TIENE SESIÓN DE GIMNASIO QUE PROPONER (26/09/2026).
+ *
+ * Elegido «Bici» en el check-in, la tarjeta decía «Lo que propondría: Día 1»
+ * con sus cambios de carga, el control de dureza debajo y la bici al final,
+ * en condicional: «Si sales hoy». El usuario ya había dicho que salía y que
+ * no iba al gimnasio. Ahora el motor lo sabe -sesión `bici`, sin ejercicios
+ * y sin Hevy- y la pantalla lo lee de ahí, del `kind`, no de la respuesta
+ * del formulario: si el rojo manda sobre la bici, lo que llega es la
+ * recuperación, y eso es lo que hay que enseñar. */
+function esDiaDeBici(d) {
+  return ((d.decision || {}).session || {}).kind === "bici";
+}
+
 function bloqueSesion(d) {
   const dec = d.decision || {};
   const ses = dec.session || {};
 
   if (dec.va_a_entrenar === false) return bloqueSinEntreno(d);
+  // La bici se cuenta entera en `bloqueBici`, que es quien la sabe contar.
+  if (esDiaDeBici(d)) return "";
 
   const dureza = ses.kind ? (DUREZA[ses.kind] || ses.kind) : "no se sabe";
 
@@ -1370,15 +1389,27 @@ function bloqueSesion(d) {
  * pinta la primera. */
 function bloqueBici(d) {
   const b = (d.decision || {}).bike;
-  if (!b) return "";
+  // En un día de bici declarado, la bici es la sesión: va en afirmativo y se
+  // dice aunque el motor no traiga recomendación, porque callarse dejaría la
+  // tarjeta sin decir qué se hace hoy. Los apuntes de la sesión -qué sigue
+  // tocando en el gimnasio- salen aquí, que es el único bloque que se pinta.
+  const declarada = esDiaDeBici(d);
+  const apuntes = declarada ? (((d.decision || {}).session || {}).notes || []) : [];
+  if (!b) {
+    if (!declarada) return "";
+    return `<h3>Hoy sales en bici</h3>` + bloqueLista("Apuntes del día", apuntes);
+  }
 
   if (!b.applies) {
     // `skip_visible` distingue «hoy aquí no se habla» de «hoy no he podido
     // calcularlo». Lo segundo se dice; lo primero no ocupa sitio.
-    if (!b.skip_visible) return "";
+    if (!b.skip_visible && !declarada) return "";
     return (
-      `<h3>Bici</h3>` +
-      `<p>${escapar(b.skip_reason || "hoy no hay recomendación")}</p>`
+      `<h3>${declarada ? "Hoy sales en bici" : "Bici"}</h3>` +
+      (b.skip_visible
+        ? `<p>${escapar(b.skip_reason || "hoy no hay recomendación")}</p>`
+        : "") +
+      bloqueLista("Apuntes del día", apuntes)
     );
   }
 
@@ -1392,12 +1423,14 @@ function bloqueBici(d) {
   for (const r of b.downgrades || []) recortes.push(r.why);
 
   return (
-    `<h3>Bici</h3>` +
-    `<p class="sesion">Si sales hoy: ${escapar(b.label || b.level || "—")}${rango}</p>` +
+    `<h3>${declarada ? "Hoy sales en bici" : "Bici"}</h3>` +
+    `<p class="sesion">${declarada ? "" : "Si sales hoy: "}` +
+    `${escapar(b.label || b.level || "—")}${rango}</p>` +
     (b.detail ? `<p>${escapar(b.detail)}</p>` : "") +
     (b.baseline_en_claro ? `<p class="tenue">${escapar(b.baseline_en_claro)}</p>` : "") +
     bloqueLista("Rebajada porque", recortes) +
-    bloqueLista("A tener en cuenta", b.notas)
+    bloqueLista("A tener en cuenta", b.notas) +
+    bloqueLista("Apuntes del día", apuntes)
   );
 }
 
@@ -1506,6 +1539,8 @@ function pintarPrevisualizacion(d) {
     `${escapar(NOMBRE_DE_LA_LUZ[d.light] || d.light || "—")}</h3>` +
     bloqueLista("Por qué", porQue(d)) +
     sinDatos(d) +
+    // En un día de bici `bloqueSesion` y `bloqueEleccion` no pintan nada, y la
+    // bici, que va la última los demás días, queda la primera sin moverla.
     bloqueSesion(d) +
     bloqueEleccion(d) +
     bloqueBici(d) +
