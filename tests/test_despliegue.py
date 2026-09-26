@@ -736,6 +736,156 @@ def test_el_script_conoce_exactamente_los_sitios_que_este_fichero_vigila():
 
 
 # ---------------------------------------------------------------------------
+# La version la pone el COMMIT (gancho pre-commit); el taller solo comprueba
+# ---------------------------------------------------------------------------
+#
+# POR QUE SE MOVIO DEL TALLER AL GANCHO (26/09/2026)
+# --------------------------------------------------
+# El taller fijaba la version y la DEVOLVIA al repositorio en un commit suyo.
+# Funcionaba, y el usuario señalo el defecto a la primera: despues de cada push
+# la copia local quedaba un commit por detras de la remota. Dos historias que
+# tenian que ser la misma y no lo eran. Ahora el commit sale de la maquina ya
+# con su version, y el taller se limita a comprobar que subio.
+
+
+def _con_git_de_mentira(monkeypatch, *, commits: int, head, padre=None):
+    """Lo unico que el script le pregunta a git, sin git: cuantos commits hay y
+    que version declaran HEAD y su padre."""
+    from scripts import fijar_version
+
+    monkeypatch.setattr(fijar_version, "numero_de_commits", lambda: commits)
+    monkeypatch.setattr(
+        fijar_version, "version_en", lambda c: {"HEAD": head, "HEAD^": padre}.get(c)
+    )
+
+
+def test_la_siguiente_version_es_el_ordinal_del_commit(repo_de_mentira, monkeypatch):
+    """Lo normal: HEAD es el commit 10 y declara 0.1.10; el que viene es el 11."""
+    from scripts import fijar_version
+
+    fijar_version.fijar("0.1.10")
+    _con_git_de_mentira(monkeypatch, commits=10, head=(0, 1, 10))
+    assert fijar_version.siguiente() == "0.1.11"
+
+
+def test_tras_un_amend_la_version_sigue_subiendo(repo_de_mentira, monkeypatch):
+    """`git commit --amend` no crea un commit nuevo: el ordinal no se mueve.
+
+    HEAD es el commit 10 pero ya declara 0.1.11 -porque a ese commit ya se le
+    hizo un amend antes-. Con el ordinal a secas saldria otra vez 0.1.11, la
+    version no subiria, y el taller -con razon- se negaria a publicar. Por eso
+    `siguiente` toma el maximo entre el ordinal y «la de HEAD mas uno».
+    """
+    from scripts import fijar_version
+
+    fijar_version.fijar("0.1.11")
+    _con_git_de_mentira(monkeypatch, commits=10, head=(0, 1, 11))
+    assert fijar_version.siguiente() == "0.1.12"
+
+
+def test_una_version_subida_a_mano_se_respeta(repo_de_mentira, monkeypatch):
+    """Si en este commit alguien ya puso 0.2.0, el gancho no la pisa con 0.1.11.
+
+    Cambiar la menor es una decision que se toma a proposito -con
+    `fijar_version.py 0.2.0`-, y el gancho la deshacia si aplicaba el ordinal
+    sin mirar: el arbol declara MAS que HEAD, y eso es la señal de que alguien
+    ya ha decidido.
+    """
+    from scripts import fijar_version
+
+    fijar_version.fijar("0.2.0")
+    _con_git_de_mentira(monkeypatch, commits=10, head=(0, 1, 10))
+    assert fijar_version.siguiente() == "0.2.0"
+
+
+def test_verificar_acepta_un_commit_que_sube(repo_de_mentira, monkeypatch):
+    from scripts import fijar_version
+
+    fijar_version.fijar("0.1.11")
+    _con_git_de_mentira(monkeypatch, commits=11, head=(0, 1, 11), padre=(0, 1, 10))
+    assert fijar_version.verificar() == []
+
+
+def test_verificar_rechaza_un_commit_hecho_sin_el_gancho(repo_de_mentira, monkeypatch):
+    """Un clon sin `core.hooksPath`, o un `--no-verify`: el commit sale con la
+    version de su padre.
+
+    Si el taller publicara igual, sacaria la etiqueta de siempre y Umbrel no
+    veria ninguna actualizacion que ofrecer. Tiene que negarse, y decir que
+    hacer: el mensaje lleva el `git config` que activa el gancho.
+    """
+    from scripts import fijar_version
+
+    fijar_version.fijar("0.1.10")
+    _con_git_de_mentira(monkeypatch, commits=11, head=(0, 1, 10), padre=(0, 1, 10))
+    problemas = fijar_version.verificar()
+    assert problemas, "un commit que no sube la version ha pasado la verificacion"
+    assert "gancho" in problemas[0] and "core.hooksPath" in problemas[0]
+
+
+def test_verificar_rechaza_cuatro_sitios_que_no_coinciden(repo_de_mentira, monkeypatch):
+    from scripts import fijar_version
+
+    fijar_version.fijar("0.1.11")
+    manifiesto = repo_de_mentira / "umbrel" / "umbrel-app.yml"
+    manifiesto.write_text(
+        manifiesto.read_text(encoding="utf-8").replace('version: "0.1.11"', 'version: "0.1.10"'),
+        encoding="utf-8",
+    )
+    _con_git_de_mentira(monkeypatch, commits=11, head=(0, 1, 11), padre=(0, 1, 10))
+    problemas = fijar_version.verificar()
+    assert problemas and "no dicen lo mismo" in problemas[0]
+
+
+def test_el_ultimo_commit_de_este_repositorio_subio_la_version():
+    """La guarda VIVA: contra el repositorio de verdad, no contra uno de mentira.
+
+    Es exactamente lo que el taller va a ejecutar sobre el commit que se
+    empuje. Se pone rojo en local en cuanto alguien hace un commit sin el
+    gancho -HEAD declara lo mismo que su padre-, que es mejor que enterarse
+    cuando el taller se niegue a publicar.
+
+    Necesita git y un HEAD con padre: este repositorio siempre es un clon.
+    """
+    from scripts import fijar_version
+
+    assert fijar_version.verificar() == []
+
+
+def test_el_gancho_mete_en_el_commit_los_mismos_sitios_que_el_script_escribe():
+    """El gancho hace `git add` de una lista escrita a mano, y el script escribe
+    `LUGARES`. Si un dia se añade un quinto sitio al script y no al gancho, el
+    commit sale con tres ficheros movidos y uno sin mover -en el arbol, pero
+    fuera del commit- y `--verificar` lo caza en el taller, no antes.
+
+    Y sin retorno de carro: `sh` no entiende un `#!/bin/sh` con `\\r` detras y
+    el gancho moriria con «bad interpreter» antes de hacer nada. Eso lo fija
+    `.gitattributes`, que tambien se comprueba, porque es lo que sobrevive a un
+    clon nuevo en Windows con `core.autocrlf=true`.
+    """
+    from scripts import fijar_version
+
+    # En BYTES: `read_text` traduce CRLF a LF al leer, y la comprobacion del
+    # retorno de carro pasaria siempre, tambien con el gancho roto. La misma
+    # trampa que ya cazo `feedback_bancos_preservan_bytes`.
+    crudo = (REPO_ROOT / ".githooks" / "pre-commit").read_bytes()
+    assert b"\r" not in crudo, "el gancho lleva CRLF: `sh` no lo va a ejecutar"
+    gancho = crudo.decode("utf-8")
+    assert "fijar_version.py --siguiente" in gancho
+    linea_add = next(l for l in gancho.splitlines() if l.strip().startswith("git add"))
+    for lugar in fijar_version.LUGARES:
+        assert lugar.ruta in linea_add, (
+            f"el script escribe {lugar.ruta} y el `git add` del gancho no lo mete "
+            f"en el commit"
+        )
+    atributos = (REPO_ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert re.search(r"^\.githooks/\*\s+text\s+eol=lf", atributos, re.M), (
+        "`.gitattributes` ya no fuerza LF en `.githooks/`: en un clon nuevo de "
+        "Windows el gancho saldria con CRLF"
+    )
+
+
+# ---------------------------------------------------------------------------
 # `.dockerignore`: lo que entra y lo que no puede entrar
 # ---------------------------------------------------------------------------
 

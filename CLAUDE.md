@@ -75,35 +75,40 @@ es la vuelta atrás. No lo borres, y no lo levantes sin apagar el Umbrel antes
 —dos planificadores sobre la misma cuenta son dos decisiones pisándose el mismo
 día y dos escrituras de la misma rutina en Hevy—.
 
-**UN CAMBIO LLEGA CON UN `git push`, Y NADA MÁS.** Así quedó el 25/09/2026,
+**UN CAMBIO LLEGA CON UN `git push`, Y NADA MÁS.** Así quedó el 26/09/2026,
 después de que el Umbrel pasara horas sirviendo `f9a5a4a` con dos commits de
 código por delante sin que nada lo dijera:
 
-1. **`git push`.** La rama local es `master` y la remota `main`; está puesto
-   `push.default = upstream`, así que `git push` a secas vale.
-2. `.github/workflows/docker.yml` **fija la versión** (`0.1.<nº de commits>`)
-   con `scripts/fijar_version.py`, **la devuelve al repositorio** en un commit
-   suyo, y **publica la imagen** etiquetada con ella.
-3. Un taller **dentro de `VoidHashh/PlanB`** (un cron que GitHub ejecuta cuando
-   quiere: en la práctica, horas) se trae los dos
-   YAML y los deja en `planb-adaptive-training/`. Vive de ese lado porque así su
-   propio `GITHUB_TOKEN` basta: **no hay ninguna credencial que crear ni rotar.**
-4. Umbrel ve una versión nueva y **te ofrece actualizar**. Ese clic es tuyo: en
+1. **Al hacer `git commit`**, el gancho `.githooks/pre-commit` pone la versión
+   que le toca a ese commit (`0.1.<ordinal del commit>`) en los cuatro
+   ficheros y los mete en el commit. **El commit que sale ya es el
+   definitivo.** El gancho se activa **una vez por clon**:
+   `git config core.hooksPath .githooks`. Sin activar, los commits salen con la
+   versión de siempre y el taller se niega a publicar diciéndolo.
+2. **`git push`.** La rama local es `master` y la remota `main`; está puesto
+   `push.default = upstream`, así que `git push` a secas vale. **Después del
+   push, local y remoto son idénticos**: el taller no escribe nada en el
+   repositorio. (Durante un día lo hizo —devolvía la versión en un commit
+   suyo— y dejaba la copia local un commit por detrás; se quitó por eso.)
+3. `.github/workflows/docker.yml` **comprueba** que el commit sube la versión
+   respecto a su padre (`scripts/fijar_version.py --verificar`) y **publica la
+   imagen** etiquetada con ella. Solo se construye el commit que llega con el
+   push, no los intermedios.
+4. Un taller **dentro de `VoidHashh/PlanB`** (un cron que GitHub ejecuta cuando
+   quiere: en la práctica, horas) se trae los dos YAML y los deja en
+   `planb-adaptive-training/`. Vive de ese lado porque así su propio
+   `GITHUB_TOKEN` basta: **no hay ninguna credencial que crear ni rotar.**
+5. Umbrel ve una versión nueva y **te ofrece actualizar**. Ese clic es tuyo: en
    esa máquina no hay acceso a Docker (el usuario `umbrel` no está en el grupo
    `docker` y `sudo` pide contraseña).
 
-**CONSECUENCIA QUE MUERDE: después de cada `push` tu rama local se queda
-atrás**, porque el taller ha commiteado la versión encima. El siguiente `push`
-será rechazado. Antes de seguir trabajando, `git pull --rebase`.
-
-La versión es un contador de construcciones, no una versión semántica, y eso es
-deliberado: lo único que Umbrel necesita es que **crezca**. Por eso se calcula
-con `git rev-list --count` y por eso el taller hace `fetch-depth: 0` —en un clon
-superficial ese número es más pequeño y la versión iría hacia atrás—.
-
-**Si algún día hay que moverla a mano**, `python scripts/fijar_version.py
-0.1.200`, que escribe los cuatro y comprueba releyendo el disco. Nunca a mano
-fichero por fichero: `tests/test_despliegue.py` exige que los cuatro coincidan.
+La versión es un contador y no una versión semántica, y eso es deliberado: lo
+único que Umbrel necesita es que **crezca**. Tras un `git commit --amend` sube
+igualmente aunque se desalinee del ordinal. Si alguien la sube a mano en un
+commit (`python scripts/fijar_version.py 0.2.0`, para cambiar la menor), el
+gancho la respeta. **Nunca la muevas fichero a fichero**:
+`tests/test_despliegue.py` exige que los cuatro coincidan, y el script vuelve a
+leer del disco para comprobar que quedó escrito, que es lo que un `sed` no hace.
 
 **`config.yaml` es la excepción y sigue siéndolo.** Va bind-mounted en
 `${APP_DATA_DIR}/config.yaml` y se aplica al recrear el contenedor, sin imagen

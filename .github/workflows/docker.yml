@@ -19,22 +19,24 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-# `contents: write` porque el taller DEVUELVE al repositorio la version que
-# acaba de fijar. Sin eso los cuatro ficheros seguirian diciendo la version
-# vieja mientras la imagen sale con la nueva, que es exactamente la
-# desincronizacion que `tests/test_despliegue.py` existe para impedir.
+# `contents: read`, y no es un descuido: ESTE TALLER NO ESCRIBE EN EL
+# REPOSITORIO. Durante un dia lo hizo -devolvia la version en un commit suyo- y
+# el resultado era que, despues de cada push, la copia local quedaba un commit
+# por detras de la remota y el siguiente push se rechazaba. Dos historias que
+# tenian que ser la misma y no lo eran. La version la pone ahora el gancho
+# `.githooks/pre-commit` ANTES del push; aqui solo se comprueba y se construye.
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # `fetch-depth: 0` porque la version se calcula con `git rev-list --count`
-      # y en un clon superficial ese numero es el de los commits descargados, no
-      # el de la historia. Saldria una version MENOR que la anterior y Umbrel no
-      # ofreceria la actualizacion.
+      # `fetch-depth: 0` porque `--verificar` compara la version de este commit
+      # con la de su PADRE, y en un clon superficial de profundidad 1 el padre no
+      # existe: la comprobacion pasaria en blanco, que es justo la forma de
+      # fallar que aqui no se admite.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -51,47 +53,31 @@ jobs:
       # `umbrel/docker-compose.yml`, con `umbrel-app.yml` y con el compose de la
       # raíz. Si se leyera de aquí serían cinco sitios en vez de cuatro, y el
       # quinto sin test.
-      # LA VERSION SE FIJA AQUI Y SE DEVUELVE AL REPOSITORIO.
+      # LA VERSION YA VIENE PUESTA EN EL COMMIT. AQUI SOLO SE COMPRUEBA.
       #
-      # Antes se leia de `pyproject.toml` y se movia a mano. El problema no era
-      # la molestia: era que olvidarlo no da error. La imagen se publicaba con
-      # la etiqueta de siempre, Umbrel no veia ninguna actualizacion que ofrecer
-      # y seguia corriendo lo de antes -y desde el movil eso se parece
-      # exactamente a que el arreglo esta puesto-. Paso de verdad: el Umbrel
-      # estuvo horas sirviendo `f9a5a4a` con dos commits de codigo por delante.
+      # La pone el gancho `.githooks/pre-commit` en la maquina de quien hace el
+      # commit, llamando a `scripts/fijar_version.py --siguiente`. Este paso
+      # hace dos cosas y ninguna es escribir:
       #
-      # El numero es el de commits, +1 por el que este paso esta a punto de
-      # hacer: asi el commit que declara `0.1.N` es el N-esimo. Es un contador
-      # de construcciones y no una version semantica, y eso es honesto: lo que
-      # Umbrel necesita es que CREZCA.
+      #   - `--verificar`: los cuatro ficheros coinciden, y este commit declara
+      #     MAS que su padre. Si no sube, es que el commit se hizo sin el gancho
+      #     -o con `--no-verify`-, y publicar seria sacar la etiqueta de siempre:
+      #     Umbrel no veria ninguna actualizacion que ofrecer y seguiria con lo
+      #     de antes, que desde el movil se parece exactamente a que el arreglo
+      #     esta puesto. Paso de verdad el 25/09/2026: horas sirviendo `f9a5a4a`
+      #     con dos commits de codigo por delante. Por eso aqui se FALLA, con el
+      #     comando exacto para arreglarlo en el mensaje.
+      #   - `--imprimir`: la version, para etiquetar la imagen.
       #
-      # Quien lo escribe es `scripts/fijar_version.py` y no un `sed` aqui
-      # dentro, porque un `sed` que deja de casar no falla: no cambia nada. El
-      # script afirma cuantas veces tiene que casar cada patron y vuelve a leer
-      # del disco para comprobar que quedo escrito, y `tests/test_despliegue.py`
-      # lo ejercita en cada ejecucion de la bateria.
-      - name: Fijar la version y devolverla al repositorio
+      # La version es `0.1.<ordinal del commit>` salvo tras un amend, en que
+      # sigue subiendo aunque se desalinee del ordinal. Es un contador y no una
+      # version semantica; lo unico que Umbrel necesita es que crezca.
+      - name: Comprobar que este commit sube la version, y leerla
         id: version
         run: |
           set -euo pipefail
-          v="0.1.$(( $(git rev-list --count HEAD) + 1 ))"
-          python scripts/fijar_version.py "$v"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "los cuatro ficheros ya decian $v; no hay nada que devolver"
-          else
-            # `[skip ci]` es cinturon y tirantes: un push hecho con el
-            # GITHUB_TOKEN no dispara talleres por si mismo, pero si algun dia
-            # este paso usa otra credencial, sin esto seria un bucle infinito.
-            git commit -m "Version $v, fijada por el taller [skip ci]"
-            git push
-          fi
-          echo "v=$v" >> "$GITHUB_OUTPUT"
-          # El SHA de DESPUES del commit de version: es el codigo que de verdad
-          # va dentro de la imagen, y es lo que `/api/health` tiene que contestar.
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          python scripts/fijar_version.py --verificar
+          echo "v=$(python scripts/fijar_version.py --imprimir)" >> "$GITHUB_OUTPUT"
           echo "fecha=$(date -Iseconds)" >> "$GITHUB_OUTPUT"
 
       # Sin esto el runner construye con el driver `docker`, que NO sabe exportar
@@ -127,12 +113,12 @@ jobs:
           tags: |
             ghcr.io/${{ steps.repo.outputs.name }}:${{ steps.version.outputs.v }}
             ghcr.io/${{ steps.repo.outputs.name }}:latest
-            ghcr.io/${{ steps.repo.outputs.name }}:${{ steps.version.outputs.sha }}
+            ghcr.io/${{ steps.repo.outputs.name }}:${{ github.sha }}
           # Los dos que el Dockerfile declara y deja vacíos sin protestar. Sin
           # ellos `/api/health` no puede decir qué código está corriendo, que es
           # la pregunta que se hace después de cada arreglo.
           build-args: |
-            BUILD_SHA=${{ steps.version.outputs.sha }}
+            BUILD_SHA=${{ github.sha }}
             BUILD_DATE=${{ steps.version.outputs.fecha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

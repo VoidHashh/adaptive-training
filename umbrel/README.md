@@ -33,7 +33,7 @@ Se publican tres etiquetas y cada una contesta una pregunta distinta:
 
 | Etiqueta | Para qué |
 |----------|----------|
-| `:0.1.<N>` (la de `pyproject.toml`, que el propio taller sube en cada empujón) | La que instala Umbrel. Cada empujón publica una nueva y la anterior se queda, así que siempre se puede volver. |
+| `:0.1.<N>` (la de `pyproject.toml`, que el gancho `pre-commit` sube en cada commit) | La que instala Umbrel. Cada empujón publica una nueva y la anterior se queda, así que siempre se puede volver. |
 | `:latest` | Un `docker run` rápido sin mirar versiones. |
 | `:<sha>` | La única que no se mueve nunca. A la que se vuelve para reinstalar exactamente lo de antes de un cambio. |
 
@@ -282,25 +282,28 @@ delante, porque la etiqueta de la imagen no se movía y Umbrel no veía ninguna
 actualización que ofrecer. Desde fuera se parecía a la aplicación funcionando,
 que es exactamente el modo de fallo que este proyecto persigue.
 
-Lo que pasa después del `push`, y quién lo hace:
+Lo que pasa, y quién lo hace:
 
-1. **El taller de este repositorio** fija la versión `0.1.<nº de commits>` en
-   los cuatro sitios con `scripts/fijar_version.py`, la devuelve al repositorio
-   en un commit `[skip ci]`, y publica la imagen con esa etiqueta.
-2. **El taller de la tienda** (sección 2) se trae los dos YAML cuando GitHub
+1. **Al hacer el commit**, el gancho `.githooks/pre-commit` pone la versión que
+   le toca (`0.1.<ordinal del commit>`) en los cuatro sitios con
+   `scripts/fijar_version.py --siguiente`, y los mete en el commit. Se activa
+   una vez por clon: `git config core.hooksPath .githooks`.
+2. **Al hacer el push**, el taller de este repositorio **comprueba** que el
+   commit sube la versión respecto a su padre (`--verificar`) y publica la
+   imagen con esa etiqueta. **No escribe en el repositorio**: local y remoto
+   quedan idénticos. Si el commit se hizo sin el gancho, se niega a publicar y
+   dice qué comando ejecutar.
+3. **El taller de la tienda** (sección 2) se trae los dos YAML cuando GitHub
    ejecuta su cron. Horas, no minutos.
-3. **Umbrel ofrece la actualización** al ver una versión mayor que la
+4. **Umbrel ofrece la actualización** al ver una versión mayor que la
    instalada. Ese clic es el único paso humano que queda.
 
-Probado de punta a punta la primera vez: `push` `93bea18` → versión `0.1.193`
-→ tienda `a8e6ed1` → Umbrel actualizado y decidiendo el día siguiente.
+Probado de punta a punta: `push` `93bea18` → versión `0.1.193` → tienda
+`a8e6ed1` → Umbrel actualizado y decidiendo el día siguiente.
 
-**Lo que empeora, y muerde:** después de cada `push` la rama local queda una
-commit por detrás —la de la versión—. El siguiente `push` se rechaza hasta un
-`git pull --rebase`.
-
-**Si alguna vez hay que mover la versión a mano**: `python
-scripts/fijar_version.py 0.1.200`. Nunca fichero por fichero: el script afirma
+**Si alguna vez hay que mover la versión a mano** (cambiar la menor, por
+ejemplo): `python scripts/fijar_version.py 0.2.0` y commit; el gancho respeta
+una versión que ya venga subida. Nunca fichero por fichero: el script afirma
 cuántas veces tiene que casar cada patrón y vuelve a leer el disco para
 comprobar que quedó escrito, que es justo lo que un `sed` no hace.
 

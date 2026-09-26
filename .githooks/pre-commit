@@ -1,0 +1,49 @@
+#!/bin/sh
+# Gancho pre-commit: pone la versión que le toca a ESTE commit en los cuatro
+# ficheros que la declaran, y los mete en el commit.
+#
+# POR QUÉ AQUÍ Y NO EN EL TALLER (26/09/2026)
+# --------------------------------------------
+# La primera versión de esto la hacía el taller de GitHub Actions: fijaba la
+# versión y la DEVOLVÍA al repositorio en un commit suyo. Funcionaba, y tenía un
+# defecto que el usuario señaló a la primera: después de cada push la copia
+# local quedaba un commit por detrás de la remota. Dos historias que tenían que
+# ser la misma y no lo eran, con un `git pull --rebase` obligatorio en medio
+# que nadie iba a recordar y un push rechazado el día que se olvidara.
+#
+# Poniendo la versión aquí, el commit que sale de la máquina ya es el
+# definitivo. El taller solo COMPRUEBA (`scripts/fijar_version.py --verificar`)
+# y construye; no escribe. Local y remoto son idénticos después de cada push.
+#
+# SE ACTIVA UNA VEZ POR CLON:
+#
+#     git config core.hooksPath .githooks
+#
+# Sin activar, los commits salen con la versión de siempre y el taller se niega
+# a publicar, diciendo exactamente esto. No falla en silencio: eso es lo único
+# que no se permite.
+#
+# La lógica -qué versión toca, qué pasa con un `--amend`, qué pasa si alguien la
+# subió a mano- vive en `scripts/fijar_version.py`, que es lo que la batería
+# ejercita. Aquí solo hay lo que un gancho no puede delegar: encontrar un
+# Python y hacer el `git add`.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+PY=""
+for candidato in .venv/Scripts/python.exe .venv/bin/python python3 python; do
+    if [ -x "$candidato" ] || command -v "$candidato" >/dev/null 2>&1; then
+        PY="$candidato"
+        break
+    fi
+done
+if [ -z "$PY" ]; then
+    echo "pre-commit: no encuentro ningún Python para scripts/fijar_version.py" >&2
+    exit 1
+fi
+
+"$PY" scripts/fijar_version.py --siguiente
+
+# Los mismos cuatro que conoce `LUGARES` en el script; un test comprueba que
+# esta línea y aquella lista no se separan.
+git add -- pyproject.toml docker-compose.yml umbrel/docker-compose.yml umbrel/umbrel-app.yml

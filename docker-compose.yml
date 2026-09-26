@@ -10,7 +10,7 @@ services:
       args:
         BUILD_SHA: "${BUILD_SHA:-}"
         BUILD_DATE: "${BUILD_DATE:-}"
-    image: adaptive-training:0.1.195
+    image: adaptive-training:0.1.196
     container_name: adaptive-training
     restart: unless-stopped
 

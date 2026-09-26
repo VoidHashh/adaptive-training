@@ -1,0 +1,5 @@
+# Los ganchos los ejecuta `sh`, y `sh` no entiende un `#!/bin/sh` con un
+# retorno de carro detrás: en Windows, con `core.autocrlf=true`, el checkout
+# los convertiría a CRLF y el gancho moriría con «bad interpreter» antes de
+# hacer nada. Aquí se les fija LF pase lo que pase.
+.githooks/* text eol=lf
