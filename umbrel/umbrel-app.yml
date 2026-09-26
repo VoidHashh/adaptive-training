@@ -26,7 +26,7 @@ manifestVersion: 1
 # que mantener para una sola aplicación.
 id: planb-adaptive-training
 name: Entrenamiento adaptativo
-version: "0.1.193"
+version: "0.1.195"
 category: automation
 tagline: Decide la sesión de cada día con Garmin, Hevy y un check-in de siete deslizadores
 
