@@ -1694,3 +1694,135 @@ def test_elegir_una_rutina_no_toca_nada_de_lo_que_decide_el_color(cfg):
     b = _con_eleccion(cfg, "bici")
     assert a.values == b.values
     assert a.adaptive == b.adaptive
+
+
+
+# ---------------------------------------------------------------------------
+# Lo declarado de una salida que Garmin no pudo medir (26/09/2026)
+# ---------------------------------------------------------------------------
+#
+# La primera salida sin pulsaciones del histórico: sin zonas ni efecto de
+# entrenamiento caía en `desconocida`, sin carga, y el usuario sabía lo que había
+# hecho -la recomendación del día, media-. `classification_fallback.declared` lo
+# deja escrito con fecha, nivel y motivo.
+
+
+def _declarando(dia, nivel="media"):
+    c = copy.deepcopy(CYCLING)
+    c["classification_fallback"]["declared"] = [
+        {"date": dia, "level": nivel, "why": "sin pulsómetro"}
+    ]
+    return c
+
+
+def test_una_salida_sin_datos_toma_el_nivel_declarado_y_su_carga_estimada():
+    c = classify_ride(Ride(date=LUNES, duration_s=7200), _declarando(LUNES))
+
+    assert (c.level, c.source) == ("media", "declarada")
+    # La carga sale sola del nivel: 2 h a 90 por hora, marcada como estimada.
+    assert c.load == pytest.approx(2 * 90)
+    assert c.load_estimated is True and c.load_known is True
+
+
+def test_lo_medido_manda_sobre_lo_declarado():
+    """Lo declarado es para lo que Garmin no midió, no para corregirle."""
+    cy = _declarando(LUNES, "intensa")
+    por_zonas = classify_ride(ride(LUNES, zones=(3600, 0, 0, 0, 0)), cy)
+    assert (por_zonas.level, por_zonas.source) == ("suave", "zones")
+
+    por_te = classify_ride(Ride(date=LUNES, duration_s=3600, anaerobic_te=0.4), cy)
+    assert (por_te.level, por_te.source) == ("suave", "fallback_te")
+
+
+def test_lo_declarado_otro_dia_no_toca_esta_salida():
+    c = classify_ride(
+        Ride(date=LUNES, duration_s=3600), _declarando(LUNES - timedelta(days=1))
+    )
+    assert (c.level, c.source) == (UNKNOWN, "none")
+
+
+def test_lo_declarado_sin_salida_se_dice():
+    from app.engine.signals import declaraciones_sin_usar
+
+    antes = LUNES - timedelta(days=3)
+    cy = _declarando(LUNES - timedelta(days=1))
+    notas = declaraciones_sin_usar(
+        classify_all([Ride(date=antes, duration_s=3600, is_cycling=True)], cy),
+        cy, LUNES,
+    )
+    assert len(notas) == 1 and "no hay ninguna salida" in notas[0], notas
+
+
+def test_lo_declarado_de_una_salida_con_datos_se_dice():
+    from app.engine.signals import declaraciones_sin_usar
+
+    ayer = LUNES - timedelta(days=1)
+    cy = _declarando(ayer)
+    notas = declaraciones_sin_usar(
+        classify_all([ride(ayer, zones=(3600, 0, 0, 0, 0))], cy), cy, LUNES
+    )
+    assert len(notas) == 1 and "lo medido manda" in notas[0], notas
+
+
+def test_lo_declarado_y_usado_no_se_dice_ni_lo_que_aun_no_puede_haber_llegado():
+    """Hoy no se juzga -Garmin se lee a la mañana siguiente- ni lo anterior a la
+    primera salida leída, que con estas salidas no se puede saber."""
+    from app.engine.signals import declaraciones_sin_usar
+
+    ayer = LUNES - timedelta(days=1)
+    usada = _declarando(ayer)
+    assert declaraciones_sin_usar(
+        classify_all([Ride(date=ayer, duration_s=3600, is_cycling=True)], usada),
+        usada, LUNES,
+    ) == []
+
+    leidas = [Ride(date=ayer, duration_s=3600, is_cycling=True)]
+    for dia in (LUNES, LUNES - timedelta(days=9)):
+        cy = _declarando(dia)
+        assert declaraciones_sin_usar(classify_all(leidas, cy), cy, LUNES) == [], dia
+
+
+def test_una_salida_declarada_cuenta_en_la_carga_y_no_como_sin_clasificar(cfg_copia):
+    """El caso entero, por `build_signals`: la salida sin datos de ayer deja de
+    dejar `load_7d` en blanco y de convertir el recuento de intensas en un
+    MÍNIMO. Y el contraste en el mismo test: sin declarar, las dos cosas pasan,
+    así que si lo declarado dejara de llegar esto no pasaría por casualidad."""
+    ayer = LUNES - timedelta(days=1)
+    salidas = [ride(ANCLA, load=50), Ride(date=ayer, duration_s=7200, is_cycling=True)]
+
+    def senales(cfg):
+        return build_signals(
+            cfg, LUNES, metrics=[], rides=salidas, sessions=[],
+            checkin_history=[], checkin=None,
+        )
+
+    sin_declarar = senales(cfg_copia)
+    assert sin_declarar.values["load_7d"] is None
+    assert any("MÍNIMO" in n for n in sin_declarar.notes), sin_declarar.notes
+
+    cfg_copia.raw["cycling"]["classification_fallback"]["declared"] = [
+        {"date": ayer, "level": "media", "why": "sin pulsómetro"}
+    ]
+    declarada = senales(cfg_copia)
+    assert declarada.values["load_7d"] is not None
+    assert not any("MÍNIMO" in n for n in declarada.notes), declarada.notes
+    assert not any("declared" in n for n in declarada.notes), declarada.notes
+
+
+def test_lo_declarado_sin_usar_llega_a_las_notas_del_dia(cfg_copia):
+    """El cable: `declaraciones_sin_usar` probada suelta no dice que alguien la
+    llame. Las notas de las señales salen en el mensaje como degradaciones, y
+    ahí es donde se ve que lo escrito en el YAML no está haciendo nada."""
+    anteayer = LUNES - timedelta(days=2)
+    cfg_copia.raw["cycling"]["classification_fallback"]["declared"] = [
+        {"date": anteayer, "level": "media", "why": "sin pulsómetro"}
+    ]
+    s = build_signals(
+        cfg_copia, LUNES, metrics=[], rides=[ride(ANCLA, load=50)], sessions=[],
+        checkin_history=[], checkin=None,
+    )
+    assert any(
+        n.startswith("cycling.classification_fallback.declared")
+        and f"{anteayer:%d/%m/%Y}" in n
+        for n in s.notes
+    ), s.notes

@@ -1454,9 +1454,33 @@ cycling:
     use: anaerobic_training_effect
     intensa_if_gte: 2.0
     media_if_gte: 1.0
-    # Si tampoco hay training effect, la salida queda como `desconocida` y NO
-    # dispara la regla del lunes: se anota como dato faltante en el log.
+    # Si tampoco hay training effect ni nada declarado abajo, la salida queda
+    # como `desconocida`: sin carga -no hay factor por hora para ella- y
+    # contada como «sin clasificar que pudo ser intensa» en el recuento de la
+    # semana, con su aviso en el mensaje. (Decía que «no dispara la regla del
+    # lunes»: esa regla, `resaca_finde`, ya no existe.)
     on_no_data: desconocida
+
+    # LO QUE DIJISTE TÚ DE UNA SALIDA QUE GARMIN NO PUDO MEDIR (26/09/2026).
+    #
+    # Sin pulsómetro no hay zonas ni efecto de entrenamiento, y la salida caía
+    # en `on_no_data`: `desconocida`, sin carga, y una semana de «1 salida sin
+    # clasificar que pudo ser intensa» cuando tú sabías perfectamente lo que
+    # habías hecho. Aquí se escribe, con fecha, nivel y motivo.
+    #
+    # Va DETRÁS de lo medido: si la salida trae zonas o efecto de entrenamiento,
+    # mandan ellos y lo declarado no se usa, y el mensaje lo dice para que se
+    # borre. Con el nivel puesto, la carga se estima por duración con
+    # `load.fallback_estimate`, marcada como estimada. En la base queda con
+    # `classification_source: declarada`, así que siempre se puede separar lo
+    # medido de lo dicho.
+    declared:
+      - date: 2026-09-26
+        level: media
+        why: >-
+          Salida sin pulsaciones registradas. Hecha tal y como decía la
+          recomendación del día: media, 120-180 min, Z2 con tramos sostenidos
+          en Z3 y sin series estructuradas.
 
   # Las zonas de FC vienen tal cual de Garmin (`timeInZones` de cada actividad)
   # y no se configuran aquí. Hubo un bloque `hr_zones: {source, max_hr}` que no

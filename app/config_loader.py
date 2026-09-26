@@ -2646,6 +2646,70 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "cycling.recommendation.baseline_from_gaps",
     )
 
+    # `classification_fallback` no tenía lista blanca, y hasta el 26/09/2026 no
+    # le hizo falta: cuatro claves fijas. Con `declared` deja de serlo, porque
+    # ahí se escribe a mano lo que se dice de una salida, y una errata -`declard`,
+    # `levl`- dejaría la salida `desconocida` con el YAML jurando que fue media.
+    fallback_bici = (data.get("cycling") or {}).get("classification_fallback") or {}
+    check_keys(
+        fallback_bici,
+        {"use", "intensa_if_gte", "media_if_gte", "on_no_data", "declared"},
+        "cycling.classification_fallback",
+    )
+    # El nivel declarado tiene que ser uno que la clasificación por zonas pueda
+    # dar. `desconocida` no: declarar que no se sabe es no declarar nada. Y un
+    # nivel inventado -`fuerte`- no tiene carga por hora ni cuenta en ningún
+    # recuento: la salida quedaría etiquetada con algo que nadie lee.
+    niveles_bici = {
+        str(e.get("level"))
+        for e in ((data.get("cycling") or {}).get("classification") or [])
+        if isinstance(e, dict) and e.get("level")
+    }
+    declaradas = fallback_bici.get("declared")
+    if declaradas is not None and not isinstance(declaradas, list):
+        require(
+            False,
+            "cycling.classification_fallback.declared tiene que ser una lista de "
+            "bloques con date, level y why",
+        )
+        declaradas = []
+    vistas: set[Any] = set()
+    for i, e in enumerate(declaradas or []):
+        donde = f"cycling.classification_fallback.declared[{i}]"
+        if not isinstance(e, dict):
+            require(False, f"{donde} tiene que ser un bloque con date, level y why")
+            continue
+        check_keys(e, {"date", "level", "why"}, donde)
+        d = e.get("date")
+        # `datetime` es subclase de `date`: una fecha con hora no se compararía
+        # nunca igual a la fecha de una salida, y la declaración no se usaría.
+        if not isinstance(d, date) or isinstance(d, datetime):
+            require(
+                False,
+                f"{donde}.date: '{d}' no es una fecha AAAA-MM-DD. Sin fecha no hay "
+                f"salida a la que aplicarla",
+            )
+        elif d in vistas:
+            require(
+                False,
+                f"{donde}.date: el {d} ya está declarado más arriba. Dos "
+                f"declaraciones del mismo día se pisarían y solo contaría la "
+                f"última, sin decirlo",
+            )
+        else:
+            vistas.add(d)
+        require(
+            e.get("level") in niveles_bici,
+            f"{donde}.level: '{e.get('level')}' no es un nivel de "
+            f"cycling.classification ({', '.join(sorted(niveles_bici))})",
+        )
+        require(
+            isinstance(e.get("why"), str) and bool(e["why"].strip()),
+            f"{donde}.why: falta el motivo. Lo declarado cambia la etiqueta y la "
+            f"carga de una salida, y dentro de tres meses hay que poder leer por "
+            f"qué",
+        )
+
     # Y con eso la sección queda cerrada: cualquier clave nueva aquí o es una
     # errata o es una opción que alguien ha escrito esperando que se lea.
     check_keys(

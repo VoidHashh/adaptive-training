@@ -272,6 +272,15 @@ mueven las cargas:
   bici**: con el día en rojo sale la recuperación, como si no se hubiera
   elegido nada. `otro` y el «no voy a entrenar» siguen escribiendo la rutina
   por si acabas yendo.
+- **Una salida sin pulsaciones se puede declarar (26/09/2026).** Sin
+  pulsómetro Garmin no da zonas ni efecto de entrenamiento y la salida quedaba
+  `desconocida`: sin carga y con «1 salida sin clasificar que pudo ser
+  intensa» toda la semana. Ahora se escribe en
+  `cycling.classification_fallback.declared` con fecha, nivel y motivo, y la
+  carga se estima por duración. La primera es la del 26/09: media, como decía
+  la recomendación. **Qué vigilar:** si el mensaje dice «lo declarado para el
+  … no se usa», o la salida no llegó de Garmin o sí traía datos (y entonces
+  mandan ellos); en los dos casos la línea del YAML sobra.
 - **«Hoy» abre con la decisión del día** cuando ya está decidido, con el
   formulario plegado detrás de «Cambiar mis respuestas». La tarjeta dice Hevy y
   Telegram en palabras. Si al abrir se recalcula el día, la tarjeta se repinta.

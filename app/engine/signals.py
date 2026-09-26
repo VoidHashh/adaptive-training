@@ -69,6 +69,14 @@ WEEKDAY_NAMES = [
 
 UNKNOWN = "desconocida"
 
+# De dónde sale la etiqueta de una salida que Garmin no pudo medir -sin
+# pulsómetro no hay zonas ni efecto de entrenamiento- y de la que el usuario ha
+# dicho cómo fue: `cycling.classification_fallback.declared`. Nació el
+# 26/09/2026 con la primera salida sin pulsaciones del histórico, que habría
+# quedado `desconocida` y sin carga una semana entera cuando el usuario sabía
+# de sobra lo que había hecho: la recomendación del día, media.
+DECLARADA = "declarada"
+
 # Las dos preguntas de Sí/No del check-in, por su nombre, aquí y no en el
 # `config.yaml`.
 #
@@ -280,7 +288,7 @@ class ClassifiedRide:
 
     ride: Ride
     level: str  # suave | media | intensa | desconocida
-    source: str  # zones | fallback_te | none
+    source: str  # zones | fallback_te | declarada | none
     load: float  # carga usada para load_2d/7d (real o estimada)
     load_estimated: bool
     # False cuando la carga no se ha podido saber NI estimar y `load` es un 0
@@ -522,7 +530,13 @@ def classify_ride(ride: Ride, cycling_cfg: dict[str, Any]) -> ClassifiedRide:
     Orden de preferencia:
       1. reparto por zonas de FC (`classification`)
       2. efecto de entrenamiento anaeróbico (`classification_fallback`)
-      3. `desconocida` — nunca se asume suave, que sería la lectura optimista
+      3. lo que el usuario declaró de esa salida (`classification_fallback.declared`)
+      4. `desconocida` — nunca se asume suave, que sería la lectura optimista
+
+    Lo declarado va DETRÁS de lo medido y no delante: es para la salida que
+    Garmin no pudo medir, no una forma de corregirle. Si la salida trae zonas o
+    efecto de entrenamiento, mandan ellos, y la declaración queda sin usar y se
+    dice (`declaraciones_sin_usar`).
     """
     pcts = zone_percentages(ride.zones)
     level: str | None = None
@@ -554,8 +568,16 @@ def classify_ride(ride: Ride, cycling_cfg: dict[str, Any]) -> ClassifiedRide:
             else:
                 level = "suave"
         else:
-            source = "none"
-            level = str(fallback.get("on_no_data", UNKNOWN))
+            declarada = salidas_declaradas(cycling_cfg).get(ride.date)
+            if declarada is not None:
+                # La carga sale de aquí sola: con el nivel puesto, `_ride_load`
+                # la estima por duración como cualquier otra salida sin carga de
+                # Garmin, y va marcada como estimada.
+                source = DECLARADA
+                level = declarada
+            else:
+                source = "none"
+                level = str(fallback.get("on_no_data", UNKNOWN))
 
     load, estimated, known = _ride_load(ride, level, cycling_cfg)
     return ClassifiedRide(
@@ -591,6 +613,56 @@ def _ride_load(
         # Sin factor para ese nivel (p. ej. `desconocida`): no inventamos.
         return 0.0, False, False
     return (ride.duration_s / 3600.0) * float(per_hour), True, True
+
+
+def salidas_declaradas(cycling_cfg: dict[str, Any]) -> dict[date, str]:
+    """Fecha -> nivel de lo declarado en `classification_fallback.declared`.
+
+    Por fecha y no por id de actividad a propósito: se declara el mismo día,
+    antes de que Garmin se lea -a las 06:30 del día siguiente-, cuando el id
+    todavía no existe. Si ese día hubiera dos salidas sin datos, las dos se
+    llevan lo declarado: es lo que se dijo del día.
+    """
+    fallback = cycling_cfg.get("classification_fallback", {}) or {}
+    return {e["date"]: str(e["level"]) for e in fallback.get("declared") or []}
+
+
+def declaraciones_sin_usar(
+    classified: list[ClassifiedRide], cycling_cfg: dict[str, Any], day: date
+) -> list[str]:
+    """Lo declarado que no ha etiquetado ninguna salida, para decirlo.
+
+    Una declaración sin usar es un valor decorativo con un motivo escrito al
+    lado: el YAML diría que aquella salida fue media, y la salida seguiría
+    `desconocida` -porque no llegó- o con la etiqueta de sus zonas -porque sí
+    tenía datos-. Las dos cosas pueden pasar y ninguna es un error; callarlas
+    sí lo sería.
+
+    Solo se juzga lo que cae dentro de lo leído y antes de hoy. Lo de hoy puede
+    no haber llegado todavía -Garmin se lee a la mañana siguiente-, y lo que es
+    anterior a la primera salida leída no se puede juzgar con estas salidas.
+    """
+    declaradas = salidas_declaradas(cycling_cfg)
+    if not declaradas or not classified:
+        return []
+    desde = min(c.date for c in classified)
+    usadas = {c.date for c in classified if c.source == DECLARADA}
+    notas: list[str] = []
+    for d in sorted(declaradas):
+        if d in usadas or not (desde <= d < day):
+            continue
+        if any(c.date == d for c in classified):
+            motivo = (
+                "las salidas de ese día traen datos de Garmin (zonas o efecto de "
+                "entrenamiento), y lo medido manda sobre lo declarado"
+            )
+        else:
+            motivo = "no hay ninguna salida leída de Garmin ese día"
+        notas.append(
+            f"cycling.classification_fallback.declared: lo declarado para el "
+            f"{d:%d/%m/%Y} no se usa, porque {motivo}"
+        )
+    return notas
 
 
 def classify_all(rides: Iterable[Ride], cycling_cfg: dict[str, Any]) -> list[ClassifiedRide]:
@@ -1422,6 +1494,7 @@ def build_signals(
 
     sig = Signals(day=day)
     notes = sig.notes
+    notes.extend(declaraciones_sin_usar(classified, cycling_cfg, day))
 
     # --- wellness de hoy ---------------------------------------------------
     today = by_date.get(day)

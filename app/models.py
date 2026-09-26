@@ -223,7 +223,7 @@ class Activity(Base):
 
     # suave | media | intensa | desconocida
     intensity_level: Mapped[str | None] = mapped_column(String(16), index=True)
-    # zones | fallback_te | none  -> de dónde salió la clasificación
+    # zones | fallback_te | declarada | none  -> de dónde salió la clasificación
     classification_source: Mapped[str | None] = mapped_column(String(16))
 
     # Esta tabla NO tiene `raw_json`, y es la única de las tres que no lo

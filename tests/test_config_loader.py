@@ -2191,3 +2191,50 @@ def test_el_sit_up_tampoco_entra_en_los_intervalos_del_dia_1(cfg_copia):
     cfg_copia.raw["hiit"]["embedded"]["dia_1"].append("sit_up")
     err = errores(cfg_copia.raw)
     assert "SEGURIDAD" in err and ("022DF610" in err or "Sit Up" in err)
+
+
+
+# ---------------------------------------------------------------------------
+# cycling.classification_fallback.declared (26/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _declarada(**cambios) -> dict:
+    return {"date": date(2026, 9, 26), "level": "media", "why": "sin pulsómetro", **cambios}
+
+
+def test_el_config_real_declara_la_salida_sin_pulsaciones_del_26(cfg):
+    """La que motivó la clave. Si alguien la borra creyendo que sobra, la
+    salida vuelve a `desconocida` sin que nada lo diga."""
+    declaradas = cfg.raw["cycling"]["classification_fallback"]["declared"]
+    assert {"date": date(2026, 9, 26), "level": "media"}.items() <= declaradas[0].items()
+
+
+@pytest.mark.parametrize(
+    "declaradas, trozo",
+    [
+        pytest.param({"date": date(2026, 9, 26)}, "tiene que ser una lista", id="no_lista"),
+        pytest.param(["2026-09-26"], "tiene que ser un bloque", id="no_bloque"),
+        pytest.param([_declarada(nivel="media")], "clave desconocida 'nivel'", id="errata"),
+        pytest.param([_declarada(date="ayer")], "no es una fecha", id="fecha_texto"),
+        pytest.param(
+            [_declarada(date=datetime(2026, 9, 26, 10, 0))], "no es una fecha", id="con_hora"
+        ),
+        pytest.param([_declarada(), _declarada()], "ya está declarado", id="repetida"),
+        pytest.param([_declarada(level="desconocida")], ".level:", id="desconocida"),
+        pytest.param([_declarada(level="fuerte")], ".level:", id="inventado"),
+        pytest.param([_declarada(why="  ")], "falta el motivo", id="sin_motivo"),
+        pytest.param([{"date": date(2026, 9, 26), "level": "media"}], "falta el motivo", id="sin_why"),
+    ],
+)
+def test_lo_declarado_mal_escrito_no_arranca(cfg_copia, declaradas, trozo):
+    cfg_copia.raw["cycling"]["classification_fallback"]["declared"] = declaradas
+    err = errores(cfg_copia.raw)
+    assert "classification_fallback" in err and trozo in err, err
+
+
+def test_una_errata_en_classification_fallback_no_se_ignora(cfg_copia):
+    """`declard` dejaría la salida `desconocida` con el YAML diciendo otra cosa."""
+    cfg_copia.raw["cycling"]["classification_fallback"]["declard"] = [_declarada()]
+    err = errores(cfg_copia.raw)
+    assert "cycling.classification_fallback" in err and "declard" in err, err
