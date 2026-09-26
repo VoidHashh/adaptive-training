@@ -14,6 +14,7 @@ import pytest
 
 from app.config_loader import load_config
 from app.models import ExerciseTarget
+from tests.conftest import con_bloque_hiit
 from tests.dobles import doble_de
 from scripts.fijar_carga import (
     CargaInvalida,
@@ -188,6 +189,7 @@ def test_la_huerfana_se_detecta_por_el_par_y_no_por_el_ejercicio(cfg):
     fila colgada de `dia_1` para siempre. Lo que está mal no es el ejercicio, es
     de qué rutina cuelga.
     """
+    cfg = con_bloque_hiit(cfg)
     sobran = huerfanas(cfg, _filas(("dia_1", "remo_maquina")))
     assert sobran == [("dia_1", "remo_maquina")]
     assert huerfanas(cfg, _filas(("hiit_dia_1", "remo_maquina"))) == []
@@ -200,6 +202,7 @@ def test_las_cinco_del_15_de_septiembre_son_huerfanas_y_en_su_sitio_no(cfg):
     también saliera huérfana, el guion estaría llamando huérfano a medio
     programa y el borrado se llevaría por delante el bloque entero.
     """
+    cfg = con_bloque_hiit(cfg)
     claves = ("remo_maquina", "suitcase_carry", "air_bike", "plancha_frontal",
               "wall_ball")
     assert huerfanas(cfg, _filas(*(("dia_1", k) for k in claves))) == sorted(

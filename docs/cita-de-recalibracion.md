@@ -257,6 +257,12 @@ mueven las cargas:
   cadena posterior -que pide dos limpias seguidas- a empezar de cero. Solo ese
   caso: una serie de en medio corta, una de menos o un peso por debajo siguen
   rompiendo la racha.
+- **El HIIT del Día 1 va dentro del Día 1 (26/09/2026)**, como el del Día 2
+  desde el 25. Ya no hay rutinas HIIT aparte ni en Hevy ni en el config: los
+  intervalos salen todos los días de Día 1, también en ámbar (con sus series
+  recortadas como el resto). La rutina «Día 1 HIIT» de Hevy ya no existía y
+  por eso salía el aviso 404. El mecanismo de bloques sigue en el código,
+  apagado (`hiit.enabled: false`), por si se quiere volver a separar.
 - **«Hoy» abre con la decisión del día** cuando ya está decidido, con el
   formulario plegado detrás de «Cambiar mis respuestas». La tarjeta dice Hevy y
   Telegram en palabras. Si al abrir se recalcula el día, la tarjeta se repinta.

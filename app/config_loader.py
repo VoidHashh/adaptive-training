@@ -988,6 +988,7 @@ def _validate(data: dict[str, Any]) -> list[str]:
     check_keys(data["actions"], set(LUCES_DE_PEOR_A_MEJOR), "actions")
 
     sesion_por_luz: dict[str, str] = {}
+    bloques_hiit_encendidos = (data.get("hiit") or {}).get("enabled") is True
     for light in LUCES_DE_PEOR_A_MEJOR:
         require(light in data["actions"], f"falta actions.{light}")
         accion = data["actions"].get(light) or {}
@@ -1027,12 +1028,28 @@ def _validate(data: dict[str, Any]) -> list[str]:
         # `allow_progression: "false"` -con comillas- es una cadena no vacía y
         # en Python es verdadera, así que abriría la progresión justo donde el
         # YAML dice que la cierra.
-        for bandera in ("allow_progression", "allow_hiit"):
+        #
+        # `allow_hiit` solo con los bloques HIIT encendidos: es lo único que lo
+        # lee. Apagados -desde el 26/09/2026-, puesta sería una clave que
+        # parece decidir si hay HIIT y no decide nada. Ver `hiit.enabled`.
+        banderas = ["allow_progression"]
+        if bloques_hiit_encendidos:
+            banderas.append("allow_hiit")
+        else:
+            require(
+                "allow_hiit" not in accion,
+                f"actions.{light}.allow_hiit está puesta con hiit.enabled en "
+                f"false: sin bloques HIIT no la lee nadie. Los intervalos van "
+                f"dentro de las rutinas y siguen la luz como todo lo demás.",
+            )
+        for bandera in banderas:
             require(
                 bandera in accion,
                 f"falta actions.{light}.{bandera}. El motor tenía un defecto "
                 f"en el código y ganaba en silencio.",
             )
+            if bandera not in accion:
+                continue
             require(
                 isinstance(accion[bandera], bool),
                 f"actions.{light}.{bandera} vale {accion[bandera]!r}, que no es "
@@ -1622,6 +1639,26 @@ def _validate(data: dict[str, Any]) -> list[str]:
         },
         "hiit",
     )
+    require(
+        isinstance(hiit.get("enabled"), bool),
+        f"hiit.enabled vale {hiit.get('enabled')!r} y tiene que ser true o false: "
+        f"enciende o apaga los bloques HIIT aparte.",
+    )
+    # LOS BLOQUES APARTE SE APAGARON EL 26/09/2026: los intervalos van dentro de
+    # cada rutina (`embedded`). El mecanismo sigue en el código por si se vuelve
+    # a separar, pero con `enabled: false` sus claves no las lee nadie, y
+    # puestas parecerían gobernar algo.
+    if not bloques_hiit_encendidos:
+        sobran = sorted(
+            k for k in ("allowed_routines", "blocks", "only_on_green", "start_week",
+                        "program_start_date")
+            if k in hiit
+        )
+        require(
+            not sobran,
+            f"hiit: {sobran} con hiit.enabled en false. Sin bloques HIIT aparte no "
+            f"las lee nadie; los intervalos van en hiit.embedded.",
+        )
     allowed = hiit.get("allowed_routines", [])
     never = hiit.get("never_routines", [])
     for key in allowed:
@@ -1639,8 +1676,9 @@ def _validate(data: dict[str, Any]) -> list[str]:
         "El día 3 no debe llevar HIIT: es la sesión ligera previa a la bici.",
     )
 
-    blocks = hiit.get("blocks", {})
-    require(bool(blocks), "falta hiit.blocks (mapa rutina -> bloque HIIT)")
+    blocks = hiit.get("blocks", {}) or {}
+    if bloques_hiit_encendidos:
+        require(bool(blocks), "falta hiit.blocks (mapa rutina -> bloque HIIT)")
     for routine_key, block_key in blocks.items():
         require(
             routine_key in routines,
@@ -2452,7 +2490,13 @@ def _validate(data: dict[str, Any]) -> list[str]:
         # dejaría entrar el bloque justo donde la regla lo quiere quitar. Aquí
         # la clave es opcional -no ponerla es no opinar-, pero puesta tiene que
         # ser un booleano de verdad.
-        if "allow_hiit" in action:
+        if "allow_hiit" in action and not bloques_hiit_encendidos:
+            require(
+                False,
+                f"{where}.action.allow_hiit con hiit.enabled en false: sin bloques "
+                f"HIIT aparte no la lee nadie.",
+            )
+        elif "allow_hiit" in action:
             require(
                 isinstance(action["allow_hiit"], bool),
                 f"{where}.action.allow_hiit vale {action['allow_hiit']!r}, que "

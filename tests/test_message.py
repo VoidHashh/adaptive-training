@@ -33,7 +33,7 @@ from app.engine.message import (
     render_telegram,
 )
 
-from tests.conftest import LUNES, sig, sig_completa
+from tests.conftest import LUNES, con_bloque_hiit, sig, sig_completa
 from tests.dobles import doble_de
 from app.engine.bike_advisor import BikeRecommendation
 from app.engine.decision import ActiveRule, DecisionAnulada
@@ -232,10 +232,12 @@ def test_el_mensaje_nunca_pasa_del_limite_de_telegram(cfg):
 
 @pytest.fixture
 def cfg_hiit(cfg_copia):
-    """El config real con el HIIT encendido y ya dentro de su semana de inicio."""
-    cfg_copia.raw["hiit"]["enabled"] = True
-    cfg_copia.raw["hiit"]["start_week"] = 1
-    return cfg_copia
+    """El config con el bloque HIIT de prueba, ya dentro de su semana de inicio.
+
+    Desde el 26/09/2026 el config real no tiene bloques aparte: ver
+    `con_bloque_hiit`.
+    """
+    return con_bloque_hiit(cfg_copia)
 
 
 @pytest.fixture

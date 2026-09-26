@@ -68,6 +68,7 @@ from app.repository import (
 )
 
 from tests.conftest import LUNES, sig_completa
+from tests.conftest import con_bloque_hiit
 
 
 @pytest.fixture
@@ -1937,12 +1938,13 @@ def test_el_dia_2_sin_los_intervalos_no_cuenta(db, cfg):
 def test_un_dia_2_hiit_de_antes_de_la_fusion_sigue_contando(db, cfg):
     """El del 22/09: su rutina ya no es un bloque, pero llevaba esos cuatro
     ejercicios, y es por la plantilla como se reconoce."""
-    assert "hiit_dia_2" not in cfg.raw["hiit"]["blocks"].values()
+    assert "hiit_dia_2" not in (cfg.raw["hiit"].get("blocks") or {}).values()
     assert _hiit_de(db, cfg, "hiit_dia_2", [_hecho(CUERDAS)])
 
 
 def test_el_bloque_del_dia_1_cuenta_por_su_rutina(db, cfg):
     """El camino de siempre, que no depende de qué ejercicios lleve."""
+    cfg = con_bloque_hiit(cfg)
     bloque = cfg.raw["hiit"]["blocks"]["dia_1"]
     assert _hiit_de(db, cfg, bloque, [])
 
@@ -1950,3 +1952,12 @@ def test_el_bloque_del_dia_1_cuenta_por_su_rutina(db, cfg):
 def test_un_intervalo_solo_de_calentamiento_no_es_hiit(db, cfg):
     """Abrir las cuerdas para calentar no es un bloque de intervalos."""
     assert not _hiit_de(db, cfg, "dia_2", [_hecho(CUERDAS, tipo="warmup")])
+
+
+def test_un_dia_1_con_sus_intervalos_cuenta_como_hiit(db, cfg):
+    """Desde el 26/09/2026 el wall ball y compañía van dentro del Día 1."""
+    wall_ball = next(
+        ex["template_id"] for ex in cfg.raw["routines"]["dia_1"]["exercises"]
+        if ex["key"] == "wall_ball"
+    )
+    assert _hiit_de(db, cfg, "dia_1", [_hecho(wall_ball)])

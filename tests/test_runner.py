@@ -30,6 +30,7 @@ from app.models import Base, Decision, HevyWrite, Notification, WorkoutLog
 from app.repository import load_state, save_decision, save_state, upsert_checkin
 from app.runner import run_daily, run_reconcile
 from tests.conftest import LUNES, dias, sig_completa
+from tests.conftest import con_bloque_hiit
 from tests.dobles import doble_de, no_es_doble
 from app.integrations.hevy import HevyClient
 from app.integrations.telegram import TelegramClient
@@ -1343,15 +1344,18 @@ def test_los_entrenamientos_contados_quedan_registrados(db, cfg):
 
 
 @pytest.fixture
-def cfg_lunes(cfg_copia):
-    """El config real con el programa empezando el lunes de los tests.
+def cfg_lunes(cfg):
+    """El config con el bloque HIIT de prueba y el programa empezando el lunes.
 
-    `hiit_applies` cuenta semanas desde `program.start`; con la fecha real del
-    YAML -el 2026-09-14- el lunes de los tests cae antes del arranque y el
-    bloque no entra nunca. Esto no enciende el HIIT: ya está encendido.
+    Desde el 26/09/2026 el config real no tiene bloques HIIT aparte (van dentro
+    de las rutinas), y los tests de aquí prueban ese mecanismo: parten de
+    `con_bloque_hiit`. `hiit_applies` cuenta semanas desde `program.start`; con
+    la fecha real del YAML -el 2026-09-14- el lunes de los tests cae antes del
+    arranque y el bloque no entraría nunca.
     """
-    cfg_copia.raw["program"]["start"] = LUNES
-    return cfg_copia
+    otro = con_bloque_hiit(cfg)
+    otro.raw["program"]["start"] = LUNES
+    return otro
 
 
 def _rid(cfg, rkey: str) -> str:
@@ -1421,6 +1425,7 @@ def test_un_hiit_que_el_plan_no_pedia_queda_visible_con_su_motivo(db, cfg):
     la mañana: avisar de que pasó algo sin decir el qué obliga a abrir la base
     de datos, y a las nueve desde el móvil eso es no avisar.
     """
+    cfg = con_bloque_hiit(cfg)
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     assert _plan_guardado(db).get("hiit_block") is None
 
@@ -1686,6 +1691,7 @@ def test_una_rutina_de_fuera_del_ciclo_conserva_el_motivo_de_siempre(db, cfg):
     HIIT no es una alternativa a la fuerza, es un añadido, y contarlo con esas
     palabras diría que ese día elegí HIIT en lugar de entrenar.
     """
+    cfg = con_bloque_hiit(cfg)
     upsert_checkin(db, LUNES, {"chosen_session": "dia_2"}, config=cfg)
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
 
@@ -2240,6 +2246,7 @@ def test_si_el_bloque_no_entra_no_queda_plan_de_progresion_guardado(db, cfg):
     da el bloque, pero `hiit.blocks` sí declara cuál le tocaría a `dia_1`, así
     que el plan SÍ se calcula y esta es la única guardia que lo borra.
     """
+    cfg = con_bloque_hiit(cfg)
     _monta_la_racha(db, cfg)
 
     res = corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
@@ -2344,6 +2351,7 @@ def test_un_hiit_registrado_el_martes_se_cuenta_el_sabado(db, cfg):
     llamara a `intensity_count` directamente habría pasado desde el principio
     sin enterarse de nada.
     """
+    cfg = con_bloque_hiit(cfg)
     martes = LUNES + timedelta(days=1)
     db.add(WorkoutLog(hevy_workout_id="h", date=martes, routine_key="hiit_dia_1"))
     db.flush()
@@ -2610,6 +2618,7 @@ def test_el_entreno_fuera_del_plan_se_cuenta_en_el_mensaje_de_la_manana(db, cfg)
     mensaje. Y con el motivo, porque un aviso que obliga a abrir la base de datos
     para entenderlo, a las nueve de la mañana y desde el móvil, es no avisar.
     """
+    cfg = con_bloque_hiit(cfg)
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="hiit_suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
@@ -2630,6 +2639,7 @@ def test_si_telegram_falla_el_entreno_suelto_se_cuenta_al_dia_siguiente(db, cfg)
     separados: `_mandar_telegram` se traga los fallos de envío para que un
     Telegram caído no tumbe la mañana, así que sellar al leer daría por contado
     un entrenamiento que nadie llegó a ver nunca."""
+    cfg = con_bloque_hiit(cfg)
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")
@@ -2649,6 +2659,7 @@ def test_si_telegram_falla_el_entreno_suelto_se_cuenta_al_dia_siguiente(db, cfg)
 def test_un_entreno_suelto_ya_contado_no_se_repite_cada_manana(db, cfg):
     """Una línea que sale todos los días se aprende a saltar, y con ella se
     saltan las que sí cambian."""
+    cfg = con_bloque_hiit(cfg)
     corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
     w = _entrenamiento_completo({"exercises": []}, sin_plan=True, wid="suelto")
     w["routine_id"] = _rid(cfg, "hiit_dia_1")

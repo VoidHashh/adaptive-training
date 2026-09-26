@@ -237,9 +237,11 @@ def huerfanas(cfg, filas: dict[tuple[str, str], Any]) -> list[tuple[str, str]]:
 
     Se comprueba el PAR (rutina, ejercicio) y no solo el ejercicio, que es la
     diferencia que importa: `plancha_lateral` existe en `dia_1`, `dia_2` y
-    `dia_3`, y `remo_maquina` existe -pero en `hiit_dia_1`, no en `dia_1`. Mirar
-    solo la clave del ejercicio daría por buena una fila que está colgada de la
-    rutina equivocada, que es justo la clase de huérfana que apareció aquí.
+    `dia_3`, y hasta el 26/09/2026 `remo_maquina` existía en `hiit_dia_1` y no
+    en `dia_1` (ese día el bloque se fusionó en el Día 1, y las filas que
+    quedan colgadas de `hiit_dia_1` son ahora las huérfanas). Mirar solo la
+    clave del ejercicio daría por buena una fila que está colgada de la rutina
+    equivocada, que es justo la clase de huérfana que apareció aquí.
 
     Una rutina entera que desaparece del YAML cae sola: ninguno de sus pares
     encuentra sitio.

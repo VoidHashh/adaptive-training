@@ -103,6 +103,46 @@ def cfg_copia(cfg):
     return copy.deepcopy(cfg)
 
 
+def con_bloque_hiit(cfg):
+    """El config real con el HIIT del Día 1 en un BLOQUE APARTE, como estuvo
+    hasta el 26/09/2026.
+
+    Ese día los intervalos del Día 1 pasaron dentro del Día 1 y los bloques HIIT
+    aparte se apagaron (`hiit.enabled: false`). El mecanismo sigue en el código
+    -por si se vuelve a separar-, y sus tests necesitan un config que lo use.
+    Se construye desde el real, sacando del Día 1 lo que `hiit.embedded` declara
+    suyo: así el bloque de prueba son los ejercicios de verdad y no una copia
+    que pueda quedarse vieja. `test_el_config_con_bloque_de_prueba_es_valido`
+    comprueba que esto sigue siendo un config que arranca.
+    """
+    otro = copy.deepcopy(cfg)
+    raw = otro.raw
+    suyos = set(raw["hiit"]["embedded"].pop("dia_1"))
+    dia_1 = raw["routines"]["dia_1"]
+    raw["routines"]["hiit_dia_1"] = {
+        "title": "Día 1 HIIT",
+        "hevy_routine_id": "hiit-dia-1-de-prueba",
+        "exercises": [e for e in dia_1["exercises"] if e["key"] in suyos],
+    }
+    dia_1["exercises"] = [e for e in dia_1["exercises"] if e["key"] not in suyos]
+    raw["hiit"].update(
+        enabled=True, start_week=1, program_start_date=None,
+        allowed_routines=["dia_1"], blocks={"dia_1": "hiit_dia_1"}, only_on_green=True,
+    )
+    for luz, permitido in (("green", True), ("amber", False), ("red", False)):
+        raw["actions"][luz]["allow_hiit"] = permitido
+    for regla in raw.get("special_rules") or []:
+        if regla.get("name") == "semana_de_descarga":
+            regla["action"]["allow_hiit"] = True
+    return otro
+
+
+@pytest.fixture
+def cfg_con_bloque(cfg):
+    """Ver `con_bloque_hiit`."""
+    return con_bloque_hiit(cfg)
+
+
 # AQUÍ ESTABA `cfg_summer`. Era una copia del config con `active_variant` a
 # "summer", y existía por una sola razón: la variante activa, `with_pool`, no
 # programaba `dia_3` ningún día de la semana, así que cualquier test que

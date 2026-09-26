@@ -17,6 +17,7 @@ from app.engine.tendencia import senales_de_regla
 from app.integrations.activity_cache import dias_adaptativos
 
 from tests.conftest import REPO_ROOT
+from tests.conftest import con_bloque_hiit
 
 
 def errores(data) -> str:
@@ -595,6 +596,7 @@ def test_apagar_la_adopcion_no_exige_el_resto_de_numeros(cfg):
 
 
 def test_un_patron_prohibido_en_una_rutina_hiit_impide_arrancar(cfg):
+    cfg = con_bloque_hiit(cfg)
     data = copy.deepcopy(cfg.raw)
     bloque = next(iter(data["hiit"]["blocks"].values()))
     data["routines"][bloque]["exercises"].append(
@@ -610,6 +612,7 @@ def test_un_patron_prohibido_en_una_rutina_hiit_impide_arrancar(cfg):
 
 def test_el_patron_prohibido_ignora_los_acentos(cfg):
     """`Superserie con péndulo` y `pendulo` tienen que tratarse igual."""
+    cfg = con_bloque_hiit(cfg)
     data = copy.deepcopy(cfg.raw)
     patrones = data["safety"]["forbidden_in_hiit"]["name_patterns"]
     bloque = next(iter(data["hiit"]["blocks"].values()))
@@ -629,6 +632,7 @@ def test_el_patron_prohibido_ignora_los_acentos(cfg):
 
 def test_una_rutina_no_hiit_puede_llevar_peso_muerto(cfg):
     """El peso muerto normal está permitido: lo gobierna `retirada_peso_muerto`."""
+    cfg = con_bloque_hiit(cfg)
     data = copy.deepcopy(cfg.raw)
     hiit = set(data["hiit"]["blocks"].values())
     normal = next(k for k in data["routines"] if k not in hiit)
@@ -644,6 +648,7 @@ def test_una_rutina_no_hiit_puede_llevar_peso_muerto(cfg):
 
 
 def test_hiit_no_puede_estar_a_la_vez_permitido_y_prohibido(cfg):
+    cfg = con_bloque_hiit(cfg)
     data = copy.deepcopy(cfg.raw)
     permitida = data["hiit"]["allowed_routines"][0]
     data["hiit"]["never_routines"] = list(data["hiit"]["never_routines"]) + [permitida]
@@ -655,11 +660,13 @@ def test_hiit_no_puede_estar_a_la_vez_permitido_y_prohibido(cfg):
 # ---------------------------------------------------------------------------
 
 
-def test_el_config_real_declara_los_intervalos_del_dia_2(cfg):
+def test_el_config_real_declara_los_intervalos_de_los_dias_1_y_2(cfg):
     """Sin la clave, el recuento de sesiones intensas vuelve a no ver el HIIT
-    del Día 2 y la guarda de la hernia deja de recorrerlo, sin un error."""
+    de esos días y la guarda de la hernia deja de recorrerlo, sin un error. El
+    Día 1 entró el 26/09/2026, cuando su bloque aparte se fusionó en él."""
     assert cfg.raw["hiit"]["embedded"] == {
-        "dia_2": ["battle_ropes", "comba", "ski_erg", "step_up"]
+        "dia_1": ["remo_maquina", "suitcase_carry", "air_bike", "plancha_frontal", "wall_ball"],
+        "dia_2": ["battle_ropes", "comba", "ski_erg", "step_up"],
     }
 
 
@@ -689,8 +696,8 @@ def test_una_errata_dentro_de_hiit_no_se_ignora(cfg):
     """La sección no tenía lista blanca: `only_on_gren` arrancaba limpio y el
     HIIT se prescribía en ámbar sin que nada lo dijera."""
     data = copy.deepcopy(cfg.raw)
-    data["hiit"]["only_on_gren"] = data["hiit"].pop("only_on_green")
-    assert "hiit: clave desconocida 'only_on_gren'" in errores(data)
+    data["hiit"]["never_rutines"] = data["hiit"].pop("never_routines")
+    assert "hiit: clave desconocida 'never_rutines'" in errores(data)
 
 
 @pytest.mark.parametrize(
@@ -1248,6 +1255,7 @@ def test_standalone_ya_no_esta_en_el_config_real(cfg):
 def test_standalone_no_puede_volver(cfg_copia):
     """No era una opción: repetía como interruptor lo que deciden `calendar` y
     `hiit.blocks`. Un `standalone: true` no habría programado nada."""
+    cfg_copia = con_bloque_hiit(cfg_copia)
     cfg_copia.raw["routines"]["hiit_dia_1"]["standalone"] = True
     err = errores(cfg_copia.raw)
     assert "standalone" in err and "hiit_dia_1" in err
@@ -1293,6 +1301,7 @@ def test_un_foco_en_blanco_tampoco_vale(cfg_copia, vacio):
 def test_un_foco_en_un_bloque_hiit_se_rechaza(cfg_copia):
     """Los bloques HIIT se añaden al final de otra sesión y usan su
     encabezado, así que ahí `focus` volvería a ser una clave muerta."""
+    cfg_copia = con_bloque_hiit(cfg_copia)
     cfg_copia.raw["routines"]["hiit_dia_1"]["focus"] = "Metabólico"
     err = errores(cfg_copia.raw)
     assert "hiit_dia_1" in err and "focus" in err
@@ -1359,6 +1368,7 @@ def test_una_errata_dentro_de_forbidden_in_hiit_no_se_ignora(cfg_copia):
 def test_la_prohibicion_de_verdad_sigue_en_pie(cfg_copia):
     """Guarda de que este arreglo no ha aflojado nada: el sit up retirado por
     la hernia sigue sin poder entrar en un bloque HIIT."""
+    cfg_copia = con_bloque_hiit(cfg_copia)
     cfg_copia.raw["routines"]["hiit_dia_1"]["exercises"].append(
         {"key": "sit_up", "name": "Sit Up", "template_id": "022DF610",
          "progression_type": "none", "sets": [{"reps": 20}]}
@@ -2125,3 +2135,59 @@ def test_ninguna_rutina_repite_los_ejercicios_de_su_bloque_hiit(cfg):
             f"'{rutina}' y su bloque '{bloque}' comparten {repetidos}: "
             f"se escribirian dos veces en la misma sesion"
         )
+
+
+# ---------------------------------------------------------------------------
+# Los bloques HIIT aparte, apagados (26/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_el_config_con_bloque_de_prueba_es_valido(cfg):
+    """El que usan los tests del mecanismo de bloques. Si dejara de validar,
+    esos tests estarían probando un config que no arranca."""
+    from tests.conftest import con_bloque_hiit
+
+    assert _validate(con_bloque_hiit(cfg).raw) == []
+
+
+@pytest.mark.parametrize(
+    "clave, valor",
+    [("allowed_routines", ["dia_1"]), ("blocks", {"dia_1": "dia_2"}),
+     ("only_on_green", True), ("start_week", 1), ("program_start_date", None)],
+)
+def test_con_los_bloques_apagados_sus_claves_se_rechazan(cfg, clave, valor):
+    """Puestas no las leería nadie, y parecerían gobernar si hay HIIT."""
+    data = copy.deepcopy(cfg.raw)
+    data["hiit"][clave] = valor
+    assert f"'{clave}'" in errores(data) and "enabled en false" in errores(data)
+
+
+def test_con_los_bloques_apagados_allow_hiit_en_una_luz_se_rechaza(cfg):
+    data = copy.deepcopy(cfg.raw)
+    data["actions"]["green"]["allow_hiit"] = True
+    assert "actions.green.allow_hiit" in errores(data)
+
+
+def test_con_los_bloques_apagados_allow_hiit_en_una_regla_se_rechaza(cfg):
+    data = copy.deepcopy(cfg.raw)
+    regla = next(r for r in data["special_rules"] if r["name"] == "semana_de_descarga")
+    regla["action"]["allow_hiit"] = True
+    assert "action.allow_hiit con hiit.enabled en false" in errores(data)
+
+
+def test_hiit_enabled_tiene_que_ser_un_booleano(cfg):
+    data = copy.deepcopy(cfg.raw)
+    data["hiit"]["enabled"] = "false"
+    assert "hiit.enabled vale 'false'" in errores(data)
+
+
+def test_el_sit_up_tampoco_entra_en_los_intervalos_del_dia_1(cfg_copia):
+    """La guarda de la hernia, sobre el Día 1 de verdad: desde que sus
+    intervalos van dentro, los recorre por `hiit.embedded`."""
+    cfg_copia.raw["routines"]["dia_1"]["exercises"].append(
+        {"key": "sit_up", "name": "Sit Up", "template_id": "022DF610",
+         "progression_type": "none", "sets": [{"reps": 20}]}
+    )
+    cfg_copia.raw["hiit"]["embedded"]["dia_1"].append("sit_up")
+    err = errores(cfg_copia.raw)
+    assert "SEGURIDAD" in err and ("022DF610" in err or "Sit Up" in err)

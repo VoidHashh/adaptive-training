@@ -807,10 +807,12 @@ thresholds:
 # 4. ACCIONES POR SEMÁFORO
 # -----------------------------------------------------------------------------
 actions:
+  # Aquí había un `allow_hiit` por luz. Se fue el 26/09/2026 con los bloques
+  # HIIT aparte: los intervalos van ahora dentro de cada rutina y siguen la luz
+  # como el resto de ejercicios. Ver `hiit`.
   green:
     session: full
     allow_progression: true
-    allow_hiit: true
     bike_max: intensa       # techo de intensidad para la bici; ver `cycling`
 
   amber:
@@ -820,13 +822,11 @@ actions:
     drop_expendable: true     # elimina los ejercicios marcados
                               # expendable_in_amber: true
     allow_progression: false
-    allow_hiit: false
     bike_max: suave
 
   red:
     session: recovery
     allow_progression: false
-    allow_hiit: false
     bike_max: descanso
     # Aquí vivían `defer_strength: true` y `defer_expires_days: 7`. Un rojo
     # guardaba la sesión de fuerza en una tabla y la reponía en el primer día
@@ -1305,8 +1305,8 @@ special_rules:
 
   - name: semana_de_descarga
     description: >
-      Semana de descarga automática: 60% de la carga, volumen recortado, y el
-      bloque HIIT recortado con los mismos factores que la fuerza.
+      Semana de descarga automática: 60% de la carga y volumen recortado. Los
+      intervalos van dentro de las rutinas y se recortan como el resto.
     trigger:
       every_n_weeks: 7        # dentro del rango 6-8 que pediste
       # Cuántas semanas puede EMPUJARLA el rojo. Nunca se adelanta: adelantar
@@ -1321,23 +1321,10 @@ special_rules:
       jitter_weeks: 1
     action:
       load_factor: 0.60
-      # Aquí ponía `false`, y era mentira dos veces.
-      #
-      # Mentira la primera porque nadie leía esta clave: `build_session` sacaba
-      # `allow_hiit` solo de `actions[light]`, las acciones de las reglas
-      # especiales no se consultaban en ningún sitio, y el bloque HIIT entraba
-      # ENTERO en semana de descarga -quince series de 30 s más el wall ball a
-      # peso completo, la sesión más dura de la semana- mientras la fuerza
-      # bajaba al 60%. El `description` de arriba decía "sin HIIT" y firmaba lo
-      # contrario de lo que pasaba. Ya se lee: ver `_hiit_permitido`.
-      #
-      # Mentira la segunda porque, ahora que se lee, `false` tampoco es lo que
-      # se quiere. Quitar el bloque no es descargarlo: es borrar de la semana el
-      # único trabajo metabólico y dejar la descarga sin comparación con las
-      # otras seis. Lo que se quiere es lo mismo que en la fuerza -60% de carga
-      # y el recorte de volumen de `progression.deload`-, y eso lo hace
-      # `_sesion_hiit`, no esta clave.
-      allow_hiit: true
+      # Aquí había un `allow_hiit: true` con su historia: decidía si el bloque
+      # HIIT aparte entraba en descarga. Desde el 26/09/2026 no hay bloques
+      # aparte -los intervalos van dentro de cada rutina- y la descarga los
+      # recorta como a cualquier otro ejercicio.
       duration_days: 7
     notify: true
 
@@ -1777,42 +1764,31 @@ cycling:
 # 8. HIIT
 # -----------------------------------------------------------------------------
 hiit:
-  # Activado el 2026-09-13. La espera hasta la semana 5 estaba pensada para
-  # quien empieza de cero, y no es el caso: en la cuenta de Hevy constan
-  # `hiit_dia_1` y `hiit_dia_2` ya ejecutados el 8 y el 9 de septiembre. El
-  # HIIT ya se está haciendo, así que retrasarlo en el plan solo conseguía que
-  # el sistema no lo viera -y sobre todo, que no lo descontara del presupuesto
-  # semanal de sesiones intensas, dejando margen para la bici del fin de semana
-  # que en realidad no existe-.
-  enabled: true
-  start_week: 1             # semanas contadas desde `program_start_date`
-  program_start_date: null  # AAAA-MM-DD; si es null se usa la fecha del primer
-                            # check-in registrado
-  allowed_routines: [dia_1]
+  # LOS BLOQUES HIIT APARTE SE RETIRARON EL 26/09/2026. Eran rutinas propias
+  # en Hevy («Día 1 HIIT», «Día 2 HIIT») que el sistema añadía en verde y
+  # escribía aparte. El Día 2 se fusionó el 25/09 y el Día 1 el 26/09, por
+  # decisión del usuario: una sola rutina que abrir en el gimnasio.
+  #
+  # El mecanismo de bloques sigue en el código, apagado, por si algún día se
+  # quiere volver a separar. Con `enabled: false` el validador RECHAZA sus
+  # claves -`allowed_routines`, `blocks`, `only_on_green`, `start_week`,
+  # `program_start_date` y `allow_hiit` en `actions` y en las reglas-: puestas
+  # ahí no las leería nadie, y parecerían gobernar algo.
+  enabled: false
 
   # Día 3 (viernes) NUNCA lleva HIIT. Es la sesión ligera previa a la bici del
-  # fin de semana y esa función se pierde si se le añade intensidad.
-  # Esto es redundante con allowed_routines a propósito: si algún día alguien
-  # añade dia_3 a la lista de arriba sin recordar el motivo, el cargador de
-  # configuración se negará a arrancar en vez de romper el descanso en silencio.
+  # fin de semana y esa función se pierde si se le añade intensidad. Lo vigila
+  # el validador sobre `embedded`: un intervalo declarado dentro del Día 3 no
+  # arranca.
   never_routines: [dia_3]
 
-  # Un bloque distinto por día. Los dos existen como rutinas propias en Hevy.
-  blocks:
-    dia_1: hiit_dia_1
-
-  only_on_green: true
-
-  # Intervalos que viven DENTRO de una rutina de fuerza, sin bloque propio.
-  # Desde el 25/09/2026 el HIIT del Día 2 es parte del Día 2, y sin esto nada
-  # sabía que estos cuatro eran HIIT: el recuento de sesiones intensas dejó de
-  # verlos -también los «Día 2 HIIT» ya hechos- y `safety.forbidden_in_hiit`
-  # dejó de recorrerlos. Un entreno cuenta como HIIT si lleva al menos una
-  # serie de alguno; si el Día 2 se hace sin ellos, no cuenta.
-  #
-  # No admite rutinas de `never_routines`: el Día 3 no lleva HIIT, tampoco
-  # dentro. Cada clave tiene que existir en su rutina.
+  # Los intervalos de cada rutina, que viven DENTRO de ella. Sin esto nada
+  # sabría que son HIIT: el recuento de sesiones intensas no los vería y
+  # `safety.forbidden_in_hiit` no los recorrería. Un entreno cuenta como HIIT
+  # si lleva al menos una serie de alguno; si la rutina se hace sin ellos, no
+  # cuenta. Cada clave tiene que existir en su rutina.
   embedded:
+    dia_1: [remo_maquina, suitcase_carry, air_bike, plancha_frontal, wall_ball]
     dia_2: [battle_ropes, comba, ski_erg, step_up]
 
 
@@ -1851,8 +1827,8 @@ routines:
     #     plancha lateral + perro de caza + bosu. No lo eches en falta ni lo
     #     vuelvas a meter "porque falta".
     #   - El bosu de propiocepción y la elevación de cadera son intencionados.
-    #   - El paseo del granjero a una mano NO está aquí: está en el HIIT del
-    #     Día 1, que es donde toca.
+    #   - El paseo del granjero a una mano va en el bloque de intervalos del
+    #     final, que es donde toca.
     #   - El perro de caza pasó de 2 a 3 series el 07-09-2026; ya coincide con
     #     el del Día 3.
     exercises:
@@ -2015,6 +1991,62 @@ routines:
           - {weight_kg: 10, duration_s: 20}
           - {weight_kg: 10, duration_s: 20}
           - {weight_kg: 10, duration_s: 20}
+
+      # --- Bloque de intervalos, fijo desde el 26/09/2026 -------------------
+      #
+      # Hasta aquí esto era `hiit_dia_1`, una rutina aparte que solo se escribía
+      # en día verde. Se fusiona como se fusionó el Día 2 el 25/09: una sola
+      # rutina que abrir en el gimnasio. Lo mismo que se perdió allí se pierde
+      # aquí, y está escrito en el Día 2: ya NO es condicional (en ámbar está
+      # también, y el ámbar le recorta series como a todo), y si se quiere que
+      # el ámbar lo quite, la pieza es `expendable_in_amber: true` en estos.
+      #
+      # Están declarados en `hiit.embedded`: es lo que los hace contar como
+      # HIIT y pasar por `safety.forbidden_in_hiit`. Uno que se añada aquí y no
+      # allí no pasa por esa guarda.
+      - key: remo_maquina
+        template_id: "0222DB42"
+        name: "Remo (máquina)"
+        progression_type: none
+        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
+
+      - key: suitcase_carry
+        template_id: "7593855D"
+        name: "Paseo del granjero a una mano"
+        # La carga sigue sin prescribirse -se coge lo que haya y no progresa-,
+        # pero la DURACIÓN sí, y no es un adorno: una serie que no pide ni reps
+        # ni segundos no se puede juzgar, y `_alcanza` revienta al intentarlo.
+        # 30 s es lo que dura cada estación del resto del circuito (remo, air
+        # bike, plancha), así que no cambia el entrenamiento: lo escribe.
+        progression_type: none
+        sets:
+          - {duration_s: 30}
+          - {duration_s: 30}
+          - {duration_s: 30}
+
+      - key: air_bike
+        template_id: "43573BB8"
+        name: "Air bike"
+        progression_type: none
+        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
+
+      # Sustituye a "Abdominales (sit up)" (template 022DF610), retirado por la
+      # hernia L4-L5: flexión lumbar repetida bajo fatiga. Ver `safety`.
+      - key: plancha_frontal
+        template_id: "C6C9B8A0"
+        name: "Plancha frontal"
+        progression_type: volume
+        max_seconds: 60
+        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
+
+      - key: wall_ball
+        template_id: "A1F47ACC"
+        name: "Wall ball"
+        progression_type: none
+        sets:
+          - {reps: 20, weight_kg: 5}
+          - {reps: 20, weight_kg: 5}
+          - {reps: 20, weight_kg: 5}
 
   # ---------------------------------------------------------------------------
   dia_2:
@@ -2492,57 +2524,6 @@ routines:
   # interruptor un hecho que no es configurable: quién entra en el ciclo lo
   # dice `rotation.order` (que no los nombra) y `hiit.blocks` los ata a dia_1
   # y dia_2. Ponerlo a `true` no los habría programado ningún día.
-  hiit_dia_1:
-    title: "Día 1 HIIT"
-    hevy_routine_id: "a41e5c8a-f806-4a1f-87aa-1c1c32b1a04e"
-    exercises:
-      - key: remo_maquina
-        template_id: "0222DB42"
-        name: "Remo (máquina)"
-        progression_type: none
-        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
-
-      - key: suitcase_carry
-        template_id: "7593855D"
-        name: "Paseo del granjero a una mano"
-        # La carga sigue sin prescribirse -se coge lo que haya y no progresa-,
-        # pero la DURACIÓN sí, y no es un adorno: una serie que no pide ni reps
-        # ni segundos no se puede juzgar, y `_alcanza` revienta al intentarlo.
-        # Con `hiit.enabled` en false nadie lo notaba porque el bloque no
-        # entraba en el plan; al activarlo se llevaba por delante la
-        # reconciliación entera de ese día. 30 s es lo que dura cada estación
-        # del resto del circuito (remo, air bike, plancha), así que no cambia
-        # el entrenamiento: lo escribe.
-        progression_type: none
-        sets:
-          - {duration_s: 30}
-          - {duration_s: 30}
-          - {duration_s: 30}
-
-      - key: air_bike
-        template_id: "43573BB8"
-        name: "Air bike"
-        progression_type: none
-        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
-
-      # Sustituye a "Abdominales (sit up)" (template 022DF610), retirado por la
-      # hernia L4-L5: flexión lumbar repetida bajo fatiga. Ver `safety`.
-      - key: plancha_frontal
-        template_id: "C6C9B8A0"
-        name: "Plancha frontal"
-        progression_type: volume
-        max_seconds: 60
-        sets: [{duration_s: 30}, {duration_s: 30}, {duration_s: 30}]
-
-      - key: wall_ball
-        template_id: "A1F47ACC"
-        name: "Wall ball"
-        progression_type: none
-        sets:
-          - {reps: 20, weight_kg: 5}
-          - {reps: 20, weight_kg: 5}
-          - {reps: 20, weight_kg: 5}
-
 
 
 # -----------------------------------------------------------------------------

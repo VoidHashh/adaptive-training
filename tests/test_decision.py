@@ -21,6 +21,7 @@ from app.engine.decision import EngineState, advance_state, decide
 from app.engine.signals import Signals
 
 from tests.conftest import LUNES, eligiendo, sig, sig_completa
+from tests.conftest import con_bloque_hiit
 
 JUEVES = LUNES + timedelta(days=3)
 
@@ -681,6 +682,7 @@ def test_en_semana_de_descarga_el_hiit_tambien_se_recorta(cfg, estado_en_descarg
     vigilar el día que alguien cambie el factor: seguiría verde midiendo contra
     su propia copia.
     """
+    cfg = con_bloque_hiit(cfg)
     dl = cfg.raw["progression"]["deload"]
     factor_carga = next(
         r for r in cfg.raw["special_rules"] if r["name"] == "semana_de_descarga"
@@ -723,6 +725,7 @@ def test_la_descarga_recorta_el_hiit_con_el_mismo_criterio_que_la_fuerza(
     duraciones y pesos distintos. Lo que tiene que coincidir es cuánto se
     recorta, no cuánto queda.
     """
+    cfg = con_bloque_hiit(cfg)
     d = _dia_de_descarga(cfg, estado_en_descarga)
     routines = cfg.raw["routines"]
 
@@ -751,6 +754,7 @@ def test_el_recorte_del_hiit_queda_escrito_y_no_solo_hecho(cfg, estado_en_descar
     contar las series en la app y acordarse de cuántas había. "Déjalo escrito"
     es esto: el porqué viaja con el plan del día, no en la cabeza.
     """
+    cfg = con_bloque_hiit(cfg)
     d = _dia_de_descarga(cfg, estado_en_descarga)
     linea = next(
         (c for c in d.session.hiit.changes if "descarga" in c.lower()), None
@@ -779,6 +783,7 @@ def test_el_recorte_de_la_descarga_no_se_adopta_como_carga_vigente(
     Se comprueba en la base, no en el objeto: lo que sobrevive al día es
     `EngineState.current_sets`, y es lo que leerá `con_carga_vigente` mañana.
     """
+    cfg = con_bloque_hiit(cfg)
     d = _dia_de_descarga(cfg, estado_en_descarga)
     hiit = d.session.hiit
     prescrito = {
@@ -806,6 +811,7 @@ def test_fuera_de_la_semana_de_descarga_el_bloque_hiit_entra_entero(cfg):
     recorte aplicado siempre- pasaría por bueno: los tests de arriba solo miran
     la semana en la que SÍ toca, y verían exactamente lo mismo.
     """
+    cfg = con_bloque_hiit(cfg)
     normal = EngineState(program_start=LUNES - timedelta(weeks=1))
     d = decide(cfg, LUNES, sig_completa(LUNES), normal)
     assert not d.deload.active and d.light == "green"
@@ -1274,7 +1280,12 @@ def test_por_ejercicio_la_racha_mantenida_no_sube_reps(cfg):
 
 def test_por_ejercicio_uno_nuevo_se_queda_quieto_y_los_demas_no(cfg):
     keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
-    nuevo = keys[-1]
+    # Uno que PUEDA progresar: con `progression_type: none` -los intervalos del
+    # final- el motivo sería «sin progresión por diseño» y no se probaría nada.
+    nuevo = next(
+        e["key"] for e in reversed(cfg.raw["routines"]["dia_1"]["exercises"])
+        if e.get("progression_type") != "none"
+    )
     _, d, ex = _dia_1_con(cfg, **{nuevo: None})
 
     assert d.progression.gate_open, d.progression.gate_reason
@@ -1379,3 +1390,20 @@ def test_la_racha_por_debajo_y_su_mejor_sesion_sobreviven_a_la_manana(cfg):
         "la copia comparte la lista con el estado de ayer: una decisión podría "
         "contaminar hacia atrás la que la produjo"
     )
+
+
+# ---------------------------------------------------------------------------
+# El HIIT del Día 1, dentro del Día 1 (26/09/2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("senales", ["verde", "ambar"])
+def test_el_dia_1_lleva_sus_intervalos_dentro_y_ninguna_sesion_aparte(cfg, senales):
+    """Una sola rutina que abrir en el gimnasio. Y siempre, no solo en verde:
+    lo mismo que se decidió para el Día 2."""
+    s = sig_completa(LUNES) if senales == "verde" else sig(LUNES, upper_discomfort=6)
+    d = decide(cfg, LUNES, s, EngineState())
+    assert d.session.routine_key == "dia_1"
+    assert d.session.hiit is None, "ha vuelto a salir un bloque HIIT aparte"
+    claves = {e["key"] for e in d.session.exercises}
+    assert set(cfg.raw["hiit"]["embedded"]["dia_1"]) <= claves

@@ -55,7 +55,7 @@ services:
     #
     # La etiqueta la ata `tests/test_despliegue.py` a la versión de
     # `pyproject.toml`: se mueven las cuatro a la vez o el test se pone rojo.
-    image: ghcr.io/voidhashh/adaptive-training:0.1.196
+    image: ghcr.io/voidhashh/adaptive-training:0.1.197
     restart: on-failure
     stop_grace_period: 1m
 
