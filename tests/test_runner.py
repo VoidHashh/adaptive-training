@@ -30,6 +30,7 @@ from app.models import Base, Decision, HevyWrite, Notification, WorkoutLog
 from app.repository import load_state, save_decision, save_state, upsert_checkin
 from app.runner import run_daily, run_reconcile
 from tests.conftest import LUNES, dias, sig_completa
+from tests.conftest import titulo
 from tests.conftest import con_bloque_hiit
 from tests.dobles import doble_de, no_es_doble
 from app.integrations.hevy import HevyClient
@@ -1650,8 +1651,8 @@ def test_lo_declarado_y_lo_entrenado_salen_con_la_fecha_de_los_pesos(db, cfg):
 
     assert fila.unplanned is True
     assert fila.motivo_suelto == (
-        f"declaraste Día 2 y entrenaste Día 1, con los pesos del "
-        f"{hace_doce.strftime('%d/%m')}: los ajustes de la mañana fueron a Día 2"
+        f"declaraste {titulo(cfg, 'dia_2')} y entrenaste {titulo(cfg, 'dia_1')}, con los pesos del "
+        f"{hace_doce.strftime('%d/%m')}: los ajustes de la mañana fueron a {titulo(cfg, 'dia_2')}"
     ), fila.motivo_suelto
 
 
@@ -1673,7 +1674,7 @@ def test_sin_selector_la_frase_dice_tocaba_y_no_declaraste(db, cfg):
         f"sin check-in la propuesta debería ser la primera del ciclo: {planificada}"
     )
 
-    assert fila.motivo_suelto.startswith("tocaba Día 1 y entrenaste Día 2"), (
+    assert fila.motivo_suelto.startswith(f"tocaba {titulo(cfg, 'dia_1')} y entrenaste {titulo(cfg, 'dia_2')}"), (
         fila.motivo_suelto
     )
     assert "declaraste" not in fila.motivo_suelto, fila.motivo_suelto
@@ -1694,7 +1695,7 @@ def test_declarar_otro_no_convierte_la_propuesta_en_una_declaracion(db, cfg):
     _, _, fila = _declaro_y_entreno(
         db, cfg, declara="otro", ejecuta="dia_2", pesos_de=LUNES - timedelta(days=9)
     )
-    assert fila.motivo_suelto.startswith("tocaba Día 1 y entrenaste Día 2"), (
+    assert fila.motivo_suelto.startswith(f"tocaba {titulo(cfg, 'dia_1')} y entrenaste {titulo(cfg, 'dia_2')}"), (
         fila.motivo_suelto
     )
     assert "declaraste" not in fila.motivo_suelto, fila.motivo_suelto
@@ -3145,7 +3146,7 @@ def test_un_checkin_rojo_tardio_deshace_lo_que_escribio_el_respaldo(db, cfg):
     """
     hevy, tg = HevyFalso(), TelegramFalso()
     manana_sin_checkin(db, cfg, hevy, tg)
-    assert hevy.contenido == "Día 1"
+    assert hevy.contenido == titulo(cfg, "dia_1")
 
     res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
 
@@ -3169,7 +3170,7 @@ def test_elegir_bici_despues_del_respaldo_deshace_la_rutina_de_la_manana(db, cfg
     """
     hevy, tg = HevyFalso(), TelegramFalso()
     manana_sin_checkin(db, cfg, hevy, tg)
-    assert hevy.contenido == "Día 1"
+    assert hevy.contenido == titulo(cfg, "dia_1")
 
     res = checkin_tardio(db, cfg, hevy, tg, {"chosen_session": "bici"})
 
@@ -3202,7 +3203,7 @@ def test_la_reversion_queda_registrada_como_escritura_con_su_motivo(db, cfg):
     )
     assert vuelta.hevy_routine_id == filas[0].hevy_routine_id
     assert vuelta.reason, "una reversión sin motivo es media auditoría"
-    assert "Día 1" in vuelta.reason and "Recuperación" in vuelta.reason
+    assert titulo(cfg, "dia_1") in vuelta.reason and "Recuperación" in vuelta.reason
     # Las dos filas apuntan a decisiones DISTINTAS. Es lo que permite reconstruir
     # el orden: quién escribió y quién deshizo.
     assert filas[0].decision_id != vuelta.decision_id
@@ -3234,7 +3235,7 @@ def test_un_checkin_verde_tardio_reescribe_en_vez_de_deshacer(db, cfg):
 
     assert res.hevy_status == "ok"
     assert hevy.reversiones == []
-    assert hevy.contenido == "Día 1"
+    assert hevy.contenido == titulo(cfg, "dia_1")
     assert len(hevy.llamadas) == 2, "dos escrituras el mismo día, y las dos cuentan"
     assert [f.status for f in db.scalars(select(HevyWrite)).all()] == ["ok", "ok"]
 
@@ -3339,8 +3340,8 @@ def test_si_no_se_puede_deshacer_el_mensaje_dice_que_hacer(db, cfg):
     res = checkin_tardio(db, cfg, hevy, tg, CHECKIN_ROJO)
 
     assert res.hevy_status == "stale"
-    assert hevy.contenido == "Día 1", "el montaje: la reversión no ha podido ser"
-    assert "Día 1" in res.hevy_reason and "Recuperación" in res.hevy_reason
+    assert hevy.contenido == titulo(cfg, "dia_1"), "el montaje: la reversión no ha podido ser"
+    assert titulo(cfg, "dia_1") in res.hevy_reason and "Recuperación" in res.hevy_reason
     assert "NO hagas" in res.hevy_reason
     assert any("Hevy" in p for p in res.problemas), (
         "un estado que el usuario tiene que resolver a mano no puede quedarse "
@@ -3366,7 +3367,7 @@ def test_la_reversion_tambien_se_cuenta_aunque_salga_bien(db, cfg):
 
     texto = tg.enviados[-1]
     assert texto.startswith("↩️ <b>Hevy se ha devuelto a como estaba</b>")
-    assert "Día 1" in texto
+    assert titulo(cfg, "dia_1") in texto
 
 
 def test_en_ensayo_no_se_deshace_nada_pero_se_dice(db, cfg):
@@ -3386,7 +3387,7 @@ def test_en_ensayo_no_se_deshace_nada_pero_se_dice(db, cfg):
     assert res.hevy_status == "dry_run"
     assert hevy.reversiones == []
     assert "Se habría deshecho" in res.hevy_reason
-    assert "Día 1" in res.hevy_reason
+    assert titulo(cfg, "dia_1") in res.hevy_reason
 
 
 # ---------------------------------------------------------------------------

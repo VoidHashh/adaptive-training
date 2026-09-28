@@ -87,14 +87,44 @@ from app.engine.signals import Checkin, DayMetrics, Ride, Signals
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-# Lunes de referencia. Con la variante `with_pool` activa: lunes = dia_1.
+# Lunes de referencia. Ya no hay calendario que ate un día de la semana a una
+# rutina: con la fixture `cfg` y un estado vacío, lo que toca es `dia_1`.
 LUNES = date(2026, 9, 7)
 
 
 @pytest.fixture(scope="session")
-def cfg():
-    """El `config.yaml` del repositorio, ya validado."""
+def cfg_real():
+    """El `config.yaml` del repositorio tal cual, ya validado."""
     return load_config(REPO_ROOT / "config.yaml")
+
+
+def ciclo_desde(orden, primera):
+    """El mismo ciclo, leído empezando por `primera`."""
+    i = list(orden).index(primera)
+    return list(orden[i:]) + list(orden[:i])
+
+
+@pytest.fixture(scope="session")
+def cfg(cfg_real):
+    """El `config.yaml` del repositorio con UNA diferencia: su ciclo se lee
+    empezando por `dia_1`.
+
+    Desde el 28/09/2026 la semana real empieza por `dia_3` (`rotation.order:
+    [dia_3, dia_1, dia_2]`), para que la pierna no caiga el lunes después de la
+    bici. El CICLO es el mismo -lo que va después de cada una no cambió-; lo
+    único que cambia es por dónde empieza un arranque en frío, sin nada
+    ejecutado. Casi todos los tests del motor montan justo eso -`EngineState()`
+    vacío- y están escritos sobre el `dia_1`: la pierna con sus intervalos, que
+    es donde viven el HIIT, la rampa y media batería más.
+
+    La diferencia no puede crecer sin que se note:
+    `test_el_cfg_de_los_tests_es_el_ciclo_real_empezando_por_el_dia_1` compara
+    los dos, y lo que depende del orden de verdad -el selector, los títulos en
+    orden de semana- se prueba contra `cfg_real`.
+    """
+    otro = copy.deepcopy(cfg_real)
+    otro.raw["rotation"]["order"] = ciclo_desde(otro.raw["rotation"]["order"], "dia_1")
+    return otro
 
 
 @pytest.fixture
@@ -640,3 +670,14 @@ def _telegram_rechazaria(cuerpo: Any) -> FakeResponse | None:
             f'corresponding to start tag "{abiertas[-1][0]}"'
         )
     return None
+
+
+def titulo(cfg, clave):
+    """El título de una rutina, como se ve en Hevy, el selector y el mensaje.
+
+    Los tests lo leen del config en vez de escribir «Día 1» a mano: desde el
+    28/09/2026 los títulos siguen el orden de la semana y ya no coinciden con la
+    clave (`dia_3` se llama «Día 1»). Un literal los habría atado a la
+    coincidencia que se acaba de romper.
+    """
+    return cfg.raw["routines"][clave]["title"]

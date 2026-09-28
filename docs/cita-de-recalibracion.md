@@ -281,8 +281,22 @@ mueven las cargas:
   la recomendación. **Qué vigilar:** si el mensaje dice «lo declarado para el
   … no se usa», o la salida no llegó de Garmin o sí traía datos (y entonces
   mandan ellos); en los dos casos la línea del YAML sobra.
-- **El peso muerto rumano del Día 3, en pausa (28/09/2026).** A petición del
-  usuario, que quiere de vuelta el peso muerto normal del Día 2. A ese lo quita
+- **La semana empieza por el torso, y los títulos cambian (28/09/2026).** Con
+  tres sesiones por semana, la pierna (`dia_1`) se había quedado fija en el
+  lunes, justo después de la bici del fin de semana. Ahora: lunes `dia_3`
+  (torso, sin intervalos), martes/miércoles `dia_1` (pierna + intervalos),
+  viernes `dia_2` (bisagra + tirón + intervalos). Los TÍTULOS siguen ese orden
+  -`dia_3` es «Día 1», `dia_1` es «Día 2», `dia_2` es «Día 3»- y en Hevy
+  cambian en la siguiente escritura de cada rutina. Las claves no cambian: con
+  ellas está guardado todo el histórico. **Antes de esta fecha, en este
+  documento y en los comentarios, «Día N» es `dia_N`.** El ciclo es el mismo;
+  lo que coloca cada rutina en su día es lo ejecutado, así que la semana del
+  28/09 la fase se mueve eligiendo en el selector (tras la pierna del lunes, el
+  torso y después la bisagra). **Qué vigilar:** una semana de dos o de cuatro
+  sesiones vuelve a descolocarla; y los intervalos de `dia_2` caen ahora el
+  viernes, antes de la bici del sábado.
+- **El peso muerto rumano de `dia_3`, en pausa (28/09/2026).** A petición del
+  usuario, que quiere de vuelta el peso muerto normal de `dia_2`. A ese lo quita
   la retirada de 14 días disparada el 21/09, vigente hasta el 04/10. La
   retirada solo nombraba el del Día 2, así que el 25/09 el Día 3 prescribió el
   rumano con la regla vigente; ahora un test exige que cubra todo peso muerto

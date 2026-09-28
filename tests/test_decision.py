@@ -21,6 +21,7 @@ from app.engine.decision import EngineState, advance_state, decide
 from app.engine.signals import Signals
 
 from tests.conftest import LUNES, eligiendo, sig, sig_completa
+from tests.conftest import titulo
 from tests.conftest import con_bloque_hiit
 
 JUEVES = LUNES + timedelta(days=3)
@@ -391,7 +392,7 @@ def test_el_dia_de_bici_no_tiene_gimnasio(cfg):
     # La rotación no se entera: lo que tocaba sigue tocando, y el mensaje lo
     # dice por su nombre para que el próximo día de gimnasio no pille de nuevas.
     assert d.rotation_routine == "dia_1"
-    assert any("Día 1" in n for n in d.session.notes), d.session.notes
+    assert any(titulo(cfg, "dia_1") in n for n in d.session.notes), d.session.notes
 
     assert d.progression is not None and not d.progression.gate_open
     assert "bici" in d.progression.gate_reason
@@ -1167,7 +1168,7 @@ def test_en_frio_la_puerta_se_cierra_en_vez_de_abrirse(cfg):
     assert d.progression is not None
     assert not d.progression.gate_open
     assert d.progression.estreno is True
-    assert "primera vez que el sistema ve el Día 1" in d.progression.gate_reason
+    assert f"primera vez que el sistema ve el {titulo(cfg, 'dia_1')}" in d.progression.gate_reason
     assert "arranca la próxima vez que toque" in d.progression.gate_reason, (
         "hay que decir CUÁNDO empieza a subir, que es la pregunta que deja"
     )

@@ -2299,3 +2299,39 @@ def test_la_guarda_del_peso_muerto_reconoce_los_que_hay(cfg):
     """Sin esto, un criterio que no reconociera ninguno dejaría la guarda de
     arriba en verde para siempre."""
     assert ("dia_2", "peso_muerto_smith") in _pesos_muertos_de_las_rutinas(cfg.raw)
+
+
+# ---------------------------------------------------------------------------
+# La semana empieza por el torso, y los títulos la siguen (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_los_titulos_siguen_el_orden_de_la_semana(cfg_real):
+    """Lo que pidió el usuario al mover la pierna fuera del lunes: «cambia los
+    nombres según el nuevo orden». El selector y Hevy enseñan títulos, y un
+    «Día 1» que se hace el martes es un nombre que miente cada semana."""
+    orden = cfg_real.rotation_order()
+    titulos = [cfg_real.raw["routines"][k]["title"] for k in orden]
+    assert titulos == ["Día 1", "Día 2", "Día 3"], dict(zip(orden, titulos))
+
+
+def test_la_semana_empieza_por_la_rutina_sin_intervalos(cfg_real):
+    """El lunes va detrás de la bici del fin de semana: lo que abre la semana es
+    la rutina que no lleva HIIT y descansa las piernas (`dia_3`)."""
+    primera = cfg_real.rotation_order()[0]
+    assert primera == "dia_3"
+    assert primera in cfg_real.raw["hiit"]["never_routines"]
+    assert primera not in cfg_real.raw["hiit"]["embedded"]
+
+
+def test_el_cfg_de_los_tests_es_el_ciclo_real_empezando_por_el_dia_1(cfg, cfg_real):
+    """La fixture `cfg` solo se diferencia del fichero en por dónde lee el
+    ciclo. Si alguien la usara para cambiar algo más, o el ciclo real dejara de
+    ser el mismo, esto lo dice."""
+    from tests.conftest import ciclo_desde
+
+    real = cfg_real.rotation_order()
+    assert cfg.rotation_order() == ciclo_desde(real, "dia_1")
+    a, b = copy.deepcopy(cfg.raw), copy.deepcopy(cfg_real.raw)
+    a["rotation"].pop("order"), b["rotation"].pop("order")
+    assert a == b

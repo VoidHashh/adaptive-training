@@ -34,6 +34,7 @@ from app.engine.message import (
 )
 
 from tests.conftest import LUNES, con_bloque_hiit, sig, sig_completa
+from tests.conftest import titulo
 from tests.dobles import doble_de
 from app.engine.bike_advisor import BikeRecommendation
 from app.engine.decision import ActiveRule, DecisionAnulada
@@ -215,7 +216,7 @@ def test_el_aviso_va_antes_del_porque_para_no_perderlo_en_el_recorte(cfg):
 
 def test_el_aviso_va_despues_de_la_sesion_porque_primero_es_que_hacer(cfg):
     txt = render_plain(decision(cfg, notas=DEGRADACIONES), cfg)
-    assert txt.index("Día 1") < txt.index("Decidido con datos incompletos")
+    assert txt.index(titulo(cfg, "dia_1")) < txt.index("Decidido con datos incompletos")
 
 
 def test_el_mensaje_nunca_pasa_del_limite_de_telegram(cfg):
@@ -1763,7 +1764,7 @@ def test_el_estreno_de_una_rutina_no_lleva_el_rotulo_de_progresion_cerrada(cfg):
 
     txt = render_telegram(d, cfg)
 
-    assert "Primera vez que el sistema ve el Día 1" in txt
+    assert f"Primera vez que el sistema ve el {titulo(cfg, 'dia_1')}" in txt
     assert "Progresión cerrada" not in txt
 
 
@@ -2047,7 +2048,7 @@ def test_una_rutina_parada_mas_de_una_vuelta_se_nombra_con_su_titulo(cfg):
     assert [p.clave for p in d.pendientes] == ["dia_1"], d.pendientes
 
     txt = render_telegram(d, cfg)
-    assert "Día 1: han pasado 5 sesiones de fuerza desde la última vez" in txt, txt
+    assert f"{titulo(cfg, 'dia_1')}: han pasado 5 sesiones de fuerza desde la última vez" in txt, txt
     # La fecha es la de la última vez que se hizo, no la de hoy.
     ultima = LUNES - timedelta(days=10)
     assert f"({ultima.strftime('%d/%m')})" in txt, txt
@@ -2069,8 +2070,8 @@ def test_solo_se_nombra_la_que_mas_lleva_parada(cfg):
     txt = render_telegram(d, cfg)
     assert txt.count("🗓") == 1, f"se han enumerado varias:\n{txt}"
     # La más parada es el Día 1: está una sesión más atrás que el Día 2.
-    assert "Día 1: han pasado 6" in txt, txt
-    assert "Día 2: han pasado" not in txt, txt
+    assert f"{titulo(cfg, 'dia_1')}: han pasado 6" in txt, txt
+    assert f"{titulo(cfg, 'dia_2')}: han pasado" not in txt, txt
 
 
 def test_si_la_mas_parada_ya_caduco_se_nombra_la_siguiente(cfg):
@@ -2093,8 +2094,8 @@ def test_si_la_mas_parada_ya_caduco_se_nombra_la_siguiente(cfg):
     ], d.pendientes
 
     txt = render_telegram(d, cfg)
-    assert "Día 2: han pasado 6" in txt, txt
-    assert "Día 1: han pasado" not in txt, txt
+    assert f"{titulo(cfg, 'dia_2')}: han pasado 6" in txt, txt
+    assert f"{titulo(cfg, 'dia_1')}: han pasado" not in txt, txt
 
 
 def test_la_caducada_deja_de_nombrarse_pero_no_deja_de_guardarse(cfg):
@@ -2213,7 +2214,7 @@ def test_el_dia_de_bici_empieza_por_la_bici_y_no_por_el_gimnasio(cfg):
 def test_el_dia_de_bici_dice_que_rutina_sigue_tocando(cfg):
     """La única línea del gimnasio que queda, y es la que evita la sorpresa del
     próximo día que se vaya: la rotación no se ha movido."""
-    assert "sigue tocando Día 1" in render_telegram(_dia_de_bici(cfg), cfg)
+    assert f"sigue tocando {titulo(cfg, 'dia_1')}" in render_telegram(_dia_de_bici(cfg), cfg)
 
 
 def test_el_dia_de_bici_pide_la_frase_en_afirmativo_y_los_demas_no(cfg):

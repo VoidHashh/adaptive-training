@@ -32,6 +32,7 @@ from app.db import get_session
 from app.models import Base, WorkoutLog
 from app.settings import settings
 from tests.conftest import LUNES, dias
+from tests.conftest import titulo
 from tests.dobles import doble_de
 from app.config_loader import Config
 
@@ -820,7 +821,7 @@ def test_las_opciones_del_selector_son_las_del_config_y_no_las_del_javascript(
     # Con el título de leer, no con la clave. `dia_2` en la pantalla del móvil es
     # el identificador crudo asomando por donde no debe.
     por_clave = {o["key"]: o for o in sel["opciones"]}
-    assert por_clave["dia_2"]["label"] == "Día 2"
+    assert por_clave["dia_2"]["label"] == titulo(cfg, "dia_2")
     assert por_clave["bici"]["label"] == "Bici"
     # Y quién es fuerza y quién no, porque de eso depende lo que la pantalla diga
     # debajo: elegir «bici» no prescribe sesión.

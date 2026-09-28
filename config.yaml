@@ -164,7 +164,7 @@ integrations:
 # copiado aquí no meta un patrón contraindicado sin que nadie se dé cuenta.
 #
 # Ámbito: SOLO las rutinas HIIT. En la fuerza normal el peso muerto sí está
-# permitido (Día 2) porque va controlado, a repeticiones bajas y con la regla
+# permitido (`dia_2`) porque va controlado, a repeticiones bajas y con la regla
 # `retirada_peso_muerto` vigilándolo. Lo que se prohíbe es ese mismo patrón
 # ejecutado con prisa y bajo fatiga, que es lo que define un HIIT.
 #
@@ -488,15 +488,15 @@ checkin_preguntas:
 # PARA QUÉ SIRVE, QUE NO ES PARA MANDAR SOBRE LA ROTACIÓN
 # -------------------------------------------------------
 # Lo que gira el ciclo mañana es lo que se EJECUTÓ en Hevy, hoy y siempre. Esta
-# respuesta no lo toca: se puede declarar el Día 2 y acabar haciendo el Día 1, y
-# el que cuenta es el Día 1. Elegir aquí hace dos cosas, las dos de hoy:
+# respuesta no lo toca: se puede declarar el `dia_2` y acabar haciendo el `dia_1`, y
+# el que cuenta es el `dia_1`. Elegir aquí hace dos cosas, las dos de hoy:
 #
 #   1. Que la sesión que se escribe en Hevy sea la que vas a hacer, con SU
 #      progresión y SUS ajustes del semáforo. Sin esto, desviarse un día
 #      significaba levantar los pesos que esa rutina tuviera guardados de la
 #      última vez, sin los ajustes de esta mañana.
 #   2. Que quede escrito lo que dijiste al lado de lo que hiciste. De ahí sale
-#      saber si uno se salta el Día 1 a menudo, que es información sobre uno
+#      saber si uno se salta el `dia_1` a menudo, que es información sobre uno
 #      mismo y no se puede sacar de `workout_log` solo: ahí está lo que hiciste,
 #      no lo que ibas a hacer.
 #
@@ -1040,7 +1040,7 @@ progression:
     #   exercise         -> por ejercicio, compartido entre rutinas
     #
     # `routine_exercise` es el correcto: `plancha_lateral` está en las tres
-    # rutinas con dosis distintas (20 s en Día 1, 30 s en Día 2), y `dead_bug`
+    # rutinas con dosis distintas (20 s en `dia_1`, 30 s en `dia_2`), y `dead_bug`
     # y `perro_de_caza` en dos. Compartiendo racha acumularían sesiones limpias
     # de tres rutinas y progresarían al triple de velocidad de la que se
     # entrenan.
@@ -1063,7 +1063,7 @@ progression:
     # Con `session` aparecía además un efecto de inanición: los ejercicios en
     # modo `double` ya al tope de su rango piden carga TODAS las sesiones, así
     # que con `prefer: load` la cadena posterior en modo `sets` no subía una
-    # serie jamás, y con `prefer: volume` el Día 3 tardaba 14 sesiones en
+    # serie jamás, y con `prefer: volume` el `dia_3` tardaba 14 sesiones en
     # volver a tocar el peso. Ninguna de las dos cosas es lo que se quiere.
     conflict_scope: exercise
 
@@ -1086,16 +1086,16 @@ progression:
     #   routine_order   -> el orden en que están escritos en la rutina
     #
     # `waiting_longest` importa más de lo que parece: con `routine_order`, en
-    # una rutina larga como el Día 3 los últimos no llegarían a subir NUNCA,
+    # una rutina larga como el `dia_3` los últimos no llegarían a subir NUNCA,
     # porque los de arriba agotan el cupo cada sesión. Turnándose, todos acaban
     # pasando.
     #
-    # El 18-09-2026 el Día 3 pasó de 11 ejercicios a 15, y con eso las dos colas
+    # El 18-09-2026 el `dia_3` pasó de 11 ejercicios a 15, y con eso las dos colas
     # quedaron así: VOLUMEN 6 candidatos (4 de core + el rumano y la extensión
     # de espalda, que están en modo `sets` y una serie más cuenta como volumen)
     # para un cupo de 2; CARGA 9 candidatos para un cupo de 3. (Desde el
     # 28/09/2026 el rumano está en pausa y VOLUMEN tiene 5.) O sea tres
-    # sesiones de Día 3 para dar una vuelta completa a cada cola, donde antes
+    # sesiones de `dia_3` para dar una vuelta completa a cada cola, donde antes
     # eran dos. Nada se rompe -para eso está `waiting_longest`-, pero cada
     # ejercicio concreto tarda una sesión más en volver a tocarle el turno, y
     # eso es una decisión, no un efecto secundario: si se quiere la cadencia de
@@ -1210,10 +1210,10 @@ progression:
 #
 # ESTADO REAL (releído de la API el 18-09-2026): las series de calentamiento
 # están MARCADAS en Hevy. Son las primeras series de los 20 ejercicios de 4
-# series: 5 en Día 1, 6 en Día 2 y 9 en Día 3. Eran 18 hasta que el Día 3 ganó
+# series: 5 en `dia_1`, 6 en `dia_2` y 9 en `dia_3`. Eran 18 hasta que el `dia_3` ganó
 # cuatro ejercicios ese día, de los cuales dos -el peso muerto rumano y el
 # jalón de brazos rectos- traen su calentamiento marcado desde la app. El
-# rumano está en pausa desde el 28/09/2026: hoy son 8 en Día 3.
+# rumano está en pausa desde el 28/09/2026: hoy son 8 en `dia_3`.
 #
 # Es decir: hoy manda la API y la heurística no llega a ejecutarse nunca. Se
 # mantiene como plan B por dos motivos concretos, no por simetría:
@@ -1344,11 +1344,11 @@ special_rules:
 # ----------------------------------------------------------------
 # Había un `calendar` con dos variantes de temporada y un día de la semana
 # asignado a cada rutina. La activa (`with_pool`) programaba lunes=dia_1 y
-# jueves=dia_2, y NO nombraba `dia_3` ningún día. El Día 3 se entrena con
+# jueves=dia_2, y NO nombraba `dia_3` ningún día. El `dia_3` se entrena con
 # normalidad desde el principio, así que todas esas sesiones entraron en el
 # sistema como entrenamientos sueltos «que ese día no tocaba fuerza»: sin
 # reconciliar contra ningún plan, sin racha, sin adopción de carga y sin
-# progresión. La carga de los ejercicios del Día 3 no se movió NUNCA.
+# progresión. La carga de los ejercicios del `dia_3` no se movió NUNCA.
 #
 # No fue un fallo del código: el código hacía exactamente lo que el calendario
 # decía. Fue un fichero que declaraba una semana que no era la de verdad, y una
@@ -1363,8 +1363,8 @@ special_rules:
 #
 # Se lee de lo EJECUTADO y no de lo planificado a propósito. Con lo planificado,
 # un día que se decide y no se entrena adelantaría la rotación igual, y a los
-# tres días el sistema estaría escribiendo el Día 3 cuando la última sesión
-# real fue el Día 1. Leyendo lo ejecutado, un día sin entrenar simplemente no
+# tres días el sistema estaría escribiendo el `dia_3` cuando la última sesión
+# real fue el `dia_1`. Leyendo lo ejecutado, un día sin entrenar simplemente no
 # mueve nada: la rotación se aplaza sola, sin maquinaria de aplazamiento. Por
 # eso ya no existen `pending_strength`, `defer_strength` ni
 # `defer_expires_days`; y por eso un bloque de recuperación de día rojo tampoco
@@ -1373,8 +1373,35 @@ special_rules:
 # El orden es el ciclo. Cambiarlo cambia qué viene después de qué; quitar una
 # rutina de aquí la saca del ciclo (y entonces `focus` sobra en ella, que es lo
 # que comprueba el validador).
+#
+# LA SEMANA EMPIEZA POR `dia_3` DESDE EL 28/09/2026, Y POR ESO SE LLAMA «DÍA 1».
+# Con tres sesiones por semana cada rutina cae siempre el mismo día, y el
+# `dia_1` -pierna y sus intervalos- se había quedado fijo en el lunes, justo
+# después de la bici del fin de semana: ese lunes, tras 90 y 139 minutos en
+# bici, el HIIT se quedó sin hacer por cansancio. El usuario: «el día de
+# piernas es demasiado tras montar en bici el fin de semana». La semana queda:
+#
+#   lunes          `dia_3`  «Día 1»  torso: lo más ligero para las piernas
+#   martes/miérc.  `dia_1`  «Día 2»  pierna + intervalos, con margen desde la bici
+#   viernes        `dia_2`  «Día 3»  bisagra + tirón + intervalos
+#
+# El CICLO no cambia: dia_1 -> dia_2 -> dia_3 -> dia_1 es el mismo que
+# dia_3 -> dia_1 -> dia_2. Reordenar la lista solo hace que se lea en el orden
+# de la semana y que el selector ofrezca las tres en ese orden. Lo que coloca
+# cada una en su día es lo EJECUTADO, así que la semana del 28/09 hay que
+# elegir en el selector para mover la fase -tras el `dia_1` de ese lunes, el
+# `dia_3` y después el `dia_2`-; luego se sostiene sola mientras la semana
+# tenga tres sesiones. Una semana de dos o de cuatro la vuelve a mover.
+#
+# LAS CLAVES NO SE RENOMBRARON, SOLO LOS TÍTULOS. Con las claves está guardado
+# todo lo que el sistema sabe: `workout_log`, las rachas de cada ejercicio, los
+# check-ins y las decisiones. Cambiarlas habría sido migrar la base entera para
+# que un nombre coincidiera con otro. Los títulos son lo único que ves -en Hevy,
+# en el selector, en el mensaje-, y en Hevy cambian solos en la siguiente
+# escritura de cada rutina. Consecuencia: en comentarios y documentos
+# anteriores a esta fecha, «Día N» es `dia_N`; desde aquí se nombran por clave.
 rotation:
-  order: [dia_1, dia_2, dia_3]
+  order: [dia_3, dia_1, dia_2]
 
 # -----------------------------------------------------------------------------
 # 7-bis. CICLISMO
@@ -1798,7 +1825,7 @@ cycling:
 hiit:
   # LOS BLOQUES HIIT APARTE SE RETIRARON EL 26/09/2026. Eran rutinas propias
   # en Hevy («Día 1 HIIT», «Día 2 HIIT») que el sistema añadía en verde y
-  # escribía aparte. El Día 2 se fusionó el 25/09 y el Día 1 el 26/09, por
+  # escribía aparte. El `dia_2` se fusionó el 25/09 y el `dia_1` el 26/09, por
   # decisión del usuario: una sola rutina que abrir en el gimnasio.
   #
   # El mecanismo de bloques sigue en el código, apagado, por si algún día se
@@ -1808,10 +1835,14 @@ hiit:
   # ahí no las leería nadie, y parecerían gobernar algo.
   enabled: false
 
-  # Día 3 (viernes) NUNCA lleva HIIT. Es la sesión ligera previa a la bici del
-  # fin de semana y esa función se pierde si se le añade intensidad. Lo vigila
-  # el validador sobre `embedded`: un intervalo declarado dentro del Día 3 no
-  # arranca.
+  # `dia_3` NUNCA lleva HIIT. Nació como la sesión ligera del viernes, previa a
+  # la bici del fin de semana; desde el 28/09/2026 es la del lunes, la que va
+  # justo DESPUÉS de la bici, y por eso sigue sin intervalos: es la que
+  # descansa las piernas. Lo vigila el validador sobre `embedded`: un intervalo
+  # declarado dentro del `dia_3` no arranca.
+  #
+  # El precio del orden nuevo, anotado para no olvidarlo: los intervalos de
+  # `dia_2` caen ahora el viernes, antes de la bici del sábado.
   never_routines: [dia_3]
 
   # Los intervalos de cada rutina, que viven DENTRO de ella. Sin esto nada
@@ -1851,7 +1882,7 @@ routines:
 
   # ---------------------------------------------------------------------------
   dia_1:
-    title: "Día 1"
+    title: "Día 2"
     hevy_routine_id: "29ce5818-5442-4a40-9e70-1e74904d5867"
     focus: "Tren inferior + core"
     # DECISIONES CERRADAS, no son omisiones (leído de la API el 07-09-2026):
@@ -1862,7 +1893,7 @@ routines:
     #   - El paseo del granjero a una mano va en el bloque de intervalos del
     #     final, que es donde toca.
     #   - El perro de caza pasó de 2 a 3 series el 07-09-2026; ya coincide con
-    #     el del Día 3.
+    #     el del `dia_3`.
     exercises:
 
       - key: prensa_horizontal
@@ -2027,9 +2058,9 @@ routines:
       # --- Bloque de intervalos, fijo desde el 26/09/2026 -------------------
       #
       # Hasta aquí esto era `hiit_dia_1`, una rutina aparte que solo se escribía
-      # en día verde. Se fusiona como se fusionó el Día 2 el 25/09: una sola
+      # en día verde. Se fusiona como se fusionó el `dia_2` el 25/09: una sola
       # rutina que abrir en el gimnasio. Lo mismo que se perdió allí se pierde
-      # aquí, y está escrito en el Día 2: ya NO es condicional (en ámbar está
+      # aquí, y está escrito en el `dia_2`: ya NO es condicional (en ámbar está
       # también, y el ámbar le recorta series como a todo), y si se quiere que
       # el ámbar lo quite, la pieza es `expendable_in_amber: true` en estos.
       #
@@ -2082,7 +2113,7 @@ routines:
 
   # ---------------------------------------------------------------------------
   dia_2:
-    title: "Día 2"
+    title: "Día 3"
     hevy_routine_id: "1f1b439c-a769-46e6-a83c-405fabfa3c96"
     focus: "Cadena posterior + espalda"
     exercises:
@@ -2255,7 +2286,7 @@ routines:
       #     ámbar; ahora está siempre. Si algún día se quiere recuperar ese
       #     comportamiento sin volver a partir la rutina, la pieza que hace
       #     falta ya existe y es `expendable_in_amber: true` en estos cuatro:
-      #     el ámbar los quitaría y el resto del Día 2 seguiría igual.
+      #     el ámbar los quitaría y el resto del `dia_2` seguiría igual.
       #   - Al moverlo dejó de recorrerlo la guarda de `safety.forbidden_in_hiit`,
       #     que solo miraba las rutinas de `hiit.blocks`. Desde la tarde del
       #     mismo 25/09 vuelve a recorrerlo porque los cuatro están declarados en
@@ -2293,7 +2324,7 @@ routines:
 
   # ---------------------------------------------------------------------------
   dia_3:
-    title: "Día 3"
+    title: "Día 1"
     hevy_routine_id: "05e27b0c-7c9e-484c-a9aa-1c78622bc0c2"
     focus: "Caderas + hombro + brazo + core"
     # Estuvo fuera del calendario fijo y por eso no progresó nunca; ahora es el
@@ -2414,13 +2445,13 @@ routines:
       # -----------------------------------------------------------------
 
       # PESO MUERTO RUMANO: EN PAUSA DESDE EL 28/09/2026, a petición del
-      # usuario, que prefiere el peso muerto normal del Día 2.
+      # usuario, que prefiere el peso muerto normal del `dia_2`.
       #
-      # El motivo: el 25/09 fue lo que más costó del Día 3 (`mas_costoso` en el
+      # El motivo: el 25/09 fue lo que más costó del `dia_3` (`mas_costoso` en el
       # feedback) y la extensión de espalda de detrás se quedó sin hacer por
       # «molestia lumbar». Ese mismo día estaba vigente `retirada_peso_muerto`
       # -disparada el 21/09 por molestia lumbar 6 y 5-, que quitaba el peso
-      # muerto del Día 2 y dejaba pasar éste, porque solo nombraba
+      # muerto del `dia_2` y dejaba pasar éste, porque solo nombraba
       # `peso_muerto_smith`. Dos bisagras de cadera, y la guarda de la hernia
       # apagaba una y dejaba la otra.
       #
@@ -2442,7 +2473,7 @@ routines:
       #   # SU template_id ESTÁ en `safety.forbidden_in_hiit.template_ids` y su
       #   # nombre casa además con el patrón /peso muerto|deadlift/. Las dos cosas
       #   # son correctas y ninguna lo bloquea aquí: esa guarda solo recorre las
-      #   # rutinas referenciadas desde `hiit.blocks`, y Día 3 no es una de ellas
+      #   # rutinas referenciadas desde `hiit.blocks`, y `dia_3` no es una de ellas
       #   # (además `hiit.never_routines` lo excluye). Prohibido con prisa y bajo
       #   # fatiga; admisible guiado, vigilado y en un día de fuerza.
       #   name: "Peso muerto rumano (máquina guiada)"
