@@ -1091,9 +1091,10 @@ progression:
     # pasando.
     #
     # El 18-09-2026 el Día 3 pasó de 11 ejercicios a 15, y con eso las dos colas
-    # quedan así: VOLUMEN 6 candidatos (4 de core + el rumano y la extensión de
-    # espalda, que están en modo `sets` y una serie más cuenta como volumen)
-    # para un cupo de 2; CARGA 9 candidatos para un cupo de 3. O sea tres
+    # quedaron así: VOLUMEN 6 candidatos (4 de core + el rumano y la extensión
+    # de espalda, que están en modo `sets` y una serie más cuenta como volumen)
+    # para un cupo de 2; CARGA 9 candidatos para un cupo de 3. (Desde el
+    # 28/09/2026 el rumano está en pausa y VOLUMEN tiene 5.) O sea tres
     # sesiones de Día 3 para dar una vuelta completa a cada cola, donde antes
     # eran dos. Nada se rompe -para eso está `waiting_longest`-, pero cada
     # ejercicio concreto tarda una sesión más en volver a tocarle el turno, y
@@ -1211,7 +1212,8 @@ progression:
 # están MARCADAS en Hevy. Son las primeras series de los 20 ejercicios de 4
 # series: 5 en Día 1, 6 en Día 2 y 9 en Día 3. Eran 18 hasta que el Día 3 ganó
 # cuatro ejercicios ese día, de los cuales dos -el peso muerto rumano y el
-# jalón de brazos rectos- traen su calentamiento marcado desde la app.
+# jalón de brazos rectos- traen su calentamiento marcado desde la app. El
+# rumano está en pausa desde el 28/09/2026: hoy son 8 en Día 3.
 #
 # Es decir: hoy manda la API y la heurística no llega a ejecutarse nunca. Se
 # mantiene como plan B por dos motivos concretos, no por simetría:
@@ -2411,34 +2413,54 @@ routines:
       # 0: un 0 es una afirmación sobre la carga y esto es la ausencia de dato.
       # -----------------------------------------------------------------
 
-      - key: peso_muerto_rumano
-        template_id: "0B9B92BA"
-        # NOMENCLATURA: en Hevy figura como "Romanian Deadlift (Smith Machine)"
-        # por el mismo motivo que `peso_muerto_smith` -el catálogo no tiene la
-        # Technogym-. Es la máquina de peso muerto guiada, a rango corto.
-        #
-        # SU template_id ESTÁ en `safety.forbidden_in_hiit.template_ids` y su
-        # nombre casa además con el patrón /peso muerto|deadlift/. Las dos cosas
-        # son correctas y ninguna lo bloquea aquí: esa guarda solo recorre las
-        # rutinas referenciadas desde `hiit.blocks`, y Día 3 no es una de ellas
-        # (además `hiit.never_routines` lo excluye). Prohibido con prisa y bajo
-        # fatiga; admisible guiado, vigilado y en un día de fuerza.
-        name: "Peso muerto rumano (máquina guiada)"
-        increment_kg: 5
-        apply_to: all_sets
-        clean_sessions_required: 2      # cadena posterior
-        # Mismo modo y mismo techo que `peso_muerto_smith`, y por lo mismo: en
-        # cadena posterior una serie más es más segura que 5 kg más, y aquí el
-        # volumen tampoco es gratis. `max_sets: 4` y no 5.
-        progression_type: sets
-        max_sets: 4
-        then: double
-        rep_range: [10, 12]
-        sets:
-          - {type: warmup, reps: 10}
-          - {reps: 12}
-          - {reps: 12}
-          - {reps: 12}
+      # PESO MUERTO RUMANO: EN PAUSA DESDE EL 28/09/2026, a petición del
+      # usuario, que prefiere el peso muerto normal del Día 2.
+      #
+      # El motivo: el 25/09 fue lo que más costó del Día 3 (`mas_costoso` en el
+      # feedback) y la extensión de espalda de detrás se quedó sin hacer por
+      # «molestia lumbar». Ese mismo día estaba vigente `retirada_peso_muerto`
+      # -disparada el 21/09 por molestia lumbar 6 y 5-, que quitaba el peso
+      # muerto del Día 2 y dejaba pasar éste, porque solo nombraba
+      # `peso_muerto_smith`. Dos bisagras de cadera, y la guarda de la hernia
+      # apagaba una y dejaba la otra.
+      #
+      # Por eso, si vuelve, no basta con descomentar el bloque: añádelo también
+      # a `retirada_peso_muerto.remove_exercises`. Si no, se pone rojo
+      # `test_la_retirada_del_peso_muerto_cubre_todos_los_de_las_rutinas`.
+      #
+      # Se quita de la rutina, y no se deja a cero series, porque el PUT de Hevy
+      # la reescribe entera desde aquí: así desaparece también de la app. Lo
+      # que el motor ya sabe de él (`exercise_targets`) se queda en la base con
+      # su clave y se vuelve a usar si vuelve con la misma. El bloque, tal cual:
+      #
+      # - key: peso_muerto_rumano
+      #   template_id: "0B9B92BA"
+      #   # NOMENCLATURA: en Hevy figura como "Romanian Deadlift (Smith Machine)"
+      #   # por el mismo motivo que `peso_muerto_smith` -el catálogo no tiene la
+      #   # Technogym-. Es la máquina de peso muerto guiada, a rango corto.
+      #   #
+      #   # SU template_id ESTÁ en `safety.forbidden_in_hiit.template_ids` y su
+      #   # nombre casa además con el patrón /peso muerto|deadlift/. Las dos cosas
+      #   # son correctas y ninguna lo bloquea aquí: esa guarda solo recorre las
+      #   # rutinas referenciadas desde `hiit.blocks`, y Día 3 no es una de ellas
+      #   # (además `hiit.never_routines` lo excluye). Prohibido con prisa y bajo
+      #   # fatiga; admisible guiado, vigilado y en un día de fuerza.
+      #   name: "Peso muerto rumano (máquina guiada)"
+      #   increment_kg: 5
+      #   apply_to: all_sets
+      #   clean_sessions_required: 2      # cadena posterior
+      #   # Mismo modo y mismo techo que `peso_muerto_smith`, y por lo mismo: en
+      #   # cadena posterior una serie más es más segura que 5 kg más, y aquí el
+      #   # volumen tampoco es gratis. `max_sets: 4` y no 5.
+      #   progression_type: sets
+      #   max_sets: 4
+      #   then: double
+      #   rep_range: [10, 12]
+      #   sets:
+      #     - {type: warmup, reps: 10}
+      #     - {reps: 12}
+      #     - {reps: 12}
+      #     - {reps: 12}
 
       - key: extension_espalda
         template_id: "091737FA"

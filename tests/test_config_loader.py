@@ -2238,3 +2238,64 @@ def test_una_errata_en_classification_fallback_no_se_ignora(cfg_copia):
     cfg_copia.raw["cycling"]["classification_fallback"]["declard"] = [_declarada()]
     err = errores(cfg_copia.raw)
     assert "cycling.classification_fallback" in err and "declard" in err, err
+
+
+# ---------------------------------------------------------------------------
+# La retirada del peso muerto tiene que cubrir TODOS los pesos muertos (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _pesos_muertos_de_las_rutinas(raw):
+    """Los ejercicios de las rutinas que son un peso muerto, por el mismo
+    criterio que la guarda del HIIT: su template_id está en el bloque de
+    variantes de peso muerto de `safety`, o su nombre casa con el patrón."""
+    import re
+
+    from app.config_loader import _strip_accents
+
+    prohibido = raw["safety"]["forbidden_in_hiit"]
+    ids = {
+        str(e["id"]).upper()
+        for e in prohibido["template_ids"]
+        if "deadlift" in str(e.get("name", "")).lower()
+    }
+    patrones = [
+        re.compile(p, re.IGNORECASE)
+        for p in prohibido["name_patterns"]
+        if "peso muerto" in p or "deadlift" in p
+    ]
+    assert ids and patrones, "safety ya no declara el peso muerto: esta guarda no vigila nada"
+    out = set()
+    for rkey, rutina in raw["routines"].items():
+        for ex in rutina.get("exercises") or []:
+            nombre = _strip_accents(str(ex.get("name", "")))
+            if str(ex.get("template_id") or "").upper() in ids or any(
+                p.search(nombre) for p in patrones
+            ):
+                out.add((rkey, ex["key"]))
+    return out
+
+
+def test_la_retirada_del_peso_muerto_cubre_todos_los_de_las_rutinas(cfg):
+    """El 25/09/2026 la regla estaba vigente -molestia lumbar 6 y 5 el 20 y el
+    21- y retiraba el peso muerto del Día 2; el Día 3 prescribió ese mismo día
+    un peso muerto RUMANO, que fue lo que más costó de la sesión, y la
+    extensión de espalda de detrás se quedó sin hacer por molestia lumbar. La
+    regla solo nombraba `peso_muerto_smith`: con una hernia L4-L5, la guarda
+    apagaba una bisagra de cadera y dejaba pasar la otra."""
+    regla = next(r for r in cfg.raw["special_rules"] if r["name"] == "retirada_peso_muerto")
+    retirados = set(regla["action"]["remove_exercises"])
+    sin_cubrir = sorted(
+        f"{rkey}.{clave}"
+        for rkey, clave in _pesos_muertos_de_las_rutinas(cfg.raw)
+        if clave not in retirados
+    )
+    assert not sin_cubrir, (
+        f"peso muerto en una rutina que `retirada_peso_muerto` no retira: {sin_cubrir}"
+    )
+
+
+def test_la_guarda_del_peso_muerto_reconoce_los_que_hay(cfg):
+    """Sin esto, un criterio que no reconociera ninguno dejaría la guarda de
+    arriba en verde para siempre."""
+    assert ("dia_2", "peso_muerto_smith") in _pesos_muertos_de_las_rutinas(cfg.raw)

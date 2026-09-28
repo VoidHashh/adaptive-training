@@ -281,6 +281,14 @@ mueven las cargas:
   la recomendación. **Qué vigilar:** si el mensaje dice «lo declarado para el
   … no se usa», o la salida no llegó de Garmin o sí traía datos (y entonces
   mandan ellos); en los dos casos la línea del YAML sobra.
+- **El peso muerto rumano del Día 3, en pausa (28/09/2026).** A petición del
+  usuario, que quiere de vuelta el peso muerto normal del Día 2. A ese lo quita
+  la retirada de 14 días disparada el 21/09, vigente hasta el 04/10. La
+  retirada solo nombraba el del Día 2, así que el 25/09 el Día 3 prescribió el
+  rumano con la regla vigente; ahora un test exige que cubra todo peso muerto
+  de las rutinas. **Qué vigilar:** cuando acabe la retirada, el Día 2 vuelve
+  con su peso muerto; si la molestia lumbar vuelve a 5 dos días seguidos, la
+  regla se dispara igual que antes.
 - **«Hoy» abre con la decisión del día** cuando ya está decidido, con el
   formulario plegado detrás de «Cambiar mis respuestas». La tarjeta dice Hevy y
   Telegram en palabras. Si al abrir se recalcula el día, la tarjeta se repinta.
