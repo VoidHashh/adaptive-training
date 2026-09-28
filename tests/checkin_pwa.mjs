@@ -643,6 +643,17 @@ for (const a of guion.acciones || []) {
     if (!b) throw new Error("no se está preguntando por la subida en rojo");
     disparar(b, "click");
     await drenar();
+  } else if (a.tipo === "regla-vigente" || a.tipo === "responder-regla") {
+    // Las dos por el BOTÓN, igual que el resto: lo que hay que demostrar es
+    // que pulsar acaba en el cuerpo del POST. Las en marcha viven en el
+    // formulario; las que saltan hoy, en el hueco de la previsualización.
+    const caja = elemento(a.tipo === "regla-vigente" ? "reglas-vigentes" : "previsualizacion");
+    const b = caja.querySelectorAll("[data-regla]")
+      .find((x) => x.getAttribute("data-regla") === a.nombre
+        && x.getAttribute("data-valor") === a.valor);
+    if (!b) throw new Error(`no hay botón '${a.valor}' para la regla '${a.nombre}'`);
+    disparar(b, "click");
+    await drenar();
   } else if (a.tipo === "abrir-desacuerdo") {
     const b = elemento("previsualizacion").querySelector(".abrir-desacuerdo");
     if (!b) throw new Error("la tarjeta no ofrece dónde declarar el desacuerdo");
@@ -802,6 +813,17 @@ console.log(JSON.stringify({
   // Todos los cuerpos previsualizados, en orden. Que la segunda no tape a la
   // primera vale también aquí.
   cuerpos_previsualizados: cuerposPrevisualizados,
+  // Las reglas en marcha pintadas en el formulario, con qué botón está
+  // pulsado, y las que se están preguntando en el hueco de la tarjeta.
+  reglas_vigentes: elemento("reglas-vigentes").querySelectorAll(".regla-vigente").map((b) => ({
+    nombre: b.getAttribute("data-regla-vigente"),
+    texto: b.textContent,
+    pulsado: b.querySelectorAll("[data-regla]")
+      .filter((x) => x.getAttribute("aria-pressed") === "true")
+      .map((x) => x.getAttribute("data-valor")),
+  })),
+  preguntas_regla: elemento("previsualizacion").querySelectorAll(".pregunta-regla")
+    .map((b) => b.getAttribute("data-pregunta-regla")),
   veces_previsualizado: cuerposPrevisualizados.length,
   // El texto del bloque del desacuerdo POR SEPARADO. Lo pedía una guarda que
   // buscaba «Queda apuntado» en la tarjeta ENTERA para comprobar que un

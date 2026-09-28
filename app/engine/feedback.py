@@ -64,8 +64,9 @@ RESPUESTAS_FALTA: dict[str, str] = {
 # con una hernia L4-L5 no son la misma noticia.
 MOLESTIAS = ("molestia_lumbar", "molestia_otra")
 
-# La única respuesta que cambia lo que el motor hace, y no solo lo que cuenta.
-# Un ejercicio que se hizo y no se apuntó NO es un ejercicio incumplido: la
+# Una de las dos respuestas que cambian lo que el motor hace, y no solo lo que
+# cuenta; la otra es «¿Hiciste el HIIT?», al final de este módulo. Un ejercicio
+# que se hizo y no se apuntó NO es un ejercicio incumplido: la
 # reconciliación lo estaba contando como fallo y rompiendo la racha por un
 # olvido de registro. Ver `app/runner.py`.
 HECHO_SIN_APUNTAR = "hecho_sin_apuntar"
@@ -152,9 +153,10 @@ def validar_ejercicios(entradas: Any) -> list[dict[str, Any]]:
 def sin_apuntar(ejercicios: list[dict[str, Any]] | None) -> set[str]:
     """Los ejercicios que se hicieron aunque no consten en Hevy.
 
-    Es lo único de este módulo que el motor consulta, y por eso va aquí y no en
-    una comprensión suelta dentro de `runner`: quien lea `HECHO_SIN_APUNTAR`
-    tiene que encontrar en el mismo sitio qué significa y quién lo usa.
+    Con `claves_de_intervalos`, es lo que el motor consulta de este módulo, y
+    por eso va aquí y no en una comprensión suelta dentro de `runner`: quien lea
+    `HECHO_SIN_APUNTAR` tiene que encontrar en el mismo sitio qué significa y
+    quién lo usa.
     """
     return {
         e["key"]
@@ -375,3 +377,53 @@ PREGUNTA_MAS_COSTOSO = "¿Cuál te costó más?"
 PREGUNTA_FALTA = "¿Por qué?"
 SIN_PROBLEMA = "Sin problema"
 NINGUNO_EN_ESPECIAL = "Ninguno en especial"
+
+
+# ---------------------------------------------------------------------------
+# ¿Hiciste el HIIT? (28/09/2026)
+# ---------------------------------------------------------------------------
+#
+# Desde el 25 y el 26 de septiembre los intervalos van DENTRO de `dia_1` y de
+# `dia_2`, y el formulario los listaba como cinco o cuatro ejercicios más. El
+# 28/09 el HIIT se quedó sin hacer porque el usuario llegó cansado de la bici
+# del fin de semana -«si estoy muy cansado, como hoy, no lo hago»-, y el
+# formulario habría preguntado «¿por qué?» cinco veces seguidas por una sola
+# decisión.
+#
+# Es UNA pregunta porque es UNA decisión: el bloque entero se hace o no se hace.
+# Y no es decorativa: con «no», los intervalos que faltan NO rompen su racha al
+# cerrar el día -se mantienen, como la última serie corta- porque dejarlos por
+# cansancio no dice nada de si podían con la dosis. Ver `app/runner.py`.
+
+PREGUNTA_HIIT = "¿Hiciste el HIIT?"
+# Los valores son los booleanos que se envían: la pantalla no traduce nada.
+OPCIONES_HIIT: tuple[dict[str, Any], ...] = (
+    {"valor": True, "etiqueta": "Sí"},
+    {"valor": False, "etiqueta": "No"},
+)
+
+
+def claves_de_intervalos(plan: dict[str, Any] | None, raw: dict[str, Any] | None) -> list[str]:
+    """Las claves de los ejercicios de intervalos que pedía el plan de ese día.
+
+    Dos procedencias, y las dos cuentan: los que `hiit.embedded` declara dentro
+    de la rutina planificada, y los del bloque aparte si el plan lo llevaba
+    (`hiit.enabled`, apagado desde el 26/09/2026 pero vivo en el código). Una
+    lista vacía es «ese día no había HIIT», y entonces no se pregunta.
+
+    Se mira el PLAN GUARDADO, no el config de hoy: un intervalo que el ámbar
+    quitó o una rutina cambiada después no pueden aparecer ni desaparecer de la
+    pregunta de un día que ya pasó.
+    """
+    plan = plan or {}
+    raw = raw or {}
+    embebidos = set(
+        ((raw.get("hiit") or {}).get("embedded") or {}).get(plan.get("routine")) or []
+    )
+    salida = [
+        str(e["key"]) for e in plan.get("exercises") or []
+        if e.get("key") in embebidos
+    ]
+    bloque = plan.get("hiit") or {}
+    salida += [str(e["key"]) for e in bloque.get("exercises") or [] if e.get("key")]
+    return salida

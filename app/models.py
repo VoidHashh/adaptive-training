@@ -312,6 +312,14 @@ class Checkin(Base):
 
     comments: Mapped[str | None] = mapped_column(Text)
 
+    # Lo contestado sobre las reglas especiales, en JSON: `{regla: aplicar |
+    # no_aplicar}` (28/09/2026). No es una respuesta del formulario y por eso
+    # `checkin_values` lo deja fuera: metido en `signals.values` sería un texto
+    # con voto en el color del día. Se guarda en la fila del día porque las
+    # decisiones que vengan después -el recálculo, el respaldo- tienen que
+    # respetar lo que se contestó por la mañana sin volver a preguntarlo.
+    reglas_json: Mapped[str | None] = mapped_column(Text)
+
 
 # ---------------------------------------------------------------------------
 # Salida del motor
@@ -1157,10 +1165,12 @@ class SessionFeedback(Base):
     Y por eso sus preguntas NO están en `checkin_sliders` del `config.yaml`.
     Estar en esa lista es tener permiso para mover el semáforo -lo dice el
     propio YAML, junto a `will_train`-, y estas respuestas describen una sesión
-    que ya ha pasado. Lo que sí hacen es dos cosas concretas, y por eso no son
+    que ya ha pasado. Lo que sí hacen es tres cosas concretas, y por eso no son
     decorativas: `rpe` cierra la evaluación de la sesión esa misma noche en vez
-    de esperar al `yesterday_rpe` de mañana, y un ejercicio marcado como «lo
-    hice y no lo apunté» deja de contar como incumplido en la reconciliación.
+    de esperar al `yesterday_rpe` de mañana, un ejercicio marcado como «lo
+    hice y no lo apunté» deja de contar como incumplido en la reconciliación, y
+    desde el 28/09/2026 un «no» a «¿Hiciste el HIIT?» mantiene la racha de los
+    intervalos que faltan en vez de romperla.
 
     LOS DOS RPE SON DOS MEDIDAS, NO UNA DUPLICADA
     ---------------------------------------------
@@ -1218,6 +1228,13 @@ class SessionFeedback(Base):
     # `respuesta` depende de `estado` y vive en `app/engine/feedback.py`, que es
     # quien lo valida: aquí solo se guarda ya validado.
     ejercicios_json: Mapped[str | None] = mapped_column(Text)
+
+    # «¿Hiciste el HIIT?», solo los días en que el plan llevaba intervalos. Tres
+    # estados: `None` es no contestado -o un día sin HIIT-, y no se confunde con
+    # un «no». Con `False`, los intervalos que faltan se MANTIENEN al cerrar el
+    # día en vez de romper su racha: dejarlos por cansancio no dice nada de si
+    # la dosis era la buena. Ver `feedback.claves_de_intervalos` y `runner`.
+    hiit_hecho: Mapped[bool | None] = mapped_column(Boolean)
 
     # Una línea libre, opcional. No la lee ningún cálculo y eso es deliberado:
     # su lector es el usuario dentro de tres meses, en el histórico de la

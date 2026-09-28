@@ -358,3 +358,109 @@ def test_despues_js_no_lleva_ni_una_pregunta_escrita():
         f"`despues.js` escribe preguntas en vez de recibirlas del servidor: "
         f"{preguntas}. Van en `app/engine/feedback.py`"
     )
+
+
+# ---------------------------------------------------------------------------
+# «¿Hiciste el HIIT?» (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _con_hiit(**cambios) -> dict:
+    """Un día de pierna con sus intervalos dentro: dos de fuerza y dos de HIIT,
+    y de los de HIIT no consta ninguno en Hevy."""
+    from app.engine.feedback import OPCIONES_HIIT, PREGUNTA_HIIT
+
+    ejercicios = [
+        {"key": "prensa_horizontal", "name": "Prensa horizontal", "estado": HECHO,
+         "respuesta": None, "hiit": False},
+        {"key": "gemelo_sentado", "name": "Gemelo sentado", "estado": FALTA,
+         "respuesta": None, "hiit": False},
+        {"key": "air_bike", "name": "Air bike", "estado": FALTA,
+         "respuesta": None, "hiit": True},
+        {"key": "wall_ball", "name": "Wall ball", "estado": FALTA,
+         "respuesta": None, "hiit": True},
+    ]
+    return _sesion(
+        ejercicios=ejercicios,
+        hiit={"enunciado": PREGUNTA_HIIT, "opciones": list(OPCIONES_HIIT)},
+        **cambios,
+    )
+
+
+def test_sin_contestar_los_intervalos_no_se_preguntan_uno_a_uno(tmp_path):
+    """El 28/09 el HIIT se dejó entero por cansancio, y el formulario habría
+    preguntado «¿por qué?» por cada intervalo. La pregunta va arriba y manda."""
+    out = _pulsar(tmp_path, _con_hiit(), [{"cargar": True}])
+    assert out["hiit"]["enunciado"] == "¿Hiciste el HIIT?"
+    assert out["hiit"]["sin_contestar"] is True
+    assert out["faltan"] == ["Gemelo sentado"], out["faltan"]
+
+
+def test_con_un_no_se_envia_false_y_los_intervalos_no_viajan_con_respuesta(tmp_path):
+    out = _pulsar(tmp_path, _con_hiit(), [
+        {"cargar": True},
+        {"hiit": False},
+        {"guardar": True},
+    ])
+    assert out["hiit"]["pulsado"] == ["false"]
+    assert out["faltan"] == ["Gemelo sentado"]
+    c = out["cuerpo"]
+    assert c["hiit_hecho"] is False
+    por_clave = {e["key"]: e for e in c["ejercicios"]}
+    assert set(por_clave) == {"prensa_horizontal", "gemelo_sentado", "air_bike", "wall_ball"}, (
+        "los intervalos se esconden de la pantalla, no del envío: el servidor "
+        "necesita saber que estaban en el plan"
+    )
+    assert por_clave["air_bike"]["respuesta"] is None
+
+
+def test_con_un_si_los_intervalos_se_preguntan_como_los_demas(tmp_path):
+    out = _pulsar(tmp_path, _con_hiit(), [
+        {"cargar": True},
+        {"hiit": True},
+        {"respuesta": "wall_ball", "valor": "sin_tiempo"},
+        {"guardar": True},
+    ])
+    assert out["faltan"] == ["Gemelo sentado", "Air bike", "Wall ball"]
+    assert out["cuerpo"]["hiit_hecho"] is True
+    por_clave = {e["key"]: e for e in out["cuerpo"]["ejercicios"]}
+    assert por_clave["wall_ball"]["respuesta"] == "sin_tiempo"
+
+
+def test_pulsar_dos_veces_el_hiit_vuelve_a_sin_contestar_y_no_viaja(tmp_path):
+    out = _pulsar(tmp_path, _con_hiit(), [
+        {"cargar": True},
+        {"hiit": True},
+        {"hiit": True},
+        {"guardar": True},
+    ])
+    assert out["hiit"]["sin_contestar"] is True
+    assert "hiit_hecho" not in out["cuerpo"]
+
+
+def test_un_no_al_hiit_borra_lo_contestado_de_un_intervalo(tmp_path):
+    """Contestado primero «sí» con un motivo en el wall ball, y rectificado
+    después a «no»: ese motivo explicaría un ejercicio que se acaba de decir
+    que no se hizo."""
+    hoy = _con_hiit(guardado={"enviado": True, "hiit_hecho": True})
+    hoy["ejercicios"][3]["respuesta"] = "sin_tiempo"
+    out = _pulsar(tmp_path, hoy, [
+        {"cargar": True},
+        {"hiit": False},
+        {"guardar": True},
+    ])
+    por_clave = {e["key"]: e for e in out["cuerpo"]["ejercicios"]}
+    assert por_clave["wall_ball"]["respuesta"] is None
+
+
+def test_lo_guardado_se_precarga_en_la_pregunta_del_hiit(tmp_path):
+    out = _pulsar(tmp_path, _con_hiit(guardado={"enviado": True, "hiit_hecho": False}),
+                  [{"cargar": True}])
+    assert out["hiit"]["pulsado"] == ["false"]
+    assert out["hiit"]["sin_contestar"] is False
+
+
+def test_un_dia_sin_intervalos_no_pregunta_por_el_hiit(tmp_path):
+    out = _pulsar(tmp_path, _sesion(hiit=None), [{"cargar": True}, {"guardar": True}])
+    assert out["hiit"] is None
+    assert "hiit_hecho" not in out["cuerpo"]

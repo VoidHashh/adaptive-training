@@ -580,6 +580,22 @@ HUELLAS_DEL_ARMAZON = {
     # Hevy no se escribe porque lo decide el servidor, y lo que se pulse en el
     # control el motor lo ignora ese día y no lo apunta como anulación.
     "v29": "563b309499b80dc86f9d4a91185028006e8a006d4dab8075280ffad61f0705bf",
+    # v30: las reglas especiales se aprueban en el check-in -las en marcha se
+    # pueden quitar desde el formulario, y una que salta hoy se pregunta antes
+    # de decidir- y «¿Hiciste el HIIT?» en la pantalla de después. Toca
+    # `index.html`, `app.js`, `despues.html`, `despues.js` y `styles.css`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA GRAVE, y a la vista. El día que salta
+    # una regla, el servidor contesta al check-in con un 409 que la pantalla
+    # vieja no sabe leer: lo pinta como «el servidor ha rechazado el check-in»
+    # con el JSON crudo, y el check-in NO se guarda. Si nadie recarga, el día lo
+    # decide el respaldo sin formulario, y sin la lumbar de hoy la regla no
+    # salta: la dirección equivocada con una hernia L4-L5. Se ve -es un error
+    # en rojo con el nombre de la regla-, y se arregla recargando. El resto es
+    # LEVE: sin el bloque de reglas en marcha no hay por dónde quitarlas, y sin
+    # la pregunta del HIIT el formulario de después pregunta por cada intervalo
+    # como antes.
+    "v30": "c0147f7fb394f4576049cdab6ae026817dc4556595457c93c7eb568f0cd98763",
 }
 
 
@@ -4788,3 +4804,107 @@ def test_el_dia_de_bici_sin_nivel_sigue_diciendo_que_sales(tmp_path, bike, trozo
     assert "sigue tocando Día 1" in texto, texto[:400]
     if trozo:
         assert trozo in texto
+
+
+# ---------------------------------------------------------------------------
+# Las reglas especiales en el check-in (28/09/2026)
+# ---------------------------------------------------------------------------
+
+_OPCIONES_VIGENTE = [
+    {"valor": "aplicar", "etiqueta": "Mantener"},
+    {"valor": "no_aplicar", "etiqueta": "Quitar hoy"},
+]
+_OPCIONES_NUEVA = [
+    {"valor": "aplicar", "etiqueta": "Aplicar"},
+    {"valor": "no_aplicar", "etiqueta": "No aplicar"},
+]
+
+
+def _retirada_vigente() -> dict:
+    return {
+        "nombre": "retirada_peso_muerto",
+        "descripcion": "Con molestia lumbar >= 5 dos días consecutivos, se retira el peso muerto.",
+        "motivo": "lower_discomfort cumplió {'gte': 5} durante 2 día(s)",
+        "desde": "2026-09-21", "hasta": "2026-10-04",
+        "opciones": _OPCIONES_VIGENTE,
+    }
+
+
+def _pregunta_de_regla() -> dict:
+    return {"status": 409, "respuesta": {"detail": {
+        "reglas_por_confirmar": [{
+            "nombre": "retirada_peso_muerto",
+            "descripcion": "Con molestia lumbar >= 5 dos días consecutivos, se retira el peso muerto.",
+            "motivo": "lower_discomfort cumplió {'gte': 5} durante 2 día(s)",
+            "hasta": "2026-09-28", "vigente_hasta": None,
+        }],
+        "opciones": _OPCIONES_NUEVA,
+        "ejecutado": False, "checkin_guardado": False, "decision_guardada": False,
+        "hevy": "sin tocar", "telegram": "sin tocar",
+    }}}
+
+
+def test_una_regla_en_marcha_sale_en_el_formulario_y_sin_tocar_no_viaja(tmp_path):
+    """Sin respuesta sigue: mantenerla es lo que ya se aprobó el día que saltó."""
+    out = _rellenar(tmp_path, _hoy(reglas_vigentes=[_retirada_vigente()]), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 4},
+        {"tipo": "enviar"},
+    ])
+    (v,) = out["reglas_vigentes"]
+    assert v["nombre"] == "retirada_peso_muerto"
+    assert "4/10" in v["texto"] and "peso muerto" in v["texto"]
+    assert v["pulsado"] == []
+    assert "reglas" not in out["cuerpo"]
+
+
+def test_quitar_hoy_una_regla_en_marcha_viaja_en_el_envio(tmp_path):
+    """El caso del 28/09: la lumbar en 1 y el peso muerto de vuelta."""
+    out = _rellenar(tmp_path, _hoy(reglas_vigentes=[_retirada_vigente()]), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 4},
+        {"tipo": "regla-vigente", "nombre": "retirada_peso_muerto", "valor": "no_aplicar"},
+        {"tipo": "enviar"},
+    ])
+    assert out["reglas_vigentes"][0]["pulsado"] == ["no_aplicar"]
+    assert out["cuerpo"]["reglas"] == {"retirada_peso_muerto": "no_aplicar"}
+
+
+def test_pulsar_dos_veces_una_regla_la_deja_sin_contestar(tmp_path):
+    out = _rellenar(tmp_path, _hoy(reglas_vigentes=[_retirada_vigente()]), [
+        {"tipo": "regla-vigente", "nombre": "retirada_peso_muerto", "valor": "no_aplicar"},
+        {"tipo": "regla-vigente", "nombre": "retirada_peso_muerto", "valor": "no_aplicar"},
+        {"tipo": "deslizar", "key": "fatigue", "valor": 4},
+        {"tipo": "enviar"},
+    ])
+    assert out["reglas_vigentes"][0]["pulsado"] == []
+    assert "reglas" not in out["cuerpo"]
+
+
+def test_lo_ya_contestado_hoy_sobre_una_regla_se_precarga(tmp_path):
+    out = _rellenar(tmp_path, _hoy(
+        reglas_vigentes=[_retirada_vigente()],
+        reglas_respondidas={"retirada_peso_muerto": "aplicar"},
+    ), [{"tipo": "deslizar", "key": "fatigue", "valor": 4}, {"tipo": "enviar"}])
+    assert out["reglas_vigentes"][0]["pulsado"] == ["aplicar"]
+    assert out["cuerpo"]["reglas"] == {"retirada_peso_muerto": "aplicar"}
+
+
+def test_una_regla_que_salta_se_pregunta_y_la_respuesta_vuelve_a_previsualizar(tmp_path):
+    """El 409 no es una avería: es la pregunta. Contestada, se vuelve a mirar
+    con la respuesta dentro, y la tarjeta que sale es la de la sesión."""
+    out = _mirar(
+        tmp_path,
+        [{"tipo": "responder-regla", "nombre": "retirada_peso_muerto", "valor": "aplicar"}],
+        previsualizaciones=[_pregunta_de_regla(), {"status": 200, "respuesta": None}],
+    )
+    primera, segunda = out["cuerpos_previsualizados"]
+    assert "reglas" not in primera
+    assert segunda["reglas"] == {"retirada_peso_muerto": "aplicar"}
+    assert out["preguntas_regla"] == [], "contestada, la pregunta ya no está en pantalla"
+
+
+def test_la_pregunta_de_la_regla_no_se_pinta_como_un_fallo(tmp_path):
+    out = _mirar(tmp_path, previsualizaciones=[_pregunta_de_regla()])
+    assert out["preguntas_regla"] == ["retirada_peso_muerto"]
+    assert "mal" not in out["previsualizacion"]["clase"]
+    assert "No se aplica sin que digas que sí" in out["previsualizacion"]["texto"]
+    assert "28/9" in out["previsualizacion"]["texto"]

@@ -1494,3 +1494,94 @@ def test_el_dia_1_lleva_sus_intervalos_dentro_y_ninguna_sesion_aparte(cfg, senal
     assert d.session.hiit is None, "ha vuelto a salir un bloque HIIT aparte"
     claves = {e["key"] for e in d.session.exercises}
     assert set(cfg.raw["hiit"]["embedded"]["dia_1"]) <= claves
+
+
+# ---------------------------------------------------------------------------
+# Las reglas especiales se aprueban en el check-in (28/09/2026)
+# ---------------------------------------------------------------------------
+#
+# `retirada_peso_muerto` saltó el 21/09 y quitó el peso muerto catorce días sin
+# preguntar. El usuario: «esos puntos deben de aparecer en el cuestionario antes
+# de aceptar la rutina del día».
+
+
+def _lumbar_a_5():
+    return Signals(day=JUEVES, values={"lower_discomfort": 5}, history=hist_lumbar(JUEVES, 5))
+
+
+def _con_la_retirada_de_antes(cfg):
+    """El estado de una semana después de que saltara, con la regla en marcha."""
+    st = advance_state(EngineState(), decide(cfg, JUEVES, _lumbar_a_5(), EngineState()), executed=None)
+    assert "retirada_peso_muerto" in [r.name for r in st.active_rules], "el montaje"
+    return st
+
+
+def test_con_alguien_delante_una_regla_que_salta_se_pregunta(cfg):
+    from app.engine.decision import ReglasPorConfirmar
+
+    with pytest.raises(ReglasPorConfirmar) as exc:
+        decide(cfg, JUEVES, _lumbar_a_5(), EngineState(), preguntar_reglas=True)
+    (p,) = exc.value.pendientes
+    assert p["nombre"] == "retirada_peso_muerto"
+    assert p["hasta"] == (JUEVES + timedelta(days=13)).isoformat()
+    assert "peso muerto" in p["descripcion"], "la pregunta tiene que decir qué hace la regla"
+    assert p["vigente_hasta"] is None
+
+
+def test_aprobada_se_aplica(cfg):
+    d = decide(cfg, JUEVES, _lumbar_a_5(), EngineState(),
+               respuestas_reglas={"retirada_peso_muerto": "aplicar"}, preguntar_reglas=True)
+    assert "retirada_peso_muerto" in [r.name for r in d.active_rules]
+    assert d.to_dict()["respuestas_reglas"] == {"retirada_peso_muerto": "aplicar"}
+
+
+def test_rechazada_no_se_aplica_y_queda_dicho(cfg):
+    d = decide(cfg, JUEVES, _lumbar_a_5(), EngineState(),
+               respuestas_reglas={"retirada_peso_muerto": "no_aplicar"}, preguntar_reglas=True)
+    assert "retirada_peso_muerto" not in [r.name for r in d.active_rules]
+    assert any("dijiste que no se aplicara" in n for n in d.notes), d.notes
+
+
+def test_sin_nadie_delante_se_aplica_y_se_dice(cfg):
+    """El respaldo de la mañana o un recálculo. Ante la duda, con una hernia
+    L4-L5, el ejercicio se retira: y la nota dice que no se preguntó."""
+    d = decide(cfg, JUEVES, _lumbar_a_5(), EngineState())
+    assert "retirada_peso_muerto" in [r.name for r in d.active_rules]
+    assert any("sin tu respuesta" in n for n in d.notes), d.notes
+
+
+def test_una_regla_en_marcha_se_levanta_desde_el_check_in(cfg):
+    """El caso del 28/09: la lumbar ya en 1 y el peso muerto de vuelta."""
+    st = _con_la_retirada_de_antes(cfg)
+    despues = JUEVES + timedelta(days=7)
+    viene_del_dia_1 = EngineState(
+        active_rules=st.active_rules, last_strength=("dia_1", despues - timedelta(days=1)),
+    )
+    d = decide(cfg, despues, sig(despues, lower_discomfort=1), viene_del_dia_1,
+               respuestas_reglas={"retirada_peso_muerto": "no_aplicar"}, preguntar_reglas=True)
+    assert "retirada_peso_muerto" not in [r.name for r in d.active_rules]
+    assert d.session.routine_key == "dia_2"
+    assert "peso_muerto_smith" in [e.get("key") for e in d.session.exercises]
+    assert any("levantada en el check-in" in n for n in d.notes), d.notes
+
+
+def test_una_regla_en_marcha_sin_respuesta_sigue_y_no_pregunta(cfg):
+    """Mantenerla es lo que ya se aprobó: no se vuelve a preguntar cada día."""
+    st = _con_la_retirada_de_antes(cfg)
+    despues = JUEVES + timedelta(days=7)
+    d = decide(cfg, despues, sig(despues, lower_discomfort=1), st, preguntar_reglas=True)
+    assert "retirada_peso_muerto" in [r.name for r in d.active_rules]
+
+
+def test_alargar_una_regla_en_marcha_tambien_se_pregunta(cfg):
+    from app.engine.decision import ReglasPorConfirmar
+
+    st = _con_la_retirada_de_antes(cfg)
+    otra_vez = JUEVES + timedelta(days=5)
+    señales = Signals(day=otra_vez, values={"lower_discomfort": 6},
+                      history=hist_lumbar(otra_vez, 6))
+    with pytest.raises(ReglasPorConfirmar) as exc:
+        decide(cfg, otra_vez, señales, st, preguntar_reglas=True)
+    (p,) = exc.value.pendientes
+    assert p["vigente_hasta"] == (JUEVES + timedelta(days=13)).isoformat()
+    assert p["hasta"] == (otra_vez + timedelta(days=13)).isoformat()

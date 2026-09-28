@@ -70,6 +70,57 @@ from app.engine.signals import (
 
 DELOAD_RULE = "semana_de_descarga"
 
+# ---------------------------------------------------------------------------
+# LAS REGLAS ESPECIALES SE APRUEBAN EN EL CHECK-IN (28/09/2026)
+# ---------------------------------------------------------------------------
+#
+# `retirada_peso_muerto` saltó el 21/09 con la lumbar en 6 y en 5 y quitó el
+# peso muerto catorce días sin que nadie lo preguntara. El usuario se enteró por
+# el Telegram y, una semana después y con la lumbar en 3, 1, 3, 2 y 1, quiso el
+# peso muerto de vuelta y no había por dónde pedirlo: «esa regla no entiendo por
+# qué se determina sin mi aprobación, esos puntos deben de aparecer en el
+# cuestionario antes de aceptar la rutina del día».
+#
+# Ahora hay dos preguntas, con las mismas dos respuestas:
+#   - una regla que SALTA hoy -o que alarga su plazo- no se aplica sin respuesta
+#     cuando hay alguien delante (el check-in y la previsualización): el motor
+#     lanza `ReglasPorConfirmar` y la pantalla pregunta. Sin nadie delante -el
+#     respaldo de la mañana, un recálculo- se aplica y se dice: con una hernia
+#     L4-L5, ante la duda se retira el ejercicio, no se deja.
+#   - una regla que YA estaba en marcha sigue sola, y el formulario la enseña
+#     con la opción de levantarla hoy.
+# La descarga no entra: es de calendario, la gobierna `_deload_status` y no
+# retira nada por un síntoma.
+REGLA_APLICAR = "aplicar"
+REGLA_NO_APLICAR = "no_aplicar"
+RESPUESTAS_A_REGLAS = (REGLA_APLICAR, REGLA_NO_APLICAR)
+
+
+class ReglasPorConfirmar(Exception):
+    """Hoy salta una regla especial y nadie ha dicho si se aplica.
+
+    Revienta en vez de aplicarla o de ignorarla por lo mismo que
+    `ConfirmacionNecesaria`: con alguien delante, decidir por él cualquiera de
+    las dos cosas es dar una rutina con cara de ser la otra. Lleva lo necesario
+    para que la API pinte la pregunta sin volver a calcular nada.
+    """
+
+    def __init__(self, pendientes: list[dict[str, Any]]):
+        super().__init__(
+            "reglas especiales por confirmar: "
+            + ", ".join(p["nombre"] for p in pendientes)
+        )
+        self.pendientes = pendientes
+
+
+def descripcion_de_regla(config: Any, nombre: str) -> str:
+    """La `description` del YAML, en una línea: es lo que se le enseña al usuario."""
+    raw = config.raw if hasattr(config, "raw") else config
+    for regla in (raw or {}).get("special_rules") or []:
+        if regla.get("name") == nombre:
+            return " ".join(str(regla.get("description") or nombre).split())
+    return nombre
+
 
 # ---------------------------------------------------------------------------
 # Estado que el motor recuerda entre días
@@ -329,6 +380,11 @@ class DayDecision:
     # `va_a_entrenar`: el `None` es «no me lo han dicho» y es todo el histórico
     # anterior a que el selector existiera.
     sesion_elegida: str | None = None
+    # Lo contestado en el check-in sobre las reglas especiales, tal cual:
+    # `{regla: aplicar|no_aplicar}`. Va en la foto por lo mismo que
+    # `sesion_elegida`: una regla levantada a mano tiene que poder leerse en la
+    # decisión que levantó, no reconstruirse desde el estado final del día.
+    respuestas_reglas: dict[str, str] = field(default_factory=dict)
     active_rules: list[ActiveRule] = field(default_factory=list)
     progression: ProgressionPlan | None = None
     # La progresión del BLOQUE HIIT, que es un plan entero y aparte, no un
@@ -445,6 +501,7 @@ class DayDecision:
             # tres es el día normal.
             "propuesta": self.propuesta,
             "sesion_elegida": self.sesion_elegida,
+            "respuestas_reglas": dict(sorted(self.respuestas_reglas.items())),
             "source": self.source,
             "config_hash": self.config_hash,
             "inputs": self.signals.snapshot(),
@@ -584,6 +641,8 @@ def evaluate_special_rules(
     signals: Signals,
     day: date,
     state: EngineState,
+    respuestas: dict[str, str] | None = None,
+    preguntar: bool = False,
 ) -> tuple[list[ActiveRule], list[str]]:
     """Reglas especiales vigentes hoy: las que siguen corriendo y las nuevas.
 
@@ -591,22 +650,36 @@ def evaluate_special_rules(
     hoy aunque hoy la molestia lumbar sea 0. Ese es justo su propósito: dar un
     margen de descanso que no se cancele al primer día que uno se encuentra
     bien. Por eso primero se arrastran las vigentes y solo después se miran los
-    disparadores.
+    disparadores. Desde el 28/09/2026 ese margen lo puede levantar el usuario,
+    y solo él: con `no_aplicar` en `respuestas` (ver `REGLA_NO_APLICAR`).
 
-    Re-disparar una regla ya vigente EXTIENDE su ventana, no la duplica.
+    Re-disparar una regla ya vigente EXTIENDE su ventana, no la duplica, y
+    alargarla es una decisión nueva: pide respuesta igual que activarla.
+
+    `respuestas` son las del check-in de hoy, `{regla: aplicar|no_aplicar}`.
+    `preguntar` dice si hay alguien delante: con `True`, una regla que salta
+    sin respuesta lanza `ReglasPorConfirmar`; con `False` se aplica y la nota
+    lo dice.
     """
     raw = config.raw if hasattr(config, "raw") else config
     notes: list[str] = []
+    respuestas = dict(respuestas or {})
+    pendientes: list[dict[str, Any]] = []
 
     # 1. las que vienen de días anteriores y aún no han caducado
     active: dict[str, ActiveRule] = {}
     for r in state.active_rules:
         if r.name == DELOAD_RULE:
             continue  # la descarga la gobierna `_deload_status`, no la herencia
-        if r.covers(day):
-            active[r.name] = copy.deepcopy(r)
-        else:
+        if not r.covers(day):
             notes.append(f"regla '{r.name}' caducada el {r.active_until}")
+        elif respuestas.get(r.name) == REGLA_NO_APLICAR:
+            notes.append(
+                f"regla '{r.name}' levantada en el check-in de hoy "
+                f"(iba hasta el {r.active_until})"
+            )
+        else:
+            active[r.name] = copy.deepcopy(r)
 
     # 2. las que disparan hoy
     for rule in raw.get("special_rules", []) or []:
@@ -624,6 +697,33 @@ def evaluate_special_rules(
         reason = f"{src} cumplió {trigger.get('when')} durante {trigger.get('consecutive_days', 1)} día(s)"
 
         prev = active.get(name)
+        respuesta = respuestas.get(name)
+        if respuesta == REGLA_NO_APLICAR:
+            # Levantada en el paso 1 si venía de antes, y aquí no se vuelve a
+            # activar: el «no» es a la regla de hoy, venga de donde venga.
+            notes.append(
+                f"regla '{name}' habría saltado hoy ({reason}) y en el check-in "
+                f"dijiste que no se aplicara"
+            )
+            continue
+        if respuesta != REGLA_APLICAR:
+            if preguntar:
+                pendientes.append({
+                    "nombre": name,
+                    "descripcion": descripcion_de_regla(config, name),
+                    "motivo": reason,
+                    "hasta": until.isoformat(),
+                    # Si ya estaba vigente, lo que se pregunta es si se ALARGA.
+                    "vigente_hasta": (
+                        prev.active_until.isoformat()
+                        if prev is not None and prev.active_until else None
+                    ),
+                })
+                continue
+            notes.append(
+                f"regla '{name}' aplicada sin tu respuesta: no había nadie delante "
+                f"para preguntarlo, y la pregunta saldrá en el próximo check-in"
+            )
         if prev is not None:
             # Ya estaba vigente: se extiende la cola, no se crea otra.
             if prev.active_until is None or until > prev.active_until:
@@ -641,6 +741,8 @@ def evaluate_special_rules(
         )
         notes.append(f"regla '{name}' ACTIVADA hasta {until} ({reason})")
 
+    if pendientes:
+        raise ReglasPorConfirmar(pendientes)
     return sorted(active.values(), key=lambda r: r.name), notes
 
 
@@ -803,8 +905,14 @@ def decide(
     state: EngineState | None = None,
     source: str = "checkin",
     sesion_pedida: SesionPedida | None = None,
+    respuestas_reglas: dict[str, str] | None = None,
+    preguntar_reglas: bool = False,
 ) -> DayDecision:
     """Decide el día completo.
+
+    `respuestas_reglas` y `preguntar_reglas`: lo contestado en el check-in
+    sobre las reglas especiales, y si hay alguien delante para preguntar lo que
+    falte. Ver `evaluate_special_rules` y `ReglasPorConfirmar`.
 
     `signals` ya viene construido por `build_signals` a partir de Garmin, Hevy
     y el check-in. `state` es lo que el motor recuerda; si falta se asume un
@@ -850,7 +958,10 @@ def decide(
     light = light_decision.light
 
     # --- 2. reglas especiales y descarga ------------------------------------
-    active_rules, rule_notes = evaluate_special_rules(config, signals, day, state)
+    active_rules, rule_notes = evaluate_special_rules(
+        config, signals, day, state,
+        respuestas=respuestas_reglas, preguntar=preguntar_reglas,
+    )
     notes.extend(rule_notes)
 
     deload = _deload_status(config, day, state, light)
@@ -883,11 +994,14 @@ def decide(
     # SIEMPRE HAY RUTINA, Y NO DEPENDE DE LO QUE SE HAYA CONTESTADO.
     #
     # No existe el día sin fuerza asignada. Existe el día en que se dice que no
-    # se va al gimnasio, el día en que se elige salir en bici y el día en que se
-    # entrena otra cosa, y en los tres se planifica una rutina igual y se escribe
-    # en Hevy igual. Lo que cambia es si el mensaje la PRESCRIBE.
+    # se va al gimnasio y el día en que se entrena otra cosa, y en los dos se
+    # planifica una rutina igual y se escribe en Hevy igual. Lo que cambia es si
+    # el mensaje la PRESCRIBE. La EXCEPCIÓN es elegir «Bici», desde el
+    # 26/09/2026: el usuario dijo que ese día no va al gimnasio, y no se escribe
+    # nada (ver `dia_de_bici` más abajo y `session_builder.BICI`). La rotación
+    # sigue sabiendo qué toca: lo que no se hace es escribirlo.
     #
-    # El motivo es el mismo en los tres casos y es el de siempre: a las siete de
+    # El motivo es el mismo en los dos casos y es el de siempre: a las siete de
     # la mañana se contesta una intención, y a las siete de la tarde se cambia de
     # idea. Si la escritura dependiera de la respuesta, cambiar de idea
     # significaría abrir Hevy y encontrar la rutina de hace dos semanas, con los
@@ -1067,6 +1181,7 @@ def decide(
         rotation_routine=rotation_routine,
         propuesta=propuesta,
         sesion_elegida=sesion_elegida,
+        respuestas_reglas=dict(respuestas_reglas or {}),
         active_rules=active_rules,
         progression=progression,
         progression_hiit=progression_hiit,
@@ -1228,8 +1343,10 @@ def apply_execution(
     `mantener` son los que no salieron limpios SOLO porque la última serie se
     quedó corta de reps (`hevy.ultima_serie_corta`). Su racha no suma y no se
     borra, por decisión del usuario del 25/09/2026: esa sesión «es válida,
-    pero no cuenta para el próximo día». Obligatorio por lo mismo que
-    `progressed`: un olvido aquí no fallaría, borraría rachas en silencio.
+    pero no cuenta para el próximo día». Desde el 28/09/2026 entran también los
+    intervalos que faltan un día en que se contestó «no» a «¿Hiciste el HIIT?»
+    (ver `run_reconcile`). Obligatorio por lo mismo que `progressed`: un olvido
+    aquí no fallaría, borraría rachas en silencio.
     """
     if light is not None:
         state.last_routine_light[routine_key] = light
@@ -1245,15 +1362,16 @@ def apply_execution(
             state.clean_sessions[scoped] = state.clean_sessions.get(scoped, 0) + 1
         elif key in mantener:
             # Ni suma ni se borra: la última serie no salió entera y todo lo
-            # demás sí. `compliance` queda en False, que es lo que cierra la
-            # puerta de mañana -«seguiría siendo 12/12/12»-; la racha se
-            # queda donde estaba para la próxima sesión completa.
+            # demás sí, o es un intervalo que se dejó por decisión.
+            # `compliance` queda en False, que es lo que cierra la puerta de
+            # mañana -«seguiría siendo 12/12/12»-; la racha se queda donde
+            # estaba para la próxima sesión completa.
             pass
         else:
             # La racha se rompe entera. Es el punto: "sesiones limpias
             # CONSECUTIVAS". Decrementar en vez de resetear convertiría el
             # requisito en una media, que es otra cosa. La única excepción es la
-            # de arriba, y es una sola.
+            # de arriba: `mantener`, con los dos motivos de su docstring.
             state.clean_sessions[scoped] = 0
 
     # La cola de los cupos avanza aquí, con el resto de rachas, y no al

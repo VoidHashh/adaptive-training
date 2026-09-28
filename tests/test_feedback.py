@@ -317,3 +317,31 @@ class TestElecciones:
         for tabla in (CANTIDAD, TECNICA):
             for clave, etiqueta in tabla.items():
                 assert etiqueta.strip(), clave
+
+
+# ---------------------------------------------------------------------------
+# Qué intervalos pedía el plan: la base de «¿Hiciste el HIIT?» (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_los_intervalos_de_un_plan_salen_de_dentro_y_del_bloque_aparte():
+    """Las dos procedencias cuentan: los que `hiit.embedded` declara dentro de
+    la rutina, y los del bloque aparte si el plan lo llevaba. Los bloques están
+    apagados desde el 26/09/2026, pero el mecanismo sigue vivo en el código."""
+    from app.engine.feedback import claves_de_intervalos
+
+    raw = {"hiit": {"embedded": {"dia_1": ["air_bike"]}}}
+    plan = {
+        "routine": "dia_1",
+        "exercises": [{"key": "prensa"}, {"key": "air_bike"}],
+        "hiit": {"routine": "hiit_dia_1", "exercises": [{"key": "wall_ball"}]},
+    }
+    assert claves_de_intervalos(plan, raw) == ["air_bike", "wall_ball"]
+
+
+def test_un_plan_sin_intervalos_no_tiene_nada_que_preguntar():
+    from app.engine.feedback import claves_de_intervalos
+
+    raw = {"hiit": {"embedded": {"dia_1": ["air_bike"]}}}
+    assert claves_de_intervalos({"routine": "dia_3", "exercises": [{"key": "plancha"}]}, raw) == []
+    assert claves_de_intervalos({}, raw) == []

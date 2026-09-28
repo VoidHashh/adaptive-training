@@ -544,6 +544,44 @@ textarea {
   resize: vertical;
 }
 
+/* LAS REGLAS ESPECIALES (28/09/2026): las que están en marcha, en el
+ * formulario, y las que saltan hoy, en el hueco de la previsualización. Mismo
+ * aspecto que el selector -una caja con opciones-, y los dos botones iguales
+ * por lo mismo que los de subir en rojo: destacar uno es contestar por el
+ * usuario. */
+#reglas-vigentes { margin-top: 0.4rem; }
+.regla-vigente,
+.pregunta-regla {
+  background: var(--caja);
+  border: 1px solid var(--borde);
+  border-radius: 0.65rem;
+  padding: 0.85rem 0.9rem 0.9rem;
+  margin-bottom: 0.7rem;
+}
+.pregunta-regla { background: transparent; }
+.regla-vigente .motivo-regla,
+.pregunta-regla .motivo-regla { color: var(--tenue); font-size: 0.88rem; margin: 0.35rem 0 0; }
+.opciones-regla {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.7rem;
+}
+.opciones-regla button {
+  flex: 1 1 8rem;
+  padding: 0.7rem;
+  border-radius: 0.55rem;
+  border: 1px solid var(--borde);
+  background: var(--caja);
+  color: var(--texto);
+  font: inherit;
+  cursor: pointer;
+}
+.opciones-regla button[aria-pressed="true"] {
+  border-color: var(--texto);
+  font-weight: 600;
+}
+
 /* LA PREGUNTA DE SUBIR EN ROJO. Los dos botones del mismo tamaño y ninguno
  * destacado: destacar uno es contestar por el usuario, y la pregunta existe
  * precisamente porque la respuesta no la puede dar la pantalla. */
@@ -1340,6 +1378,10 @@ code {
  * rojo por lo mismo que el aviso -dejar un ejercicio no es un fallo que haya
  * que señalar, es algo que hay que explicar-. */
 #faltan-despues { margin-bottom: 0.9rem; }
+
+/* «¿Hiciste el HIIT?». Es un `.pregunta` como las elecciones de abajo, con su
+ * borde discontinuo mientras no se contesta; aquí solo se le da aire. */
+#hiit-despues { margin-bottom: 0.9rem; }
 
 .bloque-faltan {
   background: var(--caja);

@@ -384,6 +384,11 @@ for (const a of guion.acciones || []) {
     const input = fila.querySelector("input");
     input.value = String(a.valor);
     disparar(input, "input");
+  } else if (a.hiit !== undefined) {
+    const b = elemento("hiit-despues").querySelectorAll("[data-valor]")
+      .find((x) => x.dataset.valor === String(a.hiit));
+    if (!b) throw new Error(`no hay botón '${a.hiit}' en «¿Hiciste el HIIT?»`);
+    disparar(b, "click");
   } else if (a.eleccion) {
     const bloque = bloqueDe("elecciones-despues", "pregunta", a.eleccion);
     const b = bloque.querySelectorAll("[data-valor]").find((x) => x.dataset.valor === a.valor);
@@ -424,6 +429,8 @@ const escalas = elemento("escalas-despues").querySelectorAll(".slider").map((f) 
 const faltan = elemento("faltan-despues").querySelectorAll(".nombre-ejercicio")
   .map((n) => n.textContent);
 const hechos = elemento("hechos-despues").querySelector(".bloque-hechos");
+const hechosNombres = hechos ? hechos.querySelectorAll(".nombre-ejercicio").map((n) => n.textContent) : [];
+const preguntaHiit = elemento("hiit-despues").querySelector(".pregunta");
 const aviso = elemento("aviso-despues");
 
 console.log(JSON.stringify({
@@ -432,6 +439,13 @@ console.log(JSON.stringify({
   resumen: elemento("resumen-sesion").textContent,
   faltan,
   hechos_titulo: hechos ? hechos.querySelector("summary").textContent : null,
+  hechos: hechosNombres,
+  hiit: preguntaHiit ? {
+    enunciado: preguntaHiit.querySelector(".enunciado").textContent,
+    sin_contestar: preguntaHiit.classList.contains("sin-contestar"),
+    pulsado: preguntaHiit.querySelectorAll("[data-valor]")
+      .filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.dataset.valor),
+  } : null,
   hechos_abierto: hechos ? hechos.hasAttribute("open") : null,
   escalas,
   guardado: elemento("guardado-despues").hidden === false,

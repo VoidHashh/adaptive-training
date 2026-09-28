@@ -295,6 +295,21 @@ mueven las cargas:
   torso y después la bisagra). **Qué vigilar:** una semana de dos o de cuatro
   sesiones vuelve a descolocarla; y los intervalos de `dia_2` caen ahora el
   viernes, antes de la bici del sábado.
+- **Las reglas especiales se aprueban en el check-in (28/09/2026).** La
+  retirada del peso muerto saltó el 21/09 y quitó el ejercicio catorce días sin
+  preguntar. Ahora, una regla que salta hoy -o que alarga su plazo- se pregunta
+  al previsualizar o al enviar («Aplicar» / «No aplicar»), y el check-in no se
+  guarda hasta contestarla. Una regla ya en marcha sale en el formulario con
+  «Mantener» / «Quitar hoy»; sin tocarla, sigue. Lo contestado queda en
+  `checkins.reglas_json` y en la foto de la decisión. Sin nadie delante -el
+  respaldo de la mañana- la regla se aplica y la nota lo dice. **Qué vigilar:**
+  un móvil con la PWA vieja (v29) no sabe leer la pregunta y enseña el check-in
+  como rechazado el día que salta una regla: se arregla recargando.
+- **«¿Hiciste el HIIT?» en el formulario de después (28/09/2026).** Solo los
+  días cuyo plan llevaba intervalos. Con «no», los intervalos no se preguntan
+  uno a uno y, al cerrar el día, los que faltan mantienen su racha en vez de
+  romperla: dejarlos por cansancio no dice nada de la dosis. Sin contestar, lo
+  de siempre.
 - **El peso muerto rumano de `dia_3`, en pausa (28/09/2026).** A petición del
   usuario, que quiere de vuelta el peso muerto normal de `dia_2`. A ese lo quita
   la retirada de 14 días disparada el 21/09, vigente hasta el 04/10. La

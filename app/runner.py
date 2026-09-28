@@ -48,6 +48,7 @@ from sqlalchemy.orm import Session
 
 from app import repository as repo
 from app.engine.decision import apply_execution, decide
+from app.engine.feedback import claves_de_intervalos
 from app.engine.feedback import sin_apuntar as feedback_sin_apuntar
 from app.engine.message import render_telegram
 from app.engine.recalibracion import evaluar_recalibracion
@@ -264,6 +265,9 @@ def run_daily(
     # desde el envío del formulario, no desde ningún trabajo programado: las
     # 07:00 y las 09:00 deciden sin nadie delante y no anulan nada.
     sesion_pedida: Any = None,
+    # Si hay alguien delante para preguntarle por una regla especial que salta
+    # hoy. Solo el envío del formulario: ver `decision.ReglasPorConfirmar`.
+    preguntar_reglas: bool = False,
 ) -> DailyResult:
     """Decide el día y lo ejecuta. Los clientes se inyectan a propósito.
 
@@ -278,7 +282,7 @@ def run_daily(
     pensado = pensar_el_dia(
         session, cfg, day,
         metrics=metrics, rides=rides, source=source, anulacion=anulacion,
-        sesion_pedida=sesion_pedida,
+        sesion_pedida=sesion_pedida, preguntar_reglas=preguntar_reglas,
     )
     res = DailyResult(day=day, decision=pensado.decision)
     # A PARTIR DE AQUÍ SE TOCAN COSAS DE FUERA, así que a partir de aquí una
@@ -330,6 +334,10 @@ def pensar_el_dia(
     # `SesionPedida`. Ojo con el nombre: NO es el `anulacion` de aquí arriba,
     # que es la decisión del sistema anulada por un recálculo.
     sesion_pedida: Any = None,
+    # Las respuestas a las reglas especiales. `None` es «mira en la base», por
+    # lo mismo que `respuestas`: la previsualización las trae sin guardar.
+    reglas: dict[str, str] | None = None,
+    preguntar_reglas: bool = False,
 ) -> DiaPensado:
     """La mitad que decide. No escribe nada, y eso es lo que la hace útil.
 
@@ -358,6 +366,8 @@ def pensar_el_dia(
         valores = repo.checkin_values(repo.get_checkin(session, day))
     else:
         valores = dict(respuestas)
+    if reglas is None:
+        reglas = repo.reglas_respondidas(repo.get_checkin(session, day))
     checkin = Checkin(date=day, values=valores) if valores else None
 
     # `sessions` es lo que se entrenó DE VERDAD, leído de `workout_log`. Lo leen
@@ -435,7 +445,10 @@ def pensar_el_dia(
     # El estado sale de la base de datos, no de cero. Es la diferencia entre un
     # sistema que recuerda y uno que cada mañana vuelve a nacer.
     state = repo.load_state(session, program_start=cfg.program_start, rotation_order=cfg.rotation_order())
-    decision = decide(cfg, day, signals, state, source=source, sesion_pedida=sesion_pedida)
+    decision = decide(
+        cfg, day, signals, state, source=source, sesion_pedida=sesion_pedida,
+        respuestas_reglas=reglas, preguntar_reglas=preguntar_reglas,
+    )
 
     # Esto viaja con la decisión hasta el renderizador, y NO hasta la base:
     # `save_decision` escribe columna a columna y no hay ninguna para la
@@ -1526,6 +1539,28 @@ def run_reconcile(
         sube_hiit = cumpl_hiit.sube
         motivos_sube_hiit = cumpl_hiit.motivos_sube
         mantiene_hiit = cumpl_hiit.mantiene
+
+    # «¿HICISTE EL HIIT?» -> «NO» (28/09/2026). Los intervalos que faltan se
+    # MANTIENEN: ni suman a su racha ni la borran. Ese día el HIIT se dejó por
+    # cansancio después de la bici del fin de semana, y eso no dice nada de si
+    # la dosis era la buena; romperles la racha los habría hecho esperar dos
+    # sesiones limpias más por una decisión, no por un fallo. Los que SÍ constan
+    # en Hevy siguen su camino: la respuesta no puede tapar lo que se hizo.
+    #
+    # Van los intervalos enteros, sin filtrar, a las dos listas: `apply_execution`
+    # solo recorre los ejercicios de su plan y mira primero si se hizo y solo
+    # después si se mantiene. Un filtro aquí repetiría esas dos cosas, y el banco
+    # de mutaciones enseñó que quitarlo no cambiaba nada.
+    #
+    # Solo con un `False` explícito. Sin contestar -`None`- es lo de siempre:
+    # un ejercicio que no aparece no se sabe por qué falta, y se cuenta como
+    # incumplido.
+    if fb_dia is not None and fb_dia.hiit_hecho is False:
+        intervalos = set(claves_de_intervalos(
+            plan, cfg.raw if hasattr(cfg, "raw") else (cfg or {})
+        ))
+        mantiene |= intervalos
+        mantiene_hiit |= intervalos
 
     # El veredicto del día es el veredicto del PLAN DE FUERZA de ese día, así
     # que solo se le pone a las filas que salen de esa rutina. Antes se le

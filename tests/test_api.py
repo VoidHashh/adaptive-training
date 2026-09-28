@@ -3647,3 +3647,152 @@ def test_en_un_dia_de_bici_la_fila_de_un_bloque_hiit_no_cuenta(cliente, db, monk
     db.commit()
     d = cliente.get(f"/api/checkin/today?day={LUNES}").json()["decision_de_hoy"]
     assert d["hevy"] == "reverted"
+
+
+# ---------------------------------------------------------------------------
+# «¿Hiciste el HIIT?» en el formulario de después (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_un_dia_con_intervalos_trae_la_pregunta_y_los_marca(cliente, cfg):
+    """El lunes de la fixture es un `dia_1`: pierna con sus cinco intervalos
+    dentro. La pregunta llega del servidor, y qué ejercicio es HIIT también."""
+    from app.engine.feedback import OPCIONES_HIIT, PREGUNTA_HIIT
+
+    cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
+    d = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()}).json()
+    assert d["hiit"] == {"enunciado": PREGUNTA_HIIT, "opciones": list(OPCIONES_HIIT)}
+    marcados = {e["key"] for e in d["ejercicios"] if e["hiit"]}
+    assert marcados == set(cfg.raw["hiit"]["embedded"]["dia_1"])
+    assert d["guardado"]["hiit_hecho"] is None
+
+
+def test_la_respuesta_al_hiit_se_guarda_y_vuelve(cliente):
+    cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
+    r = cliente.post("/api/sesion/feedback", json={"day": str(LUNES), "hiit_hecho": False})
+    assert r.status_code == 200, r.text
+    d = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()}).json()
+    assert d["guardado"]["hiit_hecho"] is False
+
+
+def test_un_dia_sin_intervalos_no_pregunta_y_rechaza_la_respuesta(cliente):
+    """`dia_3` nunca lleva intervalos. Guardar ahí un «no» no lo leería nadie,
+    y un valor que nadie lee es el defecto que este repositorio persigue."""
+    cliente.post("/api/checkin", json={
+        "day": str(LUNES), "fatigue": 4, "chosen_session": "dia_3",
+    })
+    d = cliente.get("/api/sesion/hoy", params={"day": LUNES.isoformat()}).json()
+    assert d["hiit"] is None
+    assert not any(e["hiit"] for e in d["ejercicios"])
+    r = cliente.post("/api/sesion/feedback", json={"day": str(LUNES), "hiit_hecho": False})
+    assert r.status_code == 422
+    assert "no llevaba intervalos" in r.text
+
+
+# ---------------------------------------------------------------------------
+# Las reglas especiales se aprueban en el check-in (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _ayer_con_la_lumbar_a_5(cliente):
+    r = cliente.post("/api/checkin", json={
+        "day": str(LUNES - timedelta(days=1)), "lower_discomfort": 5,
+    })
+    assert r.status_code == 200, r.text
+
+
+def test_una_regla_que_salta_devuelve_la_pregunta_y_no_guarda_el_checkin(cliente, db):
+    from app import repository as repo
+
+    _ayer_con_la_lumbar_a_5(cliente)
+    r = cliente.post("/api/checkin", json={"day": str(LUNES), "lower_discomfort": 5})
+    assert r.status_code == 409, r.text
+    d = r.json()["detail"]
+    assert [p["nombre"] for p in d["reglas_por_confirmar"]] == ["retirada_peso_muerto"]
+    assert [o["valor"] for o in d["opciones"]] == ["aplicar", "no_aplicar"]
+    assert d["hevy"] == "sin tocar" and d["checkin_guardado"] is False
+    assert repo.get_checkin(db, LUNES) is None, "sin contestar, el check-in no se queda a medias"
+
+
+def test_una_regla_contestada_decide_y_la_respuesta_queda_guardada(cliente, db):
+    from app import repository as repo
+
+    _ayer_con_la_lumbar_a_5(cliente)
+    r = cliente.post("/api/checkin", json={
+        "day": str(LUNES), "lower_discomfort": 5,
+        "reglas": {"retirada_peso_muerto": "no_aplicar"},
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["decided"] is True
+    assert repo.reglas_respondidas(repo.get_checkin(db, LUNES)) == {
+        "retirada_peso_muerto": "no_aplicar"
+    }
+    hoy = cliente.get("/api/checkin/today", params={"day": str(LUNES)}).json()
+    assert hoy["reglas_respondidas"] == {"retirada_peso_muerto": "no_aplicar"}
+    assert "reglas_json" not in hoy["values"], "la respuesta a una regla no es una señal"
+
+
+def test_la_previsualizacion_tambien_pregunta(cliente):
+    _ayer_con_la_lumbar_a_5(cliente)
+    r = cliente.post("/api/preview", json={"day": str(LUNES), "lower_discomfort": 5})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["reglas_por_confirmar"][0]["nombre"] == "retirada_peso_muerto"
+
+
+@pytest.mark.parametrize("reglas, trozo", [
+    ({"retirada_del_press": "aplicar"}, "no es ninguna de las que se pueden aprobar"),
+    ({"semana_de_descarga": "no_aplicar"}, "no es ninguna de las que se pueden aprobar"),
+    ({"retirada_peso_muerto": "si"}, "solo valen"),
+])
+def test_una_respuesta_a_una_regla_que_no_vale_es_un_400(cliente, reglas, trozo):
+    r = cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4, "reglas": reglas})
+    assert r.status_code == 400, r.text
+    assert trozo in r.text
+
+
+def test_una_regla_en_marcha_sale_en_el_formulario_y_se_levanta(cliente, db):
+    """La mañana del 28/09: la retirada iba hasta el 04/10 y la lumbar ya
+    estaba en 1. El formulario la enseña, y quitarla devuelve el peso muerto."""
+    from app import repository as repo
+
+    _ayer_con_la_lumbar_a_5(cliente)
+    cliente.post("/api/checkin", json={
+        "day": str(LUNES), "lower_discomfort": 5,
+        "reglas": {"retirada_peso_muerto": "aplicar"},
+    })
+    martes = LUNES + timedelta(days=1)
+    hoy = cliente.get("/api/checkin/today", params={"day": str(martes)}).json()
+    (v,) = hoy["reglas_vigentes"]
+    assert v["nombre"] == "retirada_peso_muerto"
+    assert v["hasta"] == str(LUNES + timedelta(days=13))
+    assert [o["valor"] for o in v["opciones"]] == ["aplicar", "no_aplicar"]
+
+    r = cliente.post("/api/checkin", json={
+        "day": str(martes), "lower_discomfort": 1,
+        "reglas": {"retirada_peso_muerto": "no_aplicar"},
+    })
+    assert r.status_code == 200, r.text
+    estado = repo.load_state(db, program_start=None)
+    assert "retirada_peso_muerto" not in [x.name for x in estado.active_rules]
+    siguiente = cliente.get(
+        "/api/checkin/today", params={"day": str(martes + timedelta(days=1))}
+    ).json()
+    assert siguiente["reglas_vigentes"] == []
+
+
+def test_una_regla_caducada_que_sigue_en_el_estado_no_sale_como_vigente(cliente, db):
+    """Entre que caduca y la siguiente decisión, la fila sigue en `rule_states`.
+    Enseñarla con «Quitar hoy» sería ofrecer levantar algo que ya no está."""
+    from app import repository as repo
+    from app.engine.decision import ActiveRule
+
+    estado = repo.load_state(db, program_start=None)
+    estado.active_rules = [ActiveRule(
+        name="retirada_peso_muerto", action={"remove_exercises": ["peso_muerto_smith"]},
+        active_from=LUNES - timedelta(days=14), active_until=LUNES - timedelta(days=1),
+        reason="de hace dos semanas",
+    )]
+    repo.save_state(db, estado, day=LUNES - timedelta(days=1))
+    db.commit()
+    hoy = cliente.get("/api/checkin/today", params={"day": str(LUNES)}).json()
+    assert hoy["reglas_vigentes"] == []

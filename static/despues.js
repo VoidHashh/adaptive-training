@@ -43,6 +43,7 @@ const estadoDespues = {
   datos: null,        // la respuesta de /api/sesion/hoy
   valores: {},        // escalas y elecciones CONTESTADAS; lo que no está, no se envía
   respuestas: {},     // key de ejercicio -> respuesta, o ausente
+  hiit: undefined,    // «¿Hiciste el HIIT?»: true, false, o sin contestar
 };
 
 // ---------------------------------------------------------------------------
@@ -109,8 +110,6 @@ function pintarFormulario(d) {
   }
 
   const ejercicios = d.ejercicios || [];
-  const faltan = ejercicios.filter((e) => e.estado === "falta");
-  const hechos = ejercicios.filter((e) => e.estado === "hecho");
 
   // Lo ya guardado se precarga: el formulario se puede rectificar, y abrirlo
   // otra vez para añadir una cosa no puede obligar a contestar las demás.
@@ -126,17 +125,69 @@ function pintarFormulario(d) {
   for (const e of ejercicios) {
     if (e.respuesta) estadoDespues.respuestas[e.key] = e.respuesta;
   }
+  estadoDespues.hiit = d.hiit && typeof g.hiit_hecho === "boolean" ? g.hiit_hecho : undefined;
 
-  $("resumen-sesion").textContent = resumen(hechos.length, faltan.length);
-  const tx = d.textos || {};
-  pintarFaltan(faltan, d.respuestas.falta || {}, tx.falta);
-  pintarHechos(hechos, d.respuestas.hecho || {}, tx.sin_problema);
+  pintarHiit(d);
+  pintarEjercicios(d);
   pintarEscalas(d.escalas || []);
   pintarElecciones(d);
-  pintarCostoso(hechos, tx.mas_costoso, tx.ninguno);
   $("nota-despues").value = g.nota || "";
 
   form.hidden = false;
+}
+
+/* Los intervalos -los que el servidor marca con `hiit`- solo se preguntan uno
+ * a uno si se ha contestado que SÍ se hizo el HIIT. Con un «no» sobran: fue una
+ * decisión sobre el bloque entero, y preguntar «¿por qué?» cinco veces por
+ * ella es lo que esta pregunta vino a quitar. Sin contestar tampoco salen: la
+ * pregunta está justo encima y es lo primero que hay que decir. */
+function ejerciciosVisibles(d) {
+  const todos = d.ejercicios || [];
+  if (!d.hiit || estadoDespues.hiit === true) return todos;
+  return todos.filter((e) => !e.hiit);
+}
+
+function pintarEjercicios(d) {
+  const visibles = ejerciciosVisibles(d);
+  const faltan = visibles.filter((e) => e.estado === "falta");
+  const hechos = visibles.filter((e) => e.estado === "hecho");
+  const tx = d.textos || {};
+  $("resumen-sesion").textContent = resumen(hechos.length, faltan.length);
+  pintarFaltan(faltan, d.respuestas.falta || {}, tx.falta);
+  pintarHechos(hechos, d.respuestas.hecho || {}, tx.sin_problema);
+  pintarCostoso(hechos, tx.mas_costoso, tx.ninguno);
+}
+
+/* «¿Hiciste el HIIT?». Mismo comportamiento que las elecciones de abajo:
+ * pulsar lo ya elegido lo desmarca. Los valores son los booleanos que manda el
+ * servidor; aquí no se traduce nada. */
+function pintarHiit(d) {
+  const cont = $("hiit-despues");
+  if (!d.hiit) {
+    cont.innerHTML = "";
+    return;
+  }
+  const h = d.hiit;
+  const contestada = estadoDespues.hiit !== undefined;
+  cont.innerHTML = `
+    <div class="pregunta${contestada ? "" : " sin-contestar"}" data-key="hiit">
+      <p class="enunciado" id="enun-hiit">${escapar(h.enunciado)}</p>
+      <div class="eleccion" role="group" aria-labelledby="enun-hiit">
+        ${(h.opciones || []).map((o) => {
+          const valor = escapar(String(o.valor));
+          const puesto = estadoDespues.hiit === o.valor;
+          return `<button type="button" data-valor="${valor}" aria-pressed="${puesto}">${escapar(o.etiqueta)}</button>`;
+        }).join("")}
+      </div>
+    </div>`;
+  for (const b of cont.querySelectorAll("[data-valor]")) {
+    const opcion = (h.opciones || []).find((o) => String(o.valor) === b.dataset.valor);
+    b.addEventListener("click", () => {
+      estadoDespues.hiit = estadoDespues.hiit === opcion.valor ? undefined : opcion.valor;
+      pintarHiit(d);
+      pintarEjercicios(d);
+    });
+  }
 }
 
 function resumen(nHechos, nFaltan) {
@@ -324,11 +375,16 @@ function cuerpoDespues() {
   // mutaciones no podía distinguir si la de allí funcionaba. Ahora el estado es
   // la única fuente, y si alguna vez guarda un `""` viajará como `""` y el
   // servidor lo rechazará con su motivo, en vez de pasar desapercibido.
+  // Con un «no» al HIIT, lo que se hubiera contestado de un intervalo -en un
+  // envío anterior con «sí»- deja de valer: sería explicar un ejercicio que se
+  // acaba de decir que no se hizo.
+  const sinHiit = Boolean(d.hiit) && estadoDespues.hiit === false;
+  if (d.hiit && estadoDespues.hiit !== undefined) cuerpo.hiit_hecho = estadoDespues.hiit;
   cuerpo.ejercicios = (d.ejercicios || []).map((e) => ({
     key: e.key,
     name: e.name,
     estado: e.estado,
-    respuesta: estadoDespues.respuestas[e.key] ?? null,
+    respuesta: sinHiit && e.hiit ? null : (estadoDespues.respuestas[e.key] ?? null),
   }));
   return cuerpo;
 }

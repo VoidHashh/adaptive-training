@@ -42,6 +42,11 @@
   <form id="form-despues" hidden>
     <p class="resumen-sesion" id="resumen-sesion"></p>
 
+    <!-- «¿Hiciste el HIIT?», solo los días con intervalos en el plan. Va antes
+         que la lista porque decide qué entra en ella: con un «no», los
+         intervalos no se preguntan uno por uno. -->
+    <div id="hiit-despues"></div>
+
     <!-- Lo que falta va PRIMERO y abierto: es lo único que pide respuesta. Lo
          que fue bien va plegado debajo. Es la inversión que quita densidad: una
          sesión sin incidencias se contesta sin abrir ni una lista. -->

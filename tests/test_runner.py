@@ -3750,3 +3750,90 @@ def test_un_ejercicio_que_no_estaba_en_el_plan_se_ignora(cfg):
     )
     assert "un_ejercicio_de_otro_dia" not in c.executed
     assert c.executed["patada_atras"] is False
+
+
+# ---------------------------------------------------------------------------
+# «¿Hiciste el HIIT?» -> «no»: los intervalos que faltan se mantienen (28/09/2026)
+# ---------------------------------------------------------------------------
+
+
+def _dia_sin_intervalos(db, cfg, *, hiit_hecho, racha=2, hecho_de_todas_formas=()):
+    """Un `dia_1` con los intervalos sin hacer, con `racha` sesiones limpias
+    guardadas en cada intervalo, cerrado con la respuesta dada al HIIT."""
+    from app import repository as repo
+    from app.engine.feedback import claves_de_intervalos
+
+    corre(db, cfg, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    intervalos = claves_de_intervalos(plan, cfg.raw)
+    assert intervalos, "el montaje: el plan del lunes ya no lleva intervalos"
+    estado = load_state(db, program_start=cfg.program_start)
+    for k in intervalos:
+        estado.clean_sessions[("dia_1", k)] = racha
+    save_state(db, estado, day=LUNES)
+
+    fuera = {
+        e.get("template_id") for e in plan["exercises"]
+        if e["key"] in intervalos and e["key"] not in hecho_de_todas_formas
+    }
+    w = _entrenamiento_completo(plan)
+    w["exercises"] = [e for e in w["exercises"] if e["exercise_template_id"] not in fuera]
+    run_reconcile(db, cfg, LUNES, workouts=[w], hoy=LUNES)
+    if hiit_hecho is not None:
+        repo.guardar_feedback(db, LUNES, hiit_hecho=hiit_hecho)
+    run_reconcile(db, cfg, LUNES, workouts=[w], hoy=MARTES)
+    return intervalos, _rachas(db, cfg)
+
+
+def test_con_un_no_al_hiit_los_intervalos_que_faltan_no_pierden_la_racha(db, cfg):
+    """El 28/09 el HIIT se dejó por cansancio tras la bici del fin de semana.
+    Romperles la racha los habría hecho esperar dos sesiones limpias más por
+    una decisión, no por un fallo."""
+    intervalos, rachas = _dia_sin_intervalos(db, cfg, hiit_hecho=False)
+    assert {k: rachas.get(("dia_1", k)) for k in intervalos} == {k: 2 for k in intervalos}
+    assert rachas.get(("dia_1", "prensa_horizontal")) == 1, "la fuerza hecha sigue sumando"
+
+
+def test_sin_contestar_los_intervalos_que_faltan_rompen_la_racha_como_siempre(db, cfg):
+    """El control del anterior: sin respuesta no se sabe por qué faltan."""
+    intervalos, rachas = _dia_sin_intervalos(db, cfg, hiit_hecho=None)
+    assert {k: rachas.get(("dia_1", k)) for k in intervalos} == {k: 0 for k in intervalos}
+
+
+def test_un_no_al_hiit_no_tapa_un_intervalo_que_si_consta(db, cfg):
+    """La respuesta no puede borrar lo que Hevy tiene apuntado: si uno se hizo,
+    suma como cualquier ejercicio hecho."""
+    intervalos, rachas = _dia_sin_intervalos(
+        db, cfg, hiit_hecho=False, hecho_de_todas_formas=("air_bike",)
+    )
+    assert rachas.get(("dia_1", "air_bike")) == 3
+    assert rachas.get(("dia_1", "wall_ball")) == 2
+
+
+@pytest.mark.parametrize("hiit_hecho, esperada", [(False, 2), (None, 0)])
+def test_con_el_bloque_hiit_aparte_el_no_mantiene_su_racha_bajo_su_clave(
+    db, cfg_lunes, hiit_hecho, esperada
+):
+    """El mecanismo de bloques está apagado desde el 26/09/2026 pero vivo en el
+    código. Si se vuelve a encender, un «no» tiene que mantener los intervalos
+    bajo la clave del BLOQUE, que es donde viven sus rachas."""
+    from app import repository as repo
+    from app.engine.feedback import claves_de_intervalos
+
+    corre(db, cfg_lunes, hevy=HevyFalso(), tg=TelegramFalso())
+    plan = _plan_guardado(db)
+    assert plan.get("hiit"), "el montaje: el lunes verde con bloque ya no lleva HIIT"
+    intervalos = claves_de_intervalos(plan, cfg_lunes.raw)
+    estado = load_state(db, program_start=cfg_lunes.program_start)
+    for k in intervalos:
+        estado.clean_sessions[("hiit_dia_1", k)] = 2
+    save_state(db, estado, day=LUNES)
+
+    fuerza = _ejecuta(plan, wid="fuerza", rid=_rid(cfg_lunes, "dia_1"))
+    run_reconcile(db, cfg_lunes, LUNES, workouts=[fuerza], hoy=LUNES)
+    if hiit_hecho is not None:
+        repo.guardar_feedback(db, LUNES, hiit_hecho=hiit_hecho)
+    run_reconcile(db, cfg_lunes, LUNES, workouts=[fuerza], hoy=MARTES)
+
+    rachas = _rachas(db, cfg_lunes)
+    assert {k: rachas.get(("hiit_dia_1", k)) for k in intervalos} == {k: esperada for k in intervalos}

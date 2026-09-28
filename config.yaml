@@ -1283,6 +1283,13 @@ set_types:
 # -----------------------------------------------------------------------------
 # 6. REGLAS ESPECIALES
 # -----------------------------------------------------------------------------
+# SE APRUEBAN EN EL CHECK-IN DESDE EL 28/09/2026. Una regla que salta hoy -o
+# que alarga su plazo- no se aplica sin respuesta cuando hay alguien delante:
+# la previsualización y el envío la preguntan, con su `description` como texto.
+# Una regla ya en marcha sale en el formulario con la opción de quitarla hoy.
+# Sin nadie delante -el respaldo de la mañana- se aplica y el mensaje lo dice.
+# La descarga no se pregunta: es de calendario. Ver
+# `decision.ReglasPorConfirmar`.
 special_rules:
   - name: retirada_peso_muerto
     description: >

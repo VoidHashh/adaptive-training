@@ -1,6 +1,6 @@
 [project]
 name = "adaptive-training"
-version = "0.1.201"
+version = "0.1.202"
 description = "Self-hosted adaptive training system: Garmin + Hevy + daily check-in -> deterministic session decision"
 requires-python = ">=3.11"
 dependencies = [

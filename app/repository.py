@@ -476,8 +476,14 @@ def upsert_checkin(
     *,
     config: Any = None,
     comments: str | None = None,
+    reglas: dict[str, str] | None = None,
 ) -> CheckinRow:
     """Guarda el check-in del día. Si ya existe, lo sustituye.
+
+    `reglas` son las respuestas a las reglas especiales, que llegan aparte de
+    `valores` porque no son respuestas del formulario (ver
+    `Checkin.reglas_json`). Las valida la API; aquí se guardan tal cual, y un
+    `None` deja las de antes: reenviar el formulario no borra lo contestado.
 
     Sustituir y no acumular es deliberado: el formulario se puede reenviar
     porque uno se ha equivocado de deslizador, y lo que vale es la última
@@ -548,9 +554,18 @@ def upsert_checkin(
         setattr(fila, clave, valor)
     if comments is not None:
         fila.comments = comments
+    if reglas is not None:
+        fila.reglas_json = json.dumps(dict(sorted(reglas.items())), ensure_ascii=False)
 
     session.flush()
     return fila
+
+
+def reglas_respondidas(fila: CheckinRow | None) -> dict[str, str]:
+    """Lo contestado sobre las reglas especiales ese día, o `{}`."""
+    if fila is None or not fila.reglas_json:
+        return {}
+    return dict(json.loads(fila.reglas_json))
 
 
 def get_checkin(session: Session, day: date) -> CheckinRow | None:
@@ -606,7 +621,7 @@ def checkin_values(fila: CheckinRow | None) -> dict[str, Any]:
     """
     if fila is None:
         return {}
-    omitir = {"id", "date", "submitted_at", "comments"}
+    omitir = {"id", "date", "submitted_at", "comments", "reglas_json"}
     return {
         c.name: getattr(fila, c.name)
         for c in CheckinRow.__table__.columns

@@ -288,6 +288,7 @@ CAMPOS_QUE_NO_SON_RESPUESTAS = frozenset({
     "requested_session",
     "confirm_upgrade",
     "override_reason",
+    "reglas",
 })
 
 
@@ -318,6 +319,11 @@ class EnvioIn(CheckinIn):
     # sesión. No es «he leído el aviso» en general; es la respuesta a una
     # pregunta concreta que solo se hace ese día.
     confirm_upgrade: bool = False
+    # Lo contestado sobre las reglas especiales: `{regla: aplicar |
+    # no_aplicar}`. Sin ellas, una regla que salta hoy devuelve la pregunta en
+    # vez de la sesión (ver `decision.ReglasPorConfirmar`). Las valida
+    # `_reglas_del_envio` contra las reglas del config, no un `Literal` aquí.
+    reglas: dict[str, str] | None = None
 
 
 class PreviewIn(EnvioIn):
@@ -378,6 +384,82 @@ def _respuestas(body: CheckinIn) -> dict[str, Any]:
         ).items()
         if v is not None
     }
+
+
+def _reglas_del_envio(body: EnvioIn, cfg: Any) -> dict[str, str] | None:
+    """Las respuestas a las reglas, comprobadas, o `None` si no vino ninguna.
+
+    Un nombre de regla que no existe o una respuesta fuera de las dos se
+    rechazan con un 400. Guardadas, no las leería nadie, y la regla a la que se
+    quería contestar volvería a preguntar sin que se viera por qué.
+    """
+    from app.engine.decision import DELOAD_RULE, RESPUESTAS_A_REGLAS
+
+    if body.reglas is None:
+        return None
+    validas = {
+        str(r.get("name")) for r in cfg.raw.get("special_rules") or []
+        if r.get("name") != DELOAD_RULE
+    }
+    for nombre, respuesta in body.reglas.items():
+        if nombre not in validas:
+            raise HTTPException(status_code=400, detail=(
+                f"se ha contestado a la regla '{nombre}', que no es ninguna de "
+                f"las que se pueden aprobar: {sorted(validas)}"
+            ))
+        if respuesta not in RESPUESTAS_A_REGLAS:
+            raise HTTPException(status_code=400, detail=(
+                f"la respuesta a '{nombre}' vale {respuesta!r}; solo valen "
+                f"{list(RESPUESTAS_A_REGLAS)}"
+            ))
+    return dict(body.reglas)
+
+
+# Cómo se enseñan las dos respuestas. Viajan con la pregunta: la pantalla no
+# lleva ninguna escrita, igual que no lleva los deslizadores.
+_OPCIONES_REGLA_NUEVA = [
+    {"valor": "aplicar", "etiqueta": "Aplicar"},
+    {"valor": "no_aplicar", "etiqueta": "No aplicar"},
+]
+_OPCIONES_REGLA_VIGENTE = [
+    {"valor": "aplicar", "etiqueta": "Mantener"},
+    {"valor": "no_aplicar", "etiqueta": "Quitar hoy"},
+]
+
+
+def _reglas_por_confirmar(exc: Any) -> HTTPException:
+    """El 409 de una regla que salta hoy sin respuesta: la pregunta, no un fallo."""
+    return HTTPException(status_code=409, detail={
+        "reglas_por_confirmar": exc.pendientes,
+        "opciones": _OPCIONES_REGLA_NUEVA,
+        "motivo": str(exc),
+        **NADA_EJECUTADO,
+    })
+
+
+def _reglas_vigentes(s: Session, cfg: Any, day: date) -> list[dict[str, Any]]:
+    """Las reglas especiales en marcha hoy, para enseñarlas en el formulario.
+
+    Salen del estado guardado, que es lo mismo que va a leer el motor. La
+    descarga no: es de calendario y no retira nada por un síntoma.
+    """
+    from app.engine.decision import DELOAD_RULE, descripcion_de_regla
+
+    estado = repo.load_state(
+        s, program_start=cfg.program_start, rotation_order=cfg.rotation_order()
+    )
+    return [
+        {
+            "nombre": r.name,
+            "descripcion": descripcion_de_regla(cfg, r.name),
+            "motivo": r.reason,
+            "desde": r.active_from.isoformat() if r.active_from else None,
+            "hasta": r.active_until.isoformat() if r.active_until else None,
+            "opciones": _OPCIONES_REGLA_VIGENTE,
+        }
+        for r in estado.active_rules
+        if r.name != DELOAD_RULE and r.covers(day)
+    ]
 
 
 def _sesion_pedida(body: EnvioIn) -> Any:
@@ -948,6 +1030,11 @@ def checkin_today(
         # olvide pintaría una barra de 1 a 10 para «¿Vas a entrenar hoy?».
         "preguntas": cfg.raw.get("checkin_preguntas", []),
         "selector": _selector_de_hoy(s, cfg, day),
+        # Las reglas especiales en marcha, con la opción de quitarlas hoy, y lo
+        # que ya se contestó sobre ellas. «Esos puntos deben aparecer en el
+        # cuestionario antes de aceptar la rutina del día» (28/09/2026).
+        "reglas_vigentes": _reglas_vigentes(s, cfg, day),
+        "reglas_respondidas": repo.reglas_respondidas(fila),
         "comment_label": (cfg.raw.get("checkin_comment") or {}).get(
             "label", "Comentarios"
         ),
@@ -1155,12 +1242,14 @@ def post_preview(
     Y por eso la respuesta desglosa qué no se ha tocado en vez de decir un
     `escrito: false` que sonaría más tranquilizador y sería mentira.
     """
+    from app.engine.decision import ReglasPorConfirmar
     from app.engine.session_builder import ConfirmacionNecesaria
     from app.runner import pensar_el_dia
     from app.scheduler import garmin_para_previsualizar
 
     day = body.day or date.today()
     respuestas = _respuestas(body)
+    reglas = _reglas_del_envio(body, cfg)
 
     try:
         # La versión con caché, y no `_fetch_garmin`. Una tanda de calibración
@@ -1190,6 +1279,10 @@ def post_preview(
             source="preview",
             respuestas=respuestas,
             sesion_pedida=_sesion_pedida(body),
+            # Lo que viene en el cuerpo, y `{}` si no viene nada: como las
+            # respuestas, lo guardado es de otro envío.
+            reglas=reglas or {},
+            preguntar_reglas=True,
         )
     except ConfirmacionNecesaria as exc:
         raise HTTPException(status_code=409, detail={
@@ -1199,6 +1292,8 @@ def post_preview(
             "motivo": str(exc),
             **NADA_EJECUTADO,
         }) from exc
+    except ReglasPorConfirmar as exc:
+        raise _reglas_por_confirmar(exc) from exc
 
     fila = repo.save_preview(
         s, pensado.decision,
@@ -1294,21 +1389,31 @@ def post_checkin(
     guardara aquí y se decidiera en otro sitio, el usuario enviaría el
     formulario y no pasaría nada visible hasta una hora después.
     """
+    from app.engine.decision import ReglasPorConfirmar
     from app.engine.session_builder import ConfirmacionNecesaria
 
     day = body.day or date.today()
     valores = _respuestas(body)
+    reglas = _reglas_del_envio(body, cfg)
 
     try:
-        repo.upsert_checkin(s, day, valores, config=cfg, comments=body.comments)
+        repo.upsert_checkin(
+            s, day, valores, config=cfg, comments=body.comments, reglas=reglas
+        )
     except ValueError as exc:
         # Clave desconocida: 400 y no un 200 que se traga el campo.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         resultado = _decidir(
-            s, cfg, day, source="checkin", sesion_pedida=_sesion_pedida(body)
+            s, cfg, day, source="checkin", sesion_pedida=_sesion_pedida(body),
+            preguntar_reglas=True,
         )
+    except ReglasPorConfirmar as exc:
+        # El mismo `rollback` que el de abajo y por lo mismo: sin contestar, el
+        # check-in no se queda guardado a medias.
+        s.rollback()
+        raise _reglas_por_confirmar(exc) from exc
     except ConfirmacionNecesaria as exc:
         # El `rollback` es la mitad importante. Sin él, el check-in se quedaría
         # guardado mientras la respuesta dice que hace falta confirmar: el
@@ -1341,7 +1446,8 @@ def post_checkin(
 
 
 def _decidir(
-    s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None
+    s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None,
+    preguntar_reglas: bool = False,
 ) -> dict[str, Any]:
     """`_decidir_sin_cerrojo` con el MISMO cerrojo que `scheduler.job_decision`.
 
@@ -1355,11 +1461,15 @@ def _decidir(
     from app.scheduler import _DECIDIENDO
 
     with _DECIDIENDO:
-        return _decidir_sin_cerrojo(s, cfg, day, source=source, sesion_pedida=sesion_pedida)
+        return _decidir_sin_cerrojo(
+            s, cfg, day, source=source, sesion_pedida=sesion_pedida,
+            preguntar_reglas=preguntar_reglas,
+        )
 
 
 def _decidir_sin_cerrojo(
-    s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None
+    s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None,
+    preguntar_reglas: bool = False,
 ) -> dict[str, Any]:
     """Decide el día, y si no puede lo dice sin fingir que sí.
 
@@ -1391,8 +1501,10 @@ def _decidir_sin_cerrojo(
     un `decided: false` con un texto de error, y la pantalla la enseñaría como
     una avería en vez de como el diálogo que es -«el sistema propone
     recuperación, has pedido completa»-. Sale hacia arriba intacta para que
-    quien llama pueda redactar la pregunta.
+    quien llama pueda redactar la pregunta. Lo mismo `ReglasPorConfirmar`,
+    desde el 28/09/2026: una regla especial que salta hoy sin respuesta.
     """
+    from app.engine.decision import ReglasPorConfirmar
     from app.engine.session_builder import ConfirmacionNecesaria
     from app.runner import DecisionInterrumpida, run_daily
     from app.scheduler import _fetch_garmin, poner_al_dia_lo_entrenado
@@ -1432,12 +1544,14 @@ def _decidir_sin_cerrojo(
             s, cfg, day, metrics=metrics, rides=rides,
             hevy_client=hevy, telegram_client=tg, client_errors=motivos,
             dry_run=settings.dry_run, source=source,
-            sesion_pedida=sesion_pedida,
+            sesion_pedida=sesion_pedida, preguntar_reglas=preguntar_reglas,
         )
-    except ConfirmacionNecesaria:
+    except (ConfirmacionNecesaria, ReglasPorConfirmar):
         # No es un fallo; ver el docstring. Salta DENTRO de `pensar_el_dia`, o
         # sea antes de que se toque nada de fuera, así que no hay nada a medias
-        # que contar.
+        # que contar. Sin `ReglasPorConfirmar` aquí, la pregunta de una regla
+        # caería en el `except Exception` de abajo y se contaría como una
+        # decisión fallida.
         raise
     except DecisionInterrumpida as exc:
         log.exception("fallo decidiendo a medias")
@@ -2012,6 +2126,9 @@ class FeedbackIn(BaseModel):
     # `engine/feedback.validar_ejercicios`, que es donde vive, y duplicar aquí
     # las opciones en un Literal daría dos listas que pueden separarse.
     ejercicios: list[dict[str, Any]] | None = None
+    # «¿Hiciste el HIIT?». Solo vale los días cuyo plan llevaba intervalos: en
+    # otro se rechaza, porque guardado ahí no lo leería nadie.
+    hiit_hecho: bool | None = None
 
 
 @app.get("/api/sesion/hoy")
@@ -2041,6 +2158,12 @@ def sesion_hoy(
     ejercicios = fb.cruzar(
         plan.get("exercises") or [], workouts, cfg.raw.get("set_types") or {}
     )
+    # Los intervalos se marcan para que la pantalla los agrupe bajo «¿Hiciste
+    # el HIIT?» en vez de preguntar por cada uno. La marca la pone el servidor:
+    # qué es HIIT lo dice el config, y la pantalla no lo lleva escrito.
+    intervalos = set(fb.claves_de_intervalos(plan, cfg.raw))
+    for e in ejercicios:
+        e["hiit"] = e["key"] in intervalos
 
     # Lo ya contestado se funde con el cruce recién hecho, y manda el cruce en
     # `estado`: si entre el primer envío y el segundo se apuntó en Hevy el
@@ -2069,6 +2192,13 @@ def sesion_hoy(
             fb.FALTA: fb.RESPUESTAS_FALTA,
         },
         "elecciones": fb.ELECCIONES,
+        # `None` los días sin intervalos en el plan: ahí no hay nada que
+        # preguntar, y una pregunta que no se puede contestar con sentido
+        # enseña a contestar sin leer.
+        "hiit": (
+            {"enunciado": fb.PREGUNTA_HIIT, "opciones": list(fb.OPCIONES_HIIT)}
+            if intervalos else None
+        ),
         "escalas": fb.escalas_con_manana(manana),
         # Los textos que acompañan a los desplegables, por lo mismo que los
         # enunciados: la pantalla no lleva ni una pregunta escrita.
@@ -2088,6 +2218,7 @@ def sesion_hoy(
             "tecnica": getattr(guardado, "tecnica", None),
             "mas_costoso": getattr(guardado, "mas_costoso", None),
             "nota": getattr(guardado, "nota", None),
+            "hiit_hecho": getattr(guardado, "hiit_hecho", None),
         },
         # Con cuánta molestia lumbar se llegó por la mañana. Va aquí para que la
         # pantalla pueda enseñarlo al lado: el número de después solo significa
@@ -2101,6 +2232,7 @@ def sesion_hoy(
 def post_sesion_feedback(
     body: FeedbackIn,
     s: Session = Depends(get_session),
+    cfg=Depends(get_config),
 ) -> dict[str, Any]:
     """Guarda lo contestado. Se puede reenviar: manda el último envío."""
     from app.engine import feedback as fb
@@ -2116,6 +2248,14 @@ def post_sesion_feedback(
         # 422 y no 500: lo que ha llegado mal es la petición, no el servidor.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    if body.hiit_hecho is not None and not fb.claves_de_intervalos(
+        repo.planned_session(repo.current_decision(s, day)), cfg.raw
+    ):
+        raise HTTPException(status_code=422, detail=(
+            "«¿Hiciste el HIIT?» ha llegado contestado un día cuyo plan no "
+            "llevaba intervalos: guardado no lo leería nadie"
+        ))
+
     filas = repo.workouts_del_dia(s, day)
     fila = repo.guardar_feedback(
         s,
@@ -2129,6 +2269,7 @@ def post_sesion_feedback(
         mas_costoso=mas_costoso,
         nota=(body.nota or "").strip() or None,
         ejercicios_json=json.dumps(ejercicios, ensure_ascii=False),
+        hiit_hecho=body.hiit_hecho,
         workout_ids_json=json.dumps(
             [f.hevy_workout_id for f in filas if f.hevy_workout_id]
         ),

@@ -146,6 +146,14 @@ const estado = {
   // aviso» en general: es la respuesta a una pregunta concreta de un día
   // concreto, y arrastrarla convertiría la guarda en un trámite.
   confirmadaEnRojo: false,
+
+  /* LAS REGLAS ESPECIALES (28/09/2026). `reglasVigentes` son las que ya están
+   * en marcha, tal cual las manda el servidor; `reglas` es lo CONTESTADO,
+   * `{regla: "aplicar" | "no_aplicar"}`, sobre ellas o sobre las que salten
+   * hoy. Lo que no está no se envía: una regla en marcha sin respuesta sigue,
+   * y una que salta sin respuesta se pregunta. */
+  reglasVigentes: [],
+  reglas: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -192,12 +200,17 @@ async function arrancar() {
   // lee como "hoy no hay nada que elegir" en vez de como "esta pantalla es más
   // vieja que el servidor".
   estado.selector = datos.selector || null;
+  estado.reglasVigentes = datos.reglas_vigentes || [];
+  // Lo ya contestado hoy se precarga: reenviar el formulario no puede volver
+  // a preguntar lo que ya se dijo esta mañana.
+  estado.reglas = { ...(datos.reglas_respondidas || {}) };
   if (datos.comment_label) estado.etiquetaComentarios = datos.comment_label;
   $("etiqueta-comentarios").textContent = estado.etiquetaComentarios;
 
   pintarSliders();
   pintarPreguntas();
   pintarSelector();
+  pintarReglasVigentes();
   // Después de pintar LAS TRES, no entre medias: `recuperar` llama a `fijar`,
   // que busca en el DOM la fila de cada clave. Con las preguntas sin pintar,
   // las respuestas ya enviadas hoy -o el borrador- se perderían en silencio
@@ -712,7 +725,7 @@ async function enviar(ev) {
   revisar();
   $("enviar").textContent = "Enviando…";
 
-  const cuerpo = { ...estado.valores, ...loQuePido() };
+  const cuerpo = { ...estado.valores, ...loQuePido(), ...lasReglas() };
   const texto = $("comentarios").value.trim();
   if (texto) cuerpo.comments = texto;
 
@@ -747,6 +760,15 @@ async function enviar(ev) {
   if (pregunta) {
     guardarBorrador();
     pedirConfirmacionEnRojo(pregunta);
+    $("previsualizacion").scrollIntoView({ behavior: "smooth", block: "start" });
+    return terminar();
+  }
+  // Y la de las reglas, por lo mismo: no es un rechazo, es una pregunta. El
+  // check-in no se ha guardado -el servidor deshace antes de preguntar-.
+  const reglas = esPreguntaDeReglas(r, datos);
+  if (reglas) {
+    guardarBorrador();
+    pedirAprobacionDeReglas(reglas);
     $("previsualizacion").scrollIntoView({ behavior: "smooth", block: "start" });
     return terminar();
   }
@@ -1146,6 +1168,89 @@ function porQue(d) {
  * solo el segundo deja rastro; mandar la clave siempre convertiría cada día
  * corriente en una anulación a efectos de las cuentas.
  */
+function lasReglas() {
+  return Object.keys(estado.reglas).length ? { reglas: { ...estado.reglas } } : {};
+}
+
+/* Las dos respuestas de una regla, como botones. Pulsar la ya elegida la
+ * desmarca, como en todas las elecciones de esta pantalla: sin eso, un toque
+ * por error se quedaría como respuesta. */
+function botonesDeRegla(nombre, opciones) {
+  return `<div class="opciones-regla" role="group">` +
+    (opciones || []).map((o) =>
+      `<button type="button" data-regla="${escapar(nombre)}" data-valor="${escapar(o.valor)}"` +
+      ` aria-pressed="${estado.reglas[nombre] === o.valor}">${escapar(o.etiqueta)}</button>`,
+    ).join("") +
+    `</div>`;
+}
+
+function engancharBotonesDeRegla(cont, alCambiar) {
+  for (const b of cont.querySelectorAll("[data-regla]")) {
+    b.addEventListener("click", () => {
+      const nombre = b.dataset.regla;
+      if (estado.reglas[nombre] === b.dataset.valor) delete estado.reglas[nombre];
+      else estado.reglas[nombre] = b.dataset.valor;
+      alCambiar();
+    });
+  }
+}
+
+/* Las reglas en marcha, en el formulario. Sin respuesta, siguen: mantenerlas
+ * es lo que ya se aprobó el día que saltaron, y preguntarlo cada mañana
+ * enseñaría a contestar sin leer. */
+function pintarReglasVigentes() {
+  const cont = $("reglas-vigentes");
+  cont.innerHTML = (estado.reglasVigentes || []).map((r) =>
+    `<div class="regla-vigente" data-regla-vigente="${escapar(r.nombre)}">` +
+      `<p class="enunciado">En marcha hasta el ${escapar(fechaMinima(r.hasta))}: ` +
+      `${escapar(r.descripcion)}</p>` +
+      (r.motivo ? `<p class="motivo-regla">${escapar(r.motivo)}</p>` : "") +
+      botonesDeRegla(r.nombre, r.opciones) +
+    `</div>`,
+  ).join("");
+  engancharBotonesDeRegla(cont, pintarReglasVigentes);
+}
+
+/* UNA REGLA QUE SALTA HOY, en el hueco de la previsualización y por lo mismo
+ * que la subida en rojo: hace falta seguir viendo el resto mientras se decide.
+ * Con todas contestadas se vuelve a previsualizar, y lo que sale es la sesión
+ * con esas respuestas dentro. */
+function pedirAprobacionDeReglas(detalle) {
+  const caja = $("previsualizacion");
+  caja.hidden = false;
+  caja.className = "previsualizacion";
+  const pendientes = detalle.reglas_por_confirmar || [];
+
+  const pintar = () => {
+    caja.innerHTML =
+      `<h3>Antes de decidir el día</h3>` +
+      `<p>${pendientes.length === 1 ? "Una regla quiere" : `${pendientes.length} reglas quieren`} ` +
+      `cambiar la rutina de hoy. No se aplica sin que digas que sí.</p>` +
+      pendientes.map((p) =>
+        `<div class="pregunta-regla" data-pregunta-regla="${escapar(p.nombre)}">` +
+          `<p class="enunciado">${escapar(p.descripcion)}</p>` +
+          `<p class="motivo-regla">${escapar(p.motivo)} · ` +
+          (p.vigente_hasta
+            ? `ya iba hasta el ${escapar(fechaMinima(p.vigente_hasta))}; esto la alarga hasta el `
+            : `hasta el `) +
+          `${escapar(fechaMinima(p.hasta))}</p>` +
+          botonesDeRegla(p.nombre, detalle.opciones) +
+        `</div>`,
+      ).join("");
+    engancharBotonesDeRegla(caja, () => {
+      if (pendientes.every((p) => estado.reglas[p.nombre])) previsualizar();
+      else pintar();
+    });
+  };
+  pintar();
+}
+
+/* ¿Es este error la pregunta de las reglas y no una avería? */
+function esPreguntaDeReglas(r, datos) {
+  const d = datos && datos.detail !== undefined ? datos.detail : datos;
+  return r.status === 409 && d && Array.isArray(d.reglas_por_confirmar) ? d : null;
+}
+
 function loQuePido() {
   if (!estado.sesionPedida) return {};
   const fuera = { requested_session: estado.sesionPedida };
@@ -1647,7 +1752,7 @@ async function previsualizar() {
   // Tampoco `day`: lo mismo que hace `enviar()`. El día lo pone el reloj del
   // servidor, y que las dos rutas lo resuelvan igual es lo único que garantiza
   // que lo que se mira y lo que se manda sean del mismo día.
-  const cuerpo = { ...estado.valores, ...loQuePido() };
+  const cuerpo = { ...estado.valores, ...loQuePido(), ...lasReglas() };
 
   try {
     const r = await fetch(API.previsualizar, {
@@ -1657,8 +1762,11 @@ async function previsualizar() {
     });
     const datos = await r.json().catch(() => ({}));
     const pregunta = esConfirmacionEnRojo(r, datos);
+    const reglas = esPreguntaDeReglas(r, datos);
     if (pregunta) {
       pedirConfirmacionEnRojo(pregunta);
+    } else if (reglas) {
+      pedirAprobacionDeReglas(reglas);
     } else if (!r.ok) {
       previsualizacionMal(
         `No se ha podido previsualizar (${r.status})`,
