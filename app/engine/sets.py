@@ -2,7 +2,7 @@
 
 Un único sitio decide qué serie es calentamiento, porque la respuesta la
 necesitan tres cálculos distintos que deben coincidir siempre: el cumplimiento
-que abre la progresión, el volumen, y el recorte del -25% de los días ámbar.
+que abre la progresión, el volumen, y el recorte del -25% de la sesión reducida.
 Si cada uno lo resolviera por su cuenta, tarde o temprano discreparían.
 
 Precedencia (`set_types.source`):

@@ -295,6 +295,14 @@ mueven las cargas:
   torso y después la bisagra). **Qué vigilar:** una semana de dos o de cuatro
   sesiones vuelve a descolocarla; y los intervalos de `dia_2` caen ahora el
   viernes, antes de la bici del sábado.
+- **El ámbar da la sesión completa (09/10/2026).** El 7 y el 8 de octubre el
+  ámbar quitó de `dia_1` el gemelo, el press de tríceps y el bosu, y el usuario
+  pidió las rutinas enteras en Hevy. `actions.amber.session` pasa a `full`: el
+  ámbar sigue cerrando la progresión y poniendo techo a la bici, pero no toca
+  ejercicios ni series. La sesión reducida se pide en el check-in, y un día
+  ámbar usa `set_reduction`, `min_sets_per_exercise` y `drop_expendable`.
+  **Qué vigilar:** la semana de descarga sí recorta carga y volumen, y la
+  siguiente toca la semana del 02/11 (cada 7 semanas desde el 14/09).
 - **Las reglas especiales se aprueban en el check-in (28/09/2026).** La
   retirada del peso muerto saltó el 21/09 y quitó el ejercicio catorce días sin
   preguntar. Ahora, una regla que salta hoy -o que alarga su plazo- se pregunta

@@ -167,6 +167,21 @@ def con_bloque_hiit(cfg):
     return otro
 
 
+def con_ambar_que_recorta(cfg):
+    """El config real con el ámbar como fue hasta el 09/10/2026: `reduced`.
+
+    Ese día el ámbar pasó a dar la sesión completa -el usuario pidió las
+    rutinas enteras en Hevy-, y el recorte quedó para cuando se pide a mano.
+    El mecanismo es el mismo, y los tests que lo prueban por el camino del
+    semáforo -el cansancio que pinta ámbar y recorta- necesitan un ámbar que
+    recorte. Se construye desde el real para que el resto del config no pueda
+    quedarse viejo aquí.
+    """
+    otro = copy.deepcopy(cfg)
+    otro.raw["actions"]["amber"]["session"] = "reduced"
+    return otro
+
+
 @pytest.fixture
 def cfg_con_bloque(cfg):
     """Ver `con_bloque_hiit`."""

@@ -12,6 +12,7 @@ en automático es esto.
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import date, timedelta
 
@@ -23,6 +24,7 @@ from app.engine.signals import Signals
 from tests.conftest import LUNES, eligiendo, sig, sig_completa
 from tests.conftest import titulo
 from tests.conftest import con_bloque_hiit
+from tests.conftest import con_ambar_que_recorta
 
 JUEVES = LUNES + timedelta(days=3)
 
@@ -70,11 +72,40 @@ def test_un_dia_sin_señales_malas_es_verde_y_entrena_entero(cfg):
     assert not d.deload.active
 
 
-def test_una_molestia_cervical_de_6_baja_a_ambar_y_reduce(cfg):
+def test_una_molestia_cervical_de_6_baja_a_ambar_con_la_sesion_entera(cfg):
+    """Desde el 09/10/2026 el ámbar no recorta solo: el 7 y el 8 de octubre
+    dejó el `dia_1` de Hevy sin tres ejercicios y el usuario pidió las rutinas
+    completas. Lo que sí sigue haciendo es cerrar la progresión."""
     d = decide(cfg, LUNES, sig(LUNES, upper_discomfort=6), EngineState())
     assert d.light == "amber"
-    assert d.session.kind == "reduced"
+    assert d.session.kind == "full"
+    assert d.session.dropped == []
     assert d.progression is not None and not d.progression.gate_open
+
+
+def test_en_ambar_la_reducida_se_pide_y_entonces_recorta_con_lo_del_ambar(cfg):
+    """El recorte no desaparece: se pide. Y pedido un día ámbar usa las tres
+    claves de `actions.amber`, que por eso siguen en el config."""
+    from app.engine.session_builder import SesionPedida
+
+    entera = decide(cfg, LUNES, sig(LUNES, upper_discomfort=6), EngineState())
+    pedida = decide(cfg, LUNES, sig(LUNES, upper_discomfort=6), EngineState(),
+                    sesion_pedida=SesionPedida("reduced", motivo="prueba"))
+    assert pedida.session.kind == "reduced"
+    quitados = {e["key"] for e in entera.session.exercises} - {
+        e["key"] for e in pedida.session.exercises
+    }
+    marcados = {
+        e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]
+        if e.get("expendable_in_amber")
+    }
+    assert quitados == marcados, (quitados, marcados)
+
+    sin_tirar = copy.deepcopy(cfg)
+    sin_tirar.raw["actions"]["amber"]["drop_expendable"] = False
+    otra = decide(sin_tirar, LUNES, sig(LUNES, upper_discomfort=6), EngineState(),
+                  sesion_pedida=SesionPedida("reduced", motivo="prueba"))
+    assert otra.session.dropped == [], "`drop_expendable` del ámbar no se lee"
 
 
 def test_una_molestia_lumbar_de_7_pone_el_dia_en_rojo(cfg):
@@ -291,6 +322,7 @@ def test_lo_elegido_se_lleva_los_ajustes_de_hoy_y_no_los_de_su_ultima_vez(cfg):
     La elección no es un cambio de tema: es la misma mañana aplicada a otra
     rutina.
     """
+    cfg = con_ambar_que_recorta(cfg)
     ambar = decide(
         cfg, LUNES, eligiendo(sig(LUNES, upper_discomfort=6), "dia_2"), EngineState()
     )
@@ -636,6 +668,7 @@ def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_y_cae_en_disco(cfg):
     # viene de haber hecho el `dia_2`. Antes esto necesitaba una variante de
     # calendario entera -`summer`- solo porque la activa no lo programaba nunca.
     despues_del_dia_2 = EngineState(last_strength=("dia_2", viernes - timedelta(days=2)))
+    cfg = con_ambar_que_recorta(cfg)
     d = decide(cfg, viernes, sig(viernes, upper_discomfort=6), despues_del_dia_2)
     assert d.session.routine_key == "dia_3"
     despues = [

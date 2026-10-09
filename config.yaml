@@ -778,7 +778,7 @@ thresholds:
     # bici o alguna salida intensa. Era la única de las trece reglas de esta
     # sección que disparaba contando actividades en vez de midiendo el cuerpo, y
     # la única de los frenos por cuenta que llegaba hasta la sesión de fuerza:
-    # ámbar el lunes es -25 % de series, sin progresión y sin HIIT.
+    # ámbar el lunes era entonces -25 % de series, sin progresión y sin HIIT.
     #
     # Sobre 180 días reales -26 lunes- disparaba en 10 y era la ÚNICA causa del
     # ámbar en 2:
@@ -822,7 +822,18 @@ actions:
     bike_max: intensa       # techo de intensidad para la bici; ver `cycling`
 
   amber:
-    session: reduced
+    # SESIÓN COMPLETA DESDE EL 09/10/2026. Hasta ese día el ámbar era `reduced`
+    # y, sin preguntar, quitaba un 25 % de las series y los ejercicios marcados
+    # `expendable_in_amber`. El 7 y el 8 de octubre eso dejó el `dia_1` de Hevy
+    # sin el gemelo, el press de tríceps y el bosu, y el usuario lo pidió claro:
+    # «quiero que completes las rutinas con lo que se ha ido quitando». Lo que
+    # el ámbar sigue haciendo por su cuenta es cerrar la progresión -ese día no
+    # sube nada- y poner techo a la bici.
+    #
+    # Recortar sigue existiendo, pero lo decides tú: la sesión reducida se pide
+    # en el check-in. Las tres claves de abajo son las que usa ESE recorte un
+    # día ámbar; no son decorativas, solo dejaron de aplicarse solas.
+    session: full
     set_reduction: 0.25       # -25% de series, redondeando hacia abajo
     min_sets_per_exercise: 2
     drop_expendable: true     # elimina los ejercicios marcados
@@ -1204,7 +1215,8 @@ progression:
 #   - el cumplimiento que abre la puerta de la progresión (solo cuentan las
 #     efectivas: calentar con 30 kg no demuestra nada sobre si toca subir)
 #   - el cálculo de volumen
-#   - el recorte del -25% de los días ÁMBAR, que se aplica sobre las efectivas
+#   - el recorte del -25% de la sesión reducida, que se aplica sobre las
+#     efectivas (hasta el 09/10/2026 la imponía el ámbar; ahora se pide)
 # Y además nunca se elimina: el día que vienes tocado, calentar importa más, no
 # menos.
 #
@@ -1882,7 +1894,8 @@ hiit:
 #   increment_kg:   cuánto sube cuando toca progresar
 #   apply_to:       top_set | all_sets
 #   clean_sessions_required: sesiones limpias seguidas antes de subir
-#   expendable_in_amber: true -> se elimina en días ámbar
+#   expendable_in_amber: true -> se elimina en la sesión REDUCIDA, la que se
+#                   pide en el check-in. Hasta el 09/10/2026 la imponía el ámbar.
 #   notes:          nota que se escribe en la rutina de Hevy
 
 routines:
@@ -2068,8 +2081,9 @@ routines:
       # en día verde. Se fusiona como se fusionó el `dia_2` el 25/09: una sola
       # rutina que abrir en el gimnasio. Lo mismo que se perdió allí se pierde
       # aquí, y está escrito en el `dia_2`: ya NO es condicional (en ámbar está
-      # también, y el ámbar le recorta series como a todo), y si se quiere que
-      # el ámbar lo quite, la pieza es `expendable_in_amber: true` en estos.
+      # también, y desde el 09/10/2026 entero, como todo lo demás), y si se
+      # quiere que la sesión reducida lo quite, la pieza es
+      # `expendable_in_amber: true` en estos.
       #
       # Están declarados en `hiit.embedded`: es lo que los hace contar como
       # HIIT y pasar por `safety.forbidden_in_hiit`. Uno que se añada aquí y no
@@ -2293,7 +2307,9 @@ routines:
       #     ámbar; ahora está siempre. Si algún día se quiere recuperar ese
       #     comportamiento sin volver a partir la rutina, la pieza que hace
       #     falta ya existe y es `expendable_in_amber: true` en estos cuatro:
-      #     el ámbar los quitaría y el resto del `dia_2` seguiría igual.
+      #     la sesión reducida los quitaría y el resto del `dia_2` seguiría
+      #     igual. (Hasta el 09/10/2026 la reducida la imponía el ámbar; ahora
+      #     se pide en el check-in.)
       #   - Al moverlo dejó de recorrerlo la guarda de `safety.forbidden_in_hiit`,
       #     que solo miraba las rutinas de `hiit.blocks`. Desde la tarde del
       #     mismo 25/09 vuelve a recorrerlo porque los cuatro están declarados en

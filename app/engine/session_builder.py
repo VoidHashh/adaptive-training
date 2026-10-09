@@ -6,7 +6,7 @@ Toma la rutina que toca por calendario y le aplica, EN ESTE ORDEN:
   2. progresión                                  (solo si el semáforo la permite)
   3. recorte de la semana de descarga            (carga y volumen)
   4. reglas especiales que recortan carga        (`descarga_press_hombro`)
-  5. recorte del ámbar                           (-25% de series efectivas)
+  5. recorte de la sesión reducida              (-25% de series efectivas)
   6. bloque HIIT                                 (solo si procede)
 
 El orden importa y no es intercambiable. Dos ejemplos de por qué:
@@ -14,9 +14,13 @@ El orden importa y no es intercambiable. Dos ejemplos de por qué:
   - la retirada de ejercicios va PRIMERO porque no tiene sentido calcular la
     progresión de un peso muerto que hoy no se va a hacer, y porque hacerlo
     ensuciaría el mensaje de Telegram con una subida de un ejercicio ausente
-  - el recorte del ámbar va DESPUÉS de la progresión porque el -25% se aplica
-    sobre la sesión que tocaba hoy, no sobre la de la semana pasada; si fuera
-    al revés, un día ámbar congelaría el esquema en el estado anterior
+  - el recorte va DESPUÉS de la progresión porque el -25% se aplica sobre la
+    sesión que tocaba hoy, no sobre la de la semana pasada; si fuera al revés,
+    un día recortado congelaría el esquema en el estado anterior
+
+La sesión reducida la imponía el ámbar hasta el 09/10/2026. Desde ese día el
+ámbar del config da la sesión completa -el usuario pidió las rutinas enteras
+en Hevy- y la reducida se pide en el check-in. El paso 5 es el mismo.
 
 EL CALENTAMIENTO NUNCA SE TOCA
 ------------------------------

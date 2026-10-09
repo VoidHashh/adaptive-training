@@ -151,6 +151,10 @@ def test_bike_max_tiene_que_existir_en_intensity_order(cfg):
 
 def test_el_rojo_no_puede_ser_mas_suelto_que_el_ambar(cfg):
     d = copy.deepcopy(cfg.raw)
+    # El ámbar real es `full` desde el 09/10/2026: con él, un rojo `full` ya no
+    # es MÁS suelto, es igual. Se pone el ámbar que recorta para que la
+    # comprobación tenga algo que comparar.
+    d["actions"]["amber"]["session"] = "reduced"
     d["actions"]["red"]["session"] = "full"
     msg = errores(d)
     assert "el día PEOR daría una sesión más exigente" in msg

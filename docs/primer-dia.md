@@ -568,6 +568,10 @@ anterior, el lunes va a salir ámbar y sesión reducida.** No es una avería, es
 regla haciendo su trabajo. El bloque **«Por qué»** del mensaje dice siempre cuál
 saltó y con qué números.
 
+> Desde el 09/10/2026 esto ya no es así: el ámbar da la sesión **completa** y
+> solo cierra la progresión; la reducida se pide en el check-in. Ver
+> `actions.amber` en `config.yaml`.
+
 ### 6.3 Después del primer mensaje: comprobar Hevy
 
 Esto es lo único que hay que hacer el lunes que no se hace ningún otro día.

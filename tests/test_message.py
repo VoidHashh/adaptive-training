@@ -35,6 +35,7 @@ from app.engine.message import (
 
 from tests.conftest import LUNES, con_bloque_hiit, sig, sig_completa
 from tests.conftest import titulo
+from tests.conftest import con_ambar_que_recorta
 from tests.dobles import doble_de
 from app.engine.bike_advisor import BikeRecommendation
 from app.engine.decision import ActiveRule, DecisionAnulada
@@ -692,9 +693,10 @@ def test_un_no_voy_no_saca_fuera_hoy_sin_haber_ensenado_la_sesion(cfg):
     Sin el `if`, el mensaje sacaría "➖ Fuera hoy: X, Y" sin haber enseñado antes
     ninguna sesión de la que sacarlos. Fuera ¿de qué?
     """
-    # Un ámbar por cansancio: el config real recorta tres ejercicios ahí. Da
-    # igual qué regla lo pinte -los recortes salen de `expendable_in_amber`, no
-    # de la regla- pero tiene que ser una regla viva.
+    # Un ámbar por cansancio, con el ámbar que recortaba hasta el 09/10/2026:
+    # tres ejercicios fuera. Da igual qué regla lo pinte -los recortes salen de
+    # `expendable_in_amber`, no de la regla- pero tiene que ser una regla viva.
+    cfg = con_ambar_que_recorta(cfg)
     d = decide(cfg, LUNES, sig_completa(LUNES, fatigue=7.0, will_train=False), EngineState())
     si = decide(cfg, LUNES, sig_completa(LUNES, fatigue=7.0), EngineState())
     assert si.session.dropped, "el montaje del test ya no recorta nada"
