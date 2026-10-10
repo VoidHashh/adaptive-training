@@ -240,8 +240,9 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
     """El fallo que este test existe para impedir: `build_scheduler` estaba
     escrito, probado y no lo llamaba NADIE en producción. El contenedor arrancaba,
     servía la PWA, contestaba `status: ok` y no ejecutaba ni el refresco de
-    Garmin, ni la decisión de las 09:00, ni la reconciliación. Desde fuera es
-    idéntico a un día de descanso: no llega mensaje.
+    Garmin ni la reconciliación. Desde fuera es idéntico a un día de descanso.
+    (La decisión de las 09:00 estaba en esta lista hasta el 10/10/2026, cuando
+    se fue: el plan del día sale solo del formulario.)
 
     `backfill_wellness` entra en la misma lista y por lo mismo: es el trabajo
     que tapa los días que el sistema se perdió, y dejarlo escrito sin montar
@@ -264,8 +265,7 @@ def test_al_arrancar_se_montan_los_trabajos(arrancada, monkeypatch):
 
     assert sched["running"] is True, "la aplicación arrancó sin planificador"
     assert set(sched["jobs"]) == {
-        "garmin_fetch", "decision_fallback", "recompute_early", "reconcile",
-        "perception_notice", "watchdog",
+        "garmin_fetch", "reconcile", "perception_notice", "watchdog",
         "backfill_wellness", "reconcile_arranque", "startup_audit",
     }
     assert all(sched["jobs"].values()), (
@@ -3589,25 +3589,20 @@ def test_hevy_y_telegram_salen_de_lo_guardado_y_si_no_hay_fila_no_se_sabe(client
     assert (d["hevy"], d["telegram"]) == ("ok", "sent")
 
 
-def test_al_recalcular_se_devuelve_la_decision_nueva_para_repintar(cliente, monkeypatch):
-    """La tarjeta que la pantalla tenía delante deja de ser la vigente: sin la
-    decisión nueva en la respuesta, seguiría enseñando el ámbar de antes."""
-    monkeypatch.setattr(
-        "app.scheduler.recalcular_si_hace_falta",
-        lambda cfg, **kw: {"estado": "recalculado", "tono": "bien", "aviso": "x"},
-    )
-    monkeypatch.setattr("app.api._decision_de_hoy", lambda s, cfg, day: {"light": "green", "dia": str(day)})
+def test_abrir_la_app_no_decide_ni_escribe_nada(cliente, monkeypatch):
+    """Hasta el 10/10/2026 esta ruta rehacía el día -escribía en Hevy y mandaba
+    otro Telegram- sin que nadie enviara nada. Ahora solo mira: ni construye
+    clientes de Hevy o Telegram, ni llama al motor."""
+    def prohibido(*a, **kw):
+        raise AssertionError("abrir la app ha intentado actuar")
 
-    r = cliente.post("/api/decision/recalcular").json()
-    assert r["decision_de_hoy"] == {"light": "green", "dia": str(date.today())}
+    cliente.post("/api/checkin", json={"day": str(date.today()), "fatigue": 4})
+    monkeypatch.setattr("app.api._clientes", prohibido)
+    monkeypatch.setattr("app.runner.run_daily", prohibido)
 
-
-def test_si_no_se_recalcula_no_se_manda_decision(cliente, monkeypatch):
-    monkeypatch.setattr(
-        "app.scheduler.recalcular_si_hace_falta",
-        lambda cfg, **kw: {"estado": "nada_que_recalcular", "aviso": None},
-    )
-    assert "decision_de_hoy" not in cliente.post("/api/decision/recalcular").json()
+    r = cliente.post("/api/decision/recalcular")
+    assert r.status_code == 200, r.text
+    assert "decision_de_hoy" not in r.json()
 
 
 def test_un_dia_de_bici_dice_que_hevy_no_se_ha_tocado_y_no_que_no_se_sabe(cliente, db):
@@ -3796,3 +3791,60 @@ def test_una_regla_caducada_que_sigue_en_el_estado_no_sale_como_vigente(cliente,
     db.commit()
     hoy = cliente.get("/api/checkin/today", params={"day": str(LUNES)}).json()
     assert hoy["reglas_vigentes"] == []
+
+
+# ---------------------------------------------------------------------------
+# La casilla «aplicar los cambios» (10/10/2026)
+# ---------------------------------------------------------------------------
+
+
+def _con_clientes(monkeypatch):
+    from tests.test_runner import HevyFalso, TelegramFalso
+
+    hevy, tg = HevyFalso(), TelegramFalso()
+    monkeypatch.setattr("app.api._clientes", lambda cfg_: (hevy, tg, {}))
+    return hevy, tg
+
+
+def test_enviar_sin_la_casilla_no_toca_hevy_y_si_cuenta_el_dia(cliente, monkeypatch):
+    hevy, tg = _con_clientes(monkeypatch)
+
+    r = cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["hevy"] == "skipped"
+    assert hevy.llamadas == [], "ha escrito en Hevy sin el consentimiento"
+    assert tg.enviados, "el formulario se rellenó: el Telegram tiene que salir"
+
+
+def test_enviar_con_la_casilla_escribe(cliente, monkeypatch):
+    hevy, _tg = _con_clientes(monkeypatch)
+
+    r = cliente.post("/api/checkin", json={
+        "day": str(LUNES), "fatigue": 4, "aplicar_cambios": True,
+    })
+
+    assert r.json()["hevy"] == "ok", r.text
+    assert hevy.llamadas
+
+
+def test_la_casilla_no_es_una_respuesta_del_formulario(cliente, db):
+    """No puede acabar en `checkins` ni en las señales: no dice nada del cuerpo."""
+    from app import repository as repo
+
+    cliente.post("/api/checkin", json={
+        "day": str(LUNES), "fatigue": 4, "aplicar_cambios": True,
+    })
+    assert "aplicar_cambios" not in repo.checkin_values(repo.get_checkin(db, LUNES))
+
+
+def test_previsualizar_mira_el_dia_con_la_casilla_como_este(cliente):
+    """Lo que se mira y lo que se manda tienen que ser lo mismo: sin la casilla,
+    la tarjeta enseña el día sin subidas, que es lo que se guardaría al enviar
+    así."""
+    sin = cliente.post("/api/preview", json={"day": str(LUNES), "fatigue": 4}).json()
+    con = cliente.post("/api/preview", json={
+        "day": str(LUNES), "fatigue": 4, "aplicar_cambios": True,
+    }).json()
+    assert sin["decision"]["aplicar_cambios"] is False
+    assert con["decision"]["aplicar_cambios"] is True

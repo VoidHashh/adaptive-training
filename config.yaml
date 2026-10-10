@@ -2652,18 +2652,22 @@ recovery_blocks:
 # -----------------------------------------------------------------------------
 schedule:
   garmin_fetch_time: "06:30"    # lee Garmin antes de que te levantes
-  fallback_decision_time: "09:00"   # si no hay check-in, decide solo con Garmin
   evening_summary_time: "22:30"     # captura lo entrenado para el histórico
+
+  # AQUÍ IBA `fallback_decision_time: "09:00"`: si a esa hora no había
+  # check-in, el sistema decidía el día solo con Garmin, escribía en Hevy y
+  # mandaba el Telegram. Se fue el 10/10/2026 -y con él el recálculo de las
+  # 07:30-: «solo quiero que actúe y envíe el mensaje de Telegram si yo relleno
+  # el formulario». El plan del día sale ya solo del formulario. El validador
+  # rechaza las dos claves si vuelven, diciendo por qué.
 
   # El aviso de percepción: evalúa la sesión de AYER y, si esa mañana te
   # puntuaste mucho peor de lo que luego rendiste, lo cuenta con los números.
   #
-  # Va DESPUÉS de `fallback_decision_time` y no es un detalle de orden. Es un
-  # mensaje aparte y sobre ayer; si llegara antes del plan de hoy se leerían
-  # como una sola cosa y el contador se convertiría en el preámbulo de la
-  # decisión, que es justo lo que no puede ser. Y hace falta el check-in de esta
-  # mañana -de ahí sale el esfuerzo percibido de ayer-, así que antes de las
-  # nueve tampoco habría nada que evaluar.
+  # Es un mensaje aparte y sobre ayer, y desde el 10/10/2026 solo sale si HOY
+  # has rellenado el formulario: sin él, lo pendiente espera al próximo día que
+  # contestes. Necesita además el check-in de esta mañana, que es de donde sale
+  # el esfuerzo percibido de ayer.
   perception_notice_time: "09:30"
 
   # Reintentos ante un 429. Garmin limita por IP durante MINUTOS, así que las

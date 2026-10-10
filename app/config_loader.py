@@ -2739,25 +2739,37 @@ def _validate(data: dict[str, Any]) -> list[str]:
     # sobrante: era una contradicción, y la que perdía era la del YAML, que es
     # la que se lee cuando hay que entender qué hace el sistema.
     sched = data.get("schedule") or {}
+    # LAS DOS HORAS QUE DECIDÍAN SOLAS SE FUERON EL 10/10/2026, y se nombran
+    # aquí con su motivo en vez de dejar que `check_keys` diga solo «sobra».
+    # Un config de antes que las conserve es lo que se encontrará quien
+    # actualice la imagen sin copiar el config nuevo, y tiene que saber qué
+    # quitar y por qué. Ver la cabecera de `app/scheduler.py`.
+    for retirada in ("fallback_decision_time", "recompute_time"):
+        require(
+            retirada not in sched,
+            f"schedule.{retirada} ya no existe: desde el 10/10/2026 nada decide "
+            f"el día sin el formulario, y esa hora no la leería nadie. Quítala "
+            f"del config.yaml.",
+        )
     check_keys(
         sched,
         {
             "garmin_fetch_time",
-            "fallback_decision_time",
             "evening_summary_time",
             "perception_notice_time",
-            "recompute_time",
             "watchdog_time",
             "garmin_retry",
+            # Se aceptan aquí solo para que las rechace el `require` de arriba
+            # con su motivo, y no `check_keys` con un «clave desconocida».
+            "fallback_decision_time",
+            "recompute_time",
         },
         "schedule",
     )
     HORAS = (
         "garmin_fetch_time",
-        "fallback_decision_time",
         "evening_summary_time",
         "perception_notice_time",
-        "recompute_time",
         "watchdog_time",
     )
     for clave in HORAS:
@@ -2779,64 +2791,11 @@ def _validate(data: dict[str, Any]) -> list[str]:
             f"la mañana del día que se despliegue",
         )
 
-    # El aviso de percepción va DESPUÉS de la decisión, y ponerlo antes no
-    # rompería nada visible: el trabajo se ejecutaría, el mensaje saldría y todo
-    # parecería correcto. Lo que se perdería es el motivo entero por el que el
-    # aviso va aparte -llegar primero lo convierte en el preámbulo del plan de
-    # hoy, o sea en un argumento sobre si entrenar- y además a esa hora puede que
-    # no haya check-in todavía, que es el dato del que sale el esfuerzo percibido
-    # de ayer. Un fallo así solo se nota leyendo los mensajes semanas después.
-    def _min(clave: str, defecto: str) -> int | None:
-        texto = str(sched.get(clave) or defecto).split(":")
-        try:
-            return int(texto[0]) * 60 + int(texto[1])
-        except (IndexError, ValueError):
-            return None  # ya lo ha dicho el validador de formato de arriba
-
-    aviso, decision = _min("perception_notice_time", "09:30"), _min(
-        "fallback_decision_time", "09:00"
-    )
-    if aviso is not None and decision is not None:
-        require(
-            aviso > decision,
-            f"schedule.perception_notice_time ({sched.get('perception_notice_time')}) "
-            f"tiene que ser posterior a schedule.fallback_decision_time "
-            f"({sched.get('fallback_decision_time')}): el aviso habla de AYER y "
-            f"tiene que llegar cuando el plan de hoy ya se ha mandado, o los dos "
-            f"mensajes se leen como uno solo y el contador acaba pareciendo un "
-            f"argumento a favor o en contra de entrenar hoy",
-        )
-
-    # La vigilancia mira el ESTADO en el que ha quedado el sistema, y los dos
-    # momentos en que puede quedar mal son las escrituras en Hevy: la de las
-    # 06:30 con check-in y la de respaldo de las 09:00. Puesta antes, miraría
-    # lo de ayer y diría que todo está bien el día que se rompa; el aviso
-    # llegaría veinticuatro horas tarde y nadie ataría una cosa con la otra.
-    # El recálculo temprano va ANTES que el fallback, y esa es su razón de ser.
-    # Puesto igual o después, no arregla nada que el fallback no arreglara ya, y
-    # el problema que existe es justo el contrario: el fallback llega cuando el
-    # entreno ya se ha hecho con la rutina que la decisión ciega escribió.
-    temprano = _min("recompute_time", "07:30")
-    if temprano is not None and decision is not None:
-        require(
-            temprano < decision,
-            f"schedule.recompute_time ({sched.get('recompute_time')}) tiene que "
-            f"ser ANTERIOR a schedule.fallback_decision_time "
-            f"({sched.get('fallback_decision_time')}): existe para rehacer la "
-            f"decisión ciega a tiempo de que sirva, y a la hora del fallback o "
-            f"después no aporta nada que el fallback no haga ya",
-        )
-
-    vigilancia = _min("watchdog_time", "09:45")
-    if vigilancia is not None and decision is not None:
-        require(
-            vigilancia > decision,
-            f"schedule.watchdog_time ({sched.get('watchdog_time')}) tiene que "
-            f"ser posterior a schedule.fallback_decision_time "
-            f"({sched.get('fallback_decision_time')}): la vigilancia comprueba "
-            f"en qué estado ha quedado el sistema DESPUÉS de las escrituras "
-            f"del día, y antes de esa hora estaría mirando las de ayer",
-        )
+    # Aquí se comprobaba que el aviso de percepción, el recálculo temprano y la
+    # vigilancia caían en el orden correcto respecto a la decisión de las 09:00.
+    # Esa decisión ya no existe (10/10/2026): el plan sale del formulario, a la
+    # hora a la que se rellene, y no hay ninguna hora fija contra la que
+    # ordenar. El aviso de percepción, además, ya no sale sin formulario.
 
     retry = sched.get("garmin_retry") or {}
     if retry:

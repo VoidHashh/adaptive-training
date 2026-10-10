@@ -471,7 +471,9 @@ def _lineas_sin_entreno(decision: Any, raw: dict) -> list[str]:
        sesiones y nadie se fía de lo que no se le cuenta.
     2. «¿Y si cambio de idea a las siete de la tarde?» Está escrita en Hevy. La
        rutina se escribe igual -eso no se toca-, y decirlo aquí es lo que hace
-       que decir «no» por la mañana no sea una puerta cerrada.
+       que decir «no» por la mañana no sea una puerta cerrada. Salvo sin la
+       casilla «aplicar los cambios» (10/10/2026): entonces no se escribe nada y
+       la frase no se dice, porque sería falsa.
 
     No hay una línea animándote a ir, ni recordándote lo que llevas de semana, ni
     preguntando si estás seguro. Has contestado una pregunta que el sistema hizo;
@@ -485,73 +487,22 @@ def _lineas_sin_entreno(decision: Any, raw: dict) -> list[str]:
         if titulo
         else "la rutina que tocaba sigue siendo la siguiente"
     )
-    return [
+    lineas = [
         "",
         f"🌙 <b>Hoy no entrenas.</b> {cual}: la rotación no se mueve hasta que se haga.",
-        "   <i>La rutina está escrita en Hevy de todas formas, por si cambias de "
-        "idea.</i>",
     ]
-
-
-def _lineas_anulacion(decision: Any, tz: str | None) -> list[str]:
-    """El aviso de que esta decisión deja sin efecto la de hace un rato.
-
-    Se pinta SIEMPRE que ha habido recomputación, no solo cuando cambia el
-    color. El motivo es que la recomputación manda un segundo mensaje del mismo
-    día: si llegara sin explicarse, el usuario tendría dos semáforos en el móvil
-    y ninguna forma de saber cuál manda. Un mensaje duplicado y mudo es peor que
-    uno que se presenta.
-
-    Lo que sí cambia con el color es el tono y el sitio. Si cambia, esto es la
-    noticia del día y va en negrita justo debajo de la cabecera; si no cambia,
-    es un acuse de recibo en cursiva.
-    """
-    a = getattr(decision, "anulacion", None)
-    if a is None:
-        return []
-
-    # `computed_at` se guarda en UTC y aquí se lee una hora de reloj de pared.
-    # Sin convertir, el mensaje de las 09:00 diría "anula la de las 04:23" y el
-    # usuario no reconocería su propio check-in de las 06:23.
-    #
-    # El "de las" se monta DESPUÉS de saber la hora y no antes: `_hora_local`
-    # devuelve cadena vacía cuando no puede resolver la zona, y con el prefijo
-    # puesto por delante el mensaje salía "anula la decisión de las , que salió
-    # verde". Renunciar a la hora es aceptable; enseñar el hueco no.
-    reloj = _hora_local(getattr(a, "decidida_a", None), tz)
-    hora = f" de las {reloj}" if reloj else ""
-
-    anterior = _NOMBRE_LUZ.get(a.anterior, a.anterior)
-    medidas = list(a.medidas)
-    llegado = _enumerar(medidas)
-    cola = ""
-    if a.sin_llegar:
-        falta = list(a.sin_llegar)
-        cola = (
-            f" {_concordar(falta, 'Sigue', 'Siguen')} sin llegar "
-            f"{_enumerar(falta)}, así que esta decisión tampoco está completa."
+    if getattr(decision, "aplicar_cambios", True) is not False:
+        lineas.append(
+            "   <i>La rutina está escrita en Hevy de todas formas, por si cambias "
+            "de idea.</i>"
         )
-
-    if a.cambia_el_color(decision.light):
-        return [
-            f"♻️ <b>Esto anula la decisión{escapar_html(hora)}, que salió "
-            f"{escapar_html(anterior)}.</b> A esa hora el reloj todavía no había "
-            f"subido la noche y {escapar_html(llegado)} "
-            f"{_concordar(medidas, 'no se pudo', 'no se pudieron')} evaluar. "
-            f"{_concordar(medidas, 'Con el dato ya puesto', 'Con los datos ya puestos')}"
-            f", el semáforo cambia.{escapar_html(cola)}"
-        ]
-    return [
-        f"♻️ <i>Recalculado con {escapar_html(llegado)}, que a la hora del "
-        f"check-in todavía no {_concordar(medidas, 'estaba', 'estaban')}. El "
-        f"semáforo no cambia.{escapar_html(cola)}</i>"
-    ]
+    return lineas
 
 
 def _lineas_sin_datos(decision: Any) -> list[str]:
     """«Esto es ámbar porque no he podido mirar», dicho con esas palabras.
 
-    Va arriba, pegado a la cabecera y justo debajo de la anulación si la hay, y
+    Va arriba, pegado a la cabecera, y
     NO dentro de «Decidido con datos incompletos», que es donde cabría por
     parecido. Aquel bloque enumera degradaciones de una decisión que ya está
     tomada; esto ES la decisión: explica el color que encabeza el mensaje. Leído
@@ -580,21 +531,19 @@ def _lineas_sin_datos(decision: Any) -> list[str]:
         que = "el bienestar"
     else:
         que = _enumerar(medidas)
-    # LA ÚLTIMA FRASE ERA UNA PROMESA QUE NO SE CUMPLÍA. Decía «si el dato
-    # llega luego, el día se recalcula y te aviso», sin condición. Quien la
-    # cumplía eran dos reintentos con hora, y el 25/09/2026 el ámbar de las
-    # 06:57 se quedó ámbar todo el día con la noche ya en Garmin: el equipo
-    # dormía a las 07:30 y a las 09:00. Ahora dice lo que SÍ pasa siempre -abrir
-    # la app lo rehace, ver `scheduler.recalcular_si_hace_falta`- y el límite
-    # de verdad: un día ya entrenado no se recalcula.
+    # LA ÚLTIMA FRASE HA SIDO DOS VECES UNA PROMESA. Primero «si el dato llega
+    # luego, el día se recalcula y te aviso», que cumplían dos reintentos con
+    # hora y el 25/09/2026 no cumplió ninguno; después «abre la aplicación: el
+    # día se recalcula solo», que dejó de ser verdad el 10/10/2026, cuando nada
+    # volvió a decidir sin el formulario. Ahora dice lo único que rehace el día:
+    # volver a enviarlo. Ver `scheduler.recalcular_si_hace_falta`.
     return [
         "",
         f"🟡 <b>Ámbar por precaución: no {_concordar(medidas, 'se ha', 'se han')} "
         f"podido evaluar {escapar_html(que)}.</b> A esta hora el reloj todavía no "
         f"había subido la noche. No es que estés peor: es que no se ha podido "
         f"mirar, y no mirar no se pinta de verde. Cuando el reloj sincronice, "
-        f"abre la aplicación antes de entrenar: el día se recalcula solo y te "
-        f"aviso.",
+        f"vuelve a enviar el formulario antes de entrenar si quieres que cuente.",
     ]
 
 
@@ -650,11 +599,19 @@ def render_telegram(decision: Any, config: Any = None) -> str:
         f"{NOMBRE_LUZ[luz]}</b>"
     )
 
-    # Justo debajo de la cabecera y antes que nada más, incluida la descarga: si
-    # el semáforo de hace dos horas ya no vale, eso se lee ANTES que la sesión
-    # que ese semáforo condiciona. Ponerlo al final, entre los apuntes, sería
-    # dejar que se lea el plan del día creyendo que es el primero.
-    L.extend(_lineas_anulacion(decision, raw.get("timezone")))
+    # AQUÍ IBA EL AVISO DE QUE ESTA DECISIÓN ANULABA LA DE HACE UN RATO, que
+    # mandaba el recálculo automático. Se fue con él el 10/10/2026: ahora solo
+    # decide el formulario, y un segundo envío es del usuario, que ya sabe que
+    # lo ha mandado.
+
+    # SIN LA CASILLA, LO PRIMERO QUE SE LEE ES QUE HEVY NO SE HA TOCADO
+    # (10/10/2026). Debajo viene la sesión con sus pesos, y sin esta línea se
+    # leería como la rutina que hay en la app, que es justo lo que no es seguro.
+    if getattr(decision, "aplicar_cambios", True) is False:
+        L.append(
+            "📝 <i>No marcaste «aplicar los cambios»: la rutina de Hevy no se ha "
+            "tocado y hoy no se propone ninguna subida.</i>"
+        )
 
     if decision.deload.active:
         # El motivo va aquí, pegado al aviso, y no suelto entre los apuntes:

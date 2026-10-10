@@ -134,6 +134,20 @@
     -->
     <button type="button" id="previsualizar">Previsualizar</button>
 
+    <!-- EL CONSENTIMIENTO, JUSTO ENCIMA DE ENVIAR (10/10/2026). «No quiero que
+         haga cambios en los entrenamientos sin mi consentimiento.» Sin marcar
+         -y así empieza cada mañana, no se recuerda de ayer- el día se decide,
+         se guarda y se cuenta por Telegram, pero la rutina de Hevy no se toca
+         y no se propone ninguna subida. Marcada, se escribe lo que se decide.
+         Un `<label>` que envuelve la casilla para que se pueda pulsar el texto
+         entero, que en un móvil es lo que se pulsa. -->
+    <label class="aplicar-cambios">
+      <input type="checkbox" id="aplicar-cambios">
+      <span>Aplicar los cambios en Hevy
+        <span class="pista-aplicar">Sin marcar, la rutina de Hevy no se toca y no sube ningún peso.</span>
+      </span>
+    </label>
+
     <button type="submit" id="enviar" disabled>Enviar</button>
   </form>
 

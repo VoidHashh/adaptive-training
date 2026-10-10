@@ -241,15 +241,15 @@ function cambiarRespuestas() {
   $("cambiar-respuestas").hidden = true;
 }
 
-/* EL RECÁLCULO AL ABRIR (25/09/2026).
+/* EL AVISO AL ABRIR (25/09/2026; desde el 10/10/2026 solo avisa).
  *
- * Un ámbar «sin datos» prometía recalcular cuando el reloj subiera la noche, y
- * quien lo cumplía eran dos trabajos con hora que caían con el equipo dormido:
- * ese día se quedó ámbar con la noche ya en Garmin. Abrir la aplicación es lo
- * único que garantiza que el servidor está despierto, así que se pregunta aquí.
+ * Nació para rehacer el día cuando el reloj subía la noche tarde. Desde el
+ * 10/10/2026 nada actúa sin el formulario, así que el servidor ya no rehace
+ * nada: dice que el día se decidió sin la noche del reloj, y volver a enviar
+ * es cosa del usuario. El nombre de la función y de la ruta se quedan.
  *
  * La frase la escribe el servidor y aquí solo se pinta. Casi siempre viene
- * vacía -no había nada que recalcular- y entonces no se pinta nada. */
+ * vacía -no había nada que contar- y entonces no se pinta nada. */
 async function recalcularSiHaceFalta() {
   // Un fallo aquí no se calla, ni de red ni del servidor: si el día seguía a
   // ciegas, lo que queda en pantalla tiene que decir que no se ha podido
@@ -268,9 +268,9 @@ async function recalcularSiHaceFalta() {
     );
     return;
   }
-  // Si el día se ha recalculado, la tarjeta que había delante ya no es la
-  // vigente: se repinta con la que manda el servidor.
-  if (d.decision_de_hoy) pintarResultado(d.decision_de_hoy);
+  // Hasta el 10/10/2026 el servidor podía rehacer aquí el día y mandaba la
+  // tarjeta nueva para repintarla. Ya no rehace nada -solo avisa de que se
+  // decidió sin la noche del reloj-, así que no hay tarjeta que repintar.
   // Sin defecto para el tono: el servidor lo manda siempre junto al aviso. Va
   // en la tarjeta si está a la vista, porque con el formulario plegado un
   // aviso metido dentro no lo vería nadie.
@@ -725,7 +725,7 @@ async function enviar(ev) {
   revisar();
   $("enviar").textContent = "Enviando…";
 
-  const cuerpo = { ...estado.valores, ...loQuePido(), ...lasReglas() };
+  const cuerpo = { ...estado.valores, ...loQuePido(), ...lasReglas(), ...elConsentimiento() };
   const texto = $("comentarios").value.trim();
   if (texto) cuerpo.comments = texto;
 
@@ -1168,6 +1168,15 @@ function porQue(d) {
  * solo el segundo deja rastro; mandar la clave siempre convertiría cada día
  * corriente en una anulación a efectos de las cuentas.
  */
+/* La casilla «aplicar los cambios», en el cuerpo de las DOS rutas por lo mismo
+ * que `loQuePido`: lo que se mira y lo que se manda tienen que ser lo mismo.
+ * Solo viaja marcada; sin marcar no se envía nada y el servidor entiende «no»,
+ * que es su defecto. El consentimiento es lo que se marca, no lo que se
+ * supone. */
+function elConsentimiento() {
+  return $("aplicar-cambios").checked ? { aplicar_cambios: true } : {};
+}
+
 function lasReglas() {
   return Object.keys(estado.reglas).length ? { reglas: { ...estado.reglas } } : {};
 }
@@ -1752,7 +1761,7 @@ async function previsualizar() {
   // Tampoco `day`: lo mismo que hace `enviar()`. El día lo pone el reloj del
   // servidor, y que las dos rutas lo resuelvan igual es lo único que garantiza
   // que lo que se mira y lo que se manda sean del mismo día.
-  const cuerpo = { ...estado.valores, ...loQuePido(), ...lasReglas() };
+  const cuerpo = { ...estado.valores, ...loQuePido(), ...lasReglas(), ...elConsentimiento() };
 
   try {
     const r = await fetch(API.previsualizar, {

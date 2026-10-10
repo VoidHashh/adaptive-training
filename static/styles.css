@@ -365,6 +365,29 @@ textarea {
 
 .faltan { color: var(--tenue); font-size: 0.9rem; margin: 0 0 0.7rem; }
 
+/* La casilla del consentimiento. Grande y con el texto pulsable: es la única
+ * cosa del formulario que decide si se toca Hevy, y no puede quedar como un
+ * cuadradito que se marca por error o no se ve. Sin color de acento a
+ * propósito: destacarla sería empujar a marcarla. */
+.aplicar-cambios {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  margin: 0.9rem 0;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid var(--borde);
+  border-radius: 0.6rem;
+  background: var(--caja);
+  cursor: pointer;
+}
+#aplicar-cambios { width: 1.3rem; height: 1.3rem; margin: 0.1rem 0 0; flex: none; }
+.aplicar-cambios .pista-aplicar {
+  display: block;
+  color: var(--tenue);
+  font-size: 0.85rem;
+  margin-top: 0.2rem;
+}
+
 #enviar {
   width: 100%;
   padding: 1rem;

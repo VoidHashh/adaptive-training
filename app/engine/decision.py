@@ -304,44 +304,10 @@ class DeloadStatus:
         }
 
 
-@dataclass
-class DecisionAnulada:
-    """La decisión de esta mañana que esta otra deja sin efecto, y por qué.
-
-    Existe por un caso muy concreto: el check-in rellenado a las 06:23, antes de
-    que el reloj haya subido la noche. Ese día se decide con la HRV, las
-    pulsaciones y el sueño sin evaluar, y a las 09:00 -cuando el dato ya está-
-    se vuelve a decidir. Si de eso sale otro color, el usuario tiene derecho a
-    enterarse de que el mensaje de hace dos horas ya no vale, y a saber qué dato
-    lo ha cambiado.
-
-    NO la produce `decide`: la cuelga `run_daily` con lo que le pasa el
-    scheduler, igual que `load_adoptions` o `tendencia`. `decide` es una función
-    pura y no sabe -ni tiene por qué- que antes hubo otra decisión.
-
-    `sin_llegar` no es decoración. Que la recomputación haya rescatado la HRV no
-    significa que haya rescatado el sueño, y una decisión que sigue coja tiene
-    que decir en qué sigue coja; si no, el mensaje de las 09:00 se leería como
-    definitivo cuando no lo es.
-    """
-
-    anterior: str
-    decidida_a: datetime | None = None
-    fuente_anterior: str | None = None
-    medidas: list[str] = field(default_factory=list)
-    sin_llegar: list[str] = field(default_factory=list)
-
-    def cambia_el_color(self, ahora: str) -> bool:
-        return self.anterior != ahora
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "anterior": self.anterior,
-            "decidida_a": self.decidida_a.isoformat() if self.decidida_a else None,
-            "fuente_anterior": self.fuente_anterior,
-            "medidas": list(self.medidas),
-            "sin_llegar": list(self.sin_llegar),
-        }
+# AQUÍ ESTABA `DecisionAnulada`: la decisión de la mañana que un recálculo
+# automático dejaba sin efecto cuando el reloj subía la noche tarde. Se fue
+# el 10/10/2026 con el recálculo: nada rehace el día sin el formulario. Ver la
+# cabecera de `app/scheduler.py`.
 
 
 @dataclass
@@ -385,6 +351,11 @@ class DayDecision:
     # `sesion_elegida`: una regla levantada a mano tiene que poder leerse en la
     # decisión que levantó, no reconstruirse desde el estado final del día.
     respuestas_reglas: dict[str, str] = field(default_factory=dict)
+    # La casilla «aplicar los cambios» del envío (10/10/2026). En la foto por lo
+    # mismo que las respuestas: un día con la progresión cerrada tiene que
+    # poder leerse como «no lo aceptaste», no confundirse con un día en que no
+    # tocaba subir.
+    aplicar_cambios: bool = True
     active_rules: list[ActiveRule] = field(default_factory=list)
     progression: ProgressionPlan | None = None
     # La progresión del BLOQUE HIIT, que es un plan entero y aparte, no un
@@ -449,11 +420,6 @@ class DayDecision:
     # No entra en ninguna decisión ni la cambia. Es mantenimiento del sistema
     # contado por el único canal que se lee todos los días.
     recalibracion: Any = None
-    # La decisión de esta misma mañana que esta deja sin efecto, cuando la hay.
-    # Un `DecisionAnulada`; ver su docstring. La cuelga `run_daily` con lo que
-    # le pasa `job_decision`, por el mismo motivo que los tres campos de arriba:
-    # `decide` no abre la base de datos y no sabe qué se decidió antes.
-    anulacion: Any = None
     # Las rutinas del ciclo que llevan más de una vuelta sin hacerse. Una lista
     # de `rotacion.Pendiente`, colgada por `run_daily` como los cuatro campos de
     # arriba y por el mismo motivo: se calcula sobre `workout_log` entero y
@@ -502,6 +468,7 @@ class DayDecision:
             "propuesta": self.propuesta,
             "sesion_elegida": self.sesion_elegida,
             "respuestas_reglas": dict(sorted(self.respuestas_reglas.items())),
+            "aplicar_cambios": self.aplicar_cambios,
             "source": self.source,
             "config_hash": self.config_hash,
             "inputs": self.signals.snapshot(),
@@ -528,7 +495,6 @@ class DayDecision:
             "recalibracion": (
                 self.recalibracion.to_dict() if self.recalibracion else None
             ),
-            "anulacion": self.anulacion.to_dict() if self.anulacion else None,
             # LAS CADUCADAS TAMBIÉN. La caducidad decide si el mensaje la nombra,
             # no si el dato existe: «el Día 1 lleva nueve sesiones sin hacerse» es
             # justo lo que querrá leer quien mire el histórico dentro de tres
@@ -907,6 +873,7 @@ def decide(
     sesion_pedida: SesionPedida | None = None,
     respuestas_reglas: dict[str, str] | None = None,
     preguntar_reglas: bool = False,
+    aplicar_cambios: bool = True,
 ) -> DayDecision:
     """Decide el día completo.
 
@@ -929,11 +896,13 @@ def decide(
     sobre qué hacer con esa lectura, no una lectura más: metida ahí dentro
     acabaría moviendo los umbrales que sirven para juzgarla.
 
-    Cuidado con el nombre: `DayDecision.anulacion` es OTRA cosa -la decisión de
-    esta misma mañana que un recálculo deja sin efecto cuando Garmin entrega la
-    noche tarde-. Esa la pone el sistema sobre sí mismo. Esta la pone el
-    usuario sobre el sistema, y viaja dentro de la sesión
-    (`session.anulacion`).
+    Viaja dentro de la sesión (`session.anulacion`). Hasta el 10/10/2026 había
+    también un `DayDecision.anulacion`, la decisión que un recálculo automático
+    dejaba sin efecto; se fue con el recálculo.
+
+    `aplicar_cambios` es la casilla del formulario. Con `False` la progresión
+    no propone nada: lo que se decide hoy no va a Hevy, y una subida que no se
+    escribe no puede quedar como la carga vigente de mañana.
     """
     raw = config.raw if hasattr(config, "raw") else config
     state = state or EngineState()
@@ -1071,6 +1040,7 @@ def decide(
         # no ha visto nunca no es una avería, y el mensaje no tiene por qué
         # sonar como si lo fuera.
         rutina_estrenada=state.estrenada(routine_key),
+        cambios_aceptados=aplicar_cambios,
         # Este sí cierra la puerta. Del check-in, y en tres estados: si hoy no
         # vas, no hay nada que subir. Que la puerta se cierre AQUÍ y no solo al
         # redactar el mensaje es lo que hace que el día quede guardado con su
@@ -1122,6 +1092,7 @@ def decide(
             last_routine_light=state.last_routine_light.get(bloque_hiit),
             current_sets=state.current_sets,
             rutina_estrenada=state.estrenada(bloque_hiit),
+            cambios_aceptados=aplicar_cambios,
             # Los mismos dos cierres que la fuerza, y por el mismo motivo: si
             # hoy no vas, o vas a la bici, tampoco hay HIIT que subir.
             va_a_entrenar=va_a_entrenar,
@@ -1182,6 +1153,7 @@ def decide(
         propuesta=propuesta,
         sesion_elegida=sesion_elegida,
         respuestas_reglas=dict(respuestas_reglas or {}),
+        aplicar_cambios=aplicar_cambios,
         active_rules=active_rules,
         progression=progression,
         progression_hiit=progression_hiit,

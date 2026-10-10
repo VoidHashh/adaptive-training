@@ -3,8 +3,9 @@
 Este módulo es el único del sistema que se ejecuta sin nadie delante. Eso hace
 que lo que hay que probar no sean los caminos felices sino los silencios:
 
-- que el fallback de las 09:00 no atropelle una decisión ya tomada con check-in
-  y la deje registrada como tomada sin él;
+- que ninguno decida el día, escriba en Hevy o mande el plan sin el formulario
+  (10/10/2026: «solo quiero que actúe y envíe el mensaje de Telegram si yo
+  relleno el formulario»);
 - que un trabajo que revienta o que no llega a ejecutarse AVISE, porque no
   recibir mensaje se parece demasiado a un día de descanso;
 - que los defectos de APScheduler que descartan trabajos callando estén
@@ -29,7 +30,6 @@ from app.scheduler import (
     _avisador,
     _hora,
     build_scheduler,
-    job_decision,
     job_fetch_garmin,
     job_reconcile,
     ventana_de_reconciliacion,
@@ -72,81 +72,13 @@ def fetch_falso(cfg, day):
 
 
 # ---------------------------------------------------------------------------
-# El fallback de las 09:00
-# ---------------------------------------------------------------------------
-
-
-def test_con_checkin_el_fallback_no_actua(en_memoria, cfg):
-    """El peligro no es decidir dos veces: es MENTIR sobre cómo se decidió.
-
-    Si el usuario rellenó el formulario a las 07:40, la decisión buena ya está
-    tomada. Volver a tomarla a las 09:00 la sustituiría por otra marcada como
-    `fallback_0900`, y el registro diría que ese día se decidió sin check-in
-    teniéndolo. Es un dato falso, no un trabajo repetido.
-    """
-    repo.upsert_checkin(
-        en_memoria, LUNES, {"fatigue": 3, "lower_discomfort": 1}, config=cfg
-    )
-    en_memoria.commit()
-
-    res = job_decision(cfg, day=LUNES, fetch=fetch_falso)
-
-    assert res is None
-    assert en_memoria.scalars(select(DecisionRow)).first() is None
-
-
-def test_sin_checkin_el_fallback_decide_y_lo_declara(en_memoria, cfg):
-    res = job_decision(
-        cfg, day=LUNES, fetch=fetch_falso,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
-    )
-
-    assert res is not None
-    fila = repo.current_decision(en_memoria, LUNES)
-    assert fila is not None
-    assert fila.source == "fallback_0900", (
-        "una decisión tomada sin check-in tiene que quedar marcada como tal"
-    )
-
-
-def test_el_origen_no_esta_cableado(en_memoria, cfg):
-    """La misma función sirve para el fallback y para lanzarla a mano."""
-    job_decision(
-        cfg, day=LUNES, fetch=fetch_falso, source="manual",
-        solo_si_falta_checkin=False,
-    )
-    assert repo.current_decision(en_memoria, LUNES).source == "manual"
-
-
-def test_sin_el_cerrojo_se_puede_forzar_la_decision(en_memoria, cfg):
-    repo.upsert_checkin(en_memoria, LUNES, {"fatigue": 3}, config=cfg)
-    en_memoria.commit()
-
-    res = job_decision(
-        cfg, day=LUNES, fetch=fetch_falso, solo_si_falta_checkin=False
-    )
-    assert res is not None
-
-
-def test_el_fallback_avisa_por_telegram(en_memoria, cfg):
-    """Sin check-in no hay formulario abierto: el mensaje es lo único que llega."""
-    tg = TelegramFalso()
-    job_decision(cfg, day=LUNES, fetch=fetch_falso, telegram_client=tg)
-    assert tg.enviados, "el día que decide solo el fallback, nadie se entera"
-
-
-# ---------------------------------------------------------------------------
-# La recomputación de las 09:00
+# Nada decide el día sin el formulario (10/10/2026)
 # ---------------------------------------------------------------------------
 #
-# El caso real, del 15 de septiembre de 2026: contenedor arriba a las 06:22,
-# check-in a las 06:23, decisión a las 06:23:33. El reloj todavía no había
-# subido la noche, Garmin contestó con `"hrv": {}` y el sueño a nulos, y el día
-# se decidió con cinco reglas sin evaluar. A las 09:00 el dato ya estaba, pero
-# el trabajo se suprimía por la única razón de que existía check-in.
-#
-# Lo que estos tests fijan es la distinción que faltaba: «ya tengo tu respuesta»
-# no es «ya tengo todos los datos».
+# Hasta ese día, un trabajo de las 09:00 decidía sin check-in, escribía en Hevy
+# y mandaba el Telegram; otro de las 07:30 rehacía la decisión cuando el reloj
+# subía la noche tarde; y abrir la PWA disparaba ese mismo recálculo. Ahora el
+# plan sale solo del envío del formulario, y abrir la app solo avisa.
 
 
 def sin_wellness(cfg, day):
@@ -155,418 +87,102 @@ def sin_wellness(cfg, day):
 
 
 def _manana_a_ciegas(db, cfg, day=LUNES):
-    """Reproduce la mañana rota: check-in temprano y decisión sin datos del reloj.
+    """Un envío del formulario decidido antes de que el reloj subiera la noche."""
+    from app.runner import run_daily
 
-    El orden importa y es el de verdad: primero se decide a ciegas -como hace la
-    PWA al recibir el formulario- y DESPUÉS se deja el check-in en la base. Al
-    revés, el cerrojo saltaría antes de escribir la decisión que estos tests
-    necesitan tener delante.
-    """
-    job_decision(
-        cfg, day=day, fetch=sin_wellness, source="checkin",
-        solo_si_falta_checkin=False,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
-    )
+    metrics, rides = sin_wellness(cfg, day)
     repo.upsert_checkin(db, day, {"fatigue": 2, "lower_discomfort": 1}, config=cfg)
+    run_daily(db, cfg, day, metrics=metrics, rides=rides, source="checkin",
+              hevy_client=HevyFalso(), telegram_client=TelegramFalso())
     db.commit()
     previa = repo.current_decision(db, day)
     assert previa is not None and previa.source == "checkin"
     return previa
 
 
-def test_una_decision_completa_con_checkin_no_se_recomputa(en_memoria, cfg):
-    """El cerrojo de siempre, ahora probado con una decisión DELANTE.
-
-    `test_con_checkin_el_fallback_no_actua` pasaba sin que hubiera ninguna fila
-    de decisión en la base, así que no distinguía «no actúo porque la decisión
-    está completa» de «no actúo porque no hay nada que mirar». Este sí: hay
-    check-in, hay decisión, y esa decisión evaluó todo lo que venía del reloj.
-    """
-    job_decision(
-        cfg, day=LUNES, fetch=fetch_falso, source="checkin",
-        solo_si_falta_checkin=False,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
-    )
-    repo.upsert_checkin(
-        en_memoria, LUNES, {"fatigue": 3, "lower_discomfort": 1}, config=cfg
-    )
-    en_memoria.commit()
-
-    pedido = []
-
-    def fetch_espia(c, d):
-        pedido.append(d)
-        return fetch_falso(c, d)
-
-    assert job_decision(cfg, day=LUNES, fetch=fetch_espia) is None
-    assert not pedido, (
-        "con la decisión ya completa no hay que volver a molestar a Garmin"
-    )
-    assert repo.current_decision(en_memoria, LUNES).source == "checkin"
-
-
-def test_la_decision_ciega_se_recomputa_cuando_llega_el_wellness(en_memoria, cfg):
-    """El arreglo, entero: se vuelve a decidir y la anterior deja de ser vigente."""
-    previa = _manana_a_ciegas(en_memoria, cfg)
-    saltadas = previa.skipped_rules_json or ""
-    assert "hrv" in saltadas and "sleep_min" in saltadas, (
-        "la premisa del test: la decisión de las 06:23 salió sin datos del reloj"
-    )
-
-    res = job_decision(
-        cfg, day=LUNES, fetch=fetch_falso,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
-    )
-
-    assert res is not None, "con el dato ya disponible hay que volver a decidir"
-    vigente = repo.current_decision(en_memoria, LUNES)
-    assert vigente.source == "recompute", (
-        "no es `fallback_0900`: ese día SÍ hubo check-in, y marcarlo así sería "
-        "mentir sobre cómo se decidió"
-    )
-    assert vigente.id != previa.id
-    en_memoria.refresh(previa)
-    assert previa.is_current is False, (
-        "la decisión ciega tiene que quedar registrada, pero no vigente"
-    )
-
-
-def test_si_el_wellness_sigue_sin_llegar_no_se_escribe_nada(en_memoria, cfg):
-    """Una segunda decisión idéntica con otra fuente ensucia y no arregla nada.
-
-    Este es el test que impide que el arreglo se pase de listo. Recomputar por
-    el mero hecho de que faltara un dato -sin comprobar que el dato ha llegado-
-    reescribiría la decisión todas las mañanas en las que el reloj no sincronice
-    en toda la noche, cambiándole la fuente a `recompute` sin haber evaluado ni
-    una regla más.
-    """
-    previa = _manana_a_ciegas(en_memoria, cfg)
-
-    assert job_decision(cfg, day=LUNES, fetch=sin_wellness) is None
-    en_memoria.refresh(previa)
-    assert previa.is_current is True
-    assert previa.source == "checkin"
-
-
-def test_lo_que_falta_y_no_es_del_reloj_no_dispara_recomputacion(en_memoria, cfg):
-    """Una regla saltada por una señal del formulario no la arregla Garmin.
-
-    Y las derivadas tampoco cuentan: `hrv_baseline` falta porque no hay días
-    suficientes de historia, no porque el reloj vaya tarde. Si contaran, cada
-    mañana de una instalación recién estrenada sería una recomputación
-    garantizada que nunca puede salir bien.
-    """
-    from app.scheduler import _medidas_que_faltaban
-
-    def fila(missing):
-        import json
-        return SimpleNamespace(
-            date=LUNES,
-            skipped_rules_json=json.dumps([{"name": "r", "missing": missing}]),
-        )
-
-    assert _medidas_que_faltaban(fila(["fatigue", "training_desire"])) == set()
-    assert _medidas_que_faltaban(fila(["hrv_baseline", "rhr_baseline"])) == set()
-    assert _medidas_que_faltaban(fila(["rhr", "rhr_delta"])) == {"rhr"}
-    assert _medidas_que_faltaban(None) == set()
-    assert _medidas_que_faltaban(
-        SimpleNamespace(date=LUNES, skipped_rules_json="{no es json")
-    ) == set()
-
-
-def test_la_recomputacion_cuenta_que_anula_a_la_de_antes(en_memoria, cfg):
-    """El usuario tiene dos mensajes en el móvil: hay que decirle cuál manda."""
-    previa = _manana_a_ciegas(en_memoria, cfg)
-    tg = TelegramFalso()
-
-    res = job_decision(
-        cfg, day=LUNES, fetch=fetch_falso,
-        hevy_client=HevyFalso(), telegram_client=tg,
-    )
-
-    a = res.decision.anulacion
-    assert a is not None
-    assert a.anterior == previa.light
-    assert a.fuente_anterior == "checkin"
-    # `hrv` y `sleep_min`, no `rhr`. Ver el test de abajo: al borrar las dos
-    # reglas de pulso, `rhr` dejó de ser deducible de `skipped_rules_json`.
-    assert "hrv" in a.medidas and "sleep_min" in a.medidas
-    assert tg.enviados, "una recomputación que no se cuenta no sirve de nada"
-    assert "♻️" in tg.enviados[-1], (
-        "el mensaje de las 09:00 tiene que presentarse como lo que es"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Un día ya entrenado no se recalcula, y el recálculo al abrir (25/09/2026)
-# ---------------------------------------------------------------------------
-
-
 def _entrenado(db, day=LUNES):
     from app.models import WorkoutLog
 
-    db.add(WorkoutLog(hevy_workout_id="W-hoy", date=day, routine_key="dia_1"))
+    db.add(WorkoutLog(hevy_workout_id="hecho", date=day, routine_key="dia_1", title="x"))
     db.commit()
 
 
-@pytest.mark.parametrize(
-    "como", [{"solo_recomputar": True}, {}], ids=["07:30", "09:00"],
-)
-def test_un_dia_ya_entrenado_no_se_recalcula(en_memoria, cfg, como):
-    """Rehacerla cambiaría el plan del día por el de la SIGUIENTE rutina.
-
-    La rotación ya habría avanzado con el entreno de hoy, así que el día quedaría
-    con un plan que no se hizo, y la reconciliación de la noche compararía lo
-    entrenado con él. Con el reintento de las 09:00 ya podía pasar -el entreno
-    empieza sobre las 08:00-; abriendo la app a cualquier hora pasaría siempre.
-    """
-    previa = _manana_a_ciegas(en_memoria, cfg)
-    _entrenado(en_memoria)
-
-    res = job_decision(
-        cfg, day=LUNES, fetch=fetch_falso,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(), **como,
-    )
-
-    assert res is None
-    en_memoria.refresh(previa)
-    assert previa.is_current is True, "el plan de un día ya entrenado ha cambiado"
+def _decisiones(db, day=LUNES):
+    return db.scalars(select(DecisionRow).where(DecisionRow.date == day)).all()
 
 
-def test_job_decision_espera_su_turno(cfg, monkeypatch):
-    """El cerrojo: la app y el scheduler no pueden rehacer el día a la vez.
-
-    Sin él, abrir la app justo a la hora del reintento recalculaba dos veces y
-    mandaba dos Telegram. Aquí se sujeta el cerrojo desde fuera y se comprueba
-    que el trabajo se queda esperando en vez de entrar.
-
-    Sin base de datos, a propósito: el trabajo corre en otro hilo y SQLite en
-    memoria no se deja usar desde dos. Lo único que se mira es si ENTRA, y eso
-    lo dice la primera pregunta que hace, la del check-in.
-    """
-    import threading
-
-    import app.scheduler as mod
-
-    entro = threading.Event()
-
-    @contextmanager
-    def sin_base():
-        yield None
-
-    def primera_pregunta(*a, **k):
-        entro.set()
-        return None  # sin check-in: con `solo_recomputar` sale sin tocar nada
-
-    monkeypatch.setattr(mod, "session_scope", sin_base)
-    monkeypatch.setattr(mod.repo, "get_checkin", primera_pregunta)
-
-    with mod._DECIDIENDO:
-        hilo = threading.Thread(
-            target=lambda: job_decision(cfg, day=LUNES, solo_recomputar=True),
-            daemon=True,
-        )
-        hilo.start()
-        assert not entro.wait(0.5), "ha entrado con el cerrojo cogido"
-    assert entro.wait(10), "al soltar el cerrojo no ha entrado"
-    hilo.join(10)
-
-
-def _recalcular(cfg, fetch):
+def _recalcular(cfg):
     from app.scheduler import recalcular_si_hace_falta
 
-    return recalcular_si_hace_falta(
-        cfg, day=LUNES, fetch=fetch,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
-    )
+    return recalcular_si_hace_falta(cfg, day=LUNES)
+
+
+def test_ningun_trabajo_decide_el_dia(cfg):
+    """El 30/09 y los cinco días siguientes el de las 09:00 decidió y reescribió
+    Hevy sin que nadie hubiera contestado nada. Que no vuelvan, ni con otro
+    nombre: ningún trabajo con hora puede llamar al motor."""
+    from app.runner import run_daily
+
+    sched = build_scheduler(cfg, start=False)
+    ids = {j.id for j in sched.get_jobs()}
+    assert not ids & {"decision_fallback", "recompute_early"}
+    assert all(j.func is not run_daily for j in sched.get_jobs())
 
 
 def test_al_abrir_sin_checkin_no_hay_nada_que_decir(en_memoria, cfg):
-    assert _recalcular(cfg, fetch_falso) == {"estado": "sin_checkin", "aviso": None}
+    assert _recalcular(cfg) == {"estado": "sin_checkin", "aviso": None}
 
 
-def test_al_abrir_con_la_decision_completa_ni_se_pregunta_a_garmin(en_memoria, cfg):
-    """Es lo de casi todas las veces, y por eso no puede costar una llamada."""
+def test_al_abrir_con_la_decision_completa_no_hay_aviso(en_memoria, cfg):
+    from app.runner import run_daily
+
     repo.upsert_checkin(en_memoria, LUNES, {"fatigue": 3, "lower_discomfort": 1}, config=cfg)
+    metrics, rides = fetch_falso(cfg, LUNES)
+    run_daily(en_memoria, cfg, LUNES, metrics=metrics, rides=rides, source="checkin",
+              hevy_client=HevyFalso(), telegram_client=TelegramFalso())
     en_memoria.commit()
-    job_decision(cfg, day=LUNES, fetch=fetch_falso, source="checkin",
-                 solo_si_falta_checkin=False)
-    pedido = []
 
-    salida = _recalcular(cfg, lambda c, d: pedido.append(d) or fetch_falso(c, d))
-
-    assert salida == {"estado": "nada_que_recalcular", "aviso": None}
-    assert not pedido
+    assert _recalcular(cfg) == {"estado": "nada_que_recalcular", "aviso": None}
 
 
-def test_al_abrir_con_el_dato_ya_llegado_se_recalcula_y_se_dice(en_memoria, cfg):
+def test_al_abrir_un_dia_decidido_a_ciegas_se_avisa_y_no_se_rehace(en_memoria, cfg):
+    """Hasta el 10/10/2026 esto escribía en Hevy y mandaba otro Telegram. Ahora
+    lo dice, y volver a enviar es cosa del usuario."""
     previa = _manana_a_ciegas(en_memoria, cfg)
+    antes = len(_decisiones(en_memoria))
 
-    salida = _recalcular(cfg, fetch_falso)
+    salida = _recalcular(cfg)
 
-    assert salida["estado"] == "recalculado"
-    assert salida["tono"] == "bien"
-    assert salida["antes"] == previa.light
-    assert "Ya han llegado" in salida["aviso"] and "se ha recalculado" in salida["aviso"]
-    vigente = repo.current_decision(en_memoria, LUNES)
-    assert vigente.id != previa.id and vigente.source == "recompute"
-
-
-def test_al_abrir_sin_el_dato_se_dice_que_sigue_sin_llegar(en_memoria, cfg):
-    """Y no se escribe nada: es el mismo cerrojo de no ensuciar que a las 09:00."""
-    previa = _manana_a_ciegas(en_memoria, cfg)
-
-    salida = _recalcular(cfg, sin_wellness)
-
-    assert salida["estado"] == "sigue_sin_dato"
+    assert salida["estado"] == "decidido_sin_dato"
     assert salida["tono"] == "ojo"
-    assert salida["aviso"].startswith("Garmin todavía no tiene")
+    assert "vuelve a enviar el formulario" in salida["aviso"]
+    assert "ya no rehace el día" in salida["aviso"]
+    assert len(_decisiones(en_memoria)) == antes, "ha decidido otra vez sin el formulario"
     en_memoria.refresh(previa)
     assert previa.is_current is True
 
 
-def test_al_abrir_despues_de_entrenar_se_explica_por_que_no_se_toca(en_memoria, cfg):
-    previa = _manana_a_ciegas(en_memoria, cfg)
+def test_al_abrir_despues_de_entrenar_se_dice_sin_mas(en_memoria, cfg):
+    _manana_a_ciegas(en_memoria, cfg)
     _entrenado(en_memoria)
 
-    salida = _recalcular(cfg, fetch_falso)
+    salida = _recalcular(cfg)
 
     assert salida["estado"] == "ya_entrenado"
     assert salida["tono"] == "tenue"
-    assert "un día hecho no se recalcula" in salida["aviso"]
-    en_memoria.refresh(previa)
-    assert previa.is_current is True
 
 
-def test_al_abrir_si_el_reintento_gano_el_cerrojo_el_dia_sigue_recalculado(
-    en_memoria, cfg, monkeypatch
-):
-    """Lo que manda es que la vigente ya no sea la de antes, no quién la cambió.
+def test_lo_que_falta_y_no_es_del_reloj_no_da_aviso(en_memoria, cfg):
+    """Un deslizador sin contestar no lo arregla esperar al reloj: no se avisa."""
+    from app.runner import run_daily
 
-    Si el reintento de las 07:30 rehízo el día mientras la app esperaba, la
-    llamada de la app entra, lo encuentra completo y no hace nada. Contestar
-    «sigue sin llegar» ese día sería decir lo contrario de lo que pasó.
-    """
-    import app.scheduler as mod
+    repo.upsert_checkin(en_memoria, LUNES, {"fatigue": 3}, config=cfg)
+    metrics, rides = fetch_falso(cfg, LUNES)
+    run_daily(en_memoria, cfg, LUNES, metrics=metrics, rides=rides, source="checkin",
+              hevy_client=HevyFalso(), telegram_client=TelegramFalso())
+    en_memoria.commit()
 
-    _manana_a_ciegas(en_memoria, cfg)
-    real = mod.job_decision
-
-    def otro_llego_antes(*a, **k):
-        real(*a, **k)   # lo rehace «el otro»...
-        return None     # ...y esta llamada no encuentra nada que hacer
-
-    monkeypatch.setattr(mod, "job_decision", otro_llego_antes)
-    assert _recalcular(cfg, fetch_falso)["estado"] == "recalculado"
-
-
-def test_el_historico_explica_el_cambio_sin_columna_nueva(en_memoria, cfg):
-    """La anulación no se guarda en ninguna columna, y no hace falta.
-
-    `save_decision` escribe campo a campo y no hay hueco para ella. La
-    tentación es añadir uno; la razón para no hacerlo es que el histórico YA
-    contesta la pregunta de dentro de tres meses -«¿por qué el martes el
-    semáforo cambió a las nueve?»- con lo que guarda:
-
-      · dos filas del mismo día, la ciega marcada `is_current=False` y con
-        fuente `checkin`, la nueva vigente y con fuente `recompute`;
-      · y la diferencia entre sus dos `skipped_rules_json`, que es exactamente
-        la lista de lo que el reloj subió entre una hora y la otra.
-
-    Este test fija esa reconstrucción. Si algún día deja de poder hacerse, la
-    columna pasa de innecesaria a imprescindible y hay que enterarse aquí y no
-    tres meses después, delante de una fila muda.
-
-    LO QUE YA NO SE RECONSTRUYE, Y POR QUÉ
-    --------------------------------------
-    Aquí se pedían `hrv` y `rhr`. `rhr` se ha caído, y no por un fallo: esta
-    lista se deduce de los `missing` de las reglas SALTADAS, así que solo puede
-    hablar de medidas de las que dependa alguna regla. Al borrar
-    `fc_reposo_elevada` y `fc_reposo_disparada` -sus lápidas están en
-    `config.yaml`- el pulso de reposo dejó de tener ninguna, y con ello dejó de
-    dejar rastro aquí.
-
-    El dato NO se ha perdido: se sigue pidiendo, se sigue guardando en
-    `daily_metrics` y se sigue pintando. Lo que se ha perdido es poder deducir
-    A QUÉ HORA llegó mirando solo las decisiones. Es el precio de la lápida y se
-    escribe aquí para que sea una decisión y no una sorpresa: el día que el
-    pulso vuelva a tener regla, esta reconstrucción vuelve sola.
-    """
-    import json
-
-    _manana_a_ciegas(en_memoria, cfg)
-    job_decision(
-        cfg, day=LUNES, fetch=fetch_falso,
-        hevy_client=HevyFalso(), telegram_client=TelegramFalso(),
-    )
-
-    filas = en_memoria.scalars(
-        select(DecisionRow).where(DecisionRow.date == LUNES).order_by(DecisionRow.id)
-    ).all()
-    assert [f.source for f in filas] == ["checkin", "recompute"]
-    assert [f.is_current for f in filas] == [False, True]
-
-    def faltaban(fila):
-        return {
-            s
-            for r in json.loads(fila.skipped_rules_json or "[]")
-            for s in r.get("missing") or []
-        }
-
-    llego = faltaban(filas[0]) - faltaban(filas[1])
-    assert {"hrv", "sleep_min"} <= llego, (
-        "de las dos filas tiene que poder deducirse qué subió el reloj a las "
-        f"09:00, y de estas se deduce {sorted(llego)}"
-    )
-
-
-def test_el_ambar_por_precaucion_se_deshace_y_se_cuenta(en_memoria, cfg):
-    """El ciclo entero del arreglo, de punta a punta y en el sentido nuevo.
-
-    Hasta ahora la anulación solo se veía cuando el día EMPEORABA al llegar el
-    dato: se había decidido verde a ciegas y la HRV lo bajaba a ámbar. Desde que
-    un verde ciego sale ámbar por precaución, el caso normal es el contrario -el
-    día MEJORA-, y ese es justo el que corre peligro de pasar callando: un
-    segundo mensaje diciendo «verde» sin explicar nada se lee como si el de las
-    06:23 nunca hubiera existido, o peor, como dos semáforos contradictorios del
-    mismo día sin forma de saber cuál manda.
-
-    Se comprueba la cadena completa porque cada eslabón se rompe por su cuenta:
-    que la decisión ciega salga ámbar, que la recomputación siga disparándose
-    -depende de `skipped_rules_json`, que la promoción NO debe contaminar-, que
-    el color acabe en verde, y que el mensaje lo anuncie como anulación.
-    """
-    previa = _manana_a_ciegas(en_memoria, cfg)
-    assert previa.light == "amber", (
-        "la mañana a ciegas tiene que salir ámbar por precaución; si sale verde "
-        "es que la promoción no está actuando y el resto del test no mide nada"
-    )
-    assert previa.trigger_rule == REGLA_SIN_DATOS
-
-    tg = TelegramFalso()
-    res = job_decision(
-        cfg, day=LUNES, fetch=fetch_falso,
-        hevy_client=HevyFalso(), telegram_client=tg,
-    )
-
-    assert res is not None
-    assert res.decision.light == "green", (
-        "con la noche ya subida y un check-in tranquilo, no queda nada que "
-        "ponga el día en ámbar"
-    )
-    a = res.decision.anulacion
-    assert a is not None and a.anterior == "amber"
-    assert a.cambia_el_color("green")
-
-    ultimo = tg.enviados[-1]
-    assert "♻️" in ultimo and "<b>" in ultimo, (
-        "cuando el color cambia, la anulación va en negrita y es la noticia del "
-        "día: el mensaje anterior ya no vale"
-    )
-    assert "Ámbar por precaución" not in ultimo, (
-        "el aviso es de la decisión de las 06:23, no de esta: repetirlo aquí "
-        "diría que el verde también se ha decidido a ciegas"
-    )
+    assert _recalcular(cfg)["aviso"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -914,12 +530,12 @@ def test_sin_cache_el_refresco_se_trae_el_historico_entero(monkeypatch, cfg):
 
 
 def evento_error(exc=RuntimeError("Garmin no contesta")):
-    return SimpleNamespace(job_id="decision_fallback", exception=exc)
+    return SimpleNamespace(job_id="garmin_fetch", exception=exc)
 
 
 def evento_perdido():
     return SimpleNamespace(
-        job_id="decision_fallback",
+        job_id="garmin_fetch",
         exception=None,
         scheduled_run_time=datetime(2026, 9, 7, 9, 0),
     )
@@ -931,7 +547,7 @@ def test_un_trabajo_que_revienta_se_cuenta():
 
     assert len(tg.enviados) == 1
     texto = tg.enviados[0]
-    assert "decision_fallback" in texto
+    assert "garmin_fetch" in texto
     assert "Garmin no contesta" in texto, "el aviso sin la causa no sirve de nada"
 
 
@@ -989,8 +605,11 @@ def test_los_defectos_que_fallan_callando_estan_cambiados(cfg):
     assert d["max_instances"] == 1, "un único escritor sobre SQLite"
 
 
-def test_estan_los_seis_trabajos_del_dia_y_los_tres_del_arranque(cfg):
-    """Seis con hora y TRES que se disparan al arrancar.
+def test_estan_los_cuatro_trabajos_del_dia_y_los_tres_del_arranque(cfg):
+    """Cuatro con hora y TRES que se disparan al arrancar.
+
+    Eran seis con hora hasta el 10/10/2026: se fueron `decision_fallback` y
+    `recompute_early`, los dos que decidían el día sin el formulario.
 
     Los tres del arranque hacen cosas distintas y por eso son tres: uno
     recupera de Garmin los días de bienestar que falten, otro lee de Hevy lo
@@ -1004,48 +623,16 @@ def test_estan_los_seis_trabajos_del_dia_y_los_tres_del_arranque(cfg):
     la que se cuela antes de decidir solo ocurre si se envía el check-in. Sin
     ésta, dos mañanas sin enviar dejan Hevy sin leer.
 
-    Dos de los seis no HACEN nada por su cuenta y por eso se confunden con un
-    olvido si no se nombran: `watchdog` solo mira -ver `tests/test_vigilancia.py`-
-    y `recompute_early` solo actúa sobre la decisión que se tomó ciega de la
-    HRV y del sueño, que es el caso que se da cuando el formulario se rellena
-    antes de que el reloj suba la noche. Ver `tests/test_datos_al_dia.py`.
+    `watchdog` no HACE nada por su cuenta y por eso se confunde con un olvido
+    si no se nombra: solo mira -ver `tests/test_vigilancia.py`-.
     """
     sched = build_scheduler(cfg, start=False)
     assert {j.id for j in sched.get_jobs()} == {
-        "garmin_fetch", "decision_fallback", "recompute_early", "reconcile",
-        "perception_notice", "watchdog",
+        "garmin_fetch", "reconcile", "perception_notice", "watchdog",
         "backfill_wellness", "reconcile_arranque", "startup_audit",
     }
 
 
-def test_el_aviso_de_percepcion_va_despues_de_la_decision(cfg):
-    """Es un mensaje sobre AYER, y tiene que llegar cuando el de hoy ya llegó.
-
-    Si saliera antes del fallback de las nueve, el usuario recibiría primero un
-    comentario sobre la sesión de ayer y después el plan de hoy, y los leería
-    como una sola cosa: el contador se convertiría en el preámbulo de la
-    decisión, que es justo lo que se pidió que no fuera.
-
-    Y hay una razón de dato además de la de tono: la sesión de ayer necesita el
-    check-in de ESTA mañana para tener su esfuerzo percibido. Avisar a las siete
-    sería avisar antes de poder evaluar.
-    """
-    sched = build_scheduler(cfg, start=False)
-
-    def minutos(job_id: str) -> int:
-        t = sched.get_job(job_id).trigger
-        campos = {f.name: str(f) for f in t.fields}
-        return int(campos["hour"]) * 60 + int(campos["minute"])
-
-    assert minutos("perception_notice") > minutos("decision_fallback"), (
-        "el aviso de ayer tiene que llegar despues del plan de hoy"
-    )
-    # Y la vigilancia también, por otro motivo: mira en qué estado ha quedado
-    # el sistema DESPUÉS de las escrituras del día. Antes de las nueve estaría
-    # mirando las de ayer y diría que todo está bien el día que se rompa.
-    assert minutos("watchdog") > minutos("decision_fallback"), (
-        "la vigilancia tiene que mirar despues de que se haya escrito en Hevy"
-    )
 
 
 def test_la_recuperacion_no_tiene_hora_sino_retraso(cfg):
@@ -1206,7 +793,7 @@ def test_un_corte_por_limite_al_arrancar_revienta_para_que_se_sepa(
 def test_las_horas_salen_del_config_y_no_del_codigo(cfg_copia):
     cfg_copia.raw["schedule"] = {
         "garmin_fetch_time": "05:15",
-        "fallback_decision_time": "10:45",
+        "watchdog_time": "10:45",
         "evening_summary_time": "23:05",
     }
     sched = build_scheduler(cfg_copia, start=False)
@@ -1214,20 +801,20 @@ def test_las_horas_salen_del_config_y_no_del_codigo(cfg_copia):
 
     assert "hour='5'" in horas["garmin_fetch"]
     assert "minute='15'" in horas["garmin_fetch"]
-    assert "hour='10'" in horas["decision_fallback"]
-    assert "minute='45'" in horas["decision_fallback"]
+    assert "hour='10'" in horas["watchdog"]
+    assert "minute='45'" in horas["watchdog"]
     assert "hour='23'" in horas["reconcile"]
 
 
 def test_sin_horas_en_el_config_se_usan_las_de_siempre(cfg_copia):
     cfg_copia.raw.pop("schedule", None)
-    assert _hora(cfg_copia, "fallback_decision_time", "09:00") == (9, 0)
+    assert _hora(cfg_copia, "watchdog_time", "09:45") == (9, 45)
     assert _hora(cfg_copia, "garmin_fetch_time", "06:30") == (6, 30)
 
 
 def test_una_hora_vacia_en_el_config_cae_al_defecto(cfg_copia):
-    cfg_copia.raw["schedule"] = {"fallback_decision_time": None}
-    assert _hora(cfg_copia, "fallback_decision_time", "09:00") == (9, 0)
+    cfg_copia.raw["schedule"] = {"watchdog_time": None}
+    assert _hora(cfg_copia, "watchdog_time", "09:45") == (9, 45)
 
 
 def test_el_scheduler_va_en_la_zona_horaria_del_config(cfg):
@@ -1248,8 +835,6 @@ def test_el_avisador_queda_enganchado(cfg):
 
 
 # ---------------------------------------------------------------------------
-# El motivo de que no haya cliente llega hasta las 09:00
-# ---------------------------------------------------------------------------
 #
 # `api._clientes` averigua POR QUÉ no se pudo construir cada cliente, pero eso
 # solo sirve si el dato recorre entero el cable hasta `run_daily`. Y el tramo
@@ -1261,32 +846,8 @@ def test_el_avisador_queda_enganchado(cfg):
 # acertarla salvo el día que la causa es otra.
 
 
-def test_el_trabajo_de_las_nueve_lleva_los_motivos_de_los_clientes(cfg):
-    sched = build_scheduler(
-        cfg, client_errors={"hevy": "falta HEVY_API_KEY"}, start=False
-    )
-    trabajo = sched.get_job("decision_fallback")
-    assert trabajo.kwargs.get("client_errors") == {"hevy": "falta HEVY_API_KEY"}
 
 
-def test_job_decision_le_pasa_los_motivos_a_run_daily(cfg, monkeypatch):
-    """El último tramo: recibirlos y no reenviarlos es igual de mudo."""
-    visto: dict = {}
-
-    def falso_run_daily(*a, **kw):
-        visto.update(kw)
-        return None
-
-    monkeypatch.setattr("app.scheduler.run_daily", falso_run_daily)
-    monkeypatch.setattr(
-        "app.scheduler._fetch_garmin", lambda cfg_, day: ([], [])
-    )
-
-    job_decision(
-        cfg, day=LUNES, client_errors={"telegram": "falta TELEGRAM_CHAT_ID"},
-        solo_si_falta_checkin=False,
-    )
-    assert visto.get("client_errors") == {"telegram": "falta TELEGRAM_CHAT_ID"}
 
 
 # ---------------------------------------------------------------------------

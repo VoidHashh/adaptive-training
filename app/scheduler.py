@@ -20,51 +20,29 @@ Tres, y los tres fallan callando:
   enterarse de que hoy no hay decisión, y tiene que enterarse por el mismo sitio
   por el que le llega todo lo demás.
 
-POR QUÉ LA DECISIÓN DE LA MAÑANA ES UN *FALLBACK*
--------------------------------------------------
-El camino normal es que el check-in de la PWA dispare la decisión en cuanto se
-envía. El trabajo de las 09:00 solo actúa si a esa hora no hay check-in: decide
-con lo que haya de Garmin y lo dice. Por eso su `source` es `fallback_0900` y no
-`checkin`; que la diferencia quede registrada importa el día que haya que
-explicar por qué el semáforo de un martes salió sin la mitad de las señales.
+NADA DECIDE NI MANDA EL PLAN DEL DÍA SIN EL FORMULARIO (10/10/2026)
+--------------------------------------------------------------------
+Aquí había dos trabajos que decidían solos. El de las 09:00 decidía el día sin
+check-in, solo con Garmin, escribía la rutina en Hevy y mandaba el Telegram; el
+de las 07:30 rehacía la decisión del check-in cuando el reloj subía la noche
+tarde, y volvía a escribir y a mandar. Y la PWA disparaba ese mismo recálculo
+cada vez que se abría.
 
-...Y POR QUÉ ADEMÁS RECOMPUTA
------------------------------
-Había un segundo caso que el fallback no cubría y que en la práctica es el
-NORMAL, no el raro. El check-in dispara la decisión en el acto; si se rellena a
-las 06:23 y el reloj todavía no ha subido la noche, Garmin contesta vacío y el
-día se decide con la HRV, las pulsaciones y el sueño sin evaluar. A las 09:00 el
-reloj ya ha sincronizado, pero el trabajo se suprimía por la única razón de que
-existía check-in.
+Del 30/09 al 05/10 el de las 09:00 decidió seis días seguidos sin que nadie
+hubiera contestado nada, y reescribió cada mañana la misma rutina en Hevy. El
+usuario, con todas las letras: «solo quiero que actúe y envíe el mensaje de
+Telegram si yo relleno el formulario», y «no tiene sentido crear unas banderas
+sin una base real y solo con números del reloj».
 
-Eso confundía dos cosas distintas: «ya tengo tu respuesta» y «ya tengo todos los
-datos». La primera es motivo para no atropellar la decisión; la segunda es la
-que de verdad importa, y no se estaba mirando.
+Así que el plan del día sale SOLO del envío del formulario, y escribe en Hevy
+solo si en ese envío se marca «aplicar los cambios» (ver `api.post_checkin`).
+Lo que queda aquí lee y aprende -Garmin, lo entrenado, el bienestar perdido- o
+avisa de que algo está roto: un trabajo que falla, la vigilancia, la auditoría
+del arranque. Ninguno toca Hevy ni manda el plan.
 
-Ahora, si hay check-in, se mira la decisión vigente: si alguna regla quedó SIN
-EVALUAR por un dato de Garmin ausente, se vuelve a pedir el wellness. Y solo si
-el dato ha llegado de verdad se decide otra vez, con `source="recompute"` -no
-`fallback_0900`, que sería mentir sobre un día que sí tuvo check-in-. Si a las
-09:00 sigue sin haber dato, no se escribe nada: una segunda decisión idéntica
-marcada con otra fuente estropea el registro sin arreglar la mañana.
-
-...Y AL ABRIR LA APLICACIÓN, PORQUE LOS RELOJES FALLAN (25/09/2026)
--------------------------------------------------------------------
-Los dos reintentos -07:30 y 09:00- son horas fijas, y este equipo duerme por
-las mañanas: `recompute_early` llevaba desde el 21 sin terminar una sola vez, y
-ese día el ámbar «sin datos» de las 06:57 se quedó ámbar con la HRV y el sueño
-ya en Garmin. El mensaje había prometido recalcular. Ahora la PWA pide
-`recalcular_si_hace_falta` cada vez que se abre con el check-in hecho: si hay
-alguien mirando, el servidor está despierto, que es lo único que no se puede
-decir de una hora fija.
-
-NUNCA SE RECALCULA UN DÍA YA ENTRENADO
---------------------------------------
-Rehacer la decisión cuando el entreno ya consta la cambia por la de la
-SIGUIENTE rutina -la rotación ya ha avanzado- y deja como plan del día uno que
-no se hizo: la reconciliación de la noche compararía lo entrenado con él. Con
-el reintento de las 09:00 esto ya podía pasar, porque el entreno empieza sobre
-las 08:00; abriendo la app a cualquier hora habría pasado siempre.
+El recálculo al abrir la app sigue mirando si el día se decidió sin la noche del
+reloj, pero ya no lo rehace: lo dice, y volver a enviar es decisión del usuario.
+Ver `recalcular_si_hace_falta`.
 """
 
 from __future__ import annotations
@@ -84,10 +62,9 @@ from apscheduler.triggers.date import DateTrigger
 
 from app import repository as repo
 from app.db import session_scope
-from app.engine.decision import DecisionAnulada
 from app.engine.rules import MEDIDAS_DEL_RELOJ
 from app.integrations.telegram import escapar_html
-from app.runner import run_aviso_percepcion, run_daily, run_reconcile
+from app.runner import run_aviso_percepcion, run_reconcile
 
 log = logging.getLogger(__name__)
 
@@ -176,13 +153,6 @@ def _medidas_que_faltaban(fila: Any) -> set[str]:
     return fuera
 
 
-def _lo_que_llego(metrics: list, day: date, medidas: set[str]) -> set[str]:
-    """De las medidas que faltaban, cuáles trae ya la lectura nueva."""
-    hoy = next((m for m in metrics or [] if getattr(m, "date", None) == day), None)
-    if hoy is None:
-        return set()
-    return {m for m in medidas if getattr(hoy, m, None) is not None}
-
 # El histórico de salidas ya NO se pide con una constante: sale de
 # `cycling.fetch` a través de `ventana_de_salidas`, que elige entre la ventana
 # corta de cada mañana y el backfill según lo que la caché pueda sostener.
@@ -205,199 +175,54 @@ def _hora(cfg: Any, clave: str, defecto: str) -> tuple[int, int]:
 # la única forma de comprobar que hacen lo que dicen.
 
 
+# Un único escritor de decisiones. Lo comparten los envíos del formulario
+# (`api._decidir`): dos envíos a la vez sobre el mismo día no corrompen nada,
+# pero se pisan. Hasta el 10/10/2026 lo compartían también los dos trabajos que
+# decidían solos; ver la cabecera.
 _DECIDIENDO = threading.Lock()
 
 
-def job_decision(
-    cfg: Any,
-    *,
-    day: date | None = None,
-    source: str = "fallback_0900",
-    fetch: Callable | None = None,
-    hevy_client: Any = None,
-    telegram_client: Any = None,
-    client_errors: dict[str, str] | None = None,
-    dry_run: bool = False,
-    solo_si_falta_checkin: bool = True,
-    solo_recomputar: bool = False,
-) -> Any:
-    """Decide el día. Por defecto solo si el check-in no ha llegado, o si la
-    decisión que hay se tomó sin datos del reloj y ahora sí los hay.
+def recalcular_si_hace_falta(cfg: Any, *, day: date | None = None) -> dict[str, Any]:
+    """Lo que pide la PWA al abrirse con el check-in hecho: SOLO MIRA.
 
-    `solo_si_falta_checkin` evita el atropello: si a las 09:00 el usuario ya
-    rellenó el formulario a las 07:40, la decisión buena ya está tomada y
-    volver a tomarla la sustituiría por otra igual pero marcada como
-    `fallback_0900`. El registro diría que ese día se decidió sin check-in
-    teniéndolo, que es exactamente lo contrario de lo que pasó.
+    Hasta el 10/10/2026 rehacía el día -escribía en Hevy y mandaba otro
+    Telegram- si la decisión se había tomado sin la noche del reloj y la noche
+    ya había llegado. Era actuar sin el formulario, que es justo lo que el
+    usuario pidió que no pasara. Ahora dice qué faltó, y volver a enviar es
+    cosa suya: con el reloj ya sincronizado, el envío nuevo decide con todo.
 
-    La excepción -ver la cabecera del módulo- es la decisión CIEGA: la que se
-    tomó con reglas sin evaluar porque a esa hora Garmin no tenía la noche. Esa
-    sí se vuelve a tomar, y solo cuando el dato que faltaba ha llegado.
-
-    `solo_recomputar` es esa excepción Y NADA MÁS. Sin él, este trabajo puesto
-    temprano haría de fallback a una hora en la que el fallback no debe actuar:
-    un día sin check-in a las 07:30 no es un día sin check-in, es un día en que
-    todavía no se ha rellenado, y decidir ahí le quita al usuario la mañana
-    entera para contestar. Las 09:00 esperan a propósito. Con esta bandera, un
-    día sin check-in sale sin tocar nada.
-    """
-    # EL CERROJO (25/09/2026). Desde que la PWA puede pedir el recálculo al
-    # abrirse, este trabajo tiene dos llamantes que no se ven entre sí: el
-    # scheduler y una petición. Sin cerrojo, abrir la app a las 07:30 en punto
-    # rehacía el día dos veces y mandaba dos Telegram. El segundo en llegar
-    # espera, encuentra la decisión ya completa y sale sin tocar nada. El envío
-    # del check-in (`api._decidir`) no pasa por aquí y toma el mismo cerrojo.
-    with _DECIDIENDO:
-        day = day or date.today()
-        with session_scope() as s:
-            recomputando: set[str] = set()
-            hay_checkin = repo.get_checkin(s, day) is not None
-            if solo_recomputar and not hay_checkin:
-                # Todavía no se ha rellenado; no hay decisión ciega que arreglar y
-                # no es hora de decidir por nadie.
-                log.info(
-                    "recálculo temprano de %s: aún no hay check-in, no se toca nada",
-                    day,
-                )
-                return None
-            if (solo_si_falta_checkin or solo_recomputar) and hay_checkin:
-                previa = repo.current_decision(s, day)
-                recomputando = _medidas_que_faltaban(previa)
-                if not recomputando:
-                    log.info("decisión de %s: ya hay check-in, el fallback no actúa", day)
-                    return None
-                log.info(
-                    "decisión de %s: hay check-in, pero se decidió sin %s; se "
-                    "vuelve a pedir el wellness",
-                    day, ", ".join(sorted(recomputando)),
-                )
-
-            # Lo entrenado, al día ANTES de decidir. La rotación se lee de aquí, y
-            # decidir con esto viejo propone una rutina que ya se hizo.
-            poner_al_dia_lo_entrenado(cfg, hevy_client=hevy_client, day=day)
-
-            # Y DESPUÉS de releerlo, no antes: el entreno de esta mañana puede
-            # estar en Hevy y no todavía en la base. Ver la cabecera del módulo,
-            # «Nunca se recalcula un día ya entrenado».
-            if recomputando and repo.hay_entreno(s, day):
-                log.info(
-                    "decisión de %s: se decidió sin %s, pero ese día ya consta "
-                    "entrenado; rehacerla cambiaría el plan de un día hecho",
-                    day, ", ".join(sorted(recomputando)),
-                )
-                return None
-
-            metrics, rides = (fetch or _fetch_garmin)(cfg, day)
-
-            anulacion = None
-            if recomputando:
-                llegado = _lo_que_llego(metrics, day, recomputando)
-                if not llegado:
-                    # Sigue sin haber dato. Se deja la mañana como está: escribir
-                    # una segunda decisión idéntica solo para cambiarle la fuente
-                    # ensucia el histórico y no evalúa ni una regla más.
-                    log.info(
-                        "decisión de %s: el wellness sigue sin llegar (%s); no se "
-                        "recomputa",
-                        day, ", ".join(sorted(recomputando)),
-                    )
-                    return None
-                anulacion = DecisionAnulada(
-                    anterior=previa.light,
-                    decidida_a=previa.computed_at,
-                    fuente_anterior=previa.source,
-                    medidas=sorted(llegado),
-                    sin_llegar=sorted(recomputando - llegado),
-                )
-                source = "recompute"
-
-            return run_daily(
-                s, cfg, day,
-                metrics=metrics, rides=rides,
-                hevy_client=hevy_client, telegram_client=telegram_client,
-                client_errors=client_errors,
-                dry_run=dry_run, source=source,
-                anulacion=anulacion,
-            )
-
-
-def recalcular_si_hace_falta(
-    cfg: Any,
-    *,
-    day: date | None = None,
-    hevy_client: Any = None,
-    telegram_client: Any = None,
-    client_errors: dict[str, str] | None = None,
-    dry_run: bool = False,
-    fetch: Callable | None = None,
-) -> dict[str, Any]:
-    """Lo que pide la PWA al abrirse con el check-in hecho. Ver la cabecera.
-
-    Es `job_decision(solo_recomputar=True)` -la misma puerta que el reintento de
-    las 07:30, con su cerrojo y sus guardas- más lo único que la pantalla
-    necesita y el trabajo no devuelve: QUÉ ha pasado, en una frase. La frase se
-    escribe aquí porque la pantalla no calcula: pinta lo que le dan.
+    No lee Garmin. Para decir «se decidió sin la HRV» basta la decisión
+    guardada, y preguntar al reloj cada vez que se abre la app solo serviría
+    para decir si ya ha llegado, que el envío nuevo averigua solo.
 
     Devuelve `aviso: None` cuando no hay nada que contar -sin check-in, o una
     decisión que no se tomó a ciegas-, que es casi todas las veces. Un aviso
     que saliera siempre se aprendería a no leer.
     """
-    from app.engine.luces import nombre_luz
     from app.engine.message import _concordar, _enumerar
 
     day = day or date.today()
     with session_scope() as s:
         if repo.get_checkin(s, day) is None:
             return {"estado": "sin_checkin", "aviso": None}
-        previa = repo.current_decision(s, day)
-        faltaban = _medidas_que_faltaban(previa)
-        previa_id = getattr(previa, "id", None)
-        antes = getattr(previa, "light", None)
+        faltaban = _medidas_que_faltaban(repo.current_decision(s, day))
+        entrenado = repo.hay_entreno(s, day)
     if not faltaban:
         return {"estado": "nada_que_recalcular", "aviso": None}
 
-    job_decision(
-        cfg, day=day, solo_recomputar=True,
-        hevy_client=hevy_client, telegram_client=telegram_client,
-        client_errors=client_errors, dry_run=dry_run, fetch=fetch,
-    )
-
-    with session_scope() as s:
-        ahora = repo.current_decision(s, day)
-        entrenado = repo.hay_entreno(s, day)
     medidas = sorted(faltaban)
     que = _enumerar(medidas)
-
-    # Que la vigente ya no sea la de antes, y no que la haya cambiado ESTA
-    # llamada: si el reintento de las 07:30 ganó el cerrojo, lo hizo él y la
-    # respuesta sigue siendo que el día está recalculado.
-    if ahora is not None and ahora.id != previa_id:
-        cambio = (
-            f"el semáforo no cambia: sigue en {nombre_luz(ahora.light)}"
-            if ahora.light == antes
-            else f"pasa de {nombre_luz(antes)} a {nombre_luz(ahora.light)}"
-        )
-        return {
-            "estado": "recalculado", "antes": antes, "ahora": ahora.light,
-            "tono": "bien",
-            "aviso": (
-                f"{_concordar(medidas, 'Ya ha llegado', 'Ya han llegado')} "
-                f"{que}: el día se ha recalculado y {cambio}."
-            ),
-        }
     if entrenado:
         return {
             "estado": "ya_entrenado", "tono": "tenue",
-            "aviso": (
-                f"Hoy se decidió sin {que}, pero ya consta un entreno de hoy, y "
-                f"un día hecho no se recalcula."
-            ),
+            "aviso": f"Hoy se decidió sin {que}, pero ya consta un entreno de hoy.",
         }
     return {
-        "estado": "sigue_sin_dato", "tono": "ojo",
+        "estado": "decidido_sin_dato", "tono": "ojo",
         "aviso": (
-            f"Garmin todavía no tiene {que}. Vuelve a abrir la aplicación cuando "
-            f"el reloj haya sincronizado y el día se recalcula solo."
+            f"Hoy se decidió sin {que}. Cuando el reloj haya sincronizado, "
+            f"vuelve a enviar el formulario si quieres que {_concordar(medidas, 'cuente', 'cuenten')}: "
+            f"el sistema ya no rehace el día por su cuenta."
         ),
     }
 
@@ -758,10 +583,10 @@ def _fetch_garmin(cfg: Any, day: date) -> tuple[list, list]:
 #     las 06:55, después. La decisión de verdad reutilizaría la lectura de las
 #     06:50 y escribiría la rutina con un sueño que ya no era el de hoy. El
 #     usuario vio un semáforo, dijo que sí, y se ejecutó otro.
-#   - Los trabajos de las 07:00, 09:00 y 09:40 existen para recoger lo que
-#     Garmin corrige hacia atrás. Servirles una copia haría que recalcular no
-#     recalculara, y el síntoma -«sale lo mismo»- es indistinguible de «no
-#     había nada que corregir».
+#   - Un envío nuevo del formulario existe para recoger lo que Garmin corrige
+#     hacia atrás -desde el 10/10/2026 es la única forma de rehacer el día-.
+#     Servirle una copia haría que reenviar no recalculara, y el síntoma -«sale
+#     lo mismo»- es indistinguible de «no había nada que corregir».
 #
 # Por eso `_fetch_garmin` sigue siendo la lectura cruda y sin memoria, y quien
 # quiera ahorrar logins tiene que pedirlo por su nombre.
@@ -987,7 +812,6 @@ def auditar_arranque(
 # quede fuera del aviso por no haberlo apuntado en dos sitios.
 NOMBRES_LEGIBLES = {
     "garmin_fetch": "traer los datos de Garmin",
-    "decision_fallback": "decidir el semáforo del día",
     "reconcile": "apuntar lo que entrenaste",
     "perception_notice": "revisar las sesiones de ayer",
 }
@@ -1009,9 +833,9 @@ def poner_al_dia_lo_entrenado(
     una sola vez, porque a esa hora el ordenador estaba apagado. La decisión de
     la mañana leía un estado de cinco días antes y lo hacía con total aplomo.
 
-    Garmin no tenía este problema: los dos caminos que deciden -el `job_decision`
-    de las 09:00 y el `_decidir` del check-in- llaman a `_fetch_garmin` como
-    primera cosa. Lo entrenado no tenía ese equivalente, y esa asimetría no
+    Garmin no tenía este problema: el camino que decide -el `_decidir` del
+    check-in, y hasta el 10/10/2026 también el trabajo de las 09:00- llama a
+    `_fetch_garmin` como primera cosa. Lo entrenado no tenía ese equivalente, y esa asimetría no
     respondía a ninguna razón: era el orden en que se fueron escribiendo las
     piezas.
 
@@ -1159,7 +983,7 @@ def mensaje_de_arranque(
 ) -> str:
     """El aviso, en el idioma del usuario y no en el del planificador.
 
-    Dice QUÉ no se hizo y desde cuándo, no «job_id decision_fallback misfired».
+    Dice QUÉ no se hizo y desde cuándo, no «job_id reconcile misfired».
     Y dice qué significa, que es lo único que el usuario puede usar para decidir
     si tiene que hacer algo.
     """
@@ -1184,8 +1008,9 @@ def mensaje_de_arranque(
         )
     lineas += [
         "",
-        "Los días afectados no tienen decisión guardada ni entrenos apuntados. "
-        "Lo de Garmin se recupera solo al arrancar; lo demás, no.",
+        "Lo de Garmin y lo entrenado se recupera solo al arrancar, y los "
+        "avisos de percepción que quedaron sin mandar esperan al próximo "
+        "formulario.",
     ]
     return "\n".join(lineas)
 
@@ -1265,52 +1090,18 @@ def build_scheduler(
         job_fetch_garmin, cron("garmin_fetch_time", "06:30", "garmin_fetch"),
         args=[cfg], id="garmin_fetch", name="Refrescar caché de Garmin",
     )
-    sched.add_job(
-        job_decision, cron("fallback_decision_time", "09:00", "decision_fallback"),
-        args=[cfg],
-        kwargs={
-            "hevy_client": hevy_client, "telegram_client": telegram_client,
-            "client_errors": client_errors,
-            "dry_run": dry_run, "source": "fallback_0900",
-            "solo_si_falta_checkin": True,
-        },
-        id="decision_fallback", name="Decisión sin check-in",
-    )
-    # EL RECÁLCULO TEMPRANO. Medido sobre los cinco primeros check-ins reales:
-    # el formulario se rellena hacia las 07:00 y el reloj no sube la noche
-    # hasta las 07:10 más o menos (07:04 todavía sin datos, 07:13 ya con
-    # ellos). Tres de esos cinco días decidieron a ciegas de la HRV y del
-    # sueño, y el mensaje lo dijo con todas las letras y prometió recalcular.
-    #
-    # Quien cumplía esa promesa era el fallback de las 09:00, y llega tarde:
-    # el entreno empieza sobre las 08:00, así que a las nueve la sesión que se
-    # iba a corregir ya está hecha con la rutina equivocada escrita en Hevy.
-    #
-    # `solo_recomputar` es lo que hace que esto pueda ir tan temprano sin
-    # atropellar: un día sin check-in a esta hora sale sin tocar nada, y un día
-    # con check-in y sin nada que le faltara, también. Solo actúa sobre la
-    # decisión ciega, que es el caso que existe.
-    sched.add_job(
-        job_decision, cron("recompute_time", "07:30", "recompute_early"),
-        args=[cfg],
-        kwargs={
-            "hevy_client": hevy_client, "telegram_client": telegram_client,
-            "client_errors": client_errors,
-            "dry_run": dry_run, "source": "recalculo_temprano",
-            "solo_recomputar": True,
-        },
-        id="recompute_early", name="Rehacer la decisión ciega en cuanto suba el reloj",
-    )
+    # AQUÍ IBAN `decision_fallback` (09:00) Y `recompute_early` (07:30), los dos
+    # trabajos que decidían el día sin el formulario, escribían en Hevy y
+    # mandaban el Telegram. Se fueron el 10/10/2026; ver la cabecera.
     sched.add_job(
         job_reconcile, cron("evening_summary_time", "22:30", "reconcile"),
         args=[cfg], kwargs={"hevy_client": hevy_client},
         id="reconcile", name="Reconciliar lo entrenado",
     )
-    # Después del fallback de las 09:00 a propósito. Para entonces la decisión
-    # del día ya se ha mandado por uno de sus dos caminos, así que este llega
-    # como lo que es -un mensaje aparte sobre AYER- y no se mezcla con el plan
-    # de hoy. Antes de las nueve competiría con el check-in de la mañana, que es
-    # justo el dato que hace falta para poder evaluar la sesión de ayer.
+    # A las 09:30 y aparte del plan del día: llega como lo que es -un mensaje
+    # sobre AYER- y no se mezcla con el de hoy. Desde el 10/10/2026 solo sale
+    # si hoy se ha rellenado el formulario (ver `run_aviso_percepcion`): sin él,
+    # lo pendiente espera al próximo día que se conteste.
     sched.add_job(
         job_aviso_percepcion, cron("perception_notice_time", "09:30", "perception_notice"),
         args=[cfg],
@@ -1321,11 +1112,10 @@ def build_scheduler(
         },
         id="perception_notice", name="Contar las disociaciones de ayer",
     )
-    # La vigilancia, DESPUÉS de la decisión de respaldo y del aviso. A esa hora
-    # ya han pasado las dos cosas que pueden dejar el sistema en un estado que
-    # haya que mirar -la escritura en Hevy de las 06:30 con check-in y la de las
-    # 09:00 sin él-, así que si alguna se quedó a medias el aviso sale el mismo
-    # día y no al siguiente. Antes de las nueve miraría el estado de ayer.
+    # La vigilancia, después del aviso. Solo habla si algo está ROTO -una
+    # escritura de Hevy a medias, una credencial que falta, el config del disco
+    # distinto del cargado-, nunca del entrenamiento: por eso sigue aunque el
+    # plan del día ya no salga sin formulario.
     sched.add_job(
         job_vigilancia, cron("watchdog_time", "09:45", "watchdog"),
         args=[cfg],

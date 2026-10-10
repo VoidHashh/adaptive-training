@@ -1,8 +1,9 @@
 # Entrenamiento adaptativo
 
-Cada mañana decide qué versión de la sesión toca, reescribe la rutina de fuerza
-en Hevy y manda un mensaje de Telegram con la sesión y la indicación de bici.
-Funciona solo, sin que nadie lo mire.
+Cuando rellenas el check-in de la mañana decide qué versión de la sesión toca y
+manda un mensaje de Telegram con la sesión y la indicación de bici. La rutina de
+Hevy solo la reescribe si en ese envío marcas **«Aplicar los cambios en Hevy»**.
+Sin formulario no decide ni manda nada: lee Garmin y lo entrenado, y aprende.
 
 Las decisiones las toma un motor de **reglas explícitas en `config.yaml`**. No
 hay ningún modelo de lenguaje por medio: dos días con los mismos datos dan la
@@ -13,9 +14,13 @@ misma decisión, y siempre se puede señalar la regla que la tomó.
 | Hora  | Qué pasa |
 |-------|----------|
 | 06:30 | Refresca la caché de Garmin (sueño, HRV, pulso en reposo, actividades). |
-| —     | Cuando se envía el check-in desde el móvil: decide en ese momento. |
-| 09:00 | Si a esa hora no hay check-in, decide igualmente y lo dice. |
+| —     | Cuando se envía el check-in desde el móvil: decide en ese momento, y escribe en Hevy solo si se marca la casilla. |
+| 09:30 | Si hoy hay check-in y queda alguna sesión de ayer por contar, el aviso de percepción. |
 | 22:30 | Reconcilia lo que de verdad se entrenó y actualiza el estado. |
+
+Hasta el 10/10/2026 había además una decisión a las 09:00 sin check-in y un
+recálculo a las 07:30, que escribían en Hevy y mandaban Telegram por su cuenta.
+Se quitaron: nada actúa sin el formulario.
 
 El check-in son siete deslizadores y un comentario. **Un deslizador que no se
 toca no se envía**: el motor tiene un camino para las señales que faltan y ese
@@ -93,7 +98,6 @@ curl -s localhost:8000/api/health | python3 -m json.tool
     "jobs": {
       "reconcile":         "2026-09-12T22:30:00+02:00",
       "garmin_fetch":      "2026-09-13T06:30:00+02:00",
-      "decision_fallback": "2026-09-13T09:00:00+02:00",
       "perception_notice": "2026-09-13T09:30:00+02:00"
     }
   },
@@ -327,7 +331,7 @@ docker cp adaptive-training:/app/data/hevy_backups ./hevy_backups
 docker cp adaptive-training:/app/data/app.db ./app.db
 ```
 
-**El PC tiene que estar despierto a las 06:30, 09:00 y 22:30.** Si duerme, esos
+**El PC tiene que estar despierto a las 06:30 y 22:30.** Si duerme, esos
 trabajos no se ejecutan y no hay aviso posible: un portátil suspendido se lee
 desde el móvil exactamente igual que un día de descanso. Es la razón principal
 por la que esta fase es temporal y el destino es una máquina encendida.

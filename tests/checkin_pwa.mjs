@@ -643,6 +643,12 @@ for (const a of guion.acciones || []) {
     if (!b) throw new Error("no se está preguntando por la subida en rojo");
     disparar(b, "click");
     await drenar();
+  } else if (a.tipo === "aplicar-cambios") {
+    // La casilla del consentimiento (10/10/2026). Un `checked` y un `change`,
+    // que es lo que hace un dedo sobre un `<input type="checkbox">`.
+    const c = elemento("aplicar-cambios");
+    c.checked = !c.checked;
+    if ((c.oyentes.get("change") || []).length) disparar(c, "change");
   } else if (a.tipo === "regla-vigente" || a.tipo === "responder-regla") {
     // Las dos por el BOTÓN, igual que el resto: lo que hay que demostrar es
     // que pulsar acaba en el cuerpo del POST. Las en marcha viven en el

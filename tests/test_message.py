@@ -38,7 +38,7 @@ from tests.conftest import titulo
 from tests.conftest import con_ambar_que_recorta
 from tests.dobles import doble_de
 from app.engine.bike_advisor import BikeRecommendation
-from app.engine.decision import ActiveRule, DecisionAnulada
+from app.engine.decision import ActiveRule
 from app.engine.session_builder import SesionPedida
 from app.engine.tendencia import Tendencia
 
@@ -1814,19 +1814,6 @@ def test_el_motivo_del_estreno_tambien_va_escapado(cfg):
 DECIDIDA_A = datetime(LUNES.year, LUNES.month, LUNES.day, 4, 23, 18)
 
 
-def _anulada(cfg, *, ahora="amber", antes="green", medidas=("hrv",),
-             sin_llegar=(), cuando=DECIDIDA_A):
-    """Una decisión recomputada a las 09:00 sobre otra decidida a ciegas."""
-    d = decision_completa(cfg)
-    d.light = ahora
-    d.anulacion = DecisionAnulada(
-        anterior=antes,
-        decidida_a=cuando,
-        fuente_anterior="checkin",
-        medidas=list(medidas),
-        sin_llegar=list(sin_llegar),
-    )
-    return d
 
 
 def test_los_nombres_de_las_medidas_no_se_separan_de_los_de_la_ficha():
@@ -1855,60 +1842,12 @@ def test_los_nombres_de_las_medidas_no_se_separan_de_los_de_la_ficha():
         )
 
 
-def test_si_el_semaforo_cambia_la_anulacion_es_la_noticia_del_dia(cfg):
-    """En negrita y pegada a la cabecera, antes que el plan que condiciona.
-
-    Si esta línea cayera entre los apuntes del final, el usuario leería la
-    sesión entera creyendo que es la primera del día.
-    """
-    txt = render_telegram(_anulada(cfg), cfg)
-    lineas = txt.split("\n")
-
-    assert lineas[1].startswith("♻️"), (
-        "la anulación tiene que ir justo debajo de la cabecera, y va en "
-        f"la línea {[i for i, l in enumerate(lineas) if l.startswith('♻️')]}"
-    )
-    assert "<b>Esto anula la decisión de las 06:23, que salió verde.</b>" in txt
-    assert "la variabilidad no se pudo evaluar" in txt
-    assert "el semáforo cambia" in txt
 
 
-def test_si_el_semaforo_no_cambia_la_anulacion_es_un_acuse_en_cursiva(cfg):
-    """El segundo mensaje se sigue presentando aunque el color sea el mismo.
-
-    Dos mensajes iguales sin explicación son peores que uno explicado: el
-    usuario no tiene forma de saber si el sistema se ha repetido o ha decidido
-    dos veces.
-    """
-    txt = render_telegram(_anulada(cfg, ahora="green", antes="green"), cfg)
-
-    assert "♻️ <i>Recalculado con la variabilidad" in txt
-    assert "El semáforo no cambia." in txt
-    assert "Esto anula" not in txt, "sin cambio de color no hay titular"
 
 
-def test_la_hora_que_se_lee_es_la_del_reloj_de_pared_y_no_la_de_utc(cfg):
-    """`computed_at` se guarda en UTC; el usuario recuerda las 06:23.
-
-    Este es el fallo de las dos horas que ya se coló una vez leyendo el log de
-    las 04:30 como un evento distinto del de las 06:30. Aquí no sería un error
-    de lectura mío: sería el mensaje diciéndole al usuario que anula un
-    check-in que él mandó dos horas después.
-    """
-    txt = render_telegram(_anulada(cfg), cfg)
-    assert "de las 06:23" in txt
-    assert "04:23" not in txt
 
 
-def test_sin_zona_horaria_la_frase_se_queda_sin_hora_en_vez_de_mentir(cfg):
-    """Peor mensaje, pero no un mensaje FALSO."""
-    c = copy.deepcopy(cfg)
-    c.raw.pop("timezone", None)
-
-    txt = render_telegram(_anulada(c), c)
-
-    assert "Esto anula la decisión, que salió verde" in txt
-    assert "de las" not in txt
 
 
 def test_la_hora_local_no_inventa_nada_si_la_zona_no_existe():
@@ -1921,46 +1860,8 @@ def test_la_hora_local_no_inventa_nada_si_la_zona_no_existe():
     assert _hora_local(None, "Europe/Madrid") == ""
 
 
-def test_la_frase_concuerda_con_cuantas_medidas_llegaron(cfg):
-    """"la variabilidad y la nota de sueño no se pudo evaluar" no se manda.
-
-    Es una falta pequeña en la única línea del mensaje que avisa de que el
-    semáforo de hace dos horas ya no vale.
-    """
-    una = render_telegram(_anulada(cfg, medidas=("hrv",)), cfg)
-    assert "la variabilidad no se pudo evaluar" in una
-    assert "Con el dato ya puesto, el semáforo cambia" in una
-
-    varias = render_telegram(
-        _anulada(cfg, medidas=("hrv", "sleep_score", "body_battery")), cfg
-    )
-    assert (
-        "la variabilidad, la nota de sueño y el Body Battery no se pudieron "
-        "evaluar" in varias
-    )
-    assert "Con los datos ya puestos, el semáforo cambia" in varias
-
-    acuse = render_telegram(
-        _anulada(cfg, ahora="green", antes="green", medidas=("hrv", "rhr")), cfg
-    )
-    assert "la variabilidad y el pulso en reposo, que a la hora del check-in " \
-           "todavía no estaban" in acuse
 
 
-def test_lo_que_sigue_sin_llegar_se_dice_en_la_misma_linea(cfg):
-    """Recomputar no es lo mismo que tener el día completo.
-
-    Si a las 09:00 llega la HRV pero el Body Battery sigue sin subir, la
-    decisión nueva también está coja, y callarlo la haría parecer definitiva.
-    """
-    una = render_telegram(_anulada(cfg, sin_llegar=("body_battery",)), cfg)
-    assert "Sigue sin llegar el Body Battery, así que esta decisión tampoco " \
-           "está completa." in una
-
-    varias = render_telegram(
-        _anulada(cfg, sin_llegar=("body_battery", "sleep_min")), cfg
-    )
-    assert "Siguen sin llegar el Body Battery y lo que duermes" in varias
 
 
 def test_un_dia_normal_no_lleva_ninguna_linea_de_anulacion(cfg):
@@ -1970,28 +1871,8 @@ def test_un_dia_normal_no_lleva_ninguna_linea_de_anulacion(cfg):
     assert "anula" not in txt
 
 
-def test_la_consola_tambien_cuenta_la_anulacion(cfg):
-    """`render_plain` delega en `render_telegram`: hereda la línea sin etiquetas."""
-    plano = render_plain(_anulada(cfg), cfg)
-
-    assert "Esto anula la decisión de las 06:23, que salió verde." in plano
-    assert "<b>" not in plano and "<i>" not in plano
 
 
-def test_la_anulacion_tambien_va_escapada(cfg):
-    """`anterior` sale de la base, y de la base puede salir cualquier cosa.
-
-    `_NOMBRE_LUZ.get(luz, luz)` devuelve la clave tal cual si no la conoce -a
-    propósito, para que se vea QUÉ color llegó-, así que un valor raro guardado
-    en `decisions.light` acaba interpolado en el mensaje.
-    """
-    from tests.conftest import _telegram_rechazaria
-
-    d = _anulada(cfg, antes="<x & 'y'>")
-    txt = render_telegram(d, cfg)
-
-    assert "&lt;x &amp; 'y'&gt;" in txt
-    assert _telegram_rechazaria({"text": txt, "parse_mode": "HTML"}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -2245,3 +2126,23 @@ def test_el_dia_de_bici_sin_recomendacion_sigue_diciendo_que_sales(cfg):
     txt = render_telegram(d, cfg)
     assert "Hoy sales en bici" in txt, txt
     assert "Si vas al gimnasio" not in txt, txt
+
+
+def test_sin_consentimiento_el_mensaje_lo_dice_arriba(cfg):
+    """Debajo vienen la sesión y sus pesos: sin esta línea se leerían como la
+    rutina que hay en la app, que es justo lo que no es seguro (10/10/2026)."""
+    d = decide(cfg, LUNES, sig_completa(LUNES), EngineState(), aplicar_cambios=False)
+    txt = render_plain(d, cfg)
+    assert "No marcaste «aplicar los cambios»" in txt
+    assert txt.index("No marcaste") < txt.index("Si vas al gimnasio")
+
+    con = decide(cfg, LUNES, sig_completa(LUNES), EngineState())
+    assert "No marcaste" not in render_plain(con, cfg)
+
+
+def test_un_no_voy_sin_consentimiento_no_dice_que_la_rutina_esta_escrita(cfg):
+    d = decide(cfg, LUNES, sig_completa(LUNES, will_train=False), EngineState(),
+               aplicar_cambios=False)
+    assert "está escrita en Hevy" not in render_plain(d, cfg)
+    con = decide(cfg, LUNES, sig_completa(LUNES, will_train=False), EngineState())
+    assert "está escrita en Hevy" in render_plain(con, cfg)

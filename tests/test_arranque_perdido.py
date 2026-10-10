@@ -190,12 +190,12 @@ def test_el_primer_arranque_no_avisa_pero_deja_el_suelo_puesto(en_memoria):
     ahora = local(2026, 9, 13, 15, 0)
 
     hallado = auditar_arranque(
-        {"decision_fallback": a_las_nueve()}, TZ, telegram_client=tg, ahora=ahora
+        {"perception_notice": a_las_nueve()}, TZ, telegram_client=tg, ahora=ahora
     )
 
     assert hallado == []
     assert tg.enviados == []
-    fila = en_memoria.get(JobRun, "decision_fallback")
+    fila = en_memoria.get(JobRun, "perception_notice")
     assert fila is not None
     assert fila.first_seen_at == utc_naive(ahora)
     assert fila.checked_through == utc_naive(ahora)
@@ -210,7 +210,7 @@ def test_apagado_tres_dias_avisa_por_telegram(en_memoria):
     tiene que encontrarlos y tiene que DECIRLO.
     """
     en_memoria.add(JobRun(
-        job_id="decision_fallback",
+        job_id="perception_notice",
         first_seen_at=utc_naive(local(2026, 9, 1)),
         last_finished_at=utc_naive(local(2026, 9, 10, 9, 0)),
     ))
@@ -218,21 +218,21 @@ def test_apagado_tres_dias_avisa_por_telegram(en_memoria):
 
     tg = TelegramFalso()
     hallado = auditar_arranque(
-        {"decision_fallback": a_las_nueve()}, TZ,
+        {"perception_notice": a_las_nueve()}, TZ,
         telegram_client=tg, ahora=local(2026, 9, 13, 15, 0),
     )
 
     assert len(hallado) == 1
     job_id, perdidos, hay_mas = hallado[0]
-    assert job_id == "decision_fallback"
+    assert job_id == "perception_notice"
     assert len(perdidos) == 3
     assert hay_mas is False
 
     assert len(tg.enviados) == 1
     texto = tg.enviados[0]
     # En el idioma del usuario, no en el de APScheduler.
-    assert "decidir el semáforo del día" in texto
-    assert "decision_fallback" not in texto
+    assert "revisar las sesiones de ayer" in texto
+    assert "perception_notice" not in texto
     assert "11/09 a las 09:00" in texto
 
 
@@ -244,14 +244,14 @@ def test_el_segundo_arranque_no_repite_el_mismo_aviso(en_memoria):
     mismo mensaje en cada `docker compose up`.
     """
     en_memoria.add(JobRun(
-        job_id="decision_fallback",
+        job_id="perception_notice",
         first_seen_at=utc_naive(local(2026, 9, 1)),
         last_finished_at=utc_naive(local(2026, 9, 10, 9, 0)),
     ))
     en_memoria.commit()
 
     tg = TelegramFalso()
-    vigilados = {"decision_fallback": a_las_nueve()}
+    vigilados = {"perception_notice": a_las_nueve()}
 
     primero = auditar_arranque(
         vigilados, TZ, telegram_client=tg, ahora=local(2026, 9, 13, 15, 0)
@@ -267,7 +267,7 @@ def test_el_segundo_arranque_no_repite_el_mismo_aviso(en_memoria):
 
 def test_avisa_de_cada_trabajo_por_separado(en_memoria):
     """Cuatro trabajos parados son cuatro líneas, no un «algo falló»."""
-    for job_id in ("garmin_fetch", "decision_fallback", "reconcile"):
+    for job_id in ("garmin_fetch", "perception_notice", "reconcile"):
         en_memoria.add(JobRun(
             job_id=job_id,
             first_seen_at=utc_naive(local(2026, 9, 1)),
@@ -279,19 +279,19 @@ def test_avisa_de_cada_trabajo_por_separado(en_memoria):
     hallado = auditar_arranque(
         {
             "garmin_fetch": CronTrigger(hour=6, minute=30, timezone=TZ),
-            "decision_fallback": a_las_nueve(),
+            "perception_notice": a_las_nueve(),
             "reconcile": CronTrigger(hour=22, minute=30, timezone=TZ),
         },
         TZ, telegram_client=tg, ahora=local(2026, 9, 13, 15, 0),
     )
 
     assert {h[0] for h in hallado} == {
-        "garmin_fetch", "decision_fallback", "reconcile"
+        "garmin_fetch", "perception_notice", "reconcile"
     }
     texto = tg.enviados[0]
     for legible in (
         "traer los datos de Garmin",
-        "decidir el semáforo del día",
+        "revisar las sesiones de ayer",
         "apuntar lo que entrenaste",
     ):
         assert legible in texto
@@ -306,20 +306,20 @@ def test_un_telegram_que_revienta_no_tumba_la_auditoria(en_memoria):
     perderían las marcas de los demás trabajos.
     """
     en_memoria.add(JobRun(
-        job_id="decision_fallback",
+        job_id="perception_notice",
         first_seen_at=utc_naive(local(2026, 9, 1)),
         last_finished_at=utc_naive(local(2026, 9, 10, 9, 0)),
     ))
     en_memoria.commit()
 
     hallado = auditar_arranque(
-        {"decision_fallback": a_las_nueve()}, TZ,
+        {"perception_notice": a_las_nueve()}, TZ,
         telegram_client=TelegramFalso(revienta=True),
         ahora=local(2026, 9, 13, 15, 0),
     )
 
     assert len(hallado) == 1
-    assert en_memoria.get(JobRun, "decision_fallback").checked_through is not None
+    assert en_memoria.get(JobRun, "perception_notice").checked_through is not None
 
 
 def test_sin_telegram_la_auditoria_sigue_devolviendo_lo_encontrado(en_memoria):

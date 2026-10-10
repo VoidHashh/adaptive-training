@@ -878,7 +878,7 @@ def test_una_hora_ilegible_no_arranca(cfg_copia):
 
 
 def test_una_hora_fuera_de_rango_no_arranca(cfg_copia):
-    cfg_copia.raw["schedule"]["fallback_decision_time"] = "25:00"
+    cfg_copia.raw["schedule"]["watchdog_time"] = "25:00"
     assert "HH:MM" in errores(cfg_copia.raw)
 
 
@@ -1942,36 +1942,8 @@ def test_el_selector_no_entra_en_las_claves_del_checkin(cfg):
 # día que alguien la toque, que es justo el día en que hace falta.
 
 
-def test_el_aviso_de_percepcion_no_puede_adelantarse_a_la_decision(cfg_copia):
-    """Habla de AYER, y adelantarlo no rompe nada visible.
-
-    El trabajo se ejecutaría, el mensaje saldría y todo parecería correcto. Lo
-    que se pierde es el motivo entero de que el aviso vaya aparte: llegando
-    primero se convierte en el preámbulo del plan de hoy, o sea en un argumento
-    sobre si entrenar. Y a esa hora puede que no haya check-in todavía, que es
-    el dato del que sale el esfuerzo percibido de ayer.
-    """
-    cfg_copia.raw["schedule"]["fallback_decision_time"] = "09:00"
-    cfg_copia.raw["schedule"]["perception_notice_time"] = "08:30"
-    fallo = errores(cfg_copia.raw)
-    assert "perception_notice_time" in fallo
-    assert "08:30" in fallo
 
 
-def test_la_vigilancia_no_puede_adelantarse_a_la_decision(cfg_copia):
-    """Mira en qué estado ha QUEDADO el sistema, así que va después.
-
-    Las dos cosas que pueden dejarlo mal son las escrituras en Hevy: la de las
-    06:30 con check-in y la de respaldo de las 09:00. Puesta antes, la
-    vigilancia miraría el estado de ayer y diría que todo está bien
-    precisamente el día que se rompa; el aviso llegaría veinticuatro horas
-    tarde y nadie ataría una cosa con la otra.
-    """
-    cfg_copia.raw["schedule"]["fallback_decision_time"] = "09:00"
-    cfg_copia.raw["schedule"]["watchdog_time"] = "07:00"
-    fallo = errores(cfg_copia.raw)
-    assert "watchdog_time" in fallo
-    assert "07:00" in fallo
 
 
 def test_la_hora_de_la_vigilancia_tiene_que_ser_una_hora(cfg_copia):
@@ -1981,33 +1953,8 @@ def test_la_hora_de_la_vigilancia_tiene_que_ser_una_hora(cfg_copia):
     assert "watchdog_time" in errores(cfg_copia.raw)
 
 
-def test_el_recalculo_temprano_no_puede_ir_despues_del_fallback(cfg_copia):
-    """Su razón de ser entera es llegar a tiempo.
-
-    Existe porque el formulario se rellena hacia las 07:00 y el reloj no sube
-    la noche hasta las 07:10: la decisión sale ciega de la HRV y del sueño, el
-    mensaje lo dice y promete recalcular. Quien cumplía esa promesa era el
-    fallback de las 09:00, y llega cuando el entreno de las 08:00 ya se ha
-    hecho con la rutina que escribió la decisión ciega.
-
-    Puesto a la hora del fallback o después, este trabajo no aporta nada que
-    el fallback no haga ya, y encima parece que sí: queda en la lista de
-    trabajos, corre todos los días y no arregla el problema para el que se
-    puso. Es la tercera regla de orden de este bloque y la tercera que se
-    comprueba; las dos primeras vivieron sin test hasta que una mutación lo
-    enseñó.
-    """
-    cfg_copia.raw["schedule"]["fallback_decision_time"] = "09:00"
-    cfg_copia.raw["schedule"]["recompute_time"] = "09:30"
-    fallo = errores(cfg_copia.raw)
-    assert "recompute_time" in fallo
-    assert "09:30" in fallo
 
 
-def test_la_hora_del_recalculo_temprano_tiene_que_ser_una_hora(cfg_copia):
-    """Como las otras cinco."""
-    cfg_copia.raw["schedule"]["recompute_time"] = "a media mañana"
-    assert "recompute_time" in errores(cfg_copia.raw)
 
 
 # ---------------------------------------------------------------------------
@@ -2335,3 +2282,25 @@ def test_el_cfg_de_los_tests_es_el_ciclo_real_empezando_por_el_dia_1(cfg, cfg_re
     a, b = copy.deepcopy(cfg.raw), copy.deepcopy(cfg_real.raw)
     a["rotation"].pop("order"), b["rotation"].pop("order")
     assert a == b
+
+
+
+# ---------------------------------------------------------------------------
+# Las horas que decidían el día sin el formulario no vuelven (10/10/2026)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("clave", ["fallback_decision_time", "recompute_time"])
+def test_las_horas_que_decidian_solas_se_rechazan_diciendo_por_que(cfg, clave):
+    """Es lo que se encontrará quien actualice la imagen sin copiar el config
+    nuevo: el arranque se para, y tiene que decir qué quitar y por qué."""
+    data = copy.deepcopy(cfg.raw)
+    data["schedule"][clave] = "09:00"
+    msg = errores(data)
+    assert f"schedule.{clave} ya no existe" in msg
+    assert "sin el formulario" in msg
+
+
+def test_el_config_real_no_lleva_ninguna_hora_que_decida(cfg_real):
+    sched = cfg_real.raw.get("schedule") or {}
+    assert "fallback_decision_time" not in sched and "recompute_time" not in sched

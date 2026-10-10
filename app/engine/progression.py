@@ -375,6 +375,7 @@ def evaluate_gate(
     titulo_rutina: str | None = None,
     va_a_entrenar: bool | None = None,
     eleccion_sin_fuerza: str | None = None,
+    cambios_aceptados: bool = True,
 ) -> tuple[bool, str]:
     """Puerta general. Devuelve (abierta, motivo).
 
@@ -424,6 +425,16 @@ def evaluate_gate(
     # pregunta que se hace antes, y el mensaje de ese día se lee de arriba abajo.
     if eleccion_sin_fuerza:
         return False, _por_que_sin_fuerza(eleccion_sin_fuerza)
+
+    # SIN LA CASILLA NO SE SUBE NADA (10/10/2026). «No quiero que haga cambios
+    # en los entrenamientos sin mi consentimiento.» Lo que se decide sin ella no
+    # se escribe en Hevy, y una subida que no se escribe no puede convertirse en
+    # la carga vigente de mañana. Detrás de los dos de arriba porque esos
+    # explican el día entero; éste solo explica por qué no sube nada.
+    if not cambios_aceptados:
+        return False, (
+            "no marcaste «aplicar los cambios»: hoy no se propone ninguna subida"
+        )
 
     if deload_active and (prog_cfg.get("deload") or {}).get("freeze_progression", True):
         return False, "semana de descarga: la progresión está congelada"
@@ -909,6 +920,7 @@ def plan_progression(
     rutina_estrenada: bool | None = None,
     va_a_entrenar: bool | None = None,
     eleccion_sin_fuerza: str | None = None,
+    cambios_aceptados: bool = True,
 ) -> ProgressionPlan:
     """Decide la progresión de todos los ejercicios de una rutina.
 
@@ -997,6 +1009,7 @@ def plan_progression(
         titulo_rutina=str(routine.get("title") or "") or None,
         va_a_entrenar=va_a_entrenar,
         eleccion_sin_fuerza=eleccion_sin_fuerza,
+        cambios_aceptados=cambios_aceptados,
     )
     (sets_ok, sets_why), (reps_ok, reps_why) = evaluate_volume_gates(
         prog_cfg, signals, signals.day, last_routine_light

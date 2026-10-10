@@ -257,17 +257,18 @@ def run_daily(
     client_errors: dict[str, str] | None = None,
     dry_run: bool = False,
     source: str = "scheduler",
-    # La decisión de esta misma mañana que esta deja sin efecto, cuando la hay.
-    # La construye `job_decision`, que es el único que sabe qué había antes y
-    # qué dato del reloj ha llegado desde entonces.
-    anulacion: Any = None,
     # La sesión que el usuario pide en vez de la propuesta, cuando anula. Llega
-    # desde el envío del formulario, no desde ningún trabajo programado: las
-    # 07:00 y las 09:00 deciden sin nadie delante y no anulan nada.
+    # desde el envío del formulario.
     sesion_pedida: Any = None,
     # Si hay alguien delante para preguntarle por una regla especial que salta
     # hoy. Solo el envío del formulario: ver `decision.ReglasPorConfirmar`.
     preguntar_reglas: bool = False,
+    # La casilla «aplicar los cambios» del formulario (10/10/2026). Con `False`
+    # Hevy no se toca -ni para escribir ni para deshacer- y la progresión no
+    # propone nada. El defecto es `True` porque fuera del formulario solo
+    # llaman aquí los ensayos y los tests; el único camino de producción,
+    # `api.post_checkin`, pasa siempre lo que marcó el usuario.
+    aplicar_cambios: bool = True,
 ) -> DailyResult:
     """Decide el día y lo ejecuta. Los clientes se inyectan a propósito.
 
@@ -281,8 +282,9 @@ def run_daily(
     """
     pensado = pensar_el_dia(
         session, cfg, day,
-        metrics=metrics, rides=rides, source=source, anulacion=anulacion,
+        metrics=metrics, rides=rides, source=source,
         sesion_pedida=sesion_pedida, preguntar_reglas=preguntar_reglas,
+        aplicar_cambios=aplicar_cambios,
     )
     res = DailyResult(day=day, decision=pensado.decision)
     # A PARTIR DE AQUÍ SE TOCAN COSAS DE FUERA, así que a partir de aquí una
@@ -299,6 +301,7 @@ def run_daily(
             metrics, res,
             hevy_client=hevy_client, telegram_client=telegram_client,
             client_errors=client_errors, dry_run=dry_run,
+            aplicar_cambios=aplicar_cambios,
         )
     except Exception as exc:  # noqa: BLE001
         raise DecisionInterrumpida(exc, res) from exc
@@ -327,17 +330,16 @@ def pensar_el_dia(
     metrics: list,
     rides: list,
     source: str = "checkin",
-    anulacion: Any = None,
     # Las respuestas del formulario cuando TODAVÍA NO ESTÁN GUARDADAS. Ver abajo.
     respuestas: dict[str, Any] | None = None,
     # La sesión que el usuario pide en vez de la que el semáforo propone. Un
-    # `SesionPedida`. Ojo con el nombre: NO es el `anulacion` de aquí arriba,
-    # que es la decisión del sistema anulada por un recálculo.
+    # `SesionPedida`.
     sesion_pedida: Any = None,
     # Las respuestas a las reglas especiales. `None` es «mira en la base», por
     # lo mismo que `respuestas`: la previsualización las trae sin guardar.
     reglas: dict[str, str] | None = None,
     preguntar_reglas: bool = False,
+    aplicar_cambios: bool = True,
 ) -> DiaPensado:
     """La mitad que decide. No escribe nada, y eso es lo que la hace útil.
 
@@ -448,21 +450,8 @@ def pensar_el_dia(
     decision = decide(
         cfg, day, signals, state, source=source, sesion_pedida=sesion_pedida,
         respuestas_reglas=reglas, preguntar_reglas=preguntar_reglas,
+        aplicar_cambios=aplicar_cambios,
     )
-
-    # Esto viaja con la decisión hasta el renderizador, y NO hasta la base:
-    # `save_decision` escribe columna a columna y no hay ninguna para la
-    # anulación. Aquí decía lo contrario -"para que el JSON del histórico la
-    # lleve"- y era falso.
-    #
-    # Tampoco hace falta una columna nueva. Dentro de tres meses, "el martes el
-    # semáforo cambió de verde a ámbar a las nueve" se reconstruye con lo que ya
-    # se guarda: dos filas del mismo día, la de las 06:23 con `is_current=False`
-    # y fuente `checkin`, la de las 09:00 vigente y con fuente `recompute`. Y
-    # QUÉ dato llegó sale de comparar los dos `skipped_rules_json`: lo que
-    # faltaba en la primera y ya no falta en la segunda es exactamente lo que el
-    # reloj subió entre una hora y otra.
-    decision.anulacion = anulacion
 
     # Lo que la reconciliación de anoche movió de la carga, para contarlo AHORA.
     # Se cuelga antes de guardar la decisión para que quede también en el
@@ -522,6 +511,7 @@ def _ejecutar_el_dia(
     telegram_client: Any,
     client_errors: dict[str, str] | None,
     dry_run: bool,
+    aplicar_cambios: bool = True,
 ) -> DailyResult:
     """La mitad que escribe: base de datos, Hevy y Telegram, en ese orden.
 
@@ -553,10 +543,22 @@ def _ejecutar_el_dia(
     _guardar_lo_leido(session, signals, metrics, res)
 
     motivos = client_errors or {}
-    _escribir_hevy(
-        session, cfg, decision, fila, res, hevy_client, dry_run,
-        motivo_sin_cliente=motivos.get("hevy"),
-    )
+    if aplicar_cambios:
+        _escribir_hevy(
+            session, cfg, decision, fila, res, hevy_client, dry_run,
+            motivo_sin_cliente=motivos.get("hevy"),
+        )
+    else:
+        # SIN LA CASILLA, HEVY NO SE TOCA (10/10/2026). Ni para escribir ni para
+        # deshacer: deshacer también es cambiar la rutina que el usuario tiene
+        # delante. La fila se anota igual, porque «hoy no se tocó porque no lo
+        # aceptaste» es lo que hay que poder leer después, y no un hueco.
+        res.hevy_status = "skipped"
+        res.hevy_reason = (
+            "no marcaste «aplicar los cambios»: la rutina de Hevy se queda como "
+            "estaba"
+        )
+        _anotar_hevy(session, decision, fila, res, None)
     _mandar_telegram(
         session, cfg, decision, res, telegram_client, dry_run,
         motivo_sin_cliente=motivos.get("telegram"),
@@ -2011,6 +2013,10 @@ def run_aviso_percepcion(
     PWA y el fallback de las nueve-, así que colgarse de él significaría o
     duplicar el aviso o perderlo según a qué hora se rellenara el formulario.
 
+    Hasta el 10/10/2026 el mensaje de la decisión se mandaba por dos caminos,
+    el check-in y el fallback de las nueve. Ya solo hay uno, el formulario, y
+    este aviso tampoco sale si hoy no se ha rellenado.
+
     POR QUÉ EVALÚA AQUÍ Y NO POR LA NOCHE
     -------------------------------------
     Porque la sesión de ayer necesita el check-in de HOY para tener su esfuerzo
@@ -2050,6 +2056,18 @@ def run_aviso_percepcion(
     res.pendientes = len(pendientes)
     if not pendientes:
         res.motivo = "no hay ninguna disociación sin contar"
+        return res
+
+    # SIN FORMULARIO HOY, NO SALE (10/10/2026). «Solo quiero que actúe y envíe
+    # el mensaje de Telegram si yo relleno el formulario.» Se evalúa igual -eso
+    # es aprender, no molestar- y lo pendiente espera sin marcar al próximo día
+    # que se conteste: no se pierde, se retrasa.
+    if repo.get_checkin(session, day) is None:
+        res.status = "skipped"
+        res.motivo = (
+            f"hoy no se ha rellenado el formulario: las {len(pendientes)} "
+            f"disociaciones esperan al próximo día que se conteste"
+        )
         return res
 
     # Las cifras son las del acumulado, las mismas que enseña la pantalla.

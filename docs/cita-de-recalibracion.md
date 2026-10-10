@@ -264,8 +264,8 @@ mueven las cargas:
   por eso salía el aviso 404. El mecanismo de bloques sigue en el código,
   apagado (`hiit.enabled: false`), por si se quiere volver a separar.
 - **Elegir «Bici» hace del día un día de bici (26/09/2026).** Sin gimnasio: no
-  se escribe nada en Hevy (y si esa mañana el respaldo ya había puesto una
-  rutina, se deshace), no hay HIIT, y el Telegram y la tarjeta empiezan por la
+  se escribe nada en Hevy (y si un envío anterior de esa mañana ya había
+  puesto una rutina, se deshace, siempre que esté marcada la casilla), no hay HIIT, y el Telegram y la tarjeta empiezan por la
   bici en afirmativo -«Hoy sales en bici: media…»- en vez de por «Si vas al
   gimnasio hoy: Día 1». La rotación no se mueve: lo que tocaba sigue tocando el
   siguiente día de gimnasio, y el mensaje lo dice. **El rojo manda sobre la
@@ -295,6 +295,17 @@ mueven las cargas:
   torso y después la bisagra). **Qué vigilar:** una semana de dos o de cuatro
   sesiones vuelve a descolocarla; y los intervalos de `dia_2` caen ahora el
   viernes, antes de la bici del sábado.
+- **Nada actúa sin el formulario, y Hevy solo cambia si lo aceptas
+  (10/10/2026).** Se fueron la decisión de las 09:00 sin check-in y el
+  recálculo de las 07:30: del 30/09 al 05/10 el de las 09:00 decidió seis días
+  seguidos sin que nadie hubiera contestado nada. Abrir la app ya no rehace el
+  día: avisa si se decidió sin la noche del reloj, y reenviar es cosa tuya. El
+  aviso de percepción solo sale los días con formulario. Encima de «Enviar» hay
+  una casilla, **«Aplicar los cambios en Hevy»**, que empieza sin marcar cada
+  mañana: sin ella el día se decide, se guarda y se cuenta por Telegram, pero
+  Hevy no se toca y la progresión no propone nada. **Qué vigilar:** si el
+  config del Umbrel conserva `schedule.fallback_decision_time`, la imagen nueva
+  no arranca y lo dice; hay que quitar esa línea.
 - **El ámbar da la sesión completa (09/10/2026).** El 7 y el 8 de octubre el
   ámbar quitó de `dia_1` el gemelo, el press de tríceps y el bosu, y el usuario
   pidió las rutinas enteras en Hevy. `actions.amber.session` pasa a `full`: el
@@ -309,8 +320,9 @@ mueven las cargas:
   al previsualizar o al enviar («Aplicar» / «No aplicar»), y el check-in no se
   guarda hasta contestarla. Una regla ya en marcha sale en el formulario con
   «Mantener» / «Quitar hoy»; sin tocarla, sigue. Lo contestado queda en
-  `checkins.reglas_json` y en la foto de la decisión. Sin nadie delante -el
-  respaldo de la mañana- la regla se aplica y la nota lo dice. **Qué vigilar:**
+  `checkins.reglas_json` y en la foto de la decisión. Sin nadie delante la
+  regla se aplica y la nota lo dice (desde el 10/10/2026 no hay ningún camino
+  sin nadie delante: solo decide el formulario). **Qué vigilar:**
   un móvil con la PWA vieja (v29) no sabe leer la pregunta y enseña el check-in
   como rechazado el día que salta una regla: se arregla recargando.
 - **«¿Hiciste el HIIT?» en el formulario de después (28/09/2026).** Solo los
@@ -328,7 +340,8 @@ mueven las cargas:
   regla se dispara igual que antes.
 - **«Hoy» abre con la decisión del día** cuando ya está decidido, con el
   formulario plegado detrás de «Cambiar mis respuestas». La tarjeta dice Hevy y
-  Telegram en palabras. Si al abrir se recalcula el día, la tarjeta se repinta.
+  Telegram en palabras. (Hasta el 10/10/2026, si al abrir se recalculaba el
+  día, la tarjeta se repintaba; ahora abrir la app solo avisa.)
 - **La puerta de subir mira cada ejercicio, no la rutina entera**
   (`progression.gate.compliance_scope: exercise`). Con la rutina entera, un
   ejercicio incompleto bastaba para que no subiera nada, y en las diez primeras

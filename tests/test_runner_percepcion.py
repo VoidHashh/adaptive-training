@@ -31,11 +31,33 @@ from tests.test_analysis_rendimiento import HOY, contraria, disociada, juicio
 from tests.test_runner import TelegramFalso
 
 
-@pytest.fixture
-def db():
+def _base():
     engine = create_engine("sqlite:///:memory:", future=True)
     Base.metadata.create_all(engine)
-    with Session(engine) as session:
+    return Session(engine)
+
+
+@pytest.fixture
+def db():
+    """Con el formulario rellenado HOY y mañana.
+
+    Desde el 10/10/2026 el aviso solo sale si ese día se ha contestado el
+    formulario. Casi todo este fichero va de cuándo se marca un aviso que SÍ
+    sale, así que la base lo trae rellenado; lo que pasa sin él se prueba con
+    `db_sin_formulario`.
+    """
+    from app import repository as repo
+
+    with _base() as session:
+        for d in (HOY, HOY + timedelta(days=1)):
+            repo.upsert_checkin(session, d, {"fatigue": 3})
+        session.flush()
+        yield session
+
+
+@pytest.fixture
+def db_sin_formulario():
+    with _base() as session:
         yield session
 
 
@@ -302,3 +324,31 @@ def test_se_evalua_aunque_no_haya_a_quien_avisar(db, cfg):
         mod.evaluar_pendientes = real
 
     assert llamadas == [HOY], "sin cliente de Telegram no se ha evaluado nada"
+
+
+
+# ---------------------------------------------------------------------------
+# Sin formulario, no sale (10/10/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_sin_formulario_hoy_no_sale_y_la_fila_espera(db_sin_formulario, cfg):
+    """«Solo quiero que actúe y envíe el mensaje de Telegram si yo relleno el
+    formulario.» Lo pendiente no se pierde: espera, sin marcar, al próximo día
+    que se conteste."""
+    from app import repository as repo
+
+    db = db_sin_formulario
+    disociada(db, HOY - timedelta(days=1), clave="a")
+    tg = TelegramFalso()
+
+    res = run_aviso_percepcion(db, cfg, HOY, telegram_client=tg)
+
+    assert tg.enviados == []
+    assert res.status == "skipped" and "formulario" in res.motivo
+    assert len(pendientes(db)) == 1
+
+    repo.upsert_checkin(db, HOY + timedelta(days=1), {"fatigue": 3})
+    run_aviso_percepcion(db, cfg, HOY + timedelta(days=1), telegram_client=tg)
+    assert len(tg.enviados) == 1, "contestado el formulario, lo que esperaba sale"
+    assert pendientes(db) == []

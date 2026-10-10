@@ -289,6 +289,7 @@ CAMPOS_QUE_NO_SON_RESPUESTAS = frozenset({
     "confirm_upgrade",
     "override_reason",
     "reglas",
+    "aplicar_cambios",
 })
 
 
@@ -324,6 +325,13 @@ class EnvioIn(CheckinIn):
     # vez de la sesión (ver `decision.ReglasPorConfirmar`). Las valida
     # `_reglas_del_envio` contra las reglas del config, no un `Literal` aquí.
     reglas: dict[str, str] | None = None
+    # «Aplicar los cambios», la casilla de encima de Enviar (10/10/2026). Sin
+    # marcar -y es como empieza cada mañana- Hevy no se toca y la progresión no
+    # propone nada: el día se decide, se guarda y se cuenta, y la rutina de la
+    # app se queda como estaba. «No quiero que haga cambios en los
+    # entrenamientos sin mi consentimiento.» `False` por defecto porque el
+    # consentimiento es lo que se marca, no lo que se supone.
+    aplicar_cambios: bool = False
 
 
 class PreviewIn(EnvioIn):
@@ -1283,6 +1291,9 @@ def post_preview(
             # respuestas, lo guardado es de otro envío.
             reglas=reglas or {},
             preguntar_reglas=True,
+            # Con la casilla como esté: sin marcar, la tarjeta enseña el día
+            # sin subidas, que es lo que se guardaría al enviar así.
+            aplicar_cambios=body.aplicar_cambios,
         )
     except ConfirmacionNecesaria as exc:
         raise HTTPException(status_code=409, detail={
@@ -1407,7 +1418,7 @@ def post_checkin(
     try:
         resultado = _decidir(
             s, cfg, day, source="checkin", sesion_pedida=_sesion_pedida(body),
-            preguntar_reglas=True,
+            preguntar_reglas=True, aplicar_cambios=body.aplicar_cambios,
         )
     except ReglasPorConfirmar as exc:
         # El mismo `rollback` que el de abajo y por lo mismo: sin contestar, el
@@ -1447,7 +1458,7 @@ def post_checkin(
 
 def _decidir(
     s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None,
-    preguntar_reglas: bool = False,
+    preguntar_reglas: bool = False, aplicar_cambios: bool = False,
 ) -> dict[str, Any]:
     """`_decidir_sin_cerrojo` con el MISMO cerrojo que `scheduler.job_decision`.
 
@@ -1463,13 +1474,13 @@ def _decidir(
     with _DECIDIENDO:
         return _decidir_sin_cerrojo(
             s, cfg, day, source=source, sesion_pedida=sesion_pedida,
-            preguntar_reglas=preguntar_reglas,
+            preguntar_reglas=preguntar_reglas, aplicar_cambios=aplicar_cambios,
         )
 
 
 def _decidir_sin_cerrojo(
     s: Session, cfg, day: date, *, source: str, sesion_pedida: Any = None,
-    preguntar_reglas: bool = False,
+    preguntar_reglas: bool = False, aplicar_cambios: bool = False,
 ) -> dict[str, Any]:
     """Decide el día, y si no puede lo dice sin fingir que sí.
 
@@ -1545,6 +1556,7 @@ def _decidir_sin_cerrojo(
             hevy_client=hevy, telegram_client=tg, client_errors=motivos,
             dry_run=settings.dry_run, source=source,
             sesion_pedida=sesion_pedida, preguntar_reglas=preguntar_reglas,
+            aplicar_cambios=aplicar_cambios,
         )
     except (ConfirmacionNecesaria, ReglasPorConfirmar):
         # No es un fallo; ver el docstring. Salta DENTRO de `pensar_el_dia`, o
@@ -1646,36 +1658,21 @@ def get_decision(
 def post_recalcular(
     s: Session = Depends(get_session), cfg=Depends(get_config)
 ) -> dict[str, Any]:
-    """Rehace el día si se decidió sin la noche del reloj y ya ha llegado.
+    """Dice si el día se decidió sin la noche del reloj. Ya NO lo rehace.
 
-    Lo llama la PWA al abrirse con el check-in hecho. Existe porque los dos
-    reintentos con hora -07:30 y 09:00- caían con el equipo dormido, y el
-    mensaje de un ámbar «sin datos» prometía recalcular: el 25/09/2026 se quedó
-    ámbar todo el día con la HRV y el sueño ya en Garmin. Ver la cabecera de
-    `app/scheduler.py`.
+    Lo llama la PWA al abrirse con el check-in hecho. Hasta el 10/10/2026, si
+    la noche ya había llegado, rehacía el día: escribía en Hevy y mandaba otro
+    Telegram sin que nadie hubiera enviado nada, y el usuario pidió que nada
+    actuara sin el formulario. Ahora devuelve el aviso y nada más; volver a
+    enviar es suyo. Ver `scheduler.recalcular_si_hace_falta`.
 
-    POST y no GET, aunque casi siempre no haga nada: cuando hace algo, escribe
-    en Hevy y manda un Telegram, y eso no va detrás de un verbo que cualquier
-    precargador puede disparar solo.
-
-    La sesión de la petición NO decide: `job_decision` abre la suya como cuando
-    lo lanza el scheduler, que es el mismo camino con el mismo cerrojo y no una
-    copia. Esta solo LEE después, para devolver la decisión nueva con la forma
-    de la tarjeta: la pantalla la repinta, porque la que tenía delante acaba de
-    dejar de ser la vigente.
+    LA RUTA Y EL VERBO SE QUEDAN COMO ESTABAN, y no por descuido: los móviles con
+    la PWA de antes la siguen llamando con un POST al abrirse. Cambiarla les
+    daría un error en rojo cada mañana por una pregunta que ya no actúa.
     """
     from app.scheduler import recalcular_si_hace_falta
 
-    hoy = date.today()
-    hevy, tg, motivos = _clientes(cfg)
-    salida = recalcular_si_hace_falta(
-        cfg, day=hoy,
-        hevy_client=hevy, telegram_client=tg, client_errors=motivos,
-        dry_run=settings.dry_run,
-    )
-    if salida.get("estado") == "recalculado":
-        salida["decision_de_hoy"] = _decision_de_hoy(s, cfg, hoy)
-    return salida
+    return recalcular_si_hace_falta(cfg, day=date.today())
 
 
 @app.get("/api/state")

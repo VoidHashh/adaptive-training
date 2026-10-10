@@ -1618,3 +1618,26 @@ def test_alargar_una_regla_en_marcha_tambien_se_pregunta(cfg):
     (p,) = exc.value.pendientes
     assert p["vigente_hasta"] == (JUEVES + timedelta(days=13)).isoformat()
     assert p["hasta"] == (otra_vez + timedelta(days=13)).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Sin «aplicar los cambios», la progresión no propone nada (10/10/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_sin_consentimiento_la_puerta_se_cierra_y_dice_por_que(cfg):
+    """El mismo estado que abre la puerta en
+    `test_con_todos_registrados_y_cumplidos_la_puerta_se_abre`: sin la casilla
+    no sube nada. Una subida que no se escribe en Hevy no puede convertirse en
+    la carga vigente de mañana."""
+    keys = [e["key"] for e in cfg.raw["routines"]["dia_1"]["exercises"]]
+    st = EngineState(
+        compliance={("dia_1", k): True for k in keys},
+        clean_sessions={("dia_1", k): 5 for k in keys},
+    )
+    d = decide(cfg, LUNES, sig_completa(LUNES), st, aplicar_cambios=False)
+
+    assert not d.progression.gate_open
+    assert "no marcaste «aplicar los cambios»" in d.progression.gate_reason
+    assert d.progression.changes == []
+    assert d.to_dict()["aplicar_cambios"] is False

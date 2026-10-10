@@ -596,6 +596,17 @@ HUELLAS_DEL_ARMAZON = {
     # la pregunta del HIIT el formulario de después pregunta por cada intervalo
     # como antes.
     "v30": "c0147f7fb394f4576049cdab6ae026817dc4556595457c93c7eb568f0cd98763",
+    # v31: la casilla «aplicar los cambios» encima de Enviar, y el aviso al
+    # abrir que ya no repinta la tarjeta porque el servidor ya no rehace el día.
+    # Toca `index.html`, `app.js` y `styles.css`.
+    #
+    # EL MÓVIL VIEJO FALLA DE LA FORMA LEVE, y hacia el lado seguro. Sin la
+    # casilla nunca manda `aplicar_cambios`, y el servidor lo lee como «no»: el
+    # día se decide y se cuenta, pero Hevy no se toca y no sube nada. Se ve -el
+    # Telegram y la tarjeta dicen que Hevy no se ha tocado- y se arregla
+    # recargando. Lo que no puede pasar desde un móvil viejo es lo contrario:
+    # que se escriba en Hevy sin haberlo aceptado.
+    "v31": "be2a53c3376db1796c20048def896721d3626e0020242fd24a645731f44d6c89",
 }
 
 
@@ -2705,24 +2716,25 @@ def test_sin_decision_todavia_abre_con_el_formulario(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
-def test_si_el_recalculo_cambia_el_dia_la_tarjeta_se_repinta_con_su_aviso(tmp_path):
-    """La tarjeta de delante deja de ser la vigente al recalcular. Y el aviso va
-    dentro de ella: con el formulario plegado, metido ahí no lo vería nadie."""
+def test_el_aviso_al_abrir_va_en_la_tarjeta_y_no_la_cambia(tmp_path):
+    """Desde el 10/10/2026 abrir la app no rehace el día: avisa de que se decidió
+    sin la noche del reloj. El aviso va dentro de la tarjeta -con el formulario
+    plegado, metido ahí no lo vería nadie- y la tarjeta sigue siendo la misma,
+    aunque un servidor viejo mandara otra decisión."""
     salida = _rellenar(
         tmp_path,
         _hoy(submitted=True, values={"fatigue": 3}, decision_de_hoy=_decidida()),
         [],
         recalculo={"respuesta": {
-            "estado": "recalculado", "tono": "bien",
-            "aviso": "Ya han llegado la variabilidad y lo que duermes: el día se "
-                     "ha recalculado y pasa de ámbar a verde.",
-            "decision_de_hoy": _decidida(light="green", cuando="Decidido a las "
-                                         "09:12 al llegar la noche del reloj."),
+            "estado": "decidido_sin_dato", "tono": "ojo",
+            "aviso": "Hoy se decidió sin la variabilidad. Cuando el reloj haya "
+                     "sincronizado, vuelve a enviar el formulario si quieres que cuente.",
+            "decision_de_hoy": _decidida(light="green"),
         }},
     )
-    assert "semaforo-green" in salida["resultado"]["clase"]
-    assert "pasa de ámbar a verde" in salida["resultado"]["html"]
-    assert salida["avisos"][0]["clase"] == "aviso bien"
+    assert "semaforo-green" not in salida["resultado"]["clase"]
+    assert "vuelve a enviar el formulario" in salida["resultado"]["html"]
+    assert salida["avisos"][0]["clase"] == "aviso ojo"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="hace falta node")
@@ -4908,3 +4920,44 @@ def test_la_pregunta_de_la_regla_no_se_pinta_como_un_fallo(tmp_path):
     assert "mal" not in out["previsualizacion"]["clase"]
     assert "No se aplica sin que digas que sí" in out["previsualizacion"]["texto"]
     assert "28/9" in out["previsualizacion"]["texto"]
+
+
+# ---------------------------------------------------------------------------
+# La casilla «aplicar los cambios» (10/10/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_sin_marcar_la_casilla_no_se_pide_tocar_hevy(tmp_path):
+    """«No quiero que haga cambios en los entrenamientos sin mi consentimiento.»
+    Sin marcar no viaja nada, y el servidor lo entiende como «no»."""
+    out = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 4},
+        {"tipo": "previsualizar"},
+        {"tipo": "enviar"},
+    ])
+    assert "aplicar_cambios" not in out["cuerpos_previsualizados"][0]
+    assert "aplicar_cambios" not in out["cuerpo"]
+
+
+def test_marcada_la_casilla_viaja_en_las_dos_rutas(tmp_path):
+    """Lo que se mira y lo que se manda tienen que decir lo mismo: si solo
+    viajara al enviar, la tarjeta enseñaría el día sin subidas y se escribiría
+    otro."""
+    out = _rellenar(tmp_path, _hoy(), [
+        {"tipo": "deslizar", "key": "fatigue", "valor": 4},
+        {"tipo": "aplicar-cambios"},
+        {"tipo": "previsualizar"},
+        {"tipo": "enviar"},
+    ])
+    assert out["cuerpos_previsualizados"][0]["aplicar_cambios"] is True
+    assert out["cuerpo"]["aplicar_cambios"] is True
+
+
+def test_la_casilla_esta_en_el_html_encima_de_enviar_y_sin_marcar():
+    """Que exista, que vaya antes del botón y que no venga marcada: marcada de
+    serie sería suponer el consentimiento."""
+    html = (RAIZ / "static" / "index.html").read_text(encoding="utf-8")
+    casilla = html.index('id="aplicar-cambios"')
+    assert casilla < html.index('id="enviar"')
+    etiqueta = html[html.rindex("<input", 0, casilla):html.index(">", casilla)]
+    assert 'type="checkbox"' in etiqueta and "checked" not in etiqueta

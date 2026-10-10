@@ -3837,3 +3837,45 @@ def test_con_el_bloque_hiit_aparte_el_no_mantiene_su_racha_bajo_su_clave(
 
     rachas = _rachas(db, cfg_lunes)
     assert {k: rachas.get(("hiit_dia_1", k)) for k in intervalos} == {k: esperada for k in intervalos}
+
+
+# ---------------------------------------------------------------------------
+# Sin «aplicar los cambios», Hevy no se toca (10/10/2026)
+# ---------------------------------------------------------------------------
+
+
+def test_sin_consentimiento_no_se_escribe_en_hevy_y_se_dice(db, cfg):
+    """«No quiero que haga cambios en los entrenamientos sin mi
+    consentimiento.» El día se decide, se guarda y se cuenta; la rutina de la
+    app se queda como estaba, y la fila del día dice por qué."""
+    hevy, tg = HevyFalso(), TelegramFalso()
+
+    res = corre(db, cfg, hevy=hevy, tg=tg, aplicar_cambios=False)
+
+    assert hevy.llamadas == [], "ha escrito en Hevy sin la casilla"
+    assert hevy.contenido == "la rutina de la semana pasada"
+    assert res.hevy_status == "skipped"
+    fila = db.scalars(select(HevyWrite)).one()
+    assert fila.status == "skipped" and "aplicar los cambios" in fila.reason
+    assert tg.enviados and "No marcaste «aplicar los cambios»" in tg.enviados[-1]
+    assert res.decision.to_dict()["aplicar_cambios"] is False
+
+
+def test_sin_consentimiento_tampoco_se_deshace_lo_escrito(db, cfg):
+    """Deshacer también es cambiar la rutina que el usuario tiene delante: un
+    segundo envío sin la casilla deja Hevy como lo dejó el primero."""
+    hevy, tg = HevyFalso(), TelegramFalso()
+    corre(db, cfg, hevy=hevy, tg=tg)
+    escrito = hevy.contenido
+    upsert_checkin(db, LUNES, {"chosen_session": "bici"}, config=cfg)
+
+    corre(db, cfg, hevy=hevy, tg=tg, aplicar_cambios=False)
+
+    assert hevy.reversiones == []
+    assert hevy.contenido == escrito
+
+
+def test_con_consentimiento_se_escribe_como_siempre(db, cfg):
+    hevy = HevyFalso()
+    res = corre(db, cfg, hevy=hevy, tg=TelegramFalso(), aplicar_cambios=True)
+    assert hevy.llamadas and res.hevy_status == "ok"

@@ -6,6 +6,12 @@ guión del **lunes 14 de septiembre de 2026**, que es el día que `program.start
 señala y el primero en el que el sistema decide algo que va a gobernar un
 entrenamiento de verdad.
 
+> **Desde el 10/10/2026 esto ya no es así en una cosa importante:** no hay
+> decisión de las 09:00 (`decision_fallback`) ni recálculo de las 07:30. El
+> plan del día sale solo del envío del formulario, y escribe en Hevy solo si se
+> marca «Aplicar los cambios en Hevy». Lo que este guión cuenta del trabajo de
+> las 09:00 describe cómo era el primer día.
+
 La diferencia importa. Instalar es un problema resuelto; lo que no está resuelto
 es **qué mira uno el primer día para saber si lo que ha arrancado está vivo o
 solo parece vivo**, que no es lo mismo y desde fuera se ven igual.
