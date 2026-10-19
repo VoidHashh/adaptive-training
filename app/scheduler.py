@@ -36,9 +36,13 @@ sin una base real y solo con números del reloj».
 
 Así que el plan del día sale SOLO del envío del formulario, y escribe en Hevy
 solo si en ese envío se marca «aplicar los cambios» (ver `api.post_checkin`).
-Lo que queda aquí lee y aprende -Garmin, lo entrenado, el bienestar perdido- o
-avisa de que algo está roto: un trabajo que falla, la vigilancia, la auditoría
-del arranque. Ninguno toca Hevy ni manda el plan.
+Lo que queda aquí lee, guarda y aprende -Garmin, lo entrenado, el bienestar
+perdido- o avisa de que algo está roto: un trabajo que falla, la vigilancia, la
+auditoría del arranque. Ninguno toca Hevy ni manda el plan.
+
+Guardar no venía solo: el bienestar llegaba a la base al decidir, y del 14 al
+19/10 no se guardó ningún día porque nadie decidió. Desde el 19/10/2026 lo
+guarda cada madrugada `job_fetch_garmin` (ver `archivar_lo_leido`).
 
 El recálculo al abrir la app sigue mirando si el día se decidió sin la noche del
 reloj, pero ya no lo rehace: lo dice, y volver a enviar es decisión del usuario.
@@ -414,7 +418,7 @@ def job_aviso_percepcion(
 def job_fetch_garmin(
     cfg: Any, *, day: date | None = None, fetch: Callable | None = None
 ) -> int:
-    """Refresca la caché larga de salidas antes de que nadie la necesite.
+    """Refresca la caché larga de salidas y guarda en la base lo leído.
 
     Se hace de madrugada y aparte de la decisión a propósito: Garmin limita por
     IP, y si la lectura y la decisión fueran el mismo trabajo un 429 se llevaría
@@ -423,6 +427,8 @@ def job_fetch_garmin(
     Por eso mismo la ventana la decide `ventana_de_salidas` y no una constante:
     pedir 190 días cada noche para añadir la salida de ayer es gastar el cupo
     de peticiones en datos que ya están en disco.
+
+    Desde el 19/10/2026 termina con `archivar_lo_leido`: ver allí por qué.
     """
     from app.integrations.activity_cache import (
         RUTA_CACHE_SALIDAS, load_cached_rides, refresh_cache, ventana_de_salidas,
@@ -435,7 +441,68 @@ def job_fetch_garmin(
     # es un síntoma -la caché no se está escribiendo- y sin esta línea el único
     # rastro sería la factura de peticiones a Garmin.
     log.info("caché de salidas: %s", motivo)
-    return refresh_cache(ruta, day, days=dias, fetch=fetch)
+    leidas = refresh_cache(ruta, day, days=dias, fetch=fetch)
+    archivar_lo_leido(cfg, day)
+    return leidas
+
+
+def _leer_bienestar(cfg: Any, day: date) -> list:
+    """El bienestar de los últimos días, de Garmin. Solo eso: sin salidas.
+
+    Las salidas ya las acaba de traer `refresh_cache`; pedirlas otra vez aquí
+    gastaría el cupo de Garmin en datos que están en disco.
+    """
+    from app.integrations.garmin import build_client
+    from app.settings import settings
+
+    n = dias_de_wellness(cfg)
+    cliente = build_client(settings, cfg)
+    cliente.connect()
+    return [cliente.day_metrics(day - timedelta(days=i)) for i in range(n - 1, -1, -1)]
+
+
+def archivar_lo_leido(
+    cfg: Any, day: date, *, leer_bienestar: Callable | None = None
+) -> tuple[int, int]:
+    """Guarda en la base el bienestar de los últimos días y las salidas nuevas.
+
+    EL HUECO QUE LO TRAE (19/10/2026). El bienestar y las salidas solo llegaban
+    a `daily_metrics` y `activities` al DECIDIR el día (`runner._guardar_lo_leido`)
+    o al arrancar el contenedor. Cada mañana decidía alguien: el formulario o,
+    si no, la decisión de las 09:00. El 10/10/2026 esa decisión se quitó -nada
+    actúa sin el formulario- y los días sin formulario dejaron de guardarse: del
+    14 al 19/10 no entró ni un día de sueño, HRV ni pulso, mientras la caché se
+    refrescaba cada madrugada y todo parecía en orden.
+
+    Guardar no es actuar: no toca Hevy ni manda nada. Es lo que permite que el
+    sistema aprenda también de los días en que no se contesta.
+
+    SE GUARDA LA VENTANA ENTERA, NO SOLO HOY. A las 06:30 el reloj suele no haber
+    subido todavía la noche, así que la fila de hoy puede quedar a medias. Un
+    `None` no pisa un valor ya guardado (`upsert_daily_metrics`), y la mañana
+    siguiente vuelve a leer este día con la noche ya subida: cada día queda
+    completo, como muy tarde, al día siguiente.
+
+    Las salidas salen de la caché recién refrescada, con `backfill.rellenar_salidas`:
+    solo las que no tienen fila, clasificadas con los umbrales de hoy y sin
+    reescribir ninguna. Sin caché o sin ninguna salida no hay nada que archivar,
+    y eso no es una avería.
+
+    Si leer el bienestar falla, el trabajo revienta y el avisador lo cuenta: un
+    día sin guardar tiene que saberse, no descubrirse semanas después.
+    """
+    from app.backfill import SinCacheDeSalidas, rellenar_salidas
+
+    metricas = (leer_bienestar or _leer_bienestar)(cfg, day)
+    with session_scope() as s:
+        dias = repo.upsert_daily_metrics(s, metricas)
+        try:
+            salidas = rellenar_salidas(s, cfg).escritas
+        except SinCacheDeSalidas as exc:
+            log.info("salidas: nada que archivar (%s)", exc)
+            salidas = 0
+    log.info("archivado de Garmin: %d día(s) de bienestar, %d salida(s) nueva(s)", dias, salidas)
+    return dias, salidas
 
 
 def job_backfill_wellness(

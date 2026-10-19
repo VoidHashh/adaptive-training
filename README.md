@@ -13,7 +13,7 @@ misma decisión, y siempre se puede señalar la regla que la tomó.
 
 | Hora  | Qué pasa |
 |-------|----------|
-| 06:30 | Refresca la caché de Garmin (sueño, HRV, pulso en reposo, actividades). |
+| 06:30 | Lee Garmin y guarda en la base el bienestar de los últimos días (sueño, HRV, pulso en reposo) y las salidas nuevas, haya formulario o no. |
 | —     | Cuando se envía el check-in desde el móvil: decide en ese momento, y escribe en Hevy solo si se marca la casilla. |
 | 09:30 | Si hoy hay check-in y queda alguna sesión de ayer por contar, el aviso de percepción. |
 | 22:30 | Reconcilia lo que de verdad se entrenó y actualiza el estado. |

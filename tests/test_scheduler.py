@@ -484,6 +484,13 @@ def _espia_refresco(monkeypatch, cache=None):
         return 7
 
     monkeypatch.setattr("app.integrations.activity_cache.refresh_cache", refresh)
+    # Y lo que hace el trabajo al terminar desde el 19/10/2026: guardar en la
+    # base. Aquí se espía, porque estos tests miran el refresco y no deben
+    # tocar ni la base de verdad ni Garmin.
+    monkeypatch.setattr(
+        "app.scheduler.archivar_lo_leido",
+        lambda cfg, day: visto.update(archivado=day),
+    )
     if cache is not None:
         monkeypatch.setattr(
             "app.integrations.activity_cache.load_cached_rides", lambda p: cache
@@ -1130,3 +1137,96 @@ def test_la_cache_de_previsualizar_no_crece_sin_freno(
         )
 
     assert len(mod._previsualizaciones) == 1
+
+
+
+# ---------------------------------------------------------------------------
+# Lo leído de Garmin se guarda cada madrugada, haya formulario o no (19/10/2026)
+# ---------------------------------------------------------------------------
+#
+# Del 14 al 19/10 no entró en la base ni un día de bienestar: solo se guardaba
+# al decidir, y desde el 10/10 sin formulario nadie decide.
+
+
+def _bienestar(hrv=None):
+    return lambda cfg, day: dias(day, 8, hrv=hrv, rhr=52.0, sleep_min=420)
+
+
+def _cache_con_una_salida(monkeypatch, day):
+    from app.engine.signals import Ride
+    from app.integrations.activity_cache import CachedActivities
+
+    cache = CachedActivities(
+        rides=[Ride(date=day - timedelta(days=1), duration_s=5400, activity_id=777,
+                    aerobic_te=2.0)],
+        total_activities=1,
+    )
+    monkeypatch.setattr("app.integrations.activity_cache.load_cached_rides", lambda p: cache)
+
+
+def test_el_refresco_termina_guardando_lo_leido(monkeypatch, cfg):
+    visto = _espia_refresco(monkeypatch, cache=cache_sana(LUNES))
+    job_fetch_garmin(cfg, day=LUNES, fetch=None)
+    assert visto.get("archivado") == LUNES
+
+
+def test_se_guarda_el_bienestar_de_la_ventana_y_las_salidas_nuevas(en_memoria, cfg, monkeypatch):
+    from app.models import Activity, DailyMetrics
+    from app.scheduler import archivar_lo_leido
+
+    _cache_con_una_salida(monkeypatch, LUNES)
+
+    dias_, salidas = archivar_lo_leido(cfg, LUNES, leer_bienestar=_bienestar(hrv=55.0))
+
+    filas = en_memoria.scalars(select(DailyMetrics)).all()
+    assert dias_ == 8 and len(filas) == 8, "se guarda la ventana entera, no solo hoy"
+    assert salidas == 1
+    assert en_memoria.scalars(select(Activity.garmin_activity_id)).all() == [777]
+
+
+def test_una_noche_que_sube_tarde_se_completa_a_la_manana_siguiente(en_memoria, cfg, monkeypatch):
+    """A las 06:30 el reloj suele no haber subido la noche: la fila de hoy queda
+    a medias, y la lectura de mañana -que vuelve a pedir este día- la completa."""
+    from app.models import DailyMetrics
+    from app.scheduler import archivar_lo_leido
+
+    _cache_con_una_salida(monkeypatch, LUNES)
+    archivar_lo_leido(cfg, LUNES, leer_bienestar=_bienestar(hrv=None))
+    archivar_lo_leido(cfg, LUNES + timedelta(days=1), leer_bienestar=_bienestar(hrv=48.0))
+
+    fila = en_memoria.scalars(select(DailyMetrics).where(DailyMetrics.date == LUNES)).one()
+    assert fila.hrv == 48.0
+
+
+def test_si_garmin_no_contesta_el_trabajo_revienta_para_que_se_sepa(en_memoria, cfg):
+    from app.scheduler import archivar_lo_leido
+
+    def caido(cfg, day):
+        raise RuntimeError("Garmin 429")
+
+    with pytest.raises(RuntimeError, match="429"):
+        archivar_lo_leido(cfg, LUNES, leer_bienestar=caido)
+
+
+def test_el_bienestar_se_pide_dia_a_dia_hasta_hoy_y_nada_mas(cfg, monkeypatch):
+    """Una petición por día de la ventana, terminando HOY. Ni salidas -ya las
+    trajo el refresco- ni días de más, que es el cupo de Garmin."""
+    from app.scheduler import _leer_bienestar, dias_de_wellness
+
+    pedidos: list = []
+
+    @doble_de(GarminClient)
+    class GarminContado:
+        def connect(self):
+            pass
+
+        def day_metrics(self, day):
+            pedidos.append(day)
+            return day
+
+    monkeypatch.setattr("app.integrations.garmin.build_client", lambda s, c: GarminContado())
+
+    _leer_bienestar(cfg, LUNES)
+
+    n = dias_de_wellness(cfg)
+    assert pedidos == [LUNES - timedelta(days=i) for i in range(n - 1, -1, -1)]

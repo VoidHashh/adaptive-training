@@ -295,6 +295,14 @@ mueven las cargas:
   torso y después la bisagra). **Qué vigilar:** una semana de dos o de cuatro
   sesiones vuelve a descolocarla; y los intervalos de `dia_2` caen ahora el
   viernes, antes de la bici del sábado.
+- **Lo leído de Garmin se guarda cada madrugada (19/10/2026).** El
+  bienestar y las salidas solo llegaban a la base al decidir el día, y desde el
+  10/10 sin formulario nadie decide: del 14 al 19/10 no entró ningún día. Ahora
+  el trabajo de las 06:30, después de refrescar la caché de salidas, guarda los
+  últimos días de bienestar y las salidas nuevas. La fila de hoy puede quedar a
+  medias -a esa hora el reloj no suele haber subido la noche- y se completa a
+  la mañana siguiente. **Qué vigilar:** que `daily_metrics` tenga fila de cada
+  día aunque no se rellene el formulario.
 - **Nada actúa sin el formulario, y Hevy solo cambia si lo aceptas
   (10/10/2026).** Se fueron la decisión de las 09:00 sin check-in y el
   recálculo de las 07:30: del 30/09 al 05/10 el de las 09:00 decidió seis días
