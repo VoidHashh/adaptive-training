@@ -35,6 +35,7 @@ from app.engine.message import (
 
 from tests.conftest import LUNES, con_bloque_hiit, sig, sig_completa
 from tests.conftest import titulo
+from tests.conftest import siguiente
 from tests.conftest import con_ambar_que_recorta
 from tests.dobles import doble_de
 from app.engine.bike_advisor import BikeRecommendation
@@ -425,7 +426,7 @@ def test_el_recuento_de_dias_sale_con_el_numero_y_la_fecha(cfg_sin_motivo):
     txt = render_plain(d, cfg)
     assert "9 días" in txt, txt
     assert hace_nueve.isoformat() in txt or hace_nueve.strftime("%d/%m") in txt, txt
-    assert d.rotation_routine == "dia_3", "y sigue tocando la que tocaba"
+    assert d.rotation_routine == siguiente(cfg, "dia_2"), "y sigue tocando la que tocaba"
 
 
 def test_sin_ninguna_sesion_leida_el_mensaje_lo_dice_en_vez_de_poner_un_cero(
@@ -1970,14 +1971,16 @@ def test_si_la_mas_parada_ya_caduco_se_nombra_la_siguiente(cfg):
     que el aviso más falta hace, y no se ve en ninguno de los otros tests
     porque todos tienen una pendiente sola.
     """
-    d = _con_pendientes(cfg, _historial(["dia_3"] * 6 + ["dia_2", "dia_1"]))
+    # Con el ciclo de cuatro (19/11/2026): pendiente pasadas 4 sesiones,
+    # caducada pasadas 4 + 3.
+    d = _con_pendientes(cfg, _historial(["dia_3"] * 7 + ["dia_2", "dia_1"]))
     assert [(p.clave, p.caducada) for p in d.pendientes] == [
         ("dia_1", True),
         ("dia_2", False),
     ], d.pendientes
 
     txt = render_telegram(d, cfg)
-    assert f"{titulo(cfg, 'dia_2')}: han pasado 6" in txt, txt
+    assert f"{titulo(cfg, 'dia_2')}: han pasado 7" in txt, txt
     assert f"{titulo(cfg, 'dia_1')}: han pasado" not in txt, txt
 
 

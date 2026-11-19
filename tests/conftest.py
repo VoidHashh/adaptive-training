@@ -696,3 +696,15 @@ def titulo(cfg, clave):
     coincidencia que se acaba de romper.
     """
     return cfg.raw["routines"][clave]["title"]
+
+
+def siguiente(cfg, clave):
+    """La rutina que va detrás de `clave` en el ciclo del config.
+
+    Los tests de la rotación decían «después del `dia_2`, el `dia_3`» con el
+    literal escrito. El 19/11/2026 entró el `dia_4` detrás del `dia_2` y esa
+    frase dejó de ser cierta en quince sitios a la vez. Lo que esos tests
+    comprueban es que el motor sigue el ciclo del config, no cuál es.
+    """
+    orden = list(cfg.rotation_order())
+    return orden[(orden.index(clave) + 1) % len(orden)]

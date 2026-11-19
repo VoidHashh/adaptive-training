@@ -25,6 +25,7 @@ from tests.conftest import LUNES, eligiendo, sig, sig_completa
 from tests.conftest import titulo
 from tests.conftest import con_bloque_hiit
 from tests.conftest import con_ambar_que_recorta
+from tests.conftest import siguiente
 
 JUEVES = LUNES + timedelta(days=3)
 
@@ -237,7 +238,7 @@ def test_y_si_dice_que_no_y_entrena_igual_cuenta_como_una_sesion_normal(cfg):
     assert despues.last_strength == ("dia_2", martes)
 
     miercoles = LUNES + timedelta(days=2)
-    assert decide(cfg, miercoles, sig(miercoles), despues).rotation_routine == "dia_3"
+    assert decide(cfg, miercoles, sig(miercoles), despues).rotation_routine == siguiente(cfg, "dia_2")
 
 
 def test_da_igual_el_dia_de_la_semana_que_sea(cfg):
@@ -263,13 +264,14 @@ def test_el_ciclo_da_la_vuelta_pasando_por_el_dia_3(cfg):
     """
     st = EngineState()
     hechas = []
-    for i in range(4):
+    for i in range(5):
         dia = LUNES + timedelta(days=i * 2)
         d = decide(cfg, dia, sig(dia), st)
         hechas.append(d.session.routine_key)
         st = advance_state(st, d, executed={k["key"]: True for k in d.session.exercises})
 
-    assert hechas == ["dia_1", "dia_2", "dia_3", "dia_1"]
+    # Cuatro desde el 19/11/2026: el `dia_4` va detrás del `dia_2`.
+    assert hechas == ["dia_1", "dia_2", "dia_4", "dia_3", "dia_1"]
 
 
 def test_una_semana_entera_sin_pisar_el_gimnasio_deja_el_puntero_quieto(cfg):
@@ -282,7 +284,7 @@ def test_una_semana_entera_sin_pisar_el_gimnasio_deja_el_puntero_quieto(cfg):
 
     assert st.last_strength == ("dia_2", LUNES)
     ultimo = decide(cfg, LUNES + timedelta(days=15), sig(LUNES + timedelta(days=15)), st)
-    assert ultimo.rotation_routine == "dia_3"
+    assert ultimo.rotation_routine == siguiente(cfg, "dia_2")
 
 
 # ---------------------------------------------------------------------------
@@ -517,7 +519,7 @@ def test_hacer_el_dia_elegido_si_mueve_el_puntero_a_ese(cfg):
     assert despues.last_strength == ("dia_2", LUNES)
 
     martes = LUNES + timedelta(days=1)
-    assert decide(cfg, martes, sig(martes), despues).rotation_routine == "dia_3"
+    assert decide(cfg, martes, sig(martes), despues).rotation_routine == siguiente(cfg, "dia_2")
 
 
 def test_un_dia_de_bici_no_toca_el_estado_mas_que_un_dia_callado(cfg):
@@ -665,11 +667,14 @@ def test_el_recorte_de_carga_de_una_regla_aplica_su_factor_y_cae_en_disco(cfg):
     ]
 
     # El `dia_3` se pide por donde va el ciclo, no por el día de la semana: se
-    # viene de haber hecho el `dia_2`. Antes esto necesitaba una variante de
-    # calendario entera -`summer`- solo porque la activa no lo programaba nunca.
-    despues_del_dia_2 = EngineState(last_strength=("dia_2", viernes - timedelta(days=2)))
+    # viene de haber hecho la rutina que va antes -el `dia_4` desde el
+    # 19/11/2026-. Antes esto necesitaba una variante de calendario entera
+    # -`summer`- solo porque la activa no lo programaba nunca.
+    orden = cfg.rotation_order()
+    anterior = orden[orden.index("dia_3") - 1]
+    despues_del_anterior = EngineState(last_strength=(anterior, viernes - timedelta(days=2)))
     cfg = con_ambar_que_recorta(cfg)
-    d = decide(cfg, viernes, sig(viernes, upper_discomfort=6), despues_del_dia_2)
+    d = decide(cfg, viernes, sig(viernes, upper_discomfort=6), despues_del_anterior)
     assert d.session.routine_key == "dia_3"
     despues = [
         s.get("weight_kg")

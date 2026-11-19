@@ -1404,6 +1404,11 @@ special_rules:
 #   martes/miérc.  `dia_1`  «Día 2»  pierna + intervalos, con margen desde la bici
 #   viernes        `dia_2`  «Día 3»  bisagra + tirón + intervalos
 #
+# DESDE EL 19/11/2026 EL CICLO TIENE CUATRO: `dia_4` «Día 4», espalda y brazos,
+# va detrás del `dia_2`. Con tres sesiones por semana ya no cae cada rutina el
+# mismo día de la semana: el ciclo da la vuelta cada cuatro sesiones. La tabla
+# de arriba describe la semana de tres días que había hasta entonces.
+#
 # El CICLO no cambia: dia_1 -> dia_2 -> dia_3 -> dia_1 es el mismo que
 # dia_3 -> dia_1 -> dia_2. Reordenar la lista solo hace que se lea en el orden
 # de la semana y que el selector ofrezca las tres en ese orden. Lo que coloca
@@ -1420,7 +1425,7 @@ special_rules:
 # escritura de cada rutina. Consecuencia: en comentarios y documentos
 # anteriores a esta fecha, «Día N» es `dia_N`; desde aquí se nombran por clave.
 rotation:
-  order: [dia_3, dia_1, dia_2]
+  order: [dia_3, dia_1, dia_2, dia_4]
 
 # -----------------------------------------------------------------------------
 # 7-bis. CICLISMO
@@ -2616,6 +2621,98 @@ routines:
           - {duration_s: 20}
           - {duration_s: 20}
           - {duration_s: 20}
+
+  # ---------------------------------------------------------------------------
+  dia_4:
+    title: "Día 4"
+    hevy_routine_id: "88ebf421-abfe-42e3-bf6c-0071f17c235e"
+    focus: "Espalda + brazos"
+    # CREADO EL 19/11/2026, a petición del usuario: un día de espalda y brazos
+    # con ejercicios que no hace en ningún otro día. Los eligió él uno a uno.
+    #
+    # TODOS SENTADO O CON EL PECHO APOYADO, y por dos motivos: la hernia L4-L5
+    # -fuera remos inclinados sin apoyo, encogimientos y dominadas- y el
+    # esguince de tobillo de noviembre, que tiene aparcado lo que carga el pie.
+    # El jalón es a dos manos y no a una por decisión suya: a una mano el tronco
+    # tiene que aguantar un giro que con dos no existe. El remo iso-lateral se
+    # puede hacer con los dos brazos a la vez.
+    #
+    # SIN SERIE DE CALENTAMIENTO, también por decisión suya: 3×12 efectivas.
+    # Con tres series la heurística de `set_types` (la primera de cuatro) no
+    # marca ninguna, así que las tres cuentan.
+    #
+    # SIN PESO, A PROPÓSITO. No se inventa ninguno: el primer día se apunta el
+    # peso real en Hevy y la carga se adopta de ahí. Mientras tanto la subida de
+    # CARGA queda bloqueada con `needs_data` -lo mismo que se hizo con los
+    # cuatro ejercicios nuevos del `dia_3` el 18/09/2026- y la de reps corre.
+    # Los incrementos copian los del ejercicio más parecido de las otras
+    # rutinas: jalón 5 kg, remos 2,5 kg, curl en máquina 1,25 kg.
+    #
+    # No lleva intervalos: no está en `hiit.embedded`.
+    exercises:
+
+      - key: remo_isolateral
+        template_id: "AA1EB7D8"
+        name: "Remo iso-lateral (máquina)"
+        increment_kg: 2.5
+        apply_to: all_sets
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
+
+      - key: jalon_supino
+        template_id: "046E25A2"
+        name: "Jalón con agarre supino (polea)"
+        increment_kg: 5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
+
+      - key: remo_sentado_maquina
+        template_id: "1DF4A847"
+        name: "Remo sentado (máquina)"
+        increment_kg: 2.5
+        apply_to: all_sets
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
+
+      - key: pullover_maquina
+        template_id: "B123DD01"
+        name: "Pullover (máquina)"
+        increment_kg: 2.5
+        apply_to: all_sets
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
+
+      - key: curl_biceps_maquina
+        template_id: "AF328E3D"
+        name: "Curl de bíceps (máquina)"
+        increment_kg: 1.25
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
+
+      - key: curl_inverso_polea
+        template_id: "9F48F858"
+        name: "Curl inverso (polea)"
+        increment_kg: 2.5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
+
+      - key: extension_triceps_maquina
+        template_id: "3092FADD"
+        name: "Extensión de tríceps (máquina)"
+        increment_kg: 2.5
+        apply_to: top_set
+        progression_type: double
+        rep_range: [10, 12]
+        sets: [{reps: 12}, {reps: 12}, {reps: 12}]
 
   # ---------------------------------------------------------------------------
   # Bloques HIIT. No están en `rotation.order`: se AÑADEN al final de dia_1 o

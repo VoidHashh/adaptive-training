@@ -1069,8 +1069,8 @@ def test_una_eleccion_que_no_existe_es_un_error_y_no_una_fila_muda(db, cfg):
     ningún `workout_log`: el día queda escrito y se comporta exactamente igual
     que si no hubieras abierto el formulario.
     """
-    with pytest.raises(ValueError, match="dia_4"):
-        upsert_checkin(db, LUNES, {"chosen_session": "dia_4"}, config=cfg)
+    with pytest.raises(ValueError, match="dia_5"):
+        upsert_checkin(db, LUNES, {"chosen_session": "dia_5"}, config=cfg)
 
 
 def test_la_eleccion_distingue_mayusculas(db, cfg):

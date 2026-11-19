@@ -295,6 +295,16 @@ mueven las cargas:
   torso y después la bisagra). **Qué vigilar:** una semana de dos o de cuatro
   sesiones vuelve a descolocarla; y los intervalos de `dia_2` caen ahora el
   viernes, antes de la bici del sábado.
+- **Día 4, espalda y brazos (19/11/2026).** Siete ejercicios elegidos por el
+  usuario, todos sentado o con el pecho apoyado -hernia y esguince de tobillo-:
+  remo iso-lateral, jalón supino, remo sentado en máquina, pullover en máquina,
+  curl de bíceps en máquina, curl inverso en polea y extensión de tríceps en
+  máquina. 3×12 sin calentamiento y sin peso: el primer día se apunta el peso
+  real en Hevy y la carga se adopta de ahí. Va detrás del `dia_2` en el ciclo,
+  que pasa a ser de cuatro. La rutina «Día 4» se creó en Hevy por la API; la
+  API no permite borrar rutinas, así que «Lisiado» se borra a mano. **Qué
+  vigilar:** que el primer Día 4 con pesos apuntados deje cargas en
+  `exercise_targets`; mientras no, la subida de carga sale como `needs_data`.
 - **Lo leído de Garmin se guarda cada madrugada (19/10/2026).** El
   bienestar y las salidas solo llegaban a la base al decidir el día, y desde el
   10/10 sin formulario nadie decide: del 14 al 19/10 no entró ningún día. Ahora

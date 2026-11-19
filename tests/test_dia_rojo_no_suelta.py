@@ -579,9 +579,11 @@ def test_la_rotacion_da_la_vuelta_y_el_dia_3_esta_dentro(cfg):
     Sus cargas no se movieron una sola vez. Este test es el que se pondría rojo
     si volviera a salirse del ciclo.
     """
-    assert cfg.rotation_order() == ["dia_1", "dia_2", "dia_3"]
+    # Cuatro desde el 19/11/2026: el `dia_4` va detrás del `dia_2`.
+    assert cfg.rotation_order() == ["dia_1", "dia_2", "dia_4", "dia_3"]
     assert siguiente_en_rotacion(cfg, "dia_1") == "dia_2"
-    assert siguiente_en_rotacion(cfg, "dia_2") == "dia_3"
+    assert siguiente_en_rotacion(cfg, "dia_2") == "dia_4"
+    assert siguiente_en_rotacion(cfg, "dia_4") == "dia_3"
     assert siguiente_en_rotacion(cfg, "dia_3") == "dia_1"
 
 

@@ -1040,6 +1040,7 @@ def test_y_si_ademas_se_borra_lo_que_la_anunciaba_entonces_si_arranca(cfg_copia)
     rechazara cualquier `rotation.order` más corto que `routines`."""
     cfg_copia.raw["rotation"]["order"] = ["dia_1", "dia_2"]
     cfg_copia.raw["routines"]["dia_3"].pop("focus", None)
+    cfg_copia.raw["routines"]["dia_4"].pop("focus", None)
 
     assert errores(cfg_copia.raw) == ""
     assert "dia_3" in cfg_copia.raw["routines"], "sigue declarada, y no se escribe"
@@ -2259,7 +2260,7 @@ def test_los_titulos_siguen_el_orden_de_la_semana(cfg_real):
     «Día 1» que se hace el martes es un nombre que miente cada semana."""
     orden = cfg_real.rotation_order()
     titulos = [cfg_real.raw["routines"][k]["title"] for k in orden]
-    assert titulos == ["Día 1", "Día 2", "Día 3"], dict(zip(orden, titulos))
+    assert titulos == ["Día 1", "Día 2", "Día 3", "Día 4"], dict(zip(orden, titulos))
 
 
 def test_la_semana_empieza_por_la_rutina_sin_intervalos(cfg_real):

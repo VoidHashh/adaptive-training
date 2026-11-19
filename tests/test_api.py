@@ -33,6 +33,7 @@ from app.models import Base, WorkoutLog
 from app.settings import settings
 from tests.conftest import LUNES, dias
 from tests.conftest import titulo
+from tests.conftest import siguiente
 from tests.dobles import doble_de
 from app.config_loader import Config
 
@@ -843,7 +844,7 @@ def test_la_propuesta_es_la_que_el_motor_va_a_planificar(cliente, db, cfg):
     _hizo(db, ["dia_2", "dia_1"])
 
     sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
-    assert sel["propuesta"] == "dia_3", "después del Día 2 toca el Día 3"
+    assert sel["propuesta"] == siguiente(cfg, "dia_2"), "después del dia_2, lo que diga el ciclo"
 
     cliente.post("/api/checkin", json={"day": str(LUNES), "fatigue": 4})
     fila = repo.current_decision(db, LUNES)
@@ -854,7 +855,7 @@ def test_la_propuesta_es_la_que_el_motor_va_a_planificar(cliente, db, cfg):
     )
 
 
-def test_la_propuesta_no_se_cuela_entre_lo_contestado(cliente, db):
+def test_la_propuesta_no_se_cuela_entre_lo_contestado(cliente, db, cfg):
     """Viaja aparte, y `values` sigue vacío mientras nadie toque nada.
 
     Si la propuesta entrara en `values`, `recuperar()` la pintaría como respuesta
@@ -866,7 +867,7 @@ def test_la_propuesta_no_se_cuela_entre_lo_contestado(cliente, db):
 
     cuerpo = cliente.get(f"/api/checkin/today?day={LUNES}").json()
 
-    assert cuerpo["selector"]["propuesta"] == "dia_3"
+    assert cuerpo["selector"]["propuesta"] == siguiente(cfg, "dia_2")
     assert cuerpo["values"] == {}, (
         f"la propuesta se ha colado entre lo contestado: {cuerpo['values']}"
     )
@@ -881,18 +882,20 @@ def test_el_dia_que_lleva_mas_de_una_vuelta_parado_sale_marcado(cliente, db):
     cada uno contara por su cuenta, un día dirían cosas distintas sobre la misma
     rutina y no habría forma de saber cuál miente.
     """
-    # dia_1 al fondo, dia_2 y dia_3 recientes: el Día 1 lleva una vuelta y una
-    # sesión más sin hacerse, que es el umbral entero de `rotacion.pendientes`.
-    _hizo(db, ["dia_3", "dia_2", "dia_3", "dia_2", "dia_1"])
+    # dia_1 al fondo y las otras tres recientes: el `dia_1` lleva una vuelta y
+    # una sesión más sin hacerse -cinco con el ciclo de cuatro desde el
+    # 19/11/2026-, que es el umbral entero de `rotacion.pendientes`.
+    _hizo(db, ["dia_3", "dia_2", "dia_4", "dia_3", "dia_2", "dia_1"])
 
     sel = cliente.get(f"/api/checkin/today?day={LUNES}").json()["selector"]
     por_clave = {o["key"]: o for o in sel["opciones"]}
 
-    assert por_clave["dia_1"]["pendiente"] == 4
-    assert por_clave["dia_1"]["ultima_vez"] == str(LUNES - timedelta(days=8))
+    assert por_clave["dia_1"]["pendiente"] == 5
+    assert por_clave["dia_1"]["ultima_vez"] == str(LUNES - timedelta(days=10))
     # Y las demás no. Marcarlas todas sería no marcar ninguna.
     assert por_clave["dia_2"]["pendiente"] is None
     assert por_clave["dia_3"]["pendiente"] is None
+    assert por_clave["dia_4"]["pendiente"] is None
     assert por_clave["bici"]["pendiente"] is None
 
 
@@ -989,10 +992,10 @@ def test_una_sesion_que_no_esta_en_el_selector_se_rechaza(cliente):
     rutina, y el sistema se comporta igual que si no hubieras contestado.
     """
     r = cliente.post(
-        "/api/checkin", json={"day": str(LUNES), "chosen_session": "dia_4"}
+        "/api/checkin", json={"day": str(LUNES), "chosen_session": "dia_5"}
     )
     assert r.status_code == 400, f"se ha colado con un {r.status_code}"
-    assert "dia_4" in r.json()["detail"]
+    assert "dia_5" in r.json()["detail"]
 
 
 def test_enviar_el_checkin_decide_el_dia_en_ese_momento(cliente, db):
